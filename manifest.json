@@ -1,16 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Remote Job Search Starter",
-  "description": "Starts remote job searches on Indeed, ZipRecruiter, and Dice, then opens individual apply pages for matching roles.",
+  "description": "Searches Indeed, ZipRecruiter, Dice, and Monster, then opens application flows and autofills blank fields with saved resume and profile data.",
   "version": "1.0.0",
   "permissions": [
     "storage",
     "tabs"
   ],
   "host_permissions": [
-    "https://*.indeed.com/*",
-    "https://*.ziprecruiter.com/*",
-    "https://*.dice.com/*"
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "dist/background.js"
@@ -22,9 +21,8 @@
   "content_scripts": [
     {
       "matches": [
-        "https://*.indeed.com/*",
-        "https://*.ziprecruiter.com/*",
-        "https://*.dice.com/*"
+        "http://*/*",
+        "https://*/*"
       ],
       "js": [
         "dist/content.js"

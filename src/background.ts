@@ -1,6 +1,6 @@
 import {
-  AutomationStage,
   AutomationSession,
+  AutomationStage,
   AutomationStatus,
   SEARCH_OPEN_DELAY_MS,
   SiteKey,
@@ -14,9 +14,22 @@ type BackgroundRequest =
   | { type: "start-automation"; tabId: number }
   | { type: "get-tab-session"; tabId: number }
   | { type: "content-ready" }
-  | { type: "status-update"; status: AutomationStatus; shouldResume?: boolean }
+  | {
+      type: "status-update";
+      status: AutomationStatus;
+      shouldResume?: boolean;
+      stage?: AutomationStage;
+      label?: string;
+      resumeKind?: SpawnTabRequest["resumeKind"];
+    }
   | { type: "spawn-tabs"; items: SpawnTabRequest[] }
-  | { type: "finalize-session"; status: AutomationStatus }
+  | {
+      type: "finalize-session";
+      status: AutomationStatus;
+      stage?: AutomationStage;
+      label?: string;
+      resumeKind?: SpawnTabRequest["resumeKind"];
+    }
   | { type: "close-current-tab" };
 
 chrome.runtime.onMessage.addListener((message: BackgroundRequest, sender, sendResponse) => {
@@ -65,34 +78,11 @@ async function handleMessage(
       };
     }
 
-    case "status-update": {
-      const tabId = sender.tab?.id;
+    case "status-update":
+      return updateSessionFromMessage(message, sender, false);
 
-      if (tabId === undefined) {
-        return { ok: false };
-      }
-
-      const existingSession = await getSession(tabId);
-      const site = existingSession?.site ?? message.status.site;
-
-      if (site === "unsupported") {
-        return { ok: false };
-      }
-
-      const nextSession: AutomationSession = {
-        tabId,
-        site,
-        phase: message.status.phase,
-        message: message.status.message,
-        updatedAt: message.status.updatedAt,
-        shouldResume: message.shouldResume ?? existingSession?.shouldResume ?? false,
-        stage: existingSession?.stage ?? "bootstrap",
-        label: existingSession?.label
-      };
-
-      await setSession(nextSession);
-      return { ok: true };
-    }
+    case "finalize-session":
+      return updateSessionFromMessage(message, sender, true);
 
     case "spawn-tabs": {
       const currentTab = sender.tab;
@@ -118,7 +108,8 @@ async function handleMessage(
             item.message ?? `Starting ${getReadableStageName(item.stage)}...`,
             true,
             item.stage,
-            item.label
+            item.label,
+            item.resumeKind
           );
 
           await setSession(session);
@@ -131,35 +122,6 @@ async function handleMessage(
         ok: true,
         opened: message.items.length
       };
-    }
-
-    case "finalize-session": {
-      const tabId = sender.tab?.id;
-
-      if (tabId === undefined) {
-        return { ok: false };
-      }
-
-      const existingSession = await getSession(tabId);
-      const site = existingSession?.site ?? message.status.site;
-
-      if (site === "unsupported") {
-        await removeSession(tabId);
-        return { ok: true };
-      }
-
-      await setSession({
-        tabId,
-        site,
-        phase: message.status.phase,
-        message: message.status.message,
-        updatedAt: message.status.updatedAt,
-        shouldResume: false,
-        stage: existingSession?.stage ?? "bootstrap",
-        label: existingSession?.label
-      });
-
-      return { ok: true };
     }
 
     case "close-current-tab": {
@@ -175,6 +137,53 @@ async function handleMessage(
   }
 }
 
+async function updateSessionFromMessage(
+  message:
+    | Extract<BackgroundRequest, { type: "status-update" }>
+    | Extract<BackgroundRequest, { type: "finalize-session" }>,
+  sender: chrome.runtime.MessageSender,
+  isFinal: boolean
+): Promise<{ ok: boolean }> {
+  const tabId = sender.tab?.id;
+
+  if (tabId === undefined) {
+    return { ok: false };
+  }
+
+  const existingSession = await getSession(tabId);
+  const site = existingSession?.site ?? message.status.site;
+
+  if (site === "unsupported") {
+    if (isFinal) {
+      await removeSession(tabId);
+    }
+
+    return { ok: true };
+  }
+
+  const shouldResume =
+    isFinal
+      ? false
+      : ("shouldResume" in message ? message.shouldResume : undefined) ??
+        existingSession?.shouldResume ??
+        false;
+
+  const nextSession: AutomationSession = {
+    tabId,
+    site,
+    phase: message.status.phase,
+    message: message.status.message,
+    updatedAt: message.status.updatedAt,
+    shouldResume,
+    stage: message.stage ?? existingSession?.stage ?? "bootstrap",
+    label: message.label ?? existingSession?.label,
+    resumeKind: message.resumeKind ?? existingSession?.resumeKind
+  };
+
+  await setSession(nextSession);
+  return { ok: true };
+}
+
 async function startAutomationForTab(tabId: number): Promise<{
   ok: boolean;
   error?: string;
@@ -186,7 +195,7 @@ async function startAutomationForTab(tabId: number): Promise<{
   if (!site) {
     return {
       ok: false,
-      error: "Open an Indeed, ZipRecruiter, or Dice page first."
+      error: "Open an Indeed, ZipRecruiter, Dice, or Monster page first."
     };
   }
 
@@ -241,6 +250,8 @@ function getReadableSiteName(site: SiteKey): string {
       return "ZipRecruiter";
     case "dice":
       return "Dice";
+    case "monster":
+      return "Monster";
   }
 }
 
@@ -252,11 +263,13 @@ function getReadableStageName(stage: AutomationStage): string {
       return "result collection";
     case "open-apply":
       return "apply-page opener";
+    case "autofill-form":
+      return "application autofill";
   }
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+    globalThis.setTimeout(resolve, ms);
   });
 }

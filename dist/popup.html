@@ -12,7 +12,8 @@
         <p class="eyebrow">Chrome Extension</p>
         <h1>Remote Job Search Starter</h1>
         <p class="intro">
-          Start a site-aware search that walks matching jobs and opens their apply pages.
+          Search supported job boards, open a limited number of job pages, and autofill
+          applications with the matching resume when a form is found.
         </p>
 
         <div class="meta-row">
@@ -22,15 +23,177 @@
 
         <div class="status-panel" id="status-panel" data-phase="idle">
           <p class="status-label">Status</p>
-          <p id="status-text" class="status-text">Open Indeed, ZipRecruiter, or Dice to begin.</p>
+          <p id="status-text" class="status-text">Open Indeed, ZipRecruiter, Dice, or Monster to begin.</p>
         </div>
 
-        <button id="start-button" class="start-button" type="button" disabled>
-          Start Auto Search
-        </button>
+        <div class="action-row">
+          <button id="start-button" class="start-button" type="button" disabled>
+            Start Auto Search
+          </button>
+          <button id="save-button" class="secondary-button" type="button">
+            Save Settings
+          </button>
+        </div>
+
+        <p id="settings-status" class="settings-status">
+          Settings are stored locally in the extension.
+        </p>
+
+        <section class="settings-group">
+          <div class="group-heading">
+            <h2>Automation</h2>
+            <p>Choose how many jobs each search should open and whether resumes should upload automatically.</p>
+          </div>
+
+          <div class="field-grid compact-grid">
+            <label class="field">
+              <span>Job pages per search</span>
+              <input id="job-limit" type="number" min="1" max="25" />
+            </label>
+
+            <label class="toggle-field">
+              <input id="auto-upload" type="checkbox" />
+              <span>Auto-upload the matching resume when a resume field is detected.</span>
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-group">
+          <div class="group-heading">
+            <h2>Candidate Profile</h2>
+            <p>These values are used for blank fields on Indeed, ZipRecruiter, Monster, and company career pages.</p>
+          </div>
+
+          <div class="field-grid">
+            <label class="field">
+              <span>Full name</span>
+              <input id="full-name" type="text" autocomplete="name" />
+            </label>
+
+            <label class="field">
+              <span>Email</span>
+              <input id="email" type="email" autocomplete="email" />
+            </label>
+
+            <label class="field">
+              <span>Phone</span>
+              <input id="phone" type="tel" autocomplete="tel" />
+            </label>
+
+            <label class="field">
+              <span>City</span>
+              <input id="city" type="text" autocomplete="address-level2" />
+            </label>
+
+            <label class="field">
+              <span>State / Region</span>
+              <input id="state" type="text" autocomplete="address-level1" />
+            </label>
+
+            <label class="field">
+              <span>Country</span>
+              <input id="country" type="text" autocomplete="country-name" />
+            </label>
+
+            <label class="field">
+              <span>LinkedIn URL</span>
+              <input id="linkedin-url" type="url" />
+            </label>
+
+            <label class="field">
+              <span>Portfolio / Website URL</span>
+              <input id="portfolio-url" type="url" />
+            </label>
+
+            <label class="field">
+              <span>Current company</span>
+              <input id="current-company" type="text" />
+            </label>
+
+            <label class="field">
+              <span>Years of experience</span>
+              <input id="years-experience" type="text" inputmode="numeric" />
+            </label>
+
+            <label class="field">
+              <span>Authorized to work in the U.S.</span>
+              <select id="work-authorization">
+                <option value="">Leave blank</option>
+                <option value="Yes">Yes</option>
+                <option value="No">No</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Need sponsorship now or later</span>
+              <select id="needs-sponsorship">
+                <option value="">Leave blank</option>
+                <option value="Yes">Yes</option>
+                <option value="No">No</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Willing to relocate</span>
+              <select id="willing-to-relocate">
+                <option value="">Leave blank</option>
+                <option value="Yes">Yes</option>
+                <option value="No">No</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-group">
+          <div class="group-heading">
+            <h2>Resume Files</h2>
+            <p>Each search uses its matching resume when a resume or CV upload is available.</p>
+          </div>
+
+          <div class="resume-list">
+            <label class="resume-card">
+              <span class="resume-title">Front End Resume</span>
+              <input id="resume-front-end" type="file" accept=".pdf,.doc,.docx" />
+              <span id="resume-front-end-name" class="resume-name">No file saved</span>
+            </label>
+
+            <label class="resume-card">
+              <span class="resume-title">Back End Resume</span>
+              <input id="resume-back-end" type="file" accept=".pdf,.doc,.docx" />
+              <span id="resume-back-end-name" class="resume-name">No file saved</span>
+            </label>
+
+            <label class="resume-card">
+              <span class="resume-title">Full Stack Resume</span>
+              <input id="resume-full-stack" type="file" accept=".pdf,.doc,.docx" />
+              <span id="resume-full-stack-name" class="resume-name">No file saved</span>
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-group">
+          <div class="group-heading">
+            <h2>Remembered Answers</h2>
+            <p>
+              When you manually answer application questions, the extension stores the question and
+              reuses the answer on matching forms later.
+            </p>
+          </div>
+
+          <div class="meta-row">
+            <span class="meta-label">Saved answers</span>
+            <span id="answer-count" class="pill subtle">0</span>
+          </div>
+
+          <button id="clear-answers-button" class="secondary-button" type="button">
+            Clear Remembered Answers
+          </button>
+        </section>
 
         <p class="hint">
-          If the site asks you to verify that you are human, finish it manually and the extension will resume the apply flow.
+          If the site asks you to verify that you are human, finish it manually and the extension
+          will resume. The extension fills fields and uploads files, but it does not auto-submit
+          applications.
         </p>
       </section>
     </main>

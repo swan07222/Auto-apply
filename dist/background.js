@@ -14,6 +14,9 @@
       if (hostname === "dice.com" || hostname.endsWith(".dice.com")) {
         return "dice";
       }
+      if (hostname === "monster.com" || hostname.endsWith(".monster.com")) {
+        return "monster";
+      }
       return null;
     } catch {
       return null;
@@ -27,12 +30,13 @@
       updatedAt: Date.now()
     };
   }
-  function createSession(tabId, site, phase, message, shouldResume, stage, label) {
+  function createSession(tabId, site, phase, message, shouldResume, stage, label, resumeKind) {
     return {
       tabId,
       shouldResume,
       stage,
       label,
+      resumeKind,
       ...createStatus(site, phase, message)
     };
   }
@@ -74,29 +78,10 @@
           session
         };
       }
-      case "status-update": {
-        const tabId = sender.tab?.id;
-        if (tabId === void 0) {
-          return { ok: false };
-        }
-        const existingSession = await getSession(tabId);
-        const site = existingSession?.site ?? message.status.site;
-        if (site === "unsupported") {
-          return { ok: false };
-        }
-        const nextSession = {
-          tabId,
-          site,
-          phase: message.status.phase,
-          message: message.status.message,
-          updatedAt: message.status.updatedAt,
-          shouldResume: message.shouldResume ?? existingSession?.shouldResume ?? false,
-          stage: existingSession?.stage ?? "bootstrap",
-          label: existingSession?.label
-        };
-        await setSession(nextSession);
-        return { ok: true };
-      }
+      case "status-update":
+        return updateSessionFromMessage(message, sender, false);
+      case "finalize-session":
+        return updateSessionFromMessage(message, sender, true);
       case "spawn-tabs": {
         const currentTab = sender.tab;
         if (!currentTab?.id) {
@@ -117,7 +102,8 @@
               item.message ?? `Starting ${getReadableStageName(item.stage)}...`,
               true,
               item.stage,
-              item.label
+              item.label,
+              item.resumeKind
             );
             await setSession(session);
           }
@@ -127,29 +113,6 @@
           ok: true,
           opened: message.items.length
         };
-      }
-      case "finalize-session": {
-        const tabId = sender.tab?.id;
-        if (tabId === void 0) {
-          return { ok: false };
-        }
-        const existingSession = await getSession(tabId);
-        const site = existingSession?.site ?? message.status.site;
-        if (site === "unsupported") {
-          await removeSession(tabId);
-          return { ok: true };
-        }
-        await setSession({
-          tabId,
-          site,
-          phase: message.status.phase,
-          message: message.status.message,
-          updatedAt: message.status.updatedAt,
-          shouldResume: false,
-          stage: existingSession?.stage ?? "bootstrap",
-          label: existingSession?.label
-        });
-        return { ok: true };
       }
       case "close-current-tab": {
         const tabId = sender.tab?.id;
@@ -161,13 +124,41 @@
       }
     }
   }
+  async function updateSessionFromMessage(message, sender, isFinal) {
+    const tabId = sender.tab?.id;
+    if (tabId === void 0) {
+      return { ok: false };
+    }
+    const existingSession = await getSession(tabId);
+    const site = existingSession?.site ?? message.status.site;
+    if (site === "unsupported") {
+      if (isFinal) {
+        await removeSession(tabId);
+      }
+      return { ok: true };
+    }
+    const shouldResume = isFinal ? false : ("shouldResume" in message ? message.shouldResume : void 0) ?? existingSession?.shouldResume ?? false;
+    const nextSession = {
+      tabId,
+      site,
+      phase: message.status.phase,
+      message: message.status.message,
+      updatedAt: message.status.updatedAt,
+      shouldResume,
+      stage: message.stage ?? existingSession?.stage ?? "bootstrap",
+      label: message.label ?? existingSession?.label,
+      resumeKind: message.resumeKind ?? existingSession?.resumeKind
+    };
+    await setSession(nextSession);
+    return { ok: true };
+  }
   async function startAutomationForTab(tabId) {
     const tab = await chrome.tabs.get(tabId);
     const site = detectSiteFromUrl(tab.url ?? "");
     if (!site) {
       return {
         ok: false,
-        error: "Open an Indeed, ZipRecruiter, or Dice page first."
+        error: "Open an Indeed, ZipRecruiter, Dice, or Monster page first."
       };
     }
     const session = createSession(
@@ -214,6 +205,8 @@
         return "ZipRecruiter";
       case "dice":
         return "Dice";
+      case "monster":
+        return "Monster";
     }
   }
   function getReadableStageName(stage) {
@@ -224,11 +217,13 @@
         return "result collection";
       case "open-apply":
         return "apply-page opener";
+      case "autofill-form":
+        return "application autofill";
     }
   }
   function delay(ms) {
     return new Promise((resolve) => {
-      setTimeout(resolve, ms);
+      globalThis.setTimeout(resolve, ms);
     });
   }
 })();
