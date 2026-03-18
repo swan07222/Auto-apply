@@ -427,6 +427,7 @@
   // src/background.ts
   var AUTOMATION_RUN_STORAGE_PREFIX = "remote-job-search-run:";
   var runLocks = /* @__PURE__ */ new Map();
+  var pendingExtensionTabSpawns = /* @__PURE__ */ new Map();
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     void handleMessage(message, sender).then((response) => sendResponse(response)).catch((error) => {
       sendResponse({
@@ -438,6 +439,9 @@
   });
   chrome.tabs.onRemoved.addListener((tabId) => {
     void removeSession(tabId);
+  });
+  chrome.tabs.onCreated.addListener((tab) => {
+    void attachSessionToSiteOpenedChildTab(tab);
   });
   async function handleMessage(message, sender) {
     switch (message.type) {
@@ -470,20 +474,33 @@
         return updateSessionFromMessage(message, sender, false);
       case "finalize-session":
         return updateSessionFromMessage(message, sender, true);
+      // FIX: spawn-tabs now reads maxJobPages from the message and enforces it
+      // directly, instead of relying on session stage checks that have race conditions
       case "spawn-tabs": {
         const currentTab = sender.tab;
         if (!currentTab?.id) {
           return { ok: false, error: "Missing source tab." };
         }
-        const sourceSession = await getSession(currentTab.id);
-        const itemsToOpen = await limitSpawnItemsForSourceSession(sourceSession, message.items);
+        let itemsToOpen = message.items;
+        if (typeof message.maxJobPages === "number" && Number.isFinite(message.maxJobPages)) {
+          const cap = Math.max(0, Math.floor(message.maxJobPages));
+          itemsToOpen = capJobOpeningItems(itemsToOpen, cap);
+        }
         const baseIndex = currentTab.index ?? 0;
+        reserveExtensionSpawnSlots(currentTab.id, itemsToOpen.length);
         for (const [offset, item] of itemsToOpen.entries()) {
-          const createdTab = await chrome.tabs.create({
-            url: item.url,
-            active: item.active ?? false,
-            index: baseIndex + offset + 1
-          });
+          let createdTab;
+          try {
+            createdTab = await chrome.tabs.create({
+              url: item.url,
+              active: item.active ?? false,
+              index: baseIndex + offset + 1,
+              openerTabId: currentTab.id
+            });
+          } catch (error) {
+            releaseExtensionSpawnSlots(currentTab.id, 1);
+            throw error;
+          }
           if (item.stage && createdTab.id !== void 0) {
             const session = createSession(
               createdTab.id,
@@ -511,7 +528,11 @@
         if (tabId === void 0) {
           return { ok: false };
         }
-        await chrome.tabs.remove(tabId);
+        await removeSession(tabId);
+        try {
+          await chrome.tabs.remove(tabId);
+        } catch {
+        }
         return { ok: true };
       }
     }
@@ -545,6 +566,40 @@
     };
     await setSession(nextSession);
     return { ok: true };
+  }
+  async function attachSessionToSiteOpenedChildTab(tab) {
+    const childTabId = tab.id;
+    const openerTabId = tab.openerTabId;
+    if (childTabId === void 0 || openerTabId === void 0) {
+      return;
+    }
+    if (consumePendingExtensionSpawn(openerTabId)) {
+      return;
+    }
+    const openerSession = await getSession(openerTabId);
+    if (!openerSession) {
+      return;
+    }
+    if (openerSession.site === "unsupported" || (openerSession.phase !== "running" && openerSession.phase !== "waiting_for_verification" || openerSession.stage !== "open-apply" && openerSession.stage !== "autofill-form")) {
+      return;
+    }
+    const childSession = createSession(
+      childTabId,
+      openerSession.site,
+      "running",
+      `Continuing ${getReadableSiteName(openerSession.site)} application in a new tab...`,
+      true,
+      "autofill-form",
+      openerSession.runId,
+      openerSession.label,
+      openerSession.resumeKind
+    );
+    childSession.jobSlots = openerSession.jobSlots;
+    await setSession(childSession);
+    try {
+      await chrome.tabs.sendMessage(openerTabId, { type: "automation-child-tab-opened" });
+    } catch {
+    }
   }
   async function startAutomationForTab(tabId) {
     const tab = await chrome.tabs.get(tabId);
@@ -761,11 +816,13 @@
     const session = await getSession(tabId);
     const runId = session?.runId;
     if (!runId) {
+      const settings = await readAutomationSettings();
+      const approved = Math.min(Math.max(0, requested), settings.jobPageLimit);
       return {
         ok: true,
-        approved: Math.max(0, requested),
+        approved,
         remaining: 0,
-        limit: Math.max(0, requested)
+        limit: settings.jobPageLimit
       };
     }
     const reservation = await reserveJobOpeningsForRunId(runId, requested);
@@ -773,24 +830,6 @@
       ok: true,
       ...reservation
     };
-  }
-  async function limitSpawnItemsForSourceSession(sourceSession, items) {
-    if (!sourceSession || sourceSession.stage !== "collect-results") {
-      return items;
-    }
-    const jobOpeningItems = items.filter((item) => item.stage === "open-apply" || item.stage === "autofill-form");
-    if (jobOpeningItems.length === 0) {
-      return items;
-    }
-    if (Number.isFinite(sourceSession.jobSlots)) {
-      const capped = Math.max(0, Math.floor(sourceSession.jobSlots ?? 0));
-      return capJobOpeningItems(items, capped);
-    }
-    if (!sourceSession.runId) {
-      return items;
-    }
-    const reservation = await reserveJobOpeningsForRunId(sourceSession.runId, jobOpeningItems.length);
-    return capJobOpeningItems(items, reservation.approved);
   }
   async function reserveJobOpeningsForRunId(runId, requested) {
     return withRunLock(runId, async () => {
@@ -852,9 +891,7 @@
     const safeTotalSlots = Math.max(0, Math.floor(totalSlots));
     const slots = new Array(safeTargetCount).fill(0);
     for (let index = 0; index < safeTotalSlots; index += 1) {
-      if (safeTargetCount === 0) {
-        break;
-      }
+      if (safeTargetCount === 0) break;
       slots[index % safeTargetCount] += 1;
     }
     return slots;
@@ -895,6 +932,35 @@
       openedJobItems += 1;
     }
     return capped;
+  }
+  function reserveExtensionSpawnSlots(tabId, count) {
+    if (!Number.isFinite(count) || count <= 0) {
+      return;
+    }
+    pendingExtensionTabSpawns.set(tabId, (pendingExtensionTabSpawns.get(tabId) ?? 0) + count);
+  }
+  function consumePendingExtensionSpawn(tabId) {
+    const remaining = pendingExtensionTabSpawns.get(tabId) ?? 0;
+    if (remaining <= 0) {
+      return false;
+    }
+    if (remaining === 1) {
+      pendingExtensionTabSpawns.delete(tabId);
+    } else {
+      pendingExtensionTabSpawns.set(tabId, remaining - 1);
+    }
+    return true;
+  }
+  function releaseExtensionSpawnSlots(tabId, count) {
+    if (!Number.isFinite(count) || count <= 0) {
+      return;
+    }
+    const remaining = Math.max(0, (pendingExtensionTabSpawns.get(tabId) ?? 0) - Math.floor(count));
+    if (remaining <= 0) {
+      pendingExtensionTabSpawns.delete(tabId);
+      return;
+    }
+    pendingExtensionTabSpawns.set(tabId, remaining);
   }
   async function removeRunStateIfUnused(runId) {
     const stored = await chrome.storage.local.get(null);
@@ -953,39 +1019,29 @@
       const cleanup = () => {
         chrome.tabs.onUpdated.removeListener(handleUpdated);
         chrome.tabs.onRemoved.removeListener(handleRemoved);
-        if (timeoutId !== null) {
-          globalThis.clearTimeout(timeoutId);
-        }
+        if (timeoutId !== null) globalThis.clearTimeout(timeoutId);
       };
       const finish = (callback) => {
-        if (settled) {
-          return;
-        }
+        if (settled) return;
         settled = true;
         cleanup();
         callback();
       };
       const handleUpdated = (updatedTabId, changeInfo) => {
-        if (updatedTabId !== tabId) {
-          return;
-        }
-        if (changeInfo.status === "complete") {
-          finish(resolve);
-        }
+        if (updatedTabId !== tabId) return;
+        if (changeInfo.status === "complete") finish(resolve);
       };
       const handleRemoved = (removedTabId) => {
-        if (removedTabId !== tabId) {
-          return;
-        }
-        finish(() => reject(new Error("The tab was closed before automation could start.")));
+        if (removedTabId !== tabId) return;
+        finish(() => reject(new Error("Tab was closed.")));
       };
       chrome.tabs.onUpdated.addListener(handleUpdated);
       chrome.tabs.onRemoved.addListener(handleRemoved);
       timeoutId = globalThis.setTimeout(() => {
-        finish(() => reject(new Error("Timed out while reloading the tab.")));
+        finish(() => reject(new Error("Timed out reloading tab.")));
       }, 3e4);
       chrome.tabs.reload(tabId).catch((error) => {
-        finish(() => reject(error instanceof Error ? error : new Error("Failed to reload the tab.")));
+        finish(() => reject(error instanceof Error ? error : new Error("Failed to reload tab.")));
       });
     });
   }
