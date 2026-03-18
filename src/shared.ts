@@ -34,6 +34,8 @@ export interface AutomationSession extends AutomationStatus {
   tabId: number;
   shouldResume: boolean;
   stage: AutomationStage;
+  runId?: string;
+  jobSlots?: number;
   label?: string;
   resumeKind?: ResumeKind;
 }
@@ -68,6 +70,8 @@ export interface SpawnTabRequest {
   site: SiteKey;
   active?: boolean;
   stage?: AutomationStage;
+  runId?: string;
+  jobSlots?: number;
   message?: string;
   label?: string;
   resumeKind?: ResumeKind;
@@ -420,6 +424,7 @@ export function createSession(
   message: string,
   shouldResume: boolean,
   stage: AutomationStage,
+  runId?: string,
   label?: string,
   resumeKind?: ResumeKind
 ): AutomationSession {
@@ -427,6 +432,7 @@ export function createSession(
     tabId,
     shouldResume,
     stage,
+    runId,
     label,
     resumeKind,
     ...createStatus(site, phase, message)

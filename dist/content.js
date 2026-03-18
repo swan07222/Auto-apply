@@ -346,6 +346,8 @@
   var currentStage = "bootstrap";
   var currentLabel;
   var currentResumeKind;
+  var currentRunId;
+  var currentJobSlots;
   var activeRun = null;
   var answerFlushTimerId = null;
   var pendingAnswers = /* @__PURE__ */ new Map();
@@ -363,9 +365,21 @@
       return false;
     }
     if (message.type === "start-automation") {
-      currentStage = "bootstrap";
-      currentLabel = void 0;
-      currentResumeKind = void 0;
+      if (message.session) {
+        status = message.session;
+        currentStage = message.session.stage;
+        currentLabel = message.session.label;
+        currentResumeKind = message.session.resumeKind;
+        currentRunId = message.session.runId;
+        currentJobSlots = message.session.jobSlots;
+        renderOverlay();
+      } else {
+        currentStage = "bootstrap";
+        currentLabel = void 0;
+        currentResumeKind = void 0;
+        currentRunId = void 0;
+        currentJobSlots = void 0;
+      }
       void ensureAutomationRunning().then(() => sendResponse({ ok: true, status })).catch((error) => {
         const messageText = error instanceof Error ? error.message : "Failed to start automation.";
         sendResponse({ ok: false, error: messageText, status });
@@ -392,6 +406,8 @@
       currentStage = session.stage;
       currentLabel = session.label;
       currentResumeKind = session.resumeKind;
+      currentRunId = session.runId;
+      currentJobSlots = session.jobSlots;
       renderOverlay();
     }
     if (response?.shouldResume) {
@@ -449,18 +465,22 @@
       "bootstrap"
     );
     await waitForHumanVerificationToClear();
-    const items = buildSearchTargets(site, window.location.origin).map((target) => ({
+    const targets = buildSearchTargets(site, window.location.origin);
+    const jobSlots = distributeJobSlots(settings.jobPageLimit, targets.length);
+    const items = targets.map((target, index) => ({
       url: target.url,
       site,
       stage: "collect-results",
+      runId: currentRunId,
+      jobSlots: jobSlots[index],
       message: `Collecting ${target.label} job pages on ${getSiteLabel(site)}...`,
       label: target.label,
       resumeKind: target.resumeKind
-    }));
+    })).filter((item) => (item.jobSlots ?? 0) > 0);
     const response = await spawnTabs(items);
     updateStatus(
       "completed",
-      `Opened ${response.opened} search tabs. Each search will open up to ${settings.jobPageLimit} job pages and continue into the apply flow.`,
+      `Opened ${response.opened} search tabs. This run will open up to ${settings.jobPageLimit} total job pages across all searches and continue into the apply flow.`,
       false,
       "bootstrap"
     );
@@ -479,12 +499,37 @@
     if (jobUrls.length === 0) {
       throw new Error(`No job pages were found on this ${getSiteLabel(site)} results page.`);
     }
-    const limitedJobUrls = jobUrls.slice(0, settings.jobPageLimit);
+    const slotLimit = Number.isFinite(currentJobSlots) ? Math.max(0, Math.floor(currentJobSlots ?? 0)) : null;
+    const allocation = slotLimit === null ? await reserveJobOpenings(jobUrls.length) : null;
+    if (slotLimit !== null && slotLimit <= 0) {
+      updateStatus(
+        "completed",
+        `Skipped this ${labelPrefix}${getSiteLabel(site)} search because no job-page slots were assigned to it for this run.`,
+        false,
+        "collect-results"
+      );
+      await closeCurrentTab();
+      return;
+    }
+    if (allocation && allocation.limit > 0 && allocation.approved <= 0) {
+      updateStatus(
+        "completed",
+        `Skipped this ${labelPrefix}${getSiteLabel(site)} search because the total job-page limit of ${allocation.limit} was already reached for this run.`,
+        false,
+        "collect-results"
+      );
+      await closeCurrentTab();
+      return;
+    }
+    const fallbackLimit = resolveFallbackJobPageLimit(settings.searchMode, settings.jobPageLimit);
+    const allowedCount = slotLimit !== null ? slotLimit : allocation && allocation.approved > 0 ? allocation.approved : fallbackLimit;
+    const limitedJobUrls = jobUrls.slice(0, allowedCount);
     const items = limitedJobUrls.map(
       (url) => site === "startup" || site === "other_sites" ? {
         url,
         site,
         stage: "autofill-form",
+        runId: currentRunId,
         message: `Opening the ${labelPrefix || ""}role and autofilling if possible...`,
         label: currentLabel,
         resumeKind: currentResumeKind
@@ -492,6 +537,7 @@
         url,
         site,
         stage: "autofill-form",
+        runId: currentRunId,
         message: `Autofilling the ${labelPrefix || ""}${getSiteLabel(site)} apply page...`,
         label: currentLabel,
         resumeKind: currentResumeKind
@@ -499,13 +545,14 @@
         url,
         site,
         stage: "open-apply",
+        runId: currentRunId,
         message: `Opening the ${labelPrefix || ""}${getSiteLabel(site)} apply action...`,
         label: currentLabel,
         resumeKind: currentResumeKind
       }
     );
     const response = await spawnTabs(items);
-    const extraMessage = jobUrls.length > limitedJobUrls.length ? ` Limited this run to the first ${limitedJobUrls.length} matches from the page.` : "";
+    const extraMessage = jobUrls.length > limitedJobUrls.length ? slotLimit !== null ? ` Limited this search to ${limitedJobUrls.length} matches for its allocated share of the total run limit.` : allocation && allocation.limit > 0 ? ` Limited this run to ${limitedJobUrls.length} matches from this page to stay within the total cap of ${allocation.limit}.` : ` Limited this run to the first ${limitedJobUrls.length} matches from the page.` : "";
     updateStatus(
       "completed",
       `Opened ${response.opened} job tabs from this ${labelPrefix}${getSiteLabel(site)} search.${extraMessage}`,
@@ -532,18 +579,8 @@
       throw new Error(`No apply action was found on this ${getSiteLabel(site)} job page.`);
     }
     if (action.type === "navigate") {
-      await spawnTabs([
-        {
-          url: action.url,
-          site,
-          stage: "autofill-form",
-          message: `Opening and autofilling ${action.description}...`,
-          label: currentLabel,
-          resumeKind: currentResumeKind
-        }
-      ]);
-      updateStatus("completed", `Opened ${action.description} in a new tab.`, false, "open-apply");
-      await closeCurrentTab();
+      updateStatus("running", `Opening and autofilling ${action.description}...`, true, "autofill-form");
+      navigateCurrentTab(action.url);
       return;
     }
     updateStatus("running", `Opening ${action.description}...`, true, "autofill-form");
@@ -572,18 +609,8 @@
         break;
       }
       if (followUpAction.type === "navigate") {
-        await spawnTabs([
-          {
-            url: followUpAction.url,
-            site,
-            stage: "autofill-form",
-            message: `Opening ${followUpAction.description}...`,
-            label: currentLabel,
-            resumeKind: currentResumeKind
-          }
-        ]);
-        updateStatus("completed", `Opened ${followUpAction.description} in a new tab.`, false, "autofill-form");
-        await closeCurrentTab();
+        updateStatus("running", `Opening ${followUpAction.description}...`, true, "autofill-form");
+        navigateCurrentTab(followUpAction.url);
         return;
       }
       updateStatus("running", `Opening ${followUpAction.description}...`, true, "autofill-form");
@@ -1033,15 +1060,20 @@
     }
     const fileInputs = Array.from(document.querySelectorAll("input[type='file']"));
     const usableInputs = fileInputs.filter((input) => shouldUseFileInputForResume(input, fileInputs.length));
+    let uploaded = false;
     for (const input of usableInputs) {
       if (input.files?.length) {
-        return null;
+        continue;
       }
-      if (await setFileInputValue(input, resume)) {
-        return resume;
+      try {
+        if (await setFileInputValue(input, resume)) {
+          uploaded = true;
+          break;
+        }
+      } catch {
       }
     }
-    return null;
+    return uploaded ? resume : null;
   }
   function pickResumeAsset(settings) {
     if (currentResumeKind && settings.resumes[currentResumeKind]) {
@@ -1160,6 +1192,7 @@
           url: buildChatGptRequestUrl(requestId),
           site: "chatgpt",
           stage: "generate-ai-answer",
+          runId: currentRunId,
           active: false,
           message: `Drafting an answer for "${truncateText(candidate.question, 60)}"...`,
           label: currentLabel,
@@ -1503,10 +1536,15 @@
     if (matchesDescriptor(descriptor, ["country"])) {
       return profile.country || null;
     }
-    if (matchesDescriptor(descriptor, ["current company", "current employer", "employer", "company"])) {
+    if (matchesDescriptor(descriptor, ["current company", "current employer", "employer"])) {
       return profile.currentCompany || null;
     }
-    if (matchesDescriptor(descriptor, ["years of experience", "year of experience", "experience"])) {
+    if (matchesDescriptor(descriptor, [
+      "years of experience",
+      "year of experience",
+      "total experience",
+      "overall experience"
+    ])) {
       return profile.yearsExperience || null;
     }
     if (matchesDescriptor(descriptor, [
@@ -2204,11 +2242,60 @@
       opened: response.opened
     };
   }
+  async function reserveJobOpenings(requested) {
+    if (!currentRunId) {
+      return {
+        approved: Math.max(0, requested),
+        remaining: 0,
+        limit: 0
+      };
+    }
+    const response = await chrome.runtime.sendMessage({
+      type: "reserve-job-openings",
+      requested
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error ?? "The extension could not apply the job-page limit.");
+    }
+    return {
+      approved: Number.isFinite(response.approved) ? Number(response.approved) : 0,
+      remaining: Number.isFinite(response.remaining) ? Number(response.remaining) : 0,
+      limit: Number.isFinite(response.limit) ? Number(response.limit) : 0
+    };
+  }
   async function closeCurrentTab() {
     try {
       await chrome.runtime.sendMessage({ type: "close-current-tab" });
     } catch {
     }
+  }
+  function navigateCurrentTab(url) {
+    const normalizedUrl = normalizeUrl(url);
+    if (!normalizedUrl) {
+      throw new Error("The extension found an invalid application URL.");
+    }
+    window.location.assign(normalizedUrl);
+  }
+  function resolveFallbackJobPageLimit(searchMode, jobPageLimit) {
+    if (currentRunId) {
+      return jobPageLimit;
+    }
+    if (searchMode !== "job_board") {
+      return jobPageLimit;
+    }
+    return Math.max(1, Math.floor(jobPageLimit / 3) || 1);
+  }
+  function distributeJobSlots(totalSlots, targetCount) {
+    const safeTargetCount = Math.max(0, Math.floor(targetCount));
+    const safeTotalSlots = Math.max(0, Math.floor(totalSlots));
+    const slots = new Array(safeTargetCount).fill(0);
+    for (let index = 0; index < safeTotalSlots; index += 1) {
+      if (safeTargetCount === 0) {
+        break;
+      }
+      slots[index % safeTargetCount] += 1;
+    }
+    return slots;
   }
   function getSiteRoot(site) {
     switch (site) {
@@ -2369,6 +2456,44 @@
   function shouldRememberField(field) {
     const descriptor = getFieldDescriptor(field, getQuestionText(field));
     if (descriptor.includes("password") || descriptor.includes("social security") || descriptor.includes("ssn") || descriptor.includes("date of birth") || descriptor.includes("dob") || descriptor.includes("resume")) {
+      return false;
+    }
+    if (matchesDescriptor(descriptor, [
+      "full name",
+      "first name",
+      "last name",
+      "given name",
+      "family name",
+      "surname",
+      "email",
+      "phone",
+      "mobile",
+      "telephone",
+      "linkedin",
+      "portfolio",
+      "website",
+      "personal site",
+      "github",
+      "city",
+      "state",
+      "province",
+      "region",
+      "country",
+      "current company",
+      "current employer",
+      "years of experience",
+      "year of experience",
+      "total experience",
+      "overall experience",
+      "authorized to work",
+      "work authorization",
+      "eligible to work",
+      "legally authorized",
+      "sponsorship",
+      "visa",
+      "relocate",
+      "relocation"
+    ])) {
       return false;
     }
     if (field instanceof HTMLInputElement && field.type === "file") {

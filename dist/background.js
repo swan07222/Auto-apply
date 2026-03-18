@@ -232,11 +232,12 @@
       updatedAt: Date.now()
     };
   }
-  function createSession(tabId, site, phase, message, shouldResume, stage, label, resumeKind) {
+  function createSession(tabId, site, phase, message, shouldResume, stage, runId, label, resumeKind) {
     return {
       tabId,
       shouldResume,
       stage,
+      runId,
       label,
       resumeKind,
       ...createStatus(site, phase, message)
@@ -424,6 +425,8 @@
   }
 
   // src/background.ts
+  var AUTOMATION_RUN_STORAGE_PREFIX = "remote-job-search-run:";
+  var runLocks = /* @__PURE__ */ new Map();
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     void handleMessage(message, sender).then((response) => sendResponse(response)).catch((error) => {
       sendResponse({
@@ -444,6 +447,8 @@
         return startStartupAutomation(message.tabId);
       case "start-other-sites-automation":
         return startOtherSitesAutomation(message.tabId);
+      case "reserve-job-openings":
+        return reserveJobOpeningsForSender(sender, message.requested);
       case "get-tab-session":
         return {
           ok: true,
@@ -470,8 +475,10 @@
         if (!currentTab?.id) {
           return { ok: false, error: "Missing source tab." };
         }
+        const sourceSession = await getSession(currentTab.id);
+        const itemsToOpen = await limitSpawnItemsForSourceSession(sourceSession, message.items);
         const baseIndex = currentTab.index ?? 0;
-        for (const [offset, item] of message.items.entries()) {
+        for (const [offset, item] of itemsToOpen.entries()) {
           const createdTab = await chrome.tabs.create({
             url: item.url,
             active: item.active ?? false,
@@ -485,16 +492,18 @@
               item.message ?? `Starting ${getReadableStageName(item.stage)}...`,
               true,
               item.stage,
+              item.runId,
               item.label,
               item.resumeKind
             );
+            session.jobSlots = item.jobSlots;
             await setSession(session);
           }
           await delay(SEARCH_OPEN_DELAY_MS);
         }
         return {
           ok: true,
-          opened: message.items.length
+          opened: itemsToOpen.length
         };
       }
       case "close-current-tab": {
@@ -529,6 +538,8 @@
       updatedAt: message.status.updatedAt,
       shouldResume,
       stage: message.stage ?? existingSession?.stage ?? "bootstrap",
+      runId: existingSession?.runId,
+      jobSlots: existingSession?.jobSlots,
       label: message.label ?? existingSession?.label,
       resumeKind: message.resumeKind ?? existingSession?.resumeKind
     };
@@ -538,25 +549,35 @@
   async function startAutomationForTab(tabId) {
     const tab = await chrome.tabs.get(tabId);
     const site = detectSiteFromUrl(tab.url ?? "");
+    const settings = await readAutomationSettings();
+    const runId = createRunId();
     if (!isJobBoardSite(site)) {
       return {
         ok: false,
         error: "Open an Indeed, ZipRecruiter, Dice, or Monster page first."
       };
     }
+    await setRunState({
+      id: runId,
+      jobPageLimit: settings.jobPageLimit,
+      openedJobPages: 0,
+      updatedAt: Date.now()
+    });
     const session = createSession(
       tabId,
       site,
       "running",
       `Preparing ${getReadableSiteName(site)} automation...`,
       true,
-      "bootstrap"
+      "bootstrap",
+      runId
     );
     await setSession(session);
     try {
-      await chrome.tabs.sendMessage(tabId, { type: "start-automation" });
+      await chrome.tabs.sendMessage(tabId, { type: "start-automation", session });
     } catch {
       await removeSession(tabId);
+      await removeRunState(runId);
       return {
         ok: false,
         error: "The page is still loading. Wait a moment and try again."
@@ -570,27 +591,39 @@
   async function startStartupAutomation(tabId) {
     const tab = await chrome.tabs.get(tabId);
     const settings = await readAutomationSettings();
-    const items = buildStartupSearchTargets(settings).map((target) => ({
+    const runId = createRunId();
+    const targets = buildStartupSearchTargets(settings);
+    const jobSlots = distributeJobSlots(settings.jobPageLimit, targets.length);
+    const items = targets.map((target, index) => ({
       url: target.url,
       site: "startup",
       stage: "collect-results",
+      runId,
+      jobSlots: jobSlots[index],
       message: `Collecting ${target.label} startup roles...`,
       label: target.label,
       resumeKind: target.resumeKind
-    }));
+    })).filter((item) => (item.jobSlots ?? 0) > 0);
     if (items.length === 0) {
       return {
         ok: false,
         error: "No startup career pages are configured for the selected region."
       };
     }
+    await setRunState({
+      id: runId,
+      jobPageLimit: settings.jobPageLimit,
+      openedJobPages: 0,
+      updatedAt: Date.now()
+    });
     const session = createSession(
       tabId,
       "startup",
       "running",
       "Opening startup career pages...",
       false,
-      "bootstrap"
+      "bootstrap",
+      runId
     );
     await setSession(session);
     const baseIndex = tab.index ?? 0;
@@ -608,23 +641,27 @@
           item.message ?? `Starting ${getReadableStageName(item.stage)}...`,
           true,
           item.stage,
+          item.runId,
           item.label,
           item.resumeKind
         );
+        childSession.jobSlots = item.jobSlots;
         await setSession(childSession);
       }
       await delay(SEARCH_OPEN_DELAY_MS);
     }
     const region = resolveStartupRegion(settings.startupRegion, settings.candidate.country);
-    await setSession({
-      tabId,
-      site: "startup",
-      phase: "completed",
-      message: `Opened ${items.length} startup career pages for ${region.toUpperCase()} companies.`,
-      updatedAt: Date.now(),
-      shouldResume: false,
-      stage: "bootstrap"
-    });
+    await setSession(
+      createSession(
+        tabId,
+        "startup",
+        "completed",
+        `Opened ${items.length} startup career pages for ${region.toUpperCase()} companies.`,
+        false,
+        "bootstrap",
+        runId
+      )
+    );
     return {
       ok: true,
       opened: items.length,
@@ -634,27 +671,39 @@
   async function startOtherSitesAutomation(tabId) {
     const tab = await chrome.tabs.get(tabId);
     const settings = await readAutomationSettings();
-    const items = buildOtherJobSiteTargets(settings).map((target) => ({
+    const runId = createRunId();
+    const targets = buildOtherJobSiteTargets(settings);
+    const jobSlots = distributeJobSlots(settings.jobPageLimit, targets.length);
+    const items = targets.map((target, index) => ({
       url: target.url,
       site: "other_sites",
       stage: "collect-results",
+      runId,
+      jobSlots: jobSlots[index],
       message: `Collecting ${target.label} roles...`,
       label: target.label,
       resumeKind: target.resumeKind
-    }));
+    })).filter((item) => (item.jobSlots ?? 0) > 0);
     if (items.length === 0) {
       return {
         ok: false,
         error: "No other job site searches are configured for the selected region."
       };
     }
+    await setRunState({
+      id: runId,
+      jobPageLimit: settings.jobPageLimit,
+      openedJobPages: 0,
+      updatedAt: Date.now()
+    });
     const session = createSession(
       tabId,
       "other_sites",
       "running",
       "Opening other job site searches...",
       false,
-      "bootstrap"
+      "bootstrap",
+      runId
     );
     await setSession(session);
     const baseIndex = tab.index ?? 0;
@@ -672,23 +721,27 @@
           item.message ?? `Starting ${getReadableStageName(item.stage)}...`,
           true,
           item.stage,
+          item.runId,
           item.label,
           item.resumeKind
         );
+        childSession.jobSlots = item.jobSlots;
         await setSession(childSession);
       }
       await delay(SEARCH_OPEN_DELAY_MS);
     }
     const region = resolveStartupRegion(settings.startupRegion, settings.candidate.country);
-    await setSession({
-      tabId,
-      site: "other_sites",
-      phase: "completed",
-      message: `Opened ${items.length} other job site searches for ${region.toUpperCase()}.`,
-      updatedAt: Date.now(),
-      shouldResume: false,
-      stage: "bootstrap"
-    });
+    await setSession(
+      createSession(
+        tabId,
+        "other_sites",
+        "completed",
+        `Opened ${items.length} other job site searches for ${region.toUpperCase()}.`,
+        false,
+        "bootstrap",
+        runId
+      )
+    );
     return {
       ok: true,
       opened: items.length,
@@ -700,13 +753,161 @@
     const stored = await chrome.storage.local.get(key);
     return stored[key] ?? null;
   }
+  async function reserveJobOpeningsForSender(sender, requested) {
+    const tabId = sender.tab?.id;
+    if (tabId === void 0) {
+      return { ok: false, approved: 0, remaining: 0, limit: 0 };
+    }
+    const session = await getSession(tabId);
+    const runId = session?.runId;
+    if (!runId) {
+      return {
+        ok: true,
+        approved: Math.max(0, requested),
+        remaining: 0,
+        limit: Math.max(0, requested)
+      };
+    }
+    const reservation = await reserveJobOpeningsForRunId(runId, requested);
+    return {
+      ok: true,
+      ...reservation
+    };
+  }
+  async function limitSpawnItemsForSourceSession(sourceSession, items) {
+    if (!sourceSession || sourceSession.stage !== "collect-results") {
+      return items;
+    }
+    const jobOpeningItems = items.filter((item) => item.stage === "open-apply" || item.stage === "autofill-form");
+    if (jobOpeningItems.length === 0) {
+      return items;
+    }
+    if (Number.isFinite(sourceSession.jobSlots)) {
+      const capped = Math.max(0, Math.floor(sourceSession.jobSlots ?? 0));
+      return capJobOpeningItems(items, capped);
+    }
+    if (!sourceSession.runId) {
+      return items;
+    }
+    const reservation = await reserveJobOpeningsForRunId(sourceSession.runId, jobOpeningItems.length);
+    return capJobOpeningItems(items, reservation.approved);
+  }
+  async function reserveJobOpeningsForRunId(runId, requested) {
+    return withRunLock(runId, async () => {
+      const runState = await getRunState(runId);
+      if (!runState) {
+        return { approved: 0, remaining: 0, limit: 0 };
+      }
+      const safeRequested = Math.max(0, Math.floor(requested));
+      const remainingBefore = Math.max(0, runState.jobPageLimit - runState.openedJobPages);
+      const approved = Math.min(safeRequested, remainingBefore);
+      const remainingAfter = Math.max(0, remainingBefore - approved);
+      if (approved > 0) {
+        await setRunState({
+          ...runState,
+          openedJobPages: runState.openedJobPages + approved,
+          updatedAt: Date.now()
+        });
+      }
+      return {
+        approved,
+        remaining: remainingAfter,
+        limit: runState.jobPageLimit
+      };
+    });
+  }
   async function setSession(session) {
     await chrome.storage.local.set({
       [getSessionStorageKey(session.tabId)]: session
     });
   }
   async function removeSession(tabId) {
+    const existingSession = await getSession(tabId);
     await chrome.storage.local.remove(getSessionStorageKey(tabId));
+    if (existingSession?.runId) {
+      await removeRunStateIfUnused(existingSession.runId);
+    }
+  }
+  async function getRunState(runId) {
+    const key = getAutomationRunStorageKey(runId);
+    const stored = await chrome.storage.local.get(key);
+    return stored[key] ?? null;
+  }
+  async function setRunState(runState) {
+    await chrome.storage.local.set({
+      [getAutomationRunStorageKey(runState.id)]: runState
+    });
+  }
+  async function removeRunState(runId) {
+    await chrome.storage.local.remove(getAutomationRunStorageKey(runId));
+  }
+  function getAutomationRunStorageKey(runId) {
+    return `${AUTOMATION_RUN_STORAGE_PREFIX}${runId}`;
+  }
+  function createRunId() {
+    return typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+  function distributeJobSlots(totalSlots, targetCount) {
+    const safeTargetCount = Math.max(0, Math.floor(targetCount));
+    const safeTotalSlots = Math.max(0, Math.floor(totalSlots));
+    const slots = new Array(safeTargetCount).fill(0);
+    for (let index = 0; index < safeTotalSlots; index += 1) {
+      if (safeTargetCount === 0) {
+        break;
+      }
+      slots[index % safeTargetCount] += 1;
+    }
+    return slots;
+  }
+  async function withRunLock(runId, task) {
+    const previous = runLocks.get(runId) ?? Promise.resolve();
+    let releaseLock = () => {
+    };
+    const current = new Promise((resolve) => {
+      releaseLock = resolve;
+    });
+    runLocks.set(runId, current);
+    await previous.catch(() => {
+    });
+    try {
+      return await task();
+    } finally {
+      releaseLock();
+      if (runLocks.get(runId) === current) {
+        runLocks.delete(runId);
+      }
+    }
+  }
+  function capJobOpeningItems(items, limit) {
+    const safeLimit = Math.max(0, Math.floor(limit));
+    const capped = [];
+    let openedJobItems = 0;
+    for (const item of items) {
+      const isJobOpeningItem = item.stage === "open-apply" || item.stage === "autofill-form";
+      if (!isJobOpeningItem) {
+        capped.push(item);
+        continue;
+      }
+      if (openedJobItems >= safeLimit) {
+        continue;
+      }
+      capped.push(item);
+      openedJobItems += 1;
+    }
+    return capped;
+  }
+  async function removeRunStateIfUnused(runId) {
+    const stored = await chrome.storage.local.get(null);
+    const sessionPrefix = "remote-job-search-session:";
+    const hasActiveSession = Object.entries(stored).some(([key, value]) => {
+      if (!key.startsWith(sessionPrefix) || typeof value !== "object" || value === null) {
+        return false;
+      }
+      return "runId" in value && value.runId === runId;
+    });
+    if (!hasActiveSession) {
+      await removeRunState(runId);
+    }
   }
   function getReadableSiteName(site) {
     switch (site) {

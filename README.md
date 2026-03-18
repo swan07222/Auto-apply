@@ -9,7 +9,7 @@ This project is a Chrome extension built in TypeScript. It can start searches on
 
 From the popup you can now:
 
-- set how many job pages each search tab should open
+- set the total number of job pages an automation run should open
 - upload separate resumes for `Front End`, `Back End`, and `Full Stack`
 - store candidate profile details for common application fields
 - switch between `Job boards` mode and `Startup careers` mode
