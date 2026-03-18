@@ -433,7 +433,9 @@ export const DEFAULT_SETTINGS: AutomationSettings = {
   answers: {},
 };
 
+// ── FIX: More robust Monster detection including international domains ──
 export function detectSiteFromUrl(url: string): SiteKey | null {
+  if (!url) return null;
   try {
     const hostname = new URL(url).hostname.toLowerCase();
 
@@ -452,7 +454,33 @@ export function detectSiteFromUrl(url: string): SiteKey | null {
       return "dice";
     }
 
-    if (hostname === "monster.com" || hostname.endsWith(".monster.com")) {
+    // FIX: Catch all Monster domains including international variants
+    if (
+      hostname === "monster.com" ||
+      hostname.endsWith(".monster.com") ||
+      hostname === "monster.co.uk" ||
+      hostname.endsWith(".monster.co.uk") ||
+      hostname === "monster.de" ||
+      hostname.endsWith(".monster.de") ||
+      hostname === "monster.fr" ||
+      hostname.endsWith(".monster.fr") ||
+      hostname === "monster.ca" ||
+      hostname.endsWith(".monster.ca") ||
+      hostname === "monster.at" ||
+      hostname.endsWith(".monster.at") ||
+      hostname === "monster.be" ||
+      hostname.endsWith(".monster.be") ||
+      hostname === "monster.ch" ||
+      hostname.endsWith(".monster.ch") ||
+      hostname === "monster.ie" ||
+      hostname.endsWith(".monster.ie") ||
+      hostname === "monster.lu" ||
+      hostname.endsWith(".monster.lu") ||
+      hostname === "monster.nl" ||
+      hostname.endsWith(".monster.nl") ||
+      hostname === "monster.se" ||
+      hostname.endsWith(".monster.se")
+    ) {
       return "monster";
     }
 
@@ -547,6 +575,7 @@ export function buildSearchTargets(
   }));
 }
 
+// ── FIX: One entry per company instead of 3 — prevents opening same URL 3× ──
 export function buildStartupSearchTargets(
   settings: AutomationSettings
 ): SearchTarget[] {
@@ -558,13 +587,13 @@ export function buildStartupSearchTargets(
     company.regions.includes(region)
   );
 
-  return companies.flatMap((company) =>
-    SEARCH_DEFINITIONS.map(({ label, resumeKind }) => ({
-      label: `${company.name} ${label}`,
-      resumeKind,
-      url: company.careersUrl,
-    }))
-  );
+  // Each company career page opens ONCE.  The content script picks the best
+  // resume per-job via inferResumeKindFromTitle when spawning job tabs.
+  return companies.map((company) => ({
+    label: company.name,
+    resumeKind: "full_stack" as ResumeKind,
+    url: company.careersUrl,
+  }));
 }
 
 export function buildOtherJobSiteTargets(
@@ -676,6 +705,57 @@ const CANONICAL_JOB_BOARD_ORIGINS: Record<JobBoardSite, string> = {
   monster: "https://www.monster.com",
 };
 
+// ── FIX: Strip tracking params & normalise Monster path variants so the
+//    same job never produces two different keys ──
+const TRACKING_PARAMS_TO_STRIP = new Set([
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_content",
+  "utm_term",
+  "from",
+  "ref",
+  "referer",
+  "referrer",
+  "source",
+  "src",
+  "sid",
+  "clickid",
+  "tk",
+  "trk",
+  "trkInfo",
+  "refId",
+  "trackingId",
+  "sc_cmp",
+  "mc_cid",
+  "mc_eid",
+  "fbclid",
+  "gclid",
+  "gad_source",
+  "msclkid",
+  "li_fat_id",
+  "_ga",
+  "position",
+  "pageNumber",
+  "page",
+]);
+
+const IDENTIFYING_PARAMS = [
+  "jk",
+  "vjk",
+  "jobid",
+  "job_id",
+  "jid",
+  "gh_jid",
+  "ashby_jid",
+  "requisitionid",
+  "requisition_id",
+  "reqid",
+  "id",
+  "posting_id",
+  "req_id",
+];
+
 export function getJobDedupKey(url: string): string {
   const raw = url.trim().toLowerCase();
   if (!raw) {
@@ -685,31 +765,48 @@ export function getJobDedupKey(url: string): string {
   try {
     const parsed = new URL(url);
     const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
-    const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
-    const identifyingParams = [
-      "jk",
-      "vjk",
-      "jobid",
-      "job_id",
-      "jid",
-      "gh_jid",
-      "ashby_jid",
-      "requisitionid",
-      "requisition_id",
-      "reqid",
-    ];
+    let path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
 
-    for (const param of identifyingParams) {
+    // FIX: Normalise Monster path variants so /job-opening/ == /job-openings/
+    path = path
+      .replace(/\/job-opening\//, "/job-openings/")
+      .replace(/\/jobs\/search$/, "/jobs")
+      .replace(/\/+/g, "/");
+
+    // If an identifying param exists, key on that
+    for (const param of IDENTIFYING_PARAMS) {
       const value = parsed.searchParams.get(param);
       if (value) {
         return `${hostname}${path}?${param}=${value.toLowerCase()}`;
       }
     }
 
+    // Otherwise key on hostname + clean path (no tracking noise)
     return `${hostname}${path}`;
   } catch {
     return raw;
   }
+}
+
+// ── NEW: Infer the best resume kind from a job title so startup/career-page
+//    tabs can assign the right resume per job ──
+export function inferResumeKindFromTitle(title: string): ResumeKind {
+  const lower = title.toLowerCase();
+  if (
+    /\b(front\s*end|frontend|ui\s+engineer|ui\s+developer|react|angular|vue|css)\b/.test(
+      lower
+    )
+  ) {
+    return "front_end";
+  }
+  if (
+    /\b(back\s*end|backend|server|api\b|platform\s+engineer|python|java\b|golang|rust|node\.?js|ruby|rails|django|spring)\b/.test(
+      lower
+    )
+  ) {
+    return "back_end";
+  }
+  return "full_stack";
 }
 
 function buildSingleSearchUrl(

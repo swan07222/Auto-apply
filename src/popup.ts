@@ -113,15 +113,15 @@ window.addEventListener("beforeunload", () => {
 });
 
 async function initialize(): Promise<void> {
-  const [tab] = await chrome.tabs.query({
-    active: true,
-    currentWindow: true,
-  });
-
-  activeTabId = tab?.id ?? null;
-  activeSite = detectSiteFromUrl(tab?.url ?? "");
+  await refreshActiveTabContext();
   settings = await readAutomationSettings();
   populateSettingsForm(settings);
+
+  // Bias the popup toward job-board mode when opened on a supported board.
+  if (isJobBoardSite(activeSite)) {
+    searchModeInput.value = "job_board";
+  }
+
   updateModeUi();
   updateOverviewPreview();
 
@@ -153,6 +153,8 @@ async function initialize(): Promise<void> {
 }
 
 async function startAutomation(): Promise<void> {
+  await refreshActiveTabContext();
+
   if (!activeTabId) {
     return;
   }
@@ -282,6 +284,8 @@ async function startAutomation(): Promise<void> {
 
 // FIX: Complete rewrite of refreshStatus to properly handle all modes
 async function refreshStatus(): Promise<void> {
+  await refreshActiveTabContext();
+
   if (!activeTabId) {
     return;
   }
@@ -671,4 +675,14 @@ function requireElement<T extends Element>(selector: string): T {
   }
 
   return element;
+}
+
+async function refreshActiveTabContext(): Promise<void> {
+  const [tab] = await chrome.tabs.query({
+    active: true,
+    currentWindow: true,
+  });
+
+  activeTabId = tab?.id ?? null;
+  activeSite = detectSiteFromUrl(tab?.url ?? "");
 }

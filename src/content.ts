@@ -421,17 +421,6 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   }
 
   const items: SpawnTabRequest[] = approvedUrls.map((url) => {
-    if (site === "startup" || site === "other_sites") {
-      return {
-        url,
-        site,
-        stage: "autofill-form" as const,
-        runId: currentRunId,
-        message: `Opening ${labelPrefix}role and autofilling...`,
-        label: currentLabel,
-        resumeKind: currentResumeKind,
-      };
-    }
     if (isLikelyApplyUrl(url, site)) {
       return {
         url,
@@ -553,11 +542,19 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       if (action) break;
     }
 
-    action = findCompanySiteAction();
-    if (action) break;
+    if (site === "startup" || site === "other_sites") {
+      action = findApplyAction(site, "job-page");
+      if (action) break;
 
-    action = findApplyAction(site, "job-page");
-    if (action) break;
+      action = findCompanySiteAction();
+      if (action) break;
+    } else {
+      action = findCompanySiteAction();
+      if (action) break;
+
+      action = findApplyAction(site, "job-page");
+      if (action) break;
+    }
 
     if (hasLikelyApplicationForm()) {
       currentStage = "autofill-form";
@@ -1008,21 +1005,15 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
 async function waitForFormContentChange(
   _site: SiteKey
 ): Promise<void> {
-  const initial = document.querySelectorAll(
-    "input, textarea, select"
-  ).length;
+  const initial = collectAutofillFields().length;
   for (let i = 0; i < 10; i++) {
     await sleep(600);
-    const current = document.querySelectorAll(
-      "input, textarea, select"
-    ).length;
+    const current = collectAutofillFields().length;
     if (current !== initial) return;
 
-    const blanks = Array.from(
-      document.querySelectorAll<AutofillField>(
-        "input, textarea, select"
-      )
-    ).filter((f) => shouldAutofillField(f) && isFieldBlank(f));
+    const blanks = collectAutofillFields().filter(
+      (f) => shouldAutofillField(f) && isFieldBlank(f)
+    );
     if (blanks.length > 0) return;
   }
 }
@@ -1477,6 +1468,54 @@ async function copyTextToClipboard(
 
 // ─── AUTOFILL HELPERS ────────────────────────────────────────────────────────
 
+function collectDeepMatches<T extends Element>(
+  selector: string
+): T[] {
+  const results: T[] = [];
+  const seen = new Set<Element>();
+  const roots: Array<Document | ShadowRoot> = [document];
+
+  while (roots.length > 0) {
+    const root = roots.shift()!;
+
+    for (const element of Array.from(
+      root.querySelectorAll<T>(selector)
+    )) {
+      if (seen.has(element)) continue;
+      seen.add(element);
+      results.push(element);
+    }
+
+    for (const host of Array.from(
+      root.querySelectorAll<HTMLElement>("*")
+    )) {
+      if (host.shadowRoot) roots.push(host.shadowRoot);
+    }
+  }
+
+  return results;
+}
+
+function collectAutofillFields(): AutofillField[] {
+  return collectDeepMatches<AutofillField>(
+    "input, textarea, select"
+  );
+}
+
+function collectResumeFileInputs(): HTMLInputElement[] {
+  return collectDeepMatches<HTMLInputElement>(
+    "input[type='file']"
+  );
+}
+
+function collectEssayInputFields(): Array<
+  HTMLInputElement | HTMLTextAreaElement
+> {
+  return collectDeepMatches<
+    HTMLInputElement | HTMLTextAreaElement
+  >("textarea, input[type='text']");
+}
+
 async function autofillVisibleApplication(
   settings: AutomationSettings
 ): Promise<AutofillResult> {
@@ -1504,11 +1543,7 @@ async function autofillVisibleApplication(
   }
 
   const processedGroups = new Set<string>();
-  for (const field of Array.from(
-    document.querySelectorAll<AutofillField>(
-      "input, textarea, select"
-    )
-  )) {
+  for (const field of collectAutofillFields()) {
     if (!shouldAutofillField(field)) continue;
     if (field instanceof HTMLInputElement && field.type === "file")
       continue;
@@ -1540,11 +1575,7 @@ async function uploadResumeIfNeeded(
   const resume = pickResumeAsset(settings);
   if (!resume) return null;
 
-  const fileInputs = Array.from(
-    document.querySelectorAll<HTMLInputElement>(
-      "input[type='file']"
-    )
-  );
+  const fileInputs = collectResumeFileInputs();
   const usable = fileInputs.filter((i) =>
     shouldUseFileInputForResume(i, fileInputs.length)
   );
@@ -1607,11 +1638,7 @@ function collectEssayFieldsNeedingAi(
   settings: AutomationSettings
 ): EssayFieldCandidate[] {
   const result: EssayFieldCandidate[] = [];
-  for (const field of Array.from(
-    document.querySelectorAll<
-      HTMLInputElement | HTMLTextAreaElement
-    >("textarea, input[type='text']")
-  )) {
+  for (const field of collectEssayInputFields()) {
     if (!shouldAutofillField(field) || field.value.trim())
       continue;
     const question = getQuestionText(field);
@@ -2053,11 +2080,7 @@ function getGroupedInputs(
 }
 
 function hasLikelyApplicationForm(): boolean {
-  const relevantFields = Array.from(
-    document.querySelectorAll<AutofillField>(
-      "input, textarea, select"
-    )
-  ).filter(
+  const relevantFields = collectAutofillFields().filter(
     (f) =>
       shouldAutofillField(f, true) &&
       isLikelyApplicationField(f)
@@ -2065,11 +2088,7 @@ function hasLikelyApplicationForm(): boolean {
 
   if (relevantFields.length >= 2) return true;
 
-  return Array.from(
-    document.querySelectorAll<HTMLInputElement>(
-      "input[type='file']"
-    )
-  ).some(
+  return collectResumeFileInputs().some(
     (input) =>
       shouldAutofillField(input, true) &&
       isLikelyApplicationField(input)
@@ -2103,14 +2122,28 @@ function hasLikelyApplicationPageContent(): boolean {
 }
 
 function hasLikelyApplicationSurface(site: SiteKey): boolean {
+  const onApplyLikeUrl = isAlreadyOnApplyPage(
+    site,
+    window.location.href
+  );
+  const hasPageContent = hasLikelyApplicationPageContent();
+  const hasProgression = Boolean(findProgressionAction());
+  const hasCompanySiteStep = Boolean(findCompanySiteAction());
+  const stillLooksLikeJobPage = Boolean(
+    findApplyAction(site, "job-page")
+  );
+
   return (
     hasLikelyApplicationForm() ||
     hasLikelyApplicationFrame() ||
-    Boolean(findProgressionAction()) ||
-    Boolean(findCompanySiteAction()) ||
-    Boolean(findApplyAction(null, "follow-up")) ||
-    (isAlreadyOnApplyPage(site, window.location.href) &&
-      hasLikelyApplicationPageContent())
+    (onApplyLikeUrl &&
+      (hasPageContent ||
+        hasProgression ||
+        hasCompanySiteStep)) ||
+    (hasPageContent &&
+      (hasProgression || hasCompanySiteStep) &&
+      !stillLooksLikeJobPage) ||
+    (onApplyLikeUrl && hasPageContent)
   );
 }
 
@@ -2297,14 +2330,14 @@ function shouldAutofillField(
       )
     )
       return false;
-    if (t !== "file" && !isElementVisible(field)) return false;
     if (t === "file") return true;
+    if (!isFieldContextVisible(field)) return false;
     if (
       !ignoreBlankCheck &&
       (t === "radio" || t === "checkbox")
     )
       return true;
-  } else if (!isElementVisible(field)) return false;
+  } else if (!isFieldContextVisible(field)) return false;
   const d = getFieldDescriptor(field, getQuestionText(field));
   if (
     matchesDescriptor(d, [
@@ -2374,6 +2407,57 @@ function setFieldValue(
   field.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
+function getFieldLookupRoot(
+  field: Element
+): Document | ShadowRoot {
+  const root = field.getRootNode();
+  return root instanceof ShadowRoot ? root : document;
+}
+
+function findByIdNearField(
+  field: Element,
+  id: string
+): HTMLElement | null {
+  const selector = `#${cssEscape(id)}`;
+  const root = getFieldLookupRoot(field);
+  return (
+    root.querySelector<HTMLElement>(selector) ??
+    document.querySelector<HTMLElement>(selector)
+  );
+}
+
+function isFieldContextVisible(
+  field: AutofillField
+): boolean {
+  if (isElementVisible(field)) return true;
+
+  for (const label of Array.from(field.labels ?? [])) {
+    if (
+      label instanceof HTMLElement &&
+      isElementVisible(label)
+    ) {
+      return true;
+    }
+  }
+
+  const container = field.closest(
+    "label, fieldset, form, [role='group'], [role='radiogroup'], [role='dialog'], .field, .form-field, .question, .application-question, [class*='field'], [class*='question']"
+  );
+  if (
+    container instanceof HTMLElement &&
+    isElementVisible(container)
+  ) {
+    return true;
+  }
+
+  const root = field.getRootNode();
+  return (
+    root instanceof ShadowRoot &&
+    root.host instanceof HTMLElement &&
+    isElementVisible(root.host)
+  );
+}
+
 function getQuestionText(
   field: AutofillField | HTMLInputElement
 ): string {
@@ -2390,7 +2474,7 @@ function getQuestionText(
         .split(/\s+/)
         .map(
           (id) =>
-            document.getElementById(id)?.textContent ?? ""
+            findByIdNearField(field, id)?.textContent ?? ""
         )
         .join(" ")
     );
@@ -2420,10 +2504,14 @@ function getQuestionText(
 function getAssociatedLabelText(field: Element): string {
   const id = field.getAttribute("id");
   if (id) {
+    const root = getFieldLookupRoot(field);
     const l = cleanText(
-      document.querySelector(
+      root.querySelector(
         `label[for='${cssEscape(id)}']`
-      )?.textContent
+      )?.textContent ||
+        document.querySelector(
+          `label[for='${cssEscape(id)}']`
+        )?.textContent
     );
     if (l) return l;
   }

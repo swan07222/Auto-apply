@@ -456,6 +456,20 @@
     if (dataUrl) {
       return normalizeUrl(dataUrl);
     }
+    for (const attribute of Array.from(el.attributes)) {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value?.trim();
+      if (!value) {
+        continue;
+      }
+      if (!/(href|url|link|target|dest|redirect)/i.test(name)) {
+        continue;
+      }
+      const normalized = normalizeUrl(value);
+      if (normalized) {
+        return normalized;
+      }
+    }
     const onclick = el.getAttribute("onclick");
     if (onclick) {
       const match = onclick.match(
@@ -502,6 +516,26 @@
     return null;
   }
   function performClickAction(element) {
+    element.focus?.();
+    for (const eventType of [
+      "pointerdown",
+      "mousedown",
+      "pointerup",
+      "mouseup",
+      "click"
+    ]) {
+      try {
+        element.dispatchEvent(
+          new MouseEvent(eventType, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            view: window
+          })
+        );
+      } catch {
+      }
+    }
     element.click();
   }
 
@@ -1200,13 +1234,20 @@
     );
     let best;
     for (const element of candidates) {
-      if (!isElementVisible(element) || element.hasAttribute("disabled") || element.disabled) {
+      const actionElement = getClickableApplyElement(element);
+      if (!isElementVisible(actionElement) || actionElement.hasAttribute("disabled") || actionElement.disabled) {
         continue;
       }
-      const text = getActionText(element).trim();
+      const text = (getActionText(actionElement) || getActionText(element)).trim();
       const lower = text.toLowerCase();
-      const url = getNavigationUrl(element);
+      const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
       const attrs = [
+        actionElement.getAttribute("data-testid"),
+        actionElement.getAttribute("data-tn-element"),
+        actionElement.getAttribute("aria-label"),
+        actionElement.getAttribute("title"),
+        actionElement.className,
+        actionElement.id,
         element.getAttribute("data-testid"),
         element.getAttribute("data-tn-element"),
         element.getAttribute("aria-label"),
@@ -1265,7 +1306,7 @@
         continue;
       }
       if (!best || score > best.score) {
-        best = { element, score, text, url };
+        best = { element: actionElement, score, text, url };
       }
     }
     if (!best) {
@@ -1276,6 +1317,14 @@
         type: "navigate",
         url: best.url,
         description: describeApplyTarget(best.url, best.text)
+      };
+    }
+    const extractedUrl = extractLikelyApplyUrl(best.element) ?? findExternalApplyUrlInDocument();
+    if (extractedUrl) {
+      return {
+        type: "navigate",
+        url: extractedUrl,
+        description: describeApplyTarget(extractedUrl, best.text)
       };
     }
     return {
@@ -1627,11 +1676,23 @@
   }
   function isLikelyApplyUrl(url, site) {
     const lower = url.toLowerCase();
-    if (lower.includes("smartapply.indeed.com") || lower.includes("indeedapply") || lower.includes("zipapply") || lower.includes("/apply") || lower.includes("application") || lower.includes("jobapply")) {
+    if (lower.includes("smartapply.indeed.com") || lower.includes("indeedapply") || lower.includes("zipapply") || lower.includes("/apply") || lower.includes("application") || lower.includes("jobapply") || lower.includes("job_app") || lower.includes("applytojob") || lower.includes("candidateexperience")) {
       return true;
     }
     if (site === "startup" || site === "other_sites") {
-      return lower.includes("/apply") || lower.includes("application") || lower.includes("candidate");
+      return [
+        "/apply",
+        "application",
+        "candidate",
+        "job_app",
+        "applytojob",
+        "candidateexperience",
+        "myworkdayjobs.com",
+        "workdayjobs.com",
+        "icims.com/jobs/candidate",
+        "smartrecruiters.com",
+        "/embed/job_app"
+      ].some((token) => lower.includes(token));
     }
     try {
       return !new URL(url).hostname.toLowerCase().endsWith(getSiteRoot(site));
@@ -1656,6 +1717,101 @@
       }
     }
     return null;
+  }
+  function findExternalApplyUrlInDocument() {
+    const sources = [
+      ...Array.from(document.querySelectorAll("script:not([src])")).map(
+        (script) => script.textContent || ""
+      ),
+      document.documentElement?.innerHTML || ""
+    ];
+    let best;
+    for (const source of sources) {
+      const urls = source.match(/https?:\/\/[^"'\\<>\s]+/gi) || [];
+      for (const rawUrl of urls) {
+        const url = normalizeUrl(rawUrl);
+        if (!url || !isExternalUrl(url)) {
+          continue;
+        }
+        const score = scoreExternalApplyUrl(url);
+        if (score <= 0) {
+          continue;
+        }
+        if (!best || score > best.score) {
+          best = { url, score };
+        }
+      }
+    }
+    return best?.url ?? null;
+  }
+  function scoreExternalApplyUrl(url) {
+    const lower = url.toLowerCase();
+    if (/\.(?:png|jpg|jpeg|gif|svg|webp|ico|css|js|woff2?|ttf|eot)(?:[?#].*)?$/.test(lower)) {
+      return -1;
+    }
+    if ([
+      "facebook.com",
+      "linkedin.com",
+      "twitter.com",
+      "instagram.com",
+      "youtube.com",
+      "tiktok.com",
+      "doubleclick.net",
+      "googletagmanager.com",
+      "google-analytics.com",
+      "privacy",
+      "terms",
+      "cookie",
+      "help",
+      "support"
+    ].some((token) => lower.includes(token))) {
+      return -1;
+    }
+    let score = 0;
+    if ([
+      "workdayjobs.com",
+      "myworkdayjobs.com",
+      "greenhouse.io",
+      "boards.greenhouse.io",
+      "job-boards.greenhouse.io",
+      "lever.co",
+      "ashbyhq.com",
+      "workable.com",
+      "jobvite.com",
+      "jobs.jobvite.com",
+      "icims.com",
+      "smartrecruiters.com",
+      "applytojob.com",
+      "recruitee.com",
+      "breezy.hr",
+      "bamboohr.com"
+    ].some((token) => lower.includes(token))) {
+      score += 120;
+    }
+    if ([
+      "/apply",
+      "/job",
+      "/jobs",
+      "/career",
+      "/careers",
+      "/position",
+      "/positions",
+      "/opening",
+      "/openings",
+      "application",
+      "candidate",
+      "requisition",
+      "gh_jid=",
+      "jobid",
+      "job_id",
+      "jid="
+    ].some((token) => lower.includes(token))) {
+      score += 55;
+    }
+    if (lower.includes("indeed.com")) {
+      score = -1;
+    }
+    return score;
   }
   function scoreApplyElement(text, url, element, context) {
     if (!isElementVisible(element) || element.disabled) {
@@ -1726,8 +1882,21 @@
     }
     if (score === 0 && lowerUrl.includes("/apply")) score += 60;
     if (score === 0 && lowerUrl.includes("application")) score += 50;
+    if (score === 0 && [
+      "job_app",
+      "applytojob",
+      "candidateexperience",
+      "myworkdayjobs.com",
+      "workdayjobs.com",
+      "icims.com/jobs/candidate",
+      "smartrecruiters.com",
+      "greenhouse.io/embed/job_app"
+    ].some((token) => lowerUrl.includes(token))) {
+      score += 55;
+    }
     if (url && isExternalUrl(url)) score += 20;
     if (attrs.includes("apply")) score += 30;
+    if (attrs.includes("application")) score += 20;
     if (attrs.includes("quick apply") || attrs.includes("easy apply")) score += 20;
     if (attrs.includes("apply-button-wc")) score += 30;
     if (attrs.includes("svx_applybutton") || attrs.includes("applybutton")) score += 35;
@@ -1801,7 +1970,33 @@
         ];
       case "startup":
       case "other_sites":
-        return ["button[data-qa*='apply']", "button[data-testid*='apply']", "[class*='apply']", ...generic];
+        return [
+          "#apply_button",
+          ".application-link",
+          "button[data-qa='btn-apply']",
+          "button[data-qa*='apply']",
+          "a[data-qa*='apply']",
+          "button[data-testid*='apply']",
+          "a[data-testid*='apply']",
+          "button[data-ui='apply-button']",
+          "a[data-ui='apply-button']",
+          "a[href*='/apply/']",
+          "a[href*='job_app']",
+          "a[href*='candidate']",
+          "a[href*='applytojob']",
+          "a[href*='workdayjobs.com']",
+          "a[href*='myworkdayjobs.com']",
+          "a[href*='smartrecruiters.com']",
+          "a[href*='icims.com/jobs/candidate']",
+          "a[href*='workable.com']",
+          "a[href*='greenhouse.io/embed/job_app']",
+          "a[href*='job-boards.greenhouse.io/embed/job_app']",
+          "a[href*='boards.greenhouse.io/embed/job_app']",
+          "[class*='application']",
+          "[id*='application']",
+          "[class*='apply']",
+          ...generic
+        ];
       default:
         return generic;
     }
@@ -2103,17 +2298,6 @@
       return;
     }
     const items = approvedUrls.map((url) => {
-      if (site === "startup" || site === "other_sites") {
-        return {
-          url,
-          site,
-          stage: "autofill-form",
-          runId: currentRunId,
-          message: `Opening ${labelPrefix}role and autofilling...`,
-          label: currentLabel,
-          resumeKind: currentResumeKind
-        };
-      }
       if (isLikelyApplyUrl(url, site)) {
         return {
           url,
@@ -2212,10 +2396,17 @@
         action = findZipRecruiterApplyAction();
         if (action) break;
       }
-      action = findCompanySiteAction();
-      if (action) break;
-      action = findApplyAction(site, "job-page");
-      if (action) break;
+      if (site === "startup" || site === "other_sites") {
+        action = findApplyAction(site, "job-page");
+        if (action) break;
+        action = findCompanySiteAction();
+        if (action) break;
+      } else {
+        action = findCompanySiteAction();
+        if (action) break;
+        action = findApplyAction(site, "job-page");
+        if (action) break;
+      }
       if (hasLikelyApplicationForm()) {
         currentStage = "autofill-form";
         updateStatus(
@@ -2577,20 +2768,14 @@
     );
   }
   async function waitForFormContentChange(_site) {
-    const initial = document.querySelectorAll(
-      "input, textarea, select"
-    ).length;
+    const initial = collectAutofillFields().length;
     for (let i = 0; i < 10; i++) {
       await sleep(600);
-      const current = document.querySelectorAll(
-        "input, textarea, select"
-      ).length;
+      const current = collectAutofillFields().length;
       if (current !== initial) return;
-      const blanks = Array.from(
-        document.querySelectorAll(
-          "input, textarea, select"
-        )
-      ).filter((f) => shouldAutofillField(f) && isFieldBlank(f));
+      const blanks = collectAutofillFields().filter(
+        (f) => shouldAutofillField(f) && isFieldBlank(f)
+      );
       if (blanks.length > 0) return;
     }
   }
@@ -2953,6 +3138,40 @@
       return false;
     }
   }
+  function collectDeepMatches(selector) {
+    const results = [];
+    const seen = /* @__PURE__ */ new Set();
+    const roots = [document];
+    while (roots.length > 0) {
+      const root = roots.shift();
+      for (const element of Array.from(
+        root.querySelectorAll(selector)
+      )) {
+        if (seen.has(element)) continue;
+        seen.add(element);
+        results.push(element);
+      }
+      for (const host of Array.from(
+        root.querySelectorAll("*")
+      )) {
+        if (host.shadowRoot) roots.push(host.shadowRoot);
+      }
+    }
+    return results;
+  }
+  function collectAutofillFields() {
+    return collectDeepMatches(
+      "input, textarea, select"
+    );
+  }
+  function collectResumeFileInputs() {
+    return collectDeepMatches(
+      "input[type='file']"
+    );
+  }
+  function collectEssayInputFields() {
+    return collectDeepMatches("textarea, input[type='text']");
+  }
   async function autofillVisibleApplication(settings) {
     const result = createEmptyAutofillResult();
     if (settings.autoUploadResumes) {
@@ -2972,11 +3191,7 @@
       }
     }
     const processedGroups = /* @__PURE__ */ new Set();
-    for (const field of Array.from(
-      document.querySelectorAll(
-        "input, textarea, select"
-      )
-    )) {
+    for (const field of collectAutofillFields()) {
       if (!shouldAutofillField(field)) continue;
       if (field instanceof HTMLInputElement && field.type === "file")
         continue;
@@ -2997,11 +3212,7 @@
   async function uploadResumeIfNeeded(settings) {
     const resume = pickResumeAsset(settings);
     if (!resume) return null;
-    const fileInputs = Array.from(
-      document.querySelectorAll(
-        "input[type='file']"
-      )
-    );
+    const fileInputs = collectResumeFileInputs();
     const usable = fileInputs.filter(
       (i) => shouldUseFileInputForResume(i, fileInputs.length)
     );
@@ -3049,9 +3260,7 @@
   }
   function collectEssayFieldsNeedingAi(settings) {
     const result = [];
-    for (const field of Array.from(
-      document.querySelectorAll("textarea, input[type='text']")
-    )) {
+    for (const field of collectEssayInputFields()) {
       if (!shouldAutofillField(field) || field.value.trim())
         continue;
       const question = getQuestionText(field);
@@ -3377,19 +3586,11 @@
     );
   }
   function hasLikelyApplicationForm() {
-    const relevantFields = Array.from(
-      document.querySelectorAll(
-        "input, textarea, select"
-      )
-    ).filter(
+    const relevantFields = collectAutofillFields().filter(
       (f) => shouldAutofillField(f, true) && isLikelyApplicationField(f)
     );
     if (relevantFields.length >= 2) return true;
-    return Array.from(
-      document.querySelectorAll(
-        "input[type='file']"
-      )
-    ).some(
+    return collectResumeFileInputs().some(
       (input) => shouldAutofillField(input, true) && isLikelyApplicationField(input)
     );
   }
@@ -3415,7 +3616,17 @@
     ].some((token) => bodyText.includes(token));
   }
   function hasLikelyApplicationSurface(site) {
-    return hasLikelyApplicationForm() || hasLikelyApplicationFrame() || Boolean(findProgressionAction()) || Boolean(findCompanySiteAction()) || Boolean(findApplyAction(null, "follow-up")) || isAlreadyOnApplyPage(site, window.location.href) && hasLikelyApplicationPageContent();
+    const onApplyLikeUrl = isAlreadyOnApplyPage(
+      site,
+      window.location.href
+    );
+    const hasPageContent = hasLikelyApplicationPageContent();
+    const hasProgression = Boolean(findProgressionAction());
+    const hasCompanySiteStep = Boolean(findCompanySiteAction());
+    const stillLooksLikeJobPage = Boolean(
+      findApplyAction(site, "job-page")
+    );
+    return hasLikelyApplicationForm() || hasLikelyApplicationFrame() || onApplyLikeUrl && (hasPageContent || hasProgression || hasCompanySiteStep) || hasPageContent && (hasProgression || hasCompanySiteStep) && !stillLooksLikeJobPage || onApplyLikeUrl && hasPageContent;
   }
   function isLikelyApplicationField(field) {
     const question = getQuestionText(field);
@@ -3568,11 +3779,11 @@
         t
       ))
         return false;
-      if (t !== "file" && !isElementVisible(field)) return false;
       if (t === "file") return true;
+      if (!isFieldContextVisible(field)) return false;
       if (!ignoreBlankCheck && (t === "radio" || t === "checkbox"))
         return true;
-    } else if (!isElementVisible(field)) return false;
+    } else if (!isFieldContextVisible(field)) return false;
     const d = getFieldDescriptor(field, getQuestionText(field));
     if (matchesDescriptor(d, [
       "job title",
@@ -3619,6 +3830,31 @@
     field.dispatchEvent(new Event("input", { bubbles: true }));
     field.dispatchEvent(new Event("change", { bubbles: true }));
   }
+  function getFieldLookupRoot(field) {
+    const root = field.getRootNode();
+    return root instanceof ShadowRoot ? root : document;
+  }
+  function findByIdNearField(field, id) {
+    const selector = `#${cssEscape(id)}`;
+    const root = getFieldLookupRoot(field);
+    return root.querySelector(selector) ?? document.querySelector(selector);
+  }
+  function isFieldContextVisible(field) {
+    if (isElementVisible(field)) return true;
+    for (const label of Array.from(field.labels ?? [])) {
+      if (label instanceof HTMLElement && isElementVisible(label)) {
+        return true;
+      }
+    }
+    const container = field.closest(
+      "label, fieldset, form, [role='group'], [role='radiogroup'], [role='dialog'], .field, .form-field, .question, .application-question, [class*='field'], [class*='question']"
+    );
+    if (container instanceof HTMLElement && isElementVisible(container)) {
+      return true;
+    }
+    const root = field.getRootNode();
+    return root instanceof ShadowRoot && root.host instanceof HTMLElement && isElementVisible(root.host);
+  }
   function getQuestionText(field) {
     const legend = cleanText(
       field.closest("fieldset")?.querySelector("legend")?.textContent
@@ -3628,7 +3864,7 @@
     if (ariaBy) {
       const t = cleanText(
         ariaBy.split(/\s+/).map(
-          (id) => document.getElementById(id)?.textContent ?? ""
+          (id) => findByIdNearField(field, id)?.textContent ?? ""
         ).join(" ")
       );
       if (t) return t;
@@ -3648,8 +3884,11 @@
   function getAssociatedLabelText(field) {
     const id = field.getAttribute("id");
     if (id) {
+      const root = getFieldLookupRoot(field);
       const l = cleanText(
-        document.querySelector(
+        root.querySelector(
+          `label[for='${cssEscape(id)}']`
+        )?.textContent || document.querySelector(
           `label[for='${cssEscape(id)}']`
         )?.textContent
       );

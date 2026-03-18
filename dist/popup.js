@@ -270,14 +270,12 @@
     }
   });
   async function initialize() {
-    const [tab] = await chrome.tabs.query({
-      active: true,
-      currentWindow: true
-    });
-    activeTabId = tab?.id ?? null;
-    activeSite = detectSiteFromUrl(tab?.url ?? "");
+    await refreshActiveTabContext();
     settings = await readAutomationSettings();
     populateSettingsForm(settings);
+    if (isJobBoardSite(activeSite)) {
+      searchModeInput.value = "job_board";
+    }
     updateModeUi();
     updateOverviewPreview();
     const searchMode = getSelectedSearchMode();
@@ -303,6 +301,7 @@
     }, 1500);
   }
   async function startAutomation() {
+    await refreshActiveTabContext();
     if (!activeTabId) {
       return;
     }
@@ -411,6 +410,7 @@
     await refreshStatus();
   }
   async function refreshStatus() {
+    await refreshActiveTabContext();
     if (!activeTabId) {
       return;
     }
@@ -695,5 +695,13 @@
       );
     }
     return element;
+  }
+  async function refreshActiveTabContext() {
+    const [tab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true
+    });
+    activeTabId = tab?.id ?? null;
+    activeSite = detectSiteFromUrl(tab?.url ?? "");
   }
 })();

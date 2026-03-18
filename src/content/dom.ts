@@ -62,6 +62,23 @@ export function getNavigationUrl(el: HTMLElement): string | null {
     return normalizeUrl(dataUrl);
   }
 
+  for (const attribute of Array.from(el.attributes)) {
+    const name = attribute.name.toLowerCase();
+    const value = attribute.value?.trim();
+    if (!value) {
+      continue;
+    }
+
+    if (!/(href|url|link|target|dest|redirect)/i.test(name)) {
+      continue;
+    }
+
+    const normalized = normalizeUrl(value);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
   const onclick = el.getAttribute("onclick");
   if (onclick) {
     const match =
@@ -129,5 +146,28 @@ export function findFirstVisibleElement<T extends HTMLElement>(
 }
 
 export function performClickAction(element: HTMLElement): void {
+  element.focus?.();
+
+  for (const eventType of [
+    "pointerdown",
+    "mousedown",
+    "pointerup",
+    "mouseup",
+    "click",
+  ] as const) {
+    try {
+      element.dispatchEvent(
+        new MouseEvent(eventType, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          view: window,
+        })
+      );
+    } catch {
+      // Ignore event-construction issues and fall back to click().
+    }
+  }
+
   element.click();
 }
