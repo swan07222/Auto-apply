@@ -1,38 +1,66 @@
 # Remote Job Search Starter
 
-This project is a Chrome extension built in TypeScript. It can start searches on:
+Remote Job Search Starter is a Chrome extension built with TypeScript for streamlining multi-site software job searches and reducing repetitive application work. It can open targeted search flows, collect job pages, open application surfaces, autofill common fields, upload the appropriate resume, and reuse previously answered questions.
+
+The extension is designed to assist with application prep and form completion. It does not auto-submit applications.
+
+## Overview
+
+The project supports three search modes:
+
+- `Job Boards`: Starts from a supported job board tab and opens search flows for front end, back end, and full stack roles.
+- `Startup Careers`: Opens curated startup career pages by region and scans them for matching roles.
+- `Other Job Sites`: Opens curated regional searches on additional job platforms and scans them for matching roles.
+
+For each run, the extension tracks progress across tabs, limits how many job pages are opened, and attempts to continue automation when a flow moves into a new tab.
+
+## Supported Sources
+
+### Job boards
 
 - Indeed
 - ZipRecruiter
 - Dice
 - Monster
 
-From the popup you can now:
+### Curated startup mode
 
-- set the total number of job pages an automation run should open
-- upload separate resumes for `Front End`, `Back End`, and `Full Stack`
-- store candidate profile details for common application fields
-- switch between `Job boards` mode and `Startup careers` mode
-- switch between `Job boards`, `Startup careers`, and `Other job sites`
-- filter startup companies and other job sites by `US`, `UK`, or `EU` using the search region setting or the saved country when region is set to `Auto`
-- automatically upload the matching resume on supported application forms
-- remember answers you type into application questions and reuse them later
-- skip jobs that already appear as applied or submitted
-- open ChatGPT to draft long-form application answers like cover letters or "why are you interested?" responses using the current job description and selected resume
+- Region-aware startup career pages for `US`, `UK`, and `EU` companies
 
-The automation flow now:
+### Curated other job sites mode
 
-- opens the search tabs for front end, back end, and full stack roles
-- collects individual job pages from the results
-- opens the board-hosted apply flow or the external company career page
-- tries to autofill blank fields and resume uploads without auto-submitting
-- when it finds blank long-form questions, it can open ChatGPT, attach the selected resume, send the job context, copy the generated answer, and paste it back into the application field
+- Built In
+- The Muse
+- Work at a Startup
+- Reed
+- CWJobs
+- Totaljobs
+- Welcome to the Jungle
+- Berlin Startup Jobs
 
-Startup mode opens curated startup company career pages for the selected region, scans those pages for matching front end, back end, and full stack roles, then opens the matching job pages and tries to autofill them.
+## Core Capabilities
 
-Other job sites mode opens curated regional search pages on additional job sites, scans those result pages for matching front end, back end, and full stack roles, then opens the matching job pages and tries to autofill them.
+- Opens role-specific searches for `Front End`, `Back End`, and `Full Stack`
+- Stores separate resumes for each resume type
+- Stores candidate profile data for common application fields
+- Lets you choose a search region or derive it from the saved country
+- Limits the number of job pages opened in a run
+- Scans result pages and opens matching job or application pages
+- Attempts to autofill blank fields on supported application forms
+- Uploads the matching saved resume when resume upload is enabled
+- Remembers answers typed into application questions and reuses them later
+- Skips jobs that already appear to be applied or submitted
+- Can open ChatGPT to draft longer written responses using job context and the selected resume
+- Pauses when a site presents human verification and resumes after the challenge is cleared
 
-If a board or career site shows a human-verification challenge, the extension pauses and resumes after you complete it manually.
+## How It Works
+
+1. Configure resumes, candidate profile details, region, and job page limits in the extension popup.
+2. Start a run in one of the available search modes.
+3. The extension opens targeted search or career pages for the selected role types.
+4. It collects job links, opens job pages or application pages, and tries to continue into the apply flow.
+5. On supported forms, it fills common fields, reuses remembered answers, and uploads the corresponding resume.
+6. If a long-form question needs help, it can hand off context to ChatGPT and paste the generated answer back into the form.
 
 ## Build
 
@@ -41,17 +69,66 @@ npm install
 npm run build
 ```
 
-## Load in Chrome
+## Load In Chrome
 
-1. Open `chrome://extensions`
-2. Enable `Developer mode`
-3. Click `Load unpacked`
-4. Select either the `dist` folder or the project root
+1. Open `chrome://extensions`.
+2. Enable `Developer mode`.
+3. Click `Load unpacked`.
+4. Select the project root or the `dist` directory.
 
-## Notes
+If you load the project root, Chrome will use `manifest.json`. If you load `dist`, Chrome will use the built assets in that folder.
 
-- External company-site autofill is generic and heuristic-based, so you should review each application before submitting.
-- ChatGPT answer generation depends on you being signed in on `chatgpt.com`, and the site UI may occasionally require selector updates.
-- The extension stores settings, resumes, and remembered answers in Chrome local extension storage.
-- The curated startup company list currently covers official career pages for US, UK, and EU startups and can be expanded further.
-- The curated other-job-site list currently includes region-aware searches on sites such as Built In, The Muse, Work at a Startup, Reed, CWJobs, Totaljobs, Welcome to the Jungle, and BerlinStartupJobs.
+## Usage
+
+### Job Boards mode
+
+1. Open Indeed, ZipRecruiter, Dice, or Monster in the active tab.
+2. Open the extension popup.
+3. Confirm your resumes, profile details, and job page limit.
+4. Leave `Search Mode` set to `Job Boards`.
+5. Start the run.
+
+### Startup Careers mode
+
+1. Open the extension popup from any page.
+2. Set `Search Mode` to `Startup Careers`.
+3. Choose `US`, `UK`, `EU`, or `Auto`.
+4. Start the run.
+
+### Other Job Sites mode
+
+1. Open the extension popup from any page.
+2. Set `Search Mode` to `Other Job Sites`.
+3. Choose `US`, `UK`, `EU`, or `Auto`.
+4. Start the run.
+
+## Stored Data
+
+The extension stores its working data locally in Chrome extension storage, including:
+
+- Saved resumes
+- Candidate profile details
+- Search preferences
+- Remembered application answers
+- Temporary automation session state
+
+## Limitations
+
+- External career sites vary widely, so autofill behavior is heuristic and should always be reviewed manually.
+- Human verification, CAPTCHA, and anti-bot flows still require user intervention.
+- ChatGPT-assisted answer generation depends on being signed in to `chatgpt.com`, and UI changes there may require selector updates.
+- Broad host permissions are currently used so the content script can operate across job boards, startup career sites, and external application pages.
+
+## Project Structure
+
+- `src/background.ts`: Background service worker and tab/session orchestration
+- `src/content.ts`: Search collection, apply-flow handling, autofill logic, answer memory, and ChatGPT handoff
+- `src/popup.ts`: Popup UI behavior and settings management
+- `src/shared.ts`: Shared types, settings, curated targets, and helper utilities
+- `scripts/build.mjs`: Build pipeline
+
+## Development Notes
+
+- The project is built with TypeScript and bundled into `dist`
+- `npm run typecheck` runs the TypeScript checker without emitting files
+- `npm run build` rebuilds the extension assets used by Chrome
