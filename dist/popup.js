@@ -88,7 +88,9 @@
     return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
   }
   async function readAutomationSettings() {
-    const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
+    const stored = await chrome.storage.local.get(
+      AUTOMATION_SETTINGS_STORAGE_KEY
+    );
     return sanitizeAutomationSettings(stored[AUTOMATION_SETTINGS_STORAGE_KEY]);
   }
   async function writeAutomationSettings(settings2) {

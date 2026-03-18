@@ -9,24 +9,80 @@
   var SEARCH_DEFINITIONS = [
     { label: "Front End", query: "front end developer", resumeKind: "front_end" },
     { label: "Back End", query: "back end developer", resumeKind: "back_end" },
-    { label: "Full Stack", query: "full stack developer", resumeKind: "full_stack" }
+    {
+      label: "Full Stack",
+      query: "full stack developer",
+      resumeKind: "full_stack"
+    }
   ];
   var STARTUP_COMPANIES = [
     { name: "Ramp", careersUrl: "https://ramp.com/careers", regions: ["us"] },
-    { name: "Vercel", careersUrl: "https://vercel.com/careers", regions: ["us"] },
-    { name: "Plaid", careersUrl: "https://plaid.com/careers/", regions: ["us"] },
-    { name: "Figma", careersUrl: "https://www.figma.com/careers/", regions: ["us"] },
-    { name: "Notion", careersUrl: "https://www.notion.so/careers", regions: ["us"] },
-    { name: "Monzo", careersUrl: "https://monzo.com/careers/", regions: ["uk"] },
+    {
+      name: "Vercel",
+      careersUrl: "https://vercel.com/careers",
+      regions: ["us"]
+    },
+    {
+      name: "Plaid",
+      careersUrl: "https://plaid.com/careers/",
+      regions: ["us"]
+    },
+    {
+      name: "Figma",
+      careersUrl: "https://www.figma.com/careers/",
+      regions: ["us"]
+    },
+    {
+      name: "Notion",
+      careersUrl: "https://www.notion.so/careers",
+      regions: ["us"]
+    },
+    {
+      name: "Monzo",
+      careersUrl: "https://monzo.com/careers/",
+      regions: ["uk"]
+    },
     { name: "Wise", careersUrl: "https://wise.jobs/", regions: ["uk"] },
-    { name: "Synthesia", careersUrl: "https://synthesia.io/careers", regions: ["uk"] },
-    { name: "Snyk", careersUrl: "https://snyk.io/careers/", regions: ["uk"] },
-    { name: "Checkout.com", careersUrl: "https://www.checkout.com/careers", regions: ["uk"] },
-    { name: "N26", careersUrl: "https://n26.com/en-eu/careers", regions: ["eu"] },
-    { name: "Bolt", careersUrl: "https://bolt.eu/en/careers/", regions: ["eu"] },
-    { name: "Adyen", careersUrl: "https://careers.adyen.com/", regions: ["eu"] },
-    { name: "GetYourGuide", careersUrl: "https://www.getyourguide.careers/", regions: ["eu"] },
-    { name: "Klarna", careersUrl: "https://www.klarna.com/careers/", regions: ["eu"] }
+    {
+      name: "Synthesia",
+      careersUrl: "https://synthesia.io/careers",
+      regions: ["uk"]
+    },
+    {
+      name: "Snyk",
+      careersUrl: "https://snyk.io/careers/",
+      regions: ["uk"]
+    },
+    {
+      name: "Checkout.com",
+      careersUrl: "https://www.checkout.com/careers",
+      regions: ["uk"]
+    },
+    {
+      name: "N26",
+      careersUrl: "https://n26.com/en-eu/careers",
+      regions: ["eu"]
+    },
+    {
+      name: "Bolt",
+      careersUrl: "https://bolt.eu/en/careers/",
+      regions: ["eu"]
+    },
+    {
+      name: "Adyen",
+      careersUrl: "https://careers.adyen.com/",
+      regions: ["eu"]
+    },
+    {
+      name: "GetYourGuide",
+      careersUrl: "https://www.getyourguide.careers/",
+      regions: ["eu"]
+    },
+    {
+      name: "Klarna",
+      careersUrl: "https://www.klarna.com/careers/",
+      regions: ["eu"]
+    }
   ];
   var OTHER_JOB_SITE_TARGETS = [
     {
@@ -289,9 +345,13 @@
     if (!normalized) {
       return "us";
     }
-    if (["us", "usa", "united states", "united states of america", "america"].includes(
-      normalized
-    )) {
+    if ([
+      "us",
+      "usa",
+      "united states",
+      "united states of america",
+      "america"
+    ].includes(normalized)) {
       return "us";
     }
     if ([
@@ -378,7 +438,9 @@
     return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
   }
   async function readAutomationSettings() {
-    const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
+    const stored = await chrome.storage.local.get(
+      AUTOMATION_SETTINGS_STORAGE_KEY
+    );
     return sanitizeAutomationSettings(stored[AUTOMATION_SETTINGS_STORAGE_KEY]);
   }
   function sanitizeAutomationSettings(raw) {
@@ -521,7 +583,9 @@
       const key = "remote-job-search-pending-spawns";
       const data = {};
       for (const [tabId, count] of pendingExtensionTabSpawns.entries()) {
-        if (count > 0) data[String(tabId)] = count;
+        if (count > 0) {
+          data[String(tabId)] = count;
+        }
       }
       await chrome.storage.local.set({ [key]: data });
     } catch {
@@ -623,7 +687,6 @@
         }
         return { ok: true };
       }
-      // FIX: Added default case so unknown message types get a clear error
       default:
         return {
           ok: false,
@@ -1027,7 +1090,7 @@
         if (approvedUrls.length >= targetCount) {
           break;
         }
-        const url = candidate.url?.trim();
+        const url = candidate.url.trim();
         const key = (candidate.key || getJobDedupKey(url)).trim();
         if (!url || !key || seenKeys.has(key)) {
           continue;
@@ -1090,7 +1153,9 @@
     const safeTotalSlots = Math.max(0, Math.floor(totalSlots));
     const slots = new Array(safeTargetCount).fill(0);
     for (let index = 0; index < safeTotalSlots; index += 1) {
-      if (safeTargetCount === 0) break;
+      if (safeTargetCount === 0) {
+        break;
+      }
       slots[index % safeTargetCount] += 1;
     }
     return slots;
@@ -1140,7 +1205,7 @@
       if (approvedUrls.length >= safeLimit) {
         break;
       }
-      const url = candidate.url?.trim();
+      const url = candidate.url.trim();
       const key = (candidate.key || getJobDedupKey(url)).trim();
       if (!url || !key || seenKeys.has(key)) {
         continue;
@@ -1275,20 +1340,30 @@
       const cleanup = () => {
         chrome.tabs.onUpdated.removeListener(handleUpdated);
         chrome.tabs.onRemoved.removeListener(handleRemoved);
-        if (timeoutId !== null) globalThis.clearTimeout(timeoutId);
+        if (timeoutId !== null) {
+          globalThis.clearTimeout(timeoutId);
+        }
       };
       const finish = (callback) => {
-        if (settled) return;
+        if (settled) {
+          return;
+        }
         settled = true;
         cleanup();
         callback();
       };
       const handleUpdated = (updatedTabId, changeInfo) => {
-        if (updatedTabId !== tabId) return;
-        if (changeInfo.status === "complete") finish(resolve);
+        if (updatedTabId !== tabId) {
+          return;
+        }
+        if (changeInfo.status === "complete") {
+          finish(resolve);
+        }
       };
       const handleRemoved = (removedTabId) => {
-        if (removedTabId !== tabId) return;
+        if (removedTabId !== tabId) {
+          return;
+        }
         finish(() => reject(new Error("Tab was closed.")));
       };
       chrome.tabs.onUpdated.addListener(handleUpdated);
