@@ -69,7 +69,6 @@ interface EssayFieldCandidate {
 
 const MAX_AUTOFILL_STEPS = 15;
 const OVERLAY_AUTO_HIDE_MS = 10_000;
-// FIX: Guard against infinite stage recursion between open-apply and autofill
 const MAX_STAGE_DEPTH = 3;
 
 // ─── RESULT HELPERS ──────────────────────────────────────────────────────────
@@ -110,7 +109,6 @@ let activeRun: Promise<void> | null = null;
 let answerFlushTimerId: number | null = null;
 let overlayHideTimerId: number | null = null;
 let childApplicationTabOpened = false;
-// FIX: Track recursion depth to prevent infinite open-apply ↔ autofill loops
 let stageDepth = 0;
 const pendingAnswers = new Map<string, SavedAnswer>();
 
@@ -195,12 +193,13 @@ async function resumeAutomationIfNeeded(): Promise<void> {
   childApplicationTabOpened = false;
   stageDepth = 0;
 
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
     let response: {
       ok?: boolean;
       shouldResume?: boolean;
       session?: AutomationSession;
     } | null = null;
+
     try {
       response = await chrome.runtime.sendMessage({ type: "content-ready" });
     } catch {
@@ -223,8 +222,13 @@ async function resumeAutomationIfNeeded(): Promise<void> {
       return;
     }
 
-    if (!detectedSite || attempt === 7) return;
-    await sleep(350);
+    if (detectedSite) {
+      if (attempt === 9) return;
+    } else {
+      if (attempt >= 4) return;
+    }
+
+    await sleep(400);
   }
 }
 
@@ -334,8 +338,6 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   );
 
   await waitForHumanVerificationToClear();
-
-  // FIX: Wait for page to settle before collecting URLs
   await sleep(1500);
 
   const jobUrls = await waitForJobDetailUrls(site);
@@ -424,17 +426,10 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
 }
 
 // ─── OPEN APPLY ──────────────────────────────────────────────────────────────
-// FIX: Major rewrite to properly handle:
-// 1. Indeed: Easy Apply modals/iframes + "Apply on company site" navigation
-// 2. ZipRecruiter: "1-Click Apply" modals + "Apply on company site" links
-// 3. Monster: Web component apply buttons + external redirects
-// 4. Anchor-based apply buttons that navigate or open new tabs
-// 5. Stage depth guard against infinite recursion
 
 async function runOpenApplyStage(site: SiteKey): Promise<void> {
   childApplicationTabOpened = false;
 
-  // FIX: Guard against infinite recursion
   stageDepth += 1;
   if (stageDepth > MAX_STAGE_DEPTH) {
     updateStatus(
@@ -447,17 +442,11 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   }
 
   if (isCurrentPageAppliedJob()) {
-    updateStatus(
-      "completed",
-      "Skipped — already applied.",
-      false,
-      "open-apply"
-    );
+    updateStatus("completed", "Skipped — already applied.", false, "open-apply");
     await closeCurrentTab();
     return;
   }
 
-  // Check if we're already on an apply page or a form is visible
   if (
     isAlreadyOnApplyPage(site, window.location.href) ||
     hasLikelyApplicationForm()
@@ -481,18 +470,14 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     "open-apply"
   );
   await waitForHumanVerificationToClear();
-
-  // FIX: Give the page extra time to render dynamic content (Monster, ZipRecruiter)
   await sleep(2000);
 
   const urlBeforeSearch = window.location.href;
 
-  // Try to find an apply action with scrolling
   let action: ApplyAction | null = null;
-  const scrollPositions = [0, 300, -1, -2, 0, -3]; // -1 = half, -2 = top, -3 = bottom
+  const scrollPositions = [0, 300, -1, -2, 0, -3];
 
   for (let attempt = 0; attempt < 30; attempt += 1) {
-    // Check if page navigated (some pages auto-redirect to apply)
     if (window.location.href !== urlBeforeSearch) {
       currentStage = "autofill-form";
       updateStatus(
@@ -510,19 +495,16 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     action = findApplyAction(site, "job-page");
     if (action) break;
 
-    // FIX: Also try to find Monster's web component apply button
     if (site === "monster") {
       action = findMonsterApplyAction();
       if (action) break;
     }
 
-    // FIX: Also try to find ZipRecruiter's apply button variants
     if (site === "ziprecruiter") {
       action = findZipRecruiterApplyAction();
       if (action) break;
     }
 
-    // Check if a form appeared (e.g., Indeed Easy Apply inline)
     if (hasLikelyApplicationForm()) {
       currentStage = "autofill-form";
       updateStatus(
@@ -536,7 +518,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       return;
     }
 
-    // Scroll to find buttons
     if (attempt < scrollPositions.length) {
       const pos = scrollPositions[attempt];
       if (pos === -1)
@@ -544,8 +525,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
           top: document.body.scrollHeight / 2,
           behavior: "smooth",
         });
-      else if (pos === -2)
-        window.scrollTo({ top: 0, behavior: "smooth" });
+      else if (pos === -2) window.scrollTo({ top: 0, behavior: "smooth" });
       else if (pos === -3)
         window.scrollTo({
           top: document.body.scrollHeight,
@@ -563,7 +543,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   }
 
   if (!action) {
-    // Last chance: check for form
     if (hasLikelyApplicationForm()) {
       currentStage = "autofill-form";
       updateStatus(
@@ -586,7 +565,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     return;
   }
 
-  // We found an action — transition to autofill stage
   currentStage = "autofill-form";
 
   if (action.type === "navigate") {
@@ -600,7 +578,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     return;
   }
 
-  // Click action
   updateStatus(
     "running",
     `Clicking ${action.description}...`,
@@ -613,8 +590,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
   const urlBeforeClick = window.location.href;
 
-  // FIX: For anchor elements, check if they have a usable href and prefer navigation.
-  // This handles "Apply on company site" links on Indeed and ZipRecruiter.
   const anchorElement =
     action.element.closest("a") ??
     (action.element instanceof HTMLAnchorElement ? action.element : null);
@@ -667,18 +642,13 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     }
   }
 
-  // Regular click (button, JS-handled anchor, etc.)
   performClickAction(action.element);
 
-  // FIX: Wait and detect what happened after click.
-  // Increased wait iterations and added checks for Indeed iframe,
-  // ZipRecruiter modal, and Monster redirects.
   for (let wait = 0; wait < 15; wait += 1) {
     await sleep(800);
 
     if (childApplicationTabOpened) return;
 
-    // Check if URL changed (page navigated)
     if (window.location.href !== urlBeforeClick) {
       await sleep(2000);
       await waitForHumanVerificationToClear();
@@ -687,11 +657,9 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
         await runAutofillStage(site);
         return;
       }
-      // New page's content script will pick it up via session resume
       return;
     }
 
-    // FIX: Check for Indeed Easy Apply iframe
     if (site === "indeed" && hasIndeedApplyIframe()) {
       updateStatus(
         "completed",
@@ -702,7 +670,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       return;
     }
 
-    // FIX: Check for ZipRecruiter apply modal
     if (site === "ziprecruiter" && hasZipRecruiterApplyModal()) {
       updateStatus(
         "running",
@@ -715,14 +682,12 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       return;
     }
 
-    // Check if a form/modal appeared
     if (hasLikelyApplicationSurface(site)) {
       await waitForLikelyApplicationSurface(site);
       await runAutofillStage(site);
       return;
     }
 
-    // Check if an iframe appeared
     if (hasLikelyApplicationFrame()) {
       updateStatus(
         "completed",
@@ -734,7 +699,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     }
   }
 
-  // Nothing happened after click — try autofill anyway
   if (hasLikelyApplicationSurface(site)) {
     await waitForLikelyApplicationSurface(site);
     await runAutofillStage(site);
@@ -743,7 +707,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
   if (childApplicationTabOpened) return;
 
-  // Try clicking a different button
   const retryAction = findApplyAction(site, "job-page");
   if (
     retryAction &&
@@ -781,24 +744,17 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
 // ─── SITE-SPECIFIC APPLY FINDERS ─────────────────────────────────────────────
 
-// FIX: Monster uses web components and has changed its DOM structure.
-// This finder looks inside shadow DOMs and handles Monster-specific patterns.
 function findMonsterApplyAction(): ApplyAction | null {
-  // Check for Monster's web component
+  // 1. Web component
   const applyWc = document.querySelector("apply-button-wc");
   if (applyWc) {
-    const shadowBtn =
-      applyWc.shadowRoot?.querySelector<HTMLElement>(
-        "button, a[href], [role='button']"
-      );
-    if (shadowBtn && isElementVisible(applyWc as HTMLElement)) {
+    const shadowBtn = applyWc.shadowRoot?.querySelector<HTMLElement>(
+      "a[href], button, input[type='submit'], input[type='button'], [role='button']"
+    );
+    if (shadowBtn) {
       const url = getNavigationUrl(shadowBtn);
       if (url) {
-        return {
-          type: "navigate",
-          url,
-          description: "Monster apply button",
-        };
+        return { type: "navigate", url, description: "Monster apply button" };
       }
       return {
         type: "click",
@@ -806,19 +762,30 @@ function findMonsterApplyAction(): ApplyAction | null {
         description: "Monster apply button",
       };
     }
+    if (isElementVisible(applyWc as HTMLElement)) {
+      return {
+        type: "click",
+        element: applyWc as HTMLElement,
+        description: "Monster apply button",
+      };
+    }
   }
 
-  // Check for standard Monster apply buttons with various selectors
+  // 2. Standard buttons/links
   const monsterSelectors = [
     "button[data-testid*='apply']",
-    "[data-testid='svx_applyButton']",
-    "button[class*='apply']",
-    "a[class*='apply']",
+    "button[data-testid='svx_applyButton']",
     "[data-testid*='applyButton']",
-    "[aria-label*='Apply' i]",
-    // FIX: Monster sometimes uses these
+    "[data-testid*='apply-button']",
     "button[data-track*='apply']",
-    "[data-evt*='apply']",
+    "button[data-evt*='apply']",
+    "[aria-label*='Apply' i]",
+    "button[class*='apply' i]",
+    "a[class*='apply' i]",
+    "button[class*='Apply']",
+    "a[class*='Apply']",
+    "button",
+    "a[role='button']",
   ];
 
   for (const sel of monsterSelectors) {
@@ -826,10 +793,27 @@ function findMonsterApplyAction(): ApplyAction | null {
       document.querySelectorAll<HTMLElement>(sel)
     )) {
       if (!isElementVisible(el)) continue;
-      const text = getActionText(el).toLowerCase();
-      if (text.includes("save") || text.includes("share")) continue;
+      const text = getActionText(el).toLowerCase().trim();
+
+      if (
+        (sel === "button" || sel === "a[role='button']") &&
+        !text.includes("apply")
+      ) {
+        continue;
+      }
+
+      if (
+        text.includes("save") ||
+        text.includes("share") ||
+        text.includes("alert") ||
+        text.includes("sign")
+      ) {
+        continue;
+      }
+      if (!text) continue;
 
       const url = getNavigationUrl(el);
+
       if (url && isExternalUrl(url)) {
         return {
           type: "navigate",
@@ -837,29 +821,25 @@ function findMonsterApplyAction(): ApplyAction | null {
           description: "Monster external apply",
         };
       }
-      if (url) {
+      if (url && url.includes("/apply")) {
         return { type: "navigate", url, description: "Monster apply" };
       }
-      return { type: "click", element: el, description: getActionText(el) || "Apply" };
+      return { type: "click", element: el, description: text || "Apply" };
     }
   }
 
   return null;
 }
 
-// FIX: ZipRecruiter has specific button patterns and modals
 function findZipRecruiterApplyAction(): ApplyAction | null {
-  // Look for ZipRecruiter's specific apply button variants
   const zipSelectors = [
     "button[data-testid='apply-button']",
     "button[data-testid*='apply']",
     "[class*='apply_button']",
     "[class*='applyButton']",
     "button[name='apply']",
-    // FIX: ZipRecruiter one-click apply
     "button[data-testid='one-click-apply']",
     "[class*='one-click']",
-    // FIX: ZipRecruiter saved job page apply
     "a[href*='/apply/']",
     "a[href*='zipapply']",
   ];
@@ -870,16 +850,16 @@ function findZipRecruiterApplyAction(): ApplyAction | null {
     )) {
       if (!isElementVisible(el)) continue;
       const text = getActionText(el).toLowerCase();
-      if (text.includes("save") || text.includes("share") || text.includes("alert"))
+      if (
+        text.includes("save") ||
+        text.includes("share") ||
+        text.includes("alert")
+      )
         continue;
 
       const url = getNavigationUrl(el);
       if (url && (url.includes("zipapply") || url.includes("/apply/"))) {
-        return {
-          type: "navigate",
-          url,
-          description: "ZipRecruiter apply",
-        };
+        return { type: "navigate", url, description: "ZipRecruiter apply" };
       }
       return {
         type: "click",
@@ -892,7 +872,6 @@ function findZipRecruiterApplyAction(): ApplyAction | null {
   return null;
 }
 
-// FIX: Detect Indeed's Easy Apply iframe
 function hasIndeedApplyIframe(): boolean {
   return Boolean(
     document.querySelector(
@@ -906,9 +885,7 @@ function hasIndeedApplyIframe(): boolean {
   );
 }
 
-// FIX: Detect ZipRecruiter's apply modal/dialog
 function hasZipRecruiterApplyModal(): boolean {
-  // Check for modal/dialog with apply content
   const modals = document.querySelectorAll<HTMLElement>(
     "[role='dialog'], [class*='modal'], [class*='overlay'], [class*='popup']"
   );
@@ -916,7 +893,9 @@ function hasZipRecruiterApplyModal(): boolean {
     if (!isElementVisible(modal)) continue;
     const text = (modal.innerText || "").toLowerCase().slice(0, 2000);
     if (
-      (text.includes("apply") || text.includes("resume") || text.includes("upload")) &&
+      (text.includes("apply") ||
+        text.includes("resume") ||
+        text.includes("upload")) &&
       modal.querySelector("input, textarea, select, button")
     ) {
       return true;
@@ -924,10 +903,528 @@ function hasZipRecruiterApplyModal(): boolean {
   }
   return false;
 }
+// ─── AUTOFILL ────────────────────────────────────────────────────────────────
+
+async function runAutofillStage(site: SiteKey): Promise<void> {
+  if (childApplicationTabOpened) return;
+
+  stageDepth += 1;
+  if (stageDepth > MAX_STAGE_DEPTH) {
+    updateStatus(
+      "completed",
+      "Application page opened. Review and complete manually.",
+      false,
+      "autofill-form"
+    );
+    return;
+  }
+
+  if (isCurrentPageAppliedJob()) {
+    updateStatus(
+      "completed",
+      "Skipped — already applied.",
+      false,
+      "autofill-form"
+    );
+    await closeCurrentTab();
+    return;
+  }
+
+  updateStatus(
+    "running",
+    "Looking for application form...",
+    true,
+    "autofill-form"
+  );
+  await waitForHumanVerificationToClear();
+  await waitForLikelyApplicationSurface(site);
+
+  const combinedResult = createEmptyAutofillResult();
+  let previousUrl = window.location.href;
+  let noProgressCount = 0;
+
+  for (let attempt = 0; attempt < MAX_AUTOFILL_STEPS; attempt += 1) {
+    if (childApplicationTabOpened) return;
+
+    if (window.location.href !== previousUrl) {
+      previousUrl = window.location.href;
+      noProgressCount = 0;
+      await waitForHumanVerificationToClear();
+      await waitForLikelyApplicationSurface(site);
+      if (childApplicationTabOpened) return;
+    }
+
+    const settings = await readAutomationSettings();
+    const result = await autofillVisibleApplication(settings);
+    mergeAutofillResult(combinedResult, result);
+
+    if (result.filledFields > 0 || result.uploadedResume) {
+      noProgressCount = 0;
+      await sleep(result.uploadedResume ? 3000 : 1500);
+      continue;
+    }
+
+    const progression = findProgressionAction();
+    if (progression) {
+      noProgressCount = 0;
+      updateStatus(
+        "running",
+        `Clicking "${progression.text}"...`,
+        true,
+        "autofill-form"
+      );
+
+      previousUrl = window.location.href;
+
+      if (progression.type === "navigate") {
+        navigateCurrentTab(progression.url);
+        return;
+      }
+
+      progression.element.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+      await sleep(400);
+      performClickAction(progression.element);
+      await sleep(2500);
+      await waitForFormContentChange(site);
+      await waitForLikelyApplicationSurface(site);
+      continue;
+    }
+
+    const followUp = findApplyAction(site, "follow-up");
+    if (followUp) {
+      noProgressCount = 0;
+      updateStatus(
+        "running",
+        `Clicking ${followUp.description}...`,
+        true,
+        "autofill-form"
+      );
+
+      previousUrl = window.location.href;
+
+      if (followUp.type === "navigate") {
+        navigateCurrentTab(followUp.url);
+        return;
+      }
+
+      followUp.element.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+      await sleep(400);
+      performClickAction(followUp.element);
+      await sleep(2500);
+      await waitForLikelyApplicationSurface(site);
+      continue;
+    }
+
+    noProgressCount += 1;
+    if (noProgressCount >= 3) break;
+
+    await sleep(1000);
+  }
+
+  const finalSettings = await readAutomationSettings();
+  const finalResult = await autofillVisibleApplication(finalSettings);
+  mergeAutofillResult(combinedResult, finalResult);
+
+  if (combinedResult.filledFields > 0 || combinedResult.uploadedResume) {
+    updateStatus(
+      "completed",
+      buildAutofillSummary(combinedResult),
+      false,
+      "autofill-form"
+    );
+    return;
+  }
+
+  if (hasLikelyApplicationForm()) {
+    updateStatus(
+      "completed",
+      "Application opened. No fields auto-filled — review manually.",
+      false,
+      "autofill-form"
+    );
+    return;
+  }
+
+  updateStatus(
+    "completed",
+    "Job page opened. No application form detected.",
+    false,
+    "autofill-form"
+  );
+}
+
+// ─── PROGRESSION BUTTON FINDER ──────────────────────────────────────────────
+
+function findProgressionAction(): ProgressionAction | null {
+  const candidates = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "button, input[type='submit'], input[type='button'], a[role='button'], [role='button']"
+    )
+  );
+
+  let best:
+    | { element: HTMLElement; score: number; url: string | null; text: string }
+    | undefined;
+
+  for (const el of candidates) {
+    if (
+      !isElementVisible(el) ||
+      el.hasAttribute("disabled") ||
+      (el as HTMLButtonElement).disabled
+    )
+      continue;
+
+    const text = getActionText(el).trim();
+    const lower = text.toLowerCase();
+    if (!lower || lower.length > 60) continue;
+
+    if (
+      /submit\s*(my\s*)?application/i.test(lower) ||
+      /send\s*application/i.test(lower) ||
+      /confirm\s*and\s*submit/i.test(lower) ||
+      lower === "submit"
+    )
+      continue;
+
+    if (
+      [
+        "back",
+        "cancel",
+        "close",
+        "save for later",
+        "share",
+        "sign in",
+        "sign up",
+        "log in",
+        "register",
+        "dismiss",
+        "delete",
+        "remove",
+        "previous",
+      ].some((w) => lower.includes(w))
+    )
+      continue;
+
+    let score = 0;
+
+    if (/^next$/i.test(lower)) score = 100;
+    else if (/^continue$/i.test(lower)) score = 95;
+    else if (lower === "next step" || lower === "next page") score = 90;
+    else if (
+      lower.includes("save and continue") ||
+      lower.includes("save & continue")
+    )
+      score = 88;
+    else if (
+      lower.includes("save and next") ||
+      lower.includes("save & next")
+    )
+      score = 85;
+    else if (lower.includes("continue to")) score = 82;
+    else if (lower.includes("proceed")) score = 78;
+    else if (
+      lower.includes("review application") ||
+      lower.includes("review my application")
+    )
+      score = 75;
+    else if (lower.includes("next") && !lower.includes("submit")) score = 70;
+    else if (lower.includes("continue") && !lower.includes("submit"))
+      score = 65;
+
+    const attrs = [
+      el.getAttribute("data-testid"),
+      el.getAttribute("data-cy"),
+      el.id,
+      el.className,
+    ]
+      .join(" ")
+      .toLowerCase();
+    if (
+      attrs.includes("next") ||
+      attrs.includes("continue") ||
+      attrs.includes("proceed")
+    )
+      score += 15;
+
+    if (el.closest("form")) score += 10;
+
+    if (score < 50) continue;
+    if (!best || score > best.score) {
+      best = { element: el, score, url: getNavigationUrl(el), text };
+    }
+  }
+
+  if (!best) return null;
+
+  return best.url
+    ? {
+        type: "navigate",
+        url: best.url,
+        description: best.text,
+        text: best.text,
+      }
+    : {
+        type: "click",
+        element: best.element,
+        description: best.text,
+        text: best.text,
+      };
+}
+
+async function waitForFormContentChange(_site: SiteKey): Promise<void> {
+  const initial = document.querySelectorAll("input, textarea, select").length;
+  for (let i = 0; i < 10; i++) {
+    await sleep(600);
+    const current = document.querySelectorAll("input, textarea, select").length;
+    if (current !== initial) return;
+
+    const blanks = Array.from(
+      document.querySelectorAll<AutofillField>("input, textarea, select")
+    ).filter((f) => shouldAutofillField(f) && isFieldBlank(f));
+    if (blanks.length > 0) return;
+  }
+}
+
+function isFieldBlank(field: AutofillField): boolean {
+  if (field instanceof HTMLInputElement) {
+    if (field.type === "radio" || field.type === "checkbox") return false;
+    if (field.type === "file") return !field.files?.length;
+    return !field.value.trim();
+  }
+  if (field instanceof HTMLSelectElement) return isSelectBlank(field);
+  return !field.value.trim();
+}
+
+// ─── APPLY ACTION FINDER ────────────────────────────────────────────────────
+
+function findApplyAction(
+  site: SiteKey | null,
+  context: "job-page" | "follow-up"
+): ApplyAction | null {
+  const selectors = getApplyCandidateSelectors(site);
+  const elements = new Set<HTMLElement>();
+
+  for (const sel of selectors) {
+    for (const el of Array.from(
+      document.querySelectorAll<HTMLElement>(sel)
+    )) {
+      elements.add(el);
+    }
+  }
+
+  let best:
+    | { element: HTMLElement; score: number; url: string | null; text: string }
+    | undefined;
+
+  for (const element of elements) {
+    const actionElement = getClickableApplyElement(element);
+    const text = getActionText(actionElement) || getActionText(element);
+    const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
+    const score = scoreApplyElement(text, url, actionElement, context);
+
+    if (score < 30) continue;
+    if (!best || score > best.score) {
+      best = { element: actionElement, score, url, text };
+    }
+  }
+
+  if (!best) return null;
+
+  if (best.url && shouldPreferApplyNavigation(best.url, best.text, site)) {
+    return {
+      type: "navigate",
+      url: best.url,
+      description: describeApplyTarget(best.url, best.text),
+    };
+  }
+
+  return {
+    type: "click",
+    element: best.element,
+    description: best.text || "the apply button",
+  };
+}
+
+function scoreApplyElement(
+  text: string,
+  url: string | null,
+  element: HTMLElement,
+  context: "job-page" | "follow-up"
+): number {
+  if (!isElementVisible(element)) return -1;
+  if ((element as HTMLButtonElement).disabled) return -1;
+
+  const lower = text.toLowerCase().trim();
+  const lowerUrl = url?.toLowerCase() ?? "";
+  const attrs = [
+    element.getAttribute("data-testid"),
+    element.getAttribute("data-cy"),
+    element.getAttribute("data-qa"),
+    element.getAttribute("data-track"),
+    element.getAttribute("aria-label"),
+    element.getAttribute("title"),
+    element.id,
+    element.className,
+    element.tagName,
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  if (/submit\s*(my\s*)?application/i.test(lower)) return -1;
+  if (/send\s*application/i.test(lower)) return -1;
+  if (/confirm\s*and\s*submit/i.test(lower)) return -1;
+
+  const blocked = [
+    "save for later",
+    "share this",
+    "sign in",
+    "sign up",
+    "register",
+    "report",
+    "email this",
+    "copy link",
+    "compare",
+    "job alert",
+    "subscribe",
+    "learn more",
+    "dismiss",
+    "close",
+  ];
+  if (blocked.some((b) => lower.includes(b))) return -1;
+
+  let score = 0;
+
+  if (lowerUrl.includes("smartapply.indeed.com")) score += 100;
+  if (lowerUrl.includes("indeedapply")) score += 95;
+  if (lowerUrl.includes("zipapply")) score += 90;
+
+  if (lower === "apply now") score += 90;
+  if (lower === "apply") score += 85;
+  if (lower === "easy apply") score += 85;
+  if (lower === "indeed apply") score += 85;
+  if (lower === "quick apply") score += 80;
+  if (lower === "1-click apply") score += 80;
+
+  if (lower.includes("apply on company")) score += 88;
+  if (lower.includes("apply on employer")) score += 85;
+  if (lower.includes("apply externally")) score += 82;
+
+  if (lower.includes("apply now")) score += 80;
+  if (lower.includes("start application")) score += 70;
+  if (lower.includes("begin application")) score += 70;
+  if (lower.includes("continue to application")) score += 68;
+  if (lower.includes("continue application")) score += 65;
+  if (lower.includes("apply for this")) score += 75;
+  if (lower.includes("apply to this")) score += 75;
+
+  if (score === 0 && lower.includes("apply")) score += 50;
+
+  if (context === "follow-up") {
+    if (lower.includes("continue") && !lower.includes("submit")) score += 40;
+    if (lower.includes("next") && !lower.includes("submit")) score += 35;
+    if (lower.includes("proceed")) score += 35;
+  }
+
+  if (score === 0 && lowerUrl.includes("/apply")) score += 60;
+  if (score === 0 && lowerUrl.includes("application")) score += 50;
+
+  if (url && isExternalUrl(url)) score += 20;
+
+  if (attrs.includes("apply")) score += 30;
+  if (attrs.includes("quick apply") || attrs.includes("easy apply"))
+    score += 20;
+  if (attrs.includes("apply-button-wc")) score += 30;
+  if (attrs.includes("svx_applybutton") || attrs.includes("applybutton"))
+    score += 35;
+
+  return score;
+}
+
+function getApplyCandidateSelectors(site: SiteKey | null): string[] {
+  const generic = [
+    "a[href*='apply']",
+    "a[href*='application']",
+    "a[role='button']",
+    "button",
+    "input[type='submit']",
+    "input[type='button']",
+    "[aria-label*='apply' i]",
+    "[title*='apply' i]",
+    "[data-testid*='apply']",
+    "[data-automation*='apply']",
+    "[class*='apply']",
+    "[id*='apply']",
+    "form button",
+    "form a[href]",
+  ];
+
+  switch (site) {
+    case "indeed":
+      return [
+        "a[href*='smartapply.indeed.com']",
+        "a[href*='indeedapply']",
+        "[data-testid*='apply']",
+        "[id*='apply']",
+        "button[id*='apply']",
+        "a[href*='clk']",
+        "#applyButtonLinkContainer a",
+        "[class*='jobsearch-IndeedApplyButton']",
+        "[class*='ia-IndeedApplyButton']",
+        ...generic,
+      ];
+    case "ziprecruiter":
+      return [
+        "a[href*='zipapply']",
+        "[data-testid*='apply']",
+        "[class*='apply']",
+        "button[data-testid='apply-button']",
+        "button[data-testid='one-click-apply']",
+        "[class*='apply_button']",
+        "[class*='applyButton']",
+        "a[href*='/apply/']",
+        ...generic,
+      ];
+    case "dice":
+      return [
+        "[data-cy*='apply']",
+        "[class*='apply']",
+        "apply-button-wc",
+        ...generic,
+      ];
+    case "monster":
+      return [
+        "apply-button-wc",
+        "[data-testid*='apply']",
+        "[data-testid='svx_applyButton']",
+        "[data-track*='apply']",
+        "[data-evt*='apply']",
+        "[aria-label*='apply' i]",
+        "[class*='apply']",
+        "button[class*='Apply']",
+        "a[class*='Apply']",
+        ...generic,
+      ];
+    case "startup":
+    case "other_sites":
+      return [
+        "button[data-qa*='apply']",
+        "button[data-testid*='apply']",
+        "[class*='apply']",
+        ...generic,
+      ];
+    default:
+      return generic;
+  }
+}
 
 // ─── WAITING HELPERS ─────────────────────────────────────────────────────────
 
-// FIX: Added timeout to prevent infinite loop on false positives
 async function waitForHumanVerificationToClear(): Promise<void> {
   if (!isProbablyHumanVerificationPage(document)) return;
 
@@ -961,7 +1458,12 @@ async function waitForJobDetailUrls(site: SiteKey): Promise<string[]> {
     const urls = pickRelevantJobUrls(candidates);
     if (urls.length > 0) return urls;
 
-    if (attempt === 5 || attempt === 10 || attempt === 15 || attempt === 20) {
+    if (
+      attempt === 5 ||
+      attempt === 10 ||
+      attempt === 15 ||
+      attempt === 20
+    ) {
       window.scrollTo({
         top: document.body.scrollHeight,
         behavior: "smooth",
@@ -1009,7 +1511,6 @@ function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "a[href*='/viewjob']",
             "a[href*='/rc/clk']",
             "a[href*='/pagead/clk']",
-            // FIX: Indeed also uses company click-through links
             "a[href*='/company/']",
           ],
           ["h2", "[title]", ".jobTitle"]
@@ -1044,7 +1545,6 @@ function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "a[href*='/c/' i][href*='/job/' i]",
             "a[data-testid*='job-title']",
             "a[class*='job']",
-            // FIX: ZipRecruiter's current card links
             "a[class*='job_link']",
             "a[data-testid='job-title']",
           ],
@@ -1077,31 +1577,36 @@ function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
         ])
       );
 
-    // FIX: Completely updated Monster selectors for current site structure
     case "monster":
       return dedupeJobCandidates([
         ...collectCandidatesFromContainers(
           [
             "[data-testid*='job']",
             "[data-testid='job-card']",
+            "[data-testid='JobCard']",
             "[class*='job-card']",
             "[class*='JobCard']",
             "[class*='job_card']",
             "[class*='job-result']",
+            "[class*='JobResult']",
+            "[class*='search-result']",
+            "[class*='card-content']",
             "article",
             "section",
             "li",
           ],
           [
-            // FIX: Monster's current URL patterns
             "a[href*='/job-openings/']",
             "a[href*='/job-opening/']",
             "a[href*='monster.com/job/']",
-            "a[href*='/jobs/']",
-            "a[href*='job-openings.monster.com/']",
+            "a[href*='/jobs/search/']",
+            "a[href*='/jobs/l-']",
+            "a[href*='/jobs/q-']",
+            "a[href*='job-openings.monster.com']",
             "a[href*='jobview.monster.com']",
-            "a[data-testid*='job-title']",
+            "a[data-testid*='job']",
             "a[data-testid='jobTitle']",
+            "a[data-testid='job-title']",
             "a[class*='job']",
             "a[class*='title']",
           ],
@@ -1109,21 +1614,28 @@ function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "h1",
             "h2",
             "h3",
+            "h4",
             "[data-testid*='job-title']",
             "[data-testid='jobTitle']",
+            "[data-testid*='title']",
             "[class*='title']",
+            "[class*='job-title']",
+            "[class*='jobTitle']",
           ]
         ),
         ...collectCandidatesFromAnchors([
           "a[href*='/job-openings/']",
           "a[href*='/job-opening/']",
           "a[href*='monster.com/job/']",
-          "a[href*='/jobs/']",
-          "a[href*='job-openings.monster.com/']",
+          "a[href*='/jobs/l-']",
+          "a[href*='/jobs/q-']",
+          "a[href*='job-openings.monster.com']",
           "a[href*='jobview.monster.com']",
-          "a[data-testid*='job-title']",
+          "a[data-testid*='job']",
           "a[data-testid='jobTitle']",
+          "a[data-testid='job-title']",
         ]),
+        ...collectMonsterFallbackCandidates(),
       ]);
 
     case "startup":
@@ -1250,6 +1762,57 @@ function collectCandidatesFromAnchors(selectors: string[]): JobCandidate[] {
   return candidates;
 }
 
+function collectMonsterFallbackCandidates(): JobCandidate[] {
+  const candidates: JobCandidate[] = [];
+  const currentHost = window.location.hostname.toLowerCase();
+
+  if (!currentHost.includes("monster")) return candidates;
+
+  for (const anchor of Array.from(
+    document.querySelectorAll<HTMLAnchorElement>("a[href]")
+  )) {
+    const href = anchor.href?.toLowerCase() ?? "";
+    const text = cleanText(anchor.textContent);
+
+    if (!text || text.length < 3 || text.length > 200) continue;
+    if (
+      [
+        "sign in",
+        "post a job",
+        "career advice",
+        "salary",
+        "privacy",
+        "terms",
+        "cookie",
+      ].some((skip) => text.toLowerCase().includes(skip))
+    )
+      continue;
+
+    const isJobUrl =
+      href.includes("/job-opening") ||
+      href.includes("/job/") ||
+      href.includes("job-openings.monster") ||
+      href.includes("jobview.monster") ||
+      (href.includes("monster.com") &&
+        href.includes("/jobs/") &&
+        !href.endsWith("/jobs/") &&
+        !href.includes("/jobs/search"));
+
+    if (isJobUrl) {
+      addJobCandidate(
+        candidates,
+        anchor.href,
+        text,
+        cleanText(
+          anchor.closest("article, li, section, div")?.textContent || text
+        )
+      );
+    }
+  }
+
+  return candidates;
+}
+
 function addJobCandidate(
   candidates: JobCandidate[],
   rawUrl: string,
@@ -1292,550 +1855,6 @@ function pickRelevantJobUrls(candidates: JobCandidate[]): string[] {
     .map((e) => e.c.url);
   return preferred.length > 0 ? preferred : valid.map((c) => c.url);
 }
-// ─── AUTOFILL ────────────────────────────────────────────────────────────────
-
-async function runAutofillStage(site: SiteKey): Promise<void> {
-  if (childApplicationTabOpened) return;
-
-  // FIX: Guard against infinite recursion
-  stageDepth += 1;
-  if (stageDepth > MAX_STAGE_DEPTH) {
-    updateStatus(
-      "completed",
-      "Application page opened. Review and complete manually.",
-      false,
-      "autofill-form"
-    );
-    return;
-  }
-
-  if (isCurrentPageAppliedJob()) {
-    updateStatus(
-      "completed",
-      "Skipped — already applied.",
-      false,
-      "autofill-form"
-    );
-    await closeCurrentTab();
-    return;
-  }
-
-  updateStatus(
-    "running",
-    "Looking for application form...",
-    true,
-    "autofill-form"
-  );
-  await waitForHumanVerificationToClear();
-  await waitForLikelyApplicationSurface(site);
-
-  const combinedResult = createEmptyAutofillResult();
-  let previousUrl = window.location.href;
-  let noProgressCount = 0;
-
-  for (let attempt = 0; attempt < MAX_AUTOFILL_STEPS; attempt += 1) {
-    if (childApplicationTabOpened) return;
-
-    // If page navigated, reset
-    if (window.location.href !== previousUrl) {
-      previousUrl = window.location.href;
-      noProgressCount = 0;
-      await waitForHumanVerificationToClear();
-      await waitForLikelyApplicationSurface(site);
-      if (childApplicationTabOpened) return;
-    }
-
-    const settings = await readAutomationSettings();
-    const result = await autofillVisibleApplication(settings);
-    mergeAutofillResult(combinedResult, result);
-
-    if (result.filledFields > 0 || result.uploadedResume) {
-      noProgressCount = 0;
-      await sleep(result.uploadedResume ? 3000 : 1500);
-      continue;
-    }
-
-    // No fields filled — look for Next/Continue buttons
-    const progression = findProgressionAction();
-    if (progression) {
-      noProgressCount = 0;
-      updateStatus(
-        "running",
-        `Clicking "${progression.text}"...`,
-        true,
-        "autofill-form"
-      );
-
-      previousUrl = window.location.href;
-
-      if (progression.type === "navigate") {
-        navigateCurrentTab(progression.url);
-        return;
-      }
-
-      progression.element.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
-      await sleep(400);
-      performClickAction(progression.element);
-      await sleep(2500);
-      await waitForFormContentChange(site);
-      await waitForLikelyApplicationSurface(site);
-      continue;
-    }
-
-    // Look for follow-up apply/continue buttons
-    const followUp = findApplyAction(site, "follow-up");
-    if (followUp) {
-      noProgressCount = 0;
-      updateStatus(
-        "running",
-        `Clicking ${followUp.description}...`,
-        true,
-        "autofill-form"
-      );
-
-      previousUrl = window.location.href;
-
-      if (followUp.type === "navigate") {
-        navigateCurrentTab(followUp.url);
-        return;
-      }
-
-      followUp.element.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
-      await sleep(400);
-      performClickAction(followUp.element);
-      await sleep(2500);
-      await waitForLikelyApplicationSurface(site);
-      continue;
-    }
-
-    noProgressCount += 1;
-    if (noProgressCount >= 3) break;
-
-    await sleep(1000);
-  }
-
-  // Final attempt
-  const finalSettings = await readAutomationSettings();
-  const finalResult = await autofillVisibleApplication(finalSettings);
-  mergeAutofillResult(combinedResult, finalResult);
-
-  if (combinedResult.filledFields > 0 || combinedResult.uploadedResume) {
-    updateStatus(
-      "completed",
-      buildAutofillSummary(combinedResult),
-      false,
-      "autofill-form"
-    );
-    return;
-  }
-
-  if (hasLikelyApplicationForm()) {
-    updateStatus(
-      "completed",
-      "Application opened. No fields auto-filled — review manually.",
-      false,
-      "autofill-form"
-    );
-    return;
-  }
-
-  updateStatus(
-    "completed",
-    "Job page opened. No application form detected.",
-    false,
-    "autofill-form"
-  );
-}
-
-// ─── PROGRESSION BUTTON FINDER ──────────────────────────────────────────────
-
-function findProgressionAction(): ProgressionAction | null {
-  const candidates = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      "button, input[type='submit'], input[type='button'], a[role='button'], [role='button']"
-    )
-  );
-
-  let best:
-    | { element: HTMLElement; score: number; url: string | null; text: string }
-    | undefined;
-
-  for (const el of candidates) {
-    if (
-      !isElementVisible(el) ||
-      el.hasAttribute("disabled") ||
-      (el as HTMLButtonElement).disabled
-    )
-      continue;
-
-    const text = getActionText(el).trim();
-    const lower = text.toLowerCase();
-    if (!lower || lower.length > 60) continue;
-
-    // Skip final submission
-    if (
-      /submit\s*(my\s*)?application/i.test(lower) ||
-      /send\s*application/i.test(lower) ||
-      /confirm\s*and\s*submit/i.test(lower) ||
-      lower === "submit"
-    )
-      continue;
-
-    // Skip irrelevant
-    if (
-      [
-        "back",
-        "cancel",
-        "close",
-        "save for later",
-        "share",
-        "sign in",
-        "sign up",
-        "log in",
-        "register",
-        "dismiss",
-        "delete",
-        "remove",
-        "previous",
-      ].some((w) => lower.includes(w))
-    )
-      continue;
-
-    let score = 0;
-
-    if (/^next$/i.test(lower)) score = 100;
-    else if (/^continue$/i.test(lower)) score = 95;
-    else if (lower === "next step" || lower === "next page") score = 90;
-    else if (
-      lower.includes("save and continue") ||
-      lower.includes("save & continue")
-    )
-      score = 88;
-    else if (
-      lower.includes("save and next") ||
-      lower.includes("save & next")
-    )
-      score = 85;
-    else if (lower.includes("continue to")) score = 82;
-    else if (lower.includes("proceed")) score = 78;
-    else if (
-      lower.includes("review application") ||
-      lower.includes("review my application")
-    )
-      score = 75;
-    else if (lower.includes("next") && !lower.includes("submit")) score = 70;
-    else if (lower.includes("continue") && !lower.includes("submit"))
-      score = 65;
-
-    // Boost from data attributes
-    const attrs = [
-      el.getAttribute("data-testid"),
-      el.getAttribute("data-cy"),
-      el.id,
-      el.className,
-    ]
-      .join(" ")
-      .toLowerCase();
-    if (
-      attrs.includes("next") ||
-      attrs.includes("continue") ||
-      attrs.includes("proceed")
-    )
-      score += 15;
-
-    // Must be inside or near a form
-    if (el.closest("form")) score += 10;
-
-    if (score < 50) continue;
-    if (!best || score > best.score) {
-      best = { element: el, score, url: getNavigationUrl(el), text };
-    }
-  }
-
-  if (!best) return null;
-
-  return best.url
-    ? {
-        type: "navigate",
-        url: best.url,
-        description: best.text,
-        text: best.text,
-      }
-    : {
-        type: "click",
-        element: best.element,
-        description: best.text,
-        text: best.text,
-      };
-}
-
-async function waitForFormContentChange(site: SiteKey): Promise<void> {
-  const initial = document.querySelectorAll("input, textarea, select").length;
-  for (let i = 0; i < 10; i++) {
-    await sleep(600);
-    const current = document.querySelectorAll("input, textarea, select").length;
-    if (current !== initial) return;
-
-    const blanks = Array.from(
-      document.querySelectorAll<AutofillField>("input, textarea, select")
-    ).filter((f) => shouldAutofillField(f) && isFieldBlank(f));
-    if (blanks.length > 0) return;
-  }
-}
-
-function isFieldBlank(field: AutofillField): boolean {
-  if (field instanceof HTMLInputElement) {
-    if (field.type === "radio" || field.type === "checkbox") return false;
-    if (field.type === "file") return !field.files?.length;
-    return !field.value.trim();
-  }
-  if (field instanceof HTMLSelectElement) return isSelectBlank(field);
-  return !field.value.trim();
-}
-
-// ─── APPLY ACTION FINDER ────────────────────────────────────────────────────
-
-function findApplyAction(
-  site: SiteKey | null,
-  context: "job-page" | "follow-up"
-): ApplyAction | null {
-  const selectors = getApplyCandidateSelectors(site);
-  const elements = new Set<HTMLElement>();
-
-  for (const sel of selectors) {
-    for (const el of Array.from(
-      document.querySelectorAll<HTMLElement>(sel)
-    )) {
-      elements.add(el);
-    }
-  }
-
-  let best:
-    | { element: HTMLElement; score: number; url: string | null; text: string }
-    | undefined;
-
-  for (const element of elements) {
-    const actionElement = getClickableApplyElement(element);
-    const text = getActionText(actionElement) || getActionText(element);
-    const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
-    const score = scoreApplyElement(text, url, actionElement, context);
-
-    if (score < 30) continue;
-    if (!best || score > best.score) {
-      best = { element: actionElement, score, url, text };
-    }
-  }
-
-  if (!best) return null;
-
-  if (best.url && shouldPreferApplyNavigation(best.url, best.text, site)) {
-    return {
-      type: "navigate",
-      url: best.url,
-      description: describeApplyTarget(best.url, best.text),
-    };
-  }
-
-  return {
-    type: "click",
-    element: best.element,
-    description: best.text || "the apply button",
-  };
-}
-
-function scoreApplyElement(
-  text: string,
-  url: string | null,
-  element: HTMLElement,
-  context: "job-page" | "follow-up"
-): number {
-  if (!isElementVisible(element)) return -1;
-  if ((element as HTMLButtonElement).disabled) return -1;
-
-  const lower = text.toLowerCase().trim();
-  const lowerUrl = url?.toLowerCase() ?? "";
-  const attrs = [
-    element.getAttribute("data-testid"),
-    element.getAttribute("data-cy"),
-    element.getAttribute("data-qa"),
-    element.getAttribute("data-track"),
-    element.getAttribute("aria-label"),
-    element.getAttribute("title"),
-    element.id,
-    element.className,
-    element.tagName,
-  ]
-    .join(" ")
-    .toLowerCase();
-
-  // Hard block — never auto-submit
-  if (/submit\s*(my\s*)?application/i.test(lower)) return -1;
-  if (/send\s*application/i.test(lower)) return -1;
-  if (/confirm\s*and\s*submit/i.test(lower)) return -1;
-
-  const blocked = [
-    "save for later",
-    "share this",
-    "sign in",
-    "sign up",
-    "register",
-    "report",
-    "email this",
-    "copy link",
-    "compare",
-    "job alert",
-    "subscribe",
-    "learn more",
-    "dismiss",
-    "close",
-  ];
-  if (blocked.some((b) => lower.includes(b))) return -1;
-
-  let score = 0;
-
-  // === URL signals ===
-  if (lowerUrl.includes("smartapply.indeed.com")) score += 100;
-  if (lowerUrl.includes("indeedapply")) score += 95;
-  if (lowerUrl.includes("zipapply")) score += 90;
-
-  // === Text signals ===
-  if (lower === "apply now") score += 90;
-  if (lower === "apply") score += 85;
-  if (lower === "easy apply") score += 85;
-  if (lower === "indeed apply") score += 85;
-  if (lower === "quick apply") score += 80;
-  if (lower === "1-click apply") score += 80;
-
-  // "Apply on company site" — critical for Indeed/ZipRecruiter external
-  if (lower.includes("apply on company")) score += 88;
-  if (lower.includes("apply on employer")) score += 85;
-  if (lower.includes("apply externally")) score += 82;
-
-  // Partial matches
-  if (lower.includes("apply now")) score += 80;
-  if (lower.includes("start application")) score += 70;
-  if (lower.includes("begin application")) score += 70;
-  if (lower.includes("continue to application")) score += 68;
-  if (lower.includes("continue application")) score += 65;
-  if (lower.includes("apply for this")) score += 75;
-  if (lower.includes("apply to this")) score += 75;
-
-  // Generic "apply"
-  if (score === 0 && lower.includes("apply")) score += 50;
-
-  // === Follow-up context ===
-  if (context === "follow-up") {
-    if (lower.includes("continue") && !lower.includes("submit")) score += 40;
-    if (lower.includes("next") && !lower.includes("submit")) score += 35;
-    if (lower.includes("proceed")) score += 35;
-  }
-
-  // === URL path signals ===
-  if (score === 0 && lowerUrl.includes("/apply")) score += 60;
-  if (score === 0 && lowerUrl.includes("application")) score += 50;
-
-  // === External URL bonus ===
-  if (url && isExternalUrl(url)) score += 20;
-
-  // === Data attribute bonus ===
-  if (attrs.includes("apply")) score += 30;
-  if (attrs.includes("quick apply") || attrs.includes("easy apply"))
-    score += 20;
-  if (attrs.includes("apply-button-wc")) score += 30;
-
-  // FIX: Monster-specific attribute bonus
-  if (attrs.includes("svx_applybutton") || attrs.includes("applybutton"))
-    score += 35;
-
-  return score;
-}
-
-function getApplyCandidateSelectors(site: SiteKey | null): string[] {
-  const generic = [
-    "a[href*='apply']",
-    "a[href*='application']",
-    "a[role='button']",
-    "button",
-    "input[type='submit']",
-    "input[type='button']",
-    "[aria-label*='apply' i]",
-    "[title*='apply' i]",
-    "[data-testid*='apply']",
-    "[data-automation*='apply']",
-    "[class*='apply']",
-    "[id*='apply']",
-    "form button",
-    "form a[href]",
-  ];
-
-  switch (site) {
-    case "indeed":
-      return [
-        "a[href*='smartapply.indeed.com']",
-        "a[href*='indeedapply']",
-        "[data-testid*='apply']",
-        "[id*='apply']",
-        "button[id*='apply']",
-        "a[href*='clk']",
-        // FIX: Indeed's current apply button selectors
-        "#applyButtonLinkContainer a",
-        "[class*='jobsearch-IndeedApplyButton']",
-        "[class*='ia-IndeedApplyButton']",
-        ...generic,
-      ];
-    case "ziprecruiter":
-      return [
-        "a[href*='zipapply']",
-        "[data-testid*='apply']",
-        "[class*='apply']",
-        // FIX: ZipRecruiter-specific selectors
-        "button[data-testid='apply-button']",
-        "button[data-testid='one-click-apply']",
-        "[class*='apply_button']",
-        "[class*='applyButton']",
-        "a[href*='/apply/']",
-        ...generic,
-      ];
-    case "dice":
-      return [
-        "[data-cy*='apply']",
-        "[class*='apply']",
-        "apply-button-wc",
-        ...generic,
-      ];
-    // FIX: Expanded Monster selectors for current site structure
-    case "monster":
-      return [
-        "apply-button-wc",
-        "[data-testid*='apply']",
-        "[data-testid='svx_applyButton']",
-        "[data-track*='apply']",
-        "[data-evt*='apply']",
-        "[aria-label*='apply' i]",
-        "[class*='apply']",
-        "button[class*='Apply']",
-        "a[class*='Apply']",
-        ...generic,
-      ];
-    case "startup":
-    case "other_sites":
-      return [
-        "button[data-qa*='apply']",
-        "button[data-testid*='apply']",
-        "[class*='apply']",
-        ...generic,
-      ];
-    default:
-      return generic;
-  }
-}
-
 // ─── CHATGPT AI ANSWER ──────────────────────────────────────────────────────
 
 async function runGenerateAiAnswerStage(): Promise<void> {
@@ -2662,7 +2681,6 @@ function getGroupedInputs(
 
 // ─── URL / JOB DETECTION ────────────────────────────────────────────────────
 
-// FIX: Updated Monster URL patterns for current site
 function isLikelyJobDetailUrl(
   site: SiteKey | null,
   url: string,
@@ -2707,13 +2725,14 @@ function isLikelyJobDetailUrl(
       return (
         lurl.includes("/job-detail/") || lurl.includes("/jobs/detail/")
       );
-    // FIX: Updated Monster URL patterns
     case "monster":
       return (
         lurl.includes("/job-openings/") ||
         lurl.includes("/job-opening/") ||
         lurl.includes("monster.com/job/") ||
-        lurl.includes("/jobs/") ||
+        (lurl.includes("monster.com/jobs/") &&
+          !lurl.endsWith("/jobs/") &&
+          !lurl.includes("/jobs/search")) ||
         lurl.includes("job-openings.monster.com/") ||
         lurl.includes("jobview.monster.com") ||
         lurl.includes("m=portal&a=details")
@@ -2737,39 +2756,27 @@ function isLikelyJobDetailUrl(
           "workable.com",
           "jobvite.com",
           "smartrecruiters.com",
-        ].some((e) => lurl.includes(e)) &&
-        // FIX: Improved exclusion — use path-based matching not just endsWith
-        !isListingOrCategoryUrl(lurl)
+        ].some((e) => lurl.includes(e)) && !isListingOrCategoryUrl(lurl)
       );
     case "chatgpt":
       return false;
   }
 }
 
-// FIX: Proper exclusion for listing/category pages
 function isListingOrCategoryUrl(lurl: string): boolean {
   try {
     const parsed = new URL(lurl);
-    const path = parsed.pathname.toLowerCase();
+    const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
     const excludedPaths = [
       "/careers",
-      "/careers/",
       "/jobs",
-      "/jobs/",
       "/jobs/search",
       "/openings",
-      "/openings/",
       "/locations",
-      "/locations/",
       "/teams",
-      "/teams/",
       "/departments",
-      "/departments/",
     ];
-    // Exact path match or path with only query params
-    return excludedPaths.some(
-      (ep) => path === ep || path === ep.replace(/\/$/, "")
-    );
+    return excludedPaths.includes(path);
   } catch {
     return false;
   }
@@ -2882,7 +2889,6 @@ function getClickableApplyElement(el: HTMLElement): HTMLElement {
   const shadowTarget = el.shadowRoot?.querySelector<HTMLElement>(
     "a[href], button, input[type='submit'], input[type='button'], [role='button']"
   );
-
   return shadowTarget ?? el;
 }
 
@@ -3294,7 +3300,9 @@ function getQuestionText(field: AutofillField | HTMLInputElement): string {
       .closest(
         "label, [role='group'], .field, .form-field, .question, .application-question"
       )
-      ?.querySelector("label, .label, .question, .prompt, .title")?.textContent
+      ?.querySelector(
+        "label, .label, .question, .prompt, .title"
+      )?.textContent
   );
   if (wrapper) return wrapper;
   return (
@@ -3457,6 +3465,8 @@ function getSiteRoot(site: SiteKey): string {
   }
 }
 
+// ─── STATUS / OVERLAY ────────────────────────────────────────────────────────
+
 function updateStatus(
   phase: AutomationPhase,
   message: string,
@@ -3487,8 +3497,6 @@ function createInitialStatus(): AutomationStatus {
     ? createStatus(site, "idle", `Ready on ${getSiteLabel(site)}.`)
     : createStatus("unsupported", "idle", "Waiting for automation.");
 }
-
-// ─── OVERLAY ─────────────────────────────────────────────────────────────────
 
 function ensureOverlay(): void {
   if (overlay.host || !document.documentElement) return;
@@ -3658,6 +3666,8 @@ async function flushPendingAnswers(): Promise<void> {
     await writeAutomationSettings({ ...settings, answers });
   } catch {}
 }
+
+// ─── UTILITIES ───────────────────────────────────────────────────────────────
 
 function buildAutofillSummary(result: AutofillResult): string {
   const parts: string[] = [];
