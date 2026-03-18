@@ -23,6 +23,7 @@ import {
   deleteAiAnswerResponse,
   detectSiteFromUrl,
   getResumeKindLabel,
+  getJobDedupKey,
   getSiteLabel,
   isProbablyHumanVerificationPage,
   normalizeQuestionKey,
@@ -49,7 +50,10 @@ type ApplyAction =
 type ProgressionAction = ApplyAction & { text: string };
 
 type JobCandidate = { url: string; title: string; contextText: string };
-type AutofillField = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+type AutofillField =
+  | HTMLInputElement
+  | HTMLTextAreaElement
+  | HTMLSelectElement;
 
 interface AutofillResult {
   filledFields: number;
@@ -188,12 +192,14 @@ renderOverlay();
 
 // ─── RESUME / RUN ────────────────────────────────────────────────────────────
 
+// FIX: Increased retries from 10→20, relaxed early-exit for non-detected sites
+// so that startup/other_sites tabs reliably pick up their session
 async function resumeAutomationIfNeeded(): Promise<void> {
   const detectedSite = detectSiteFromUrl(window.location.href);
   childApplicationTabOpened = false;
   stageDepth = 0;
 
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
     let response: {
       ok?: boolean;
       shouldResume?: boolean;
@@ -201,7 +207,9 @@ async function resumeAutomationIfNeeded(): Promise<void> {
     } | null = null;
 
     try {
-      response = await chrome.runtime.sendMessage({ type: "content-ready" });
+      response = await chrome.runtime.sendMessage({
+        type: "content-ready",
+      });
     } catch {
       return;
     }
@@ -222,10 +230,13 @@ async function resumeAutomationIfNeeded(): Promise<void> {
       return;
     }
 
+    // For recognized job board sites, keep trying longer
     if (detectedSite) {
-      if (attempt === 9) return;
+      if (attempt === 19) return;
     } else {
-      if (attempt >= 4) return;
+      // For unknown sites (startup career pages, other job sites),
+      // still retry enough times to catch the session
+      if (attempt >= 9) return;
     }
 
     await sleep(400);
@@ -255,7 +266,9 @@ async function ensureAutomationRunning(): Promise<void> {
 
 async function runAutomation(): Promise<void> {
   if (status.site === "unsupported") {
-    throw new Error("This tab is not part of an active automation session.");
+    throw new Error(
+      "This tab is not part of an active automation session."
+    );
   }
 
   switch (currentStage) {
@@ -265,7 +278,9 @@ async function runAutomation(): Promise<void> {
         status.site === "other_sites" ||
         status.site === "chatgpt"
       ) {
-        throw new Error("Curated search should begin on a search-result tab.");
+        throw new Error(
+          "Curated search should begin on a search-result tab."
+        );
       }
       await runBootstrapStage(status.site);
       return;
@@ -299,7 +314,10 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
   await waitForHumanVerificationToClear();
 
   const targets = buildSearchTargets(site, window.location.origin);
-  const jobSlots = distributeJobSlots(settings.jobPageLimit, targets.length);
+  const jobSlots = distributeJobSlots(
+    settings.jobPageLimit,
+    targets.length
+  );
 
   const items: SpawnTabRequest[] = targets
     .map((target, index) => ({
@@ -338,7 +356,8 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   );
 
   await waitForHumanVerificationToClear();
-  await sleep(1500);
+  // FIX: Give career pages more time to load dynamic content
+  await sleep(site === "startup" || site === "other_sites" ? 3000 : 1500);
 
   const jobUrls = await waitForJobDetailUrls(site);
 
@@ -358,13 +377,16 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   if (typeof currentJobSlots === "number") {
     effectiveLimit = Math.max(0, Math.floor(currentJobSlots));
   } else {
-    effectiveLimit = Math.max(1, Math.floor(settings.jobPageLimit / 3));
+    effectiveLimit = Math.max(
+      1,
+      Math.floor(settings.jobPageLimit / 3)
+    );
   }
 
   if (effectiveLimit <= 0) {
     updateStatus(
       "completed",
-      `Skipped ${labelPrefix}${getSiteLabel(site)} search — no slots allocated.`,
+      `Skipped ${labelPrefix}${getSiteLabel(site)} search - no slots allocated.`,
       false,
       "collect-results"
     );
@@ -372,9 +394,23 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     return;
   }
 
-  const limitedUrls = jobUrls.slice(0, effectiveLimit);
+  const approvedUrls = await claimJobOpenings(
+    jobUrls,
+    effectiveLimit
+  );
 
-  const items: SpawnTabRequest[] = limitedUrls.map((url) => {
+  if (approvedUrls.length === 0) {
+    updateStatus(
+      "completed",
+      `No new ${labelPrefix}${getSiteLabel(site)} job pages were available after removing duplicates and applied roles.`,
+      false,
+      "collect-results"
+    );
+    await closeCurrentTab();
+    return;
+  }
+
+  const items: SpawnTabRequest[] = approvedUrls.map((url) => {
     if (site === "startup" || site === "other_sites") {
       return {
         url,
@@ -411,8 +447,8 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   const response = await spawnTabs(items, effectiveLimit);
 
   const extra =
-    jobUrls.length > limitedUrls.length
-      ? ` (limited to ${limitedUrls.length} of ${jobUrls.length} found)`
+    jobUrls.length > approvedUrls.length
+      ? ` (opened ${approvedUrls.length} unique jobs from ${jobUrls.length} found)`
       : "";
 
   updateStatus(
@@ -442,7 +478,12 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   }
 
   if (isCurrentPageAppliedJob()) {
-    updateStatus("completed", "Skipped — already applied.", false, "open-apply");
+    updateStatus(
+      "completed",
+      "Skipped - already applied.",
+      false,
+      "open-apply"
+    );
     await closeCurrentTab();
     return;
   }
@@ -495,6 +536,10 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     action = findApplyAction(site, "job-page");
     if (action) break;
 
+    // FIX: Use generic findCompanySiteAction for ALL sites, not just Indeed
+    action = findCompanySiteAction();
+    if (action) break;
+
     if (site === "monster") {
       action = findMonsterApplyAction();
       if (action) break;
@@ -525,7 +570,8 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
           top: document.body.scrollHeight / 2,
           behavior: "smooth",
         });
-      else if (pos === -2) window.scrollTo({ top: 0, behavior: "smooth" });
+      else if (pos === -2)
+        window.scrollTo({ top: 0, behavior: "smooth" });
       else if (pos === -3)
         window.scrollTo({
           top: document.body.scrollHeight,
@@ -592,7 +638,9 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
   const anchorElement =
     action.element.closest("a") ??
-    (action.element instanceof HTMLAnchorElement ? action.element : null);
+    (action.element instanceof HTMLAnchorElement
+      ? action.element
+      : null);
 
   if (anchorElement?.href) {
     const href = normalizeUrl(anchorElement.href);
@@ -600,7 +648,11 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       href &&
       href !== urlBeforeClick &&
       !href.startsWith("javascript:") &&
-      shouldPreferApplyNavigation(href, getActionText(action.element), site)
+      shouldPreferApplyNavigation(
+        href,
+        getActionText(action.element),
+        site
+      )
     ) {
       const target = anchorElement.getAttribute("target");
       if (target === "_blank") {
@@ -719,7 +771,10 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       true,
       "autofill-form"
     );
-    retryAction.element.scrollIntoView({ behavior: "smooth", block: "center" });
+    retryAction.element.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
     await sleep(400);
     performClickAction(retryAction.element);
     await sleep(3000);
@@ -744,17 +799,214 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
 // ─── SITE-SPECIFIC APPLY FINDERS ─────────────────────────────────────────────
 
+// FIX: Renamed from findIndeedCompanySiteAction → findCompanySiteAction
+// Now works for ALL sites (Monster, ZipRecruiter, startup, other_sites, etc.)
+function findCompanySiteAction(): ApplyAction | null {
+  const pageText = cleanText(document.body?.innerText || "")
+    .toLowerCase()
+    .slice(0, 5000);
+
+  const looksLikeCompanySiteGate = [
+    "company website to apply",
+    "company site to apply",
+    "continue to the company",
+    "continue to company site",
+    "continue to company website",
+    "employer website",
+    "apply on company site",
+    "apply on company website",
+    "apply on employer",
+    "apply externally",
+    "external application",
+    "apply on the company",
+    "visit company site",
+    "visit employer site",
+    "redirected to the company",
+    "redirected to an external",
+    "taken to the employer",
+    "taken to the company",
+    "company's website",
+    "employer's website",
+    "company career",
+    "employer career",
+  ].some((token) => pageText.includes(token));
+
+  if (!looksLikeCompanySiteGate) {
+    return null;
+  }
+
+  const candidates = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "a[href], button, input[type='submit'], input[type='button'], [role='button']"
+    )
+  );
+
+  let best:
+    | {
+        element: HTMLElement;
+        score: number;
+        text: string;
+        url: string | null;
+      }
+    | undefined;
+
+  for (const element of candidates) {
+    if (
+      !isElementVisible(element) ||
+      element.hasAttribute("disabled") ||
+      (element as HTMLButtonElement).disabled
+    ) {
+      continue;
+    }
+
+    const text = getActionText(element).trim();
+    const lower = text.toLowerCase();
+    const url = getNavigationUrl(element);
+    const attrs = [
+      element.getAttribute("data-testid"),
+      element.getAttribute("data-tn-element"),
+      element.getAttribute("aria-label"),
+      element.className,
+      element.id,
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    if (
+      [
+        "save",
+        "share",
+        "report",
+        "sign in",
+        "sign up",
+        "dismiss",
+        "close",
+      ].some((blocked) => lower.includes(blocked))
+    ) {
+      continue;
+    }
+
+    let score = 0;
+
+    if (
+      lower.includes("continue to company site") ||
+      lower.includes("continue to company website")
+    )
+      score += 100;
+    else if (
+      lower.includes("apply on company") ||
+      lower.includes("apply on employer")
+    )
+      score += 95;
+    else if (lower.includes("apply externally")) score += 92;
+    else if (
+      lower.includes("company site") ||
+      lower.includes("company website")
+    )
+      score += 90;
+    else if (
+      lower.includes("visit company") ||
+      lower.includes("visit employer")
+    )
+      score += 85;
+    else if (lower.includes("external application")) score += 82;
+    else if (
+      lower.includes("apply now") ||
+      lower.includes("apply for this")
+    )
+      score += 75;
+    else if (lower.includes("continue")) score += 55;
+    else if (lower.includes("visit") && lower.includes("site"))
+      score += 70;
+    else if (lower.includes("apply")) score += 50;
+
+    if (attrs.includes("company") || attrs.includes("employer"))
+      score += 15;
+    if (
+      attrs.includes("external") ||
+      attrs.includes("apply")
+    )
+      score += 10;
+    if (url && isExternalUrl(url)) score += 25;
+    if (
+      url &&
+      shouldPreferApplyNavigation(url, text, null)
+    )
+      score += 20;
+
+    if (score < 50) {
+      continue;
+    }
+
+    if (!best || score > best.score) {
+      best = { element, score, text, url };
+    }
+  }
+
+  if (!best) {
+    return null;
+  }
+
+  if (
+    best.url &&
+    (isExternalUrl(best.url) ||
+      shouldPreferApplyNavigation(best.url, best.text, null))
+  ) {
+    return {
+      type: "navigate",
+      url: best.url,
+      description: describeApplyTarget(best.url, best.text),
+    };
+  }
+
+  return {
+    type: "click",
+    element: best.element,
+    description: best.text || "the company career page",
+  };
+}
+
+// FIX: Completely rewritten Monster apply action finder with robust
+// data-attribute extraction from the apply-button-wc web component
 function findMonsterApplyAction(): ApplyAction | null {
-  // 1. Web component
+  // 1. Web component — try multiple strategies to extract the URL
   const applyWc = document.querySelector("apply-button-wc");
   if (applyWc) {
+    // Try data attributes on the web component itself
+    const wcAttrs = [
+      "data-href",
+      "data-url",
+      "data-apply-url",
+      "data-job-url",
+      "data-link",
+      "href",
+    ];
+    for (const attr of wcAttrs) {
+      const val = applyWc.getAttribute(attr);
+      if (val) {
+        const url = normalizeUrl(val);
+        if (url) {
+          return {
+            type: "navigate",
+            url,
+            description: "Monster apply button",
+          };
+        }
+      }
+    }
+
+    // Try shadow DOM
     const shadowBtn = applyWc.shadowRoot?.querySelector<HTMLElement>(
       "a[href], button, input[type='submit'], input[type='button'], [role='button']"
     );
     if (shadowBtn) {
       const url = getNavigationUrl(shadowBtn);
       if (url) {
-        return { type: "navigate", url, description: "Monster apply button" };
+        return {
+          type: "navigate",
+          url,
+          description: "Monster apply button",
+        };
       }
       return {
         type: "click",
@@ -762,6 +1014,27 @@ function findMonsterApplyAction(): ApplyAction | null {
         description: "Monster apply button",
       };
     }
+
+    // Try child elements (non-shadow)
+    const childBtn = applyWc.querySelector<HTMLElement>(
+      "a[href], button, input[type='submit'], input[type='button'], [role='button']"
+    );
+    if (childBtn) {
+      const url = getNavigationUrl(childBtn);
+      if (url) {
+        return {
+          type: "navigate",
+          url,
+          description: "Monster apply button",
+        };
+      }
+      return {
+        type: "click",
+        element: childBtn,
+        description: "Monster apply button",
+      };
+    }
+
     if (isElementVisible(applyWc as HTMLElement)) {
       return {
         type: "click",
@@ -771,21 +1044,24 @@ function findMonsterApplyAction(): ApplyAction | null {
     }
   }
 
-  // 2. Standard buttons/links
+  // 2. Standard buttons/links with Monster-specific selectors
   const monsterSelectors = [
+    "a[data-testid*='apply']",
     "button[data-testid*='apply']",
     "button[data-testid='svx_applyButton']",
     "[data-testid*='applyButton']",
     "[data-testid*='apply-button']",
+    "[data-action*='apply' i]",
     "button[data-track*='apply']",
+    "[data-track*='apply' i]",
     "button[data-evt*='apply']",
+    "[data-link*='apply' i]",
+    "[data-url*='apply' i]",
     "[aria-label*='Apply' i]",
     "button[class*='apply' i]",
     "a[class*='apply' i]",
     "button[class*='Apply']",
     "a[class*='Apply']",
-    "button",
-    "a[role='button']",
   ];
 
   for (const sel of monsterSelectors) {
@@ -796,8 +1072,48 @@ function findMonsterApplyAction(): ApplyAction | null {
       const text = getActionText(el).toLowerCase().trim();
 
       if (
-        (sel === "button" || sel === "a[role='button']") &&
-        !text.includes("apply")
+        text.includes("save") ||
+        text.includes("share") ||
+        text.includes("alert") ||
+        text.includes("sign")
+      ) {
+        continue;
+      }
+      if (!text) continue;
+
+      const url = getNavigationUrl(el);
+
+      if (
+        url &&
+        shouldPreferApplyNavigation(url, text, "monster")
+      ) {
+        return {
+          type: "navigate",
+          url,
+          description: describeApplyTarget(url, text),
+        };
+      }
+      return {
+        type: "click",
+        element: el,
+        description: text || "Apply",
+      };
+    }
+  }
+
+  // 3. Broad fallback — any visible link/button with "apply" text
+  const fallbackSelectors = ["a[href]", "button", "a[role='button']"];
+  for (const sel of fallbackSelectors) {
+    for (const el of Array.from(
+      document.querySelectorAll<HTMLElement>(sel)
+    )) {
+      if (!isElementVisible(el)) continue;
+      const text = getActionText(el).toLowerCase().trim();
+
+      if (
+        !/(apply|continue|company|external|employer|resume)/.test(
+          text
+        )
       ) {
         continue;
       }
@@ -814,17 +1130,21 @@ function findMonsterApplyAction(): ApplyAction | null {
 
       const url = getNavigationUrl(el);
 
-      if (url && isExternalUrl(url)) {
+      if (
+        url &&
+        shouldPreferApplyNavigation(url, text, "monster")
+      ) {
         return {
           type: "navigate",
           url,
-          description: "Monster external apply",
+          description: describeApplyTarget(url, text),
         };
       }
-      if (url && url.includes("/apply")) {
-        return { type: "navigate", url, description: "Monster apply" };
-      }
-      return { type: "click", element: el, description: text || "Apply" };
+      return {
+        type: "click",
+        element: el,
+        description: text || "Apply",
+      };
     }
   }
 
@@ -858,8 +1178,15 @@ function findZipRecruiterApplyAction(): ApplyAction | null {
         continue;
 
       const url = getNavigationUrl(el);
-      if (url && (url.includes("zipapply") || url.includes("/apply/"))) {
-        return { type: "navigate", url, description: "ZipRecruiter apply" };
+      if (
+        url &&
+        (url.includes("zipapply") || url.includes("/apply/"))
+      ) {
+        return {
+          type: "navigate",
+          url,
+          description: "ZipRecruiter apply",
+        };
       }
       return {
         type: "click",
@@ -903,6 +1230,7 @@ function hasZipRecruiterApplyModal(): boolean {
   }
   return false;
 }
+
 // ─── AUTOFILL ────────────────────────────────────────────────────────────────
 
 async function runAutofillStage(site: SiteKey): Promise<void> {
@@ -922,7 +1250,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
   if (isCurrentPageAppliedJob()) {
     updateStatus(
       "completed",
-      "Skipped — already applied.",
+      "Skipped - already applied.",
       false,
       "autofill-form"
     );
@@ -943,7 +1271,11 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
   let previousUrl = window.location.href;
   let noProgressCount = 0;
 
-  for (let attempt = 0; attempt < MAX_AUTOFILL_STEPS; attempt += 1) {
+  for (
+    let attempt = 0;
+    attempt < MAX_AUTOFILL_STEPS;
+    attempt += 1
+  ) {
     if (childApplicationTabOpened) return;
 
     if (window.location.href !== previousUrl) {
@@ -993,6 +1325,35 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       continue;
     }
 
+    // FIX: Use generic findCompanySiteAction for ALL sites
+    const companySiteAction = findCompanySiteAction();
+    if (companySiteAction) {
+      noProgressCount = 0;
+      updateStatus(
+        "running",
+        `Continuing to ${companySiteAction.description}...`,
+        true,
+        "autofill-form"
+      );
+
+      previousUrl = window.location.href;
+
+      if (companySiteAction.type === "navigate") {
+        navigateCurrentTab(companySiteAction.url);
+        return;
+      }
+
+      companySiteAction.element.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+      await sleep(400);
+      performClickAction(companySiteAction.element);
+      await sleep(2500);
+      await waitForLikelyApplicationSurface(site);
+      continue;
+    }
+
     const followUp = findApplyAction(site, "follow-up");
     if (followUp) {
       noProgressCount = 0;
@@ -1031,7 +1392,10 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
   const finalResult = await autofillVisibleApplication(finalSettings);
   mergeAutofillResult(combinedResult, finalResult);
 
-  if (combinedResult.filledFields > 0 || combinedResult.uploadedResume) {
+  if (
+    combinedResult.filledFields > 0 ||
+    combinedResult.uploadedResume
+  ) {
     updateStatus(
       "completed",
       buildAutofillSummary(combinedResult),
@@ -1044,7 +1408,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
   if (hasLikelyApplicationForm()) {
     updateStatus(
       "completed",
-      "Application opened. No fields auto-filled — review manually.",
+      "Application opened. No fields auto-filled - review manually.",
       false,
       "autofill-form"
     );
@@ -1058,18 +1422,22 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     "autofill-form"
   );
 }
-
 // ─── PROGRESSION BUTTON FINDER ──────────────────────────────────────────────
 
 function findProgressionAction(): ProgressionAction | null {
   const candidates = Array.from(
     document.querySelectorAll<HTMLElement>(
-      "button, input[type='submit'], input[type='button'], a[role='button'], [role='button']"
+      "button, input[type='submit'], input[type='button'], a[href], a[role='button'], [role='button']"
     )
   );
 
   let best:
-    | { element: HTMLElement; score: number; url: string | null; text: string }
+    | {
+        element: HTMLElement;
+        score: number;
+        url: string | null;
+        text: string;
+      }
     | undefined;
 
   for (const el of candidates) {
@@ -1115,7 +1483,8 @@ function findProgressionAction(): ProgressionAction | null {
 
     if (/^next$/i.test(lower)) score = 100;
     else if (/^continue$/i.test(lower)) score = 95;
-    else if (lower === "next step" || lower === "next page") score = 90;
+    else if (lower === "next step" || lower === "next page")
+      score = 90;
     else if (
       lower.includes("save and continue") ||
       lower.includes("save & continue")
@@ -1126,15 +1495,30 @@ function findProgressionAction(): ProgressionAction | null {
       lower.includes("save & next")
     )
       score = 85;
+    else if (
+      lower.includes("continue to company site") ||
+      lower.includes("continue to company website") ||
+      lower.includes("continue to employer site")
+    )
+      score = 84;
     else if (lower.includes("continue to")) score = 82;
+    else if (
+      lower.includes("visit company site") ||
+      lower.includes("visit company website")
+    )
+      score = 80;
     else if (lower.includes("proceed")) score = 78;
     else if (
       lower.includes("review application") ||
       lower.includes("review my application")
     )
       score = 75;
-    else if (lower.includes("next") && !lower.includes("submit")) score = 70;
-    else if (lower.includes("continue") && !lower.includes("submit"))
+    else if (lower.includes("next") && !lower.includes("submit"))
+      score = 70;
+    else if (
+      lower.includes("continue") &&
+      !lower.includes("submit")
+    )
       score = 65;
 
     const attrs = [
@@ -1148,7 +1532,8 @@ function findProgressionAction(): ProgressionAction | null {
     if (
       attrs.includes("next") ||
       attrs.includes("continue") ||
-      attrs.includes("proceed")
+      attrs.includes("proceed") ||
+      attrs.includes("company")
     )
       score += 15;
 
@@ -1156,7 +1541,12 @@ function findProgressionAction(): ProgressionAction | null {
 
     if (score < 50) continue;
     if (!best || score > best.score) {
-      best = { element: el, score, url: getNavigationUrl(el), text };
+      best = {
+        element: el,
+        score,
+        url: getNavigationUrl(el),
+        text,
+      };
     }
   }
 
@@ -1177,15 +1567,23 @@ function findProgressionAction(): ProgressionAction | null {
       };
 }
 
-async function waitForFormContentChange(_site: SiteKey): Promise<void> {
-  const initial = document.querySelectorAll("input, textarea, select").length;
+async function waitForFormContentChange(
+  _site: SiteKey
+): Promise<void> {
+  const initial = document.querySelectorAll(
+    "input, textarea, select"
+  ).length;
   for (let i = 0; i < 10; i++) {
     await sleep(600);
-    const current = document.querySelectorAll("input, textarea, select").length;
+    const current = document.querySelectorAll(
+      "input, textarea, select"
+    ).length;
     if (current !== initial) return;
 
     const blanks = Array.from(
-      document.querySelectorAll<AutofillField>("input, textarea, select")
+      document.querySelectorAll<AutofillField>(
+        "input, textarea, select"
+      )
     ).filter((f) => shouldAutofillField(f) && isFieldBlank(f));
     if (blanks.length > 0) return;
   }
@@ -1193,11 +1591,13 @@ async function waitForFormContentChange(_site: SiteKey): Promise<void> {
 
 function isFieldBlank(field: AutofillField): boolean {
   if (field instanceof HTMLInputElement) {
-    if (field.type === "radio" || field.type === "checkbox") return false;
+    if (field.type === "radio" || field.type === "checkbox")
+      return false;
     if (field.type === "file") return !field.files?.length;
     return !field.value.trim();
   }
-  if (field instanceof HTMLSelectElement) return isSelectBlank(field);
+  if (field instanceof HTMLSelectElement)
+    return isSelectBlank(field);
   return !field.value.trim();
 }
 
@@ -1219,14 +1619,26 @@ function findApplyAction(
   }
 
   let best:
-    | { element: HTMLElement; score: number; url: string | null; text: string }
+    | {
+        element: HTMLElement;
+        score: number;
+        url: string | null;
+        text: string;
+      }
     | undefined;
 
   for (const element of elements) {
     const actionElement = getClickableApplyElement(element);
-    const text = getActionText(actionElement) || getActionText(element);
-    const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
-    const score = scoreApplyElement(text, url, actionElement, context);
+    const text =
+      getActionText(actionElement) || getActionText(element);
+    const url =
+      getNavigationUrl(actionElement) ?? getNavigationUrl(element);
+    const score = scoreApplyElement(
+      text,
+      url,
+      actionElement,
+      context
+    );
 
     if (score < 30) continue;
     if (!best || score > best.score) {
@@ -1236,7 +1648,10 @@ function findApplyAction(
 
   if (!best) return null;
 
-  if (best.url && shouldPreferApplyNavigation(best.url, best.text, site)) {
+  if (
+    best.url &&
+    shouldPreferApplyNavigation(best.url, best.text, site)
+  ) {
     return {
       type: "navigate",
       url: best.url,
@@ -1326,8 +1741,10 @@ function scoreApplyElement(
   if (score === 0 && lower.includes("apply")) score += 50;
 
   if (context === "follow-up") {
-    if (lower.includes("continue") && !lower.includes("submit")) score += 40;
-    if (lower.includes("next") && !lower.includes("submit")) score += 35;
+    if (lower.includes("continue") && !lower.includes("submit"))
+      score += 40;
+    if (lower.includes("next") && !lower.includes("submit"))
+      score += 35;
     if (lower.includes("proceed")) score += 35;
   }
 
@@ -1337,16 +1754,24 @@ function scoreApplyElement(
   if (url && isExternalUrl(url)) score += 20;
 
   if (attrs.includes("apply")) score += 30;
-  if (attrs.includes("quick apply") || attrs.includes("easy apply"))
+  if (
+    attrs.includes("quick apply") ||
+    attrs.includes("easy apply")
+  )
     score += 20;
   if (attrs.includes("apply-button-wc")) score += 30;
-  if (attrs.includes("svx_applybutton") || attrs.includes("applybutton"))
+  if (
+    attrs.includes("svx_applybutton") ||
+    attrs.includes("applybutton")
+  )
     score += 35;
 
   return score;
 }
 
-function getApplyCandidateSelectors(site: SiteKey | null): string[] {
+function getApplyCandidateSelectors(
+  site: SiteKey | null
+): string[] {
   const generic = [
     "a[href*='apply']",
     "a[href*='application']",
@@ -1369,6 +1794,8 @@ function getApplyCandidateSelectors(site: SiteKey | null): string[] {
       return [
         "a[href*='smartapply.indeed.com']",
         "a[href*='indeedapply']",
+        "[data-tn-element*='company']",
+        "[data-testid*='company']",
         "[data-testid*='apply']",
         "[id*='apply']",
         "button[id*='apply']",
@@ -1400,10 +1827,13 @@ function getApplyCandidateSelectors(site: SiteKey | null): string[] {
     case "monster":
       return [
         "apply-button-wc",
-        "[data-testid*='apply']",
+        "[data-testid*='apply' i]",
         "[data-testid='svx_applyButton']",
-        "[data-track*='apply']",
-        "[data-evt*='apply']",
+        "[data-track*='apply' i]",
+        "[data-evt*='apply' i]",
+        "[data-action*='apply' i]",
+        "[data-link*='apply' i]",
+        "[data-url*='apply' i]",
         "[aria-label*='apply' i]",
         "[class*='apply']",
         "button[class*='Apply']",
@@ -1448,26 +1878,53 @@ async function waitForHumanVerificationToClear(): Promise<void> {
     await sleep(VERIFICATION_POLL_MS);
   }
 
-  updateStatus("running", "Verification cleared. Continuing...", true);
+  updateStatus(
+    "running",
+    "Verification cleared. Continuing...",
+    true
+  );
   await sleep(1000);
 }
 
-async function waitForJobDetailUrls(site: SiteKey): Promise<string[]> {
-  for (let attempt = 0; attempt < 25; attempt++) {
+// FIX: More aggressive scrolling for career pages that load content dynamically
+async function waitForJobDetailUrls(
+  site: SiteKey
+): Promise<string[]> {
+  const isCareerSite =
+    site === "startup" || site === "other_sites";
+
+  for (let attempt = 0; attempt < 30; attempt++) {
     const candidates = collectJobDetailCandidates(site);
     const urls = pickRelevantJobUrls(candidates);
     if (urls.length > 0) return urls;
 
-    if (
-      attempt === 5 ||
-      attempt === 10 ||
-      attempt === 15 ||
-      attempt === 20
-    ) {
-      window.scrollTo({
-        top: document.body.scrollHeight,
-        behavior: "smooth",
-      });
+    // More aggressive scrolling for career pages
+    if (isCareerSite) {
+      if (attempt % 3 === 0) {
+        window.scrollTo({
+          top: document.body.scrollHeight,
+          behavior: "smooth",
+        });
+      } else if (attempt % 3 === 1) {
+        window.scrollTo({
+          top: document.body.scrollHeight / 2,
+          behavior: "smooth",
+        });
+      } else {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+    } else {
+      if (
+        attempt === 5 ||
+        attempt === 10 ||
+        attempt === 15 ||
+        attempt === 20
+      ) {
+        window.scrollTo({
+          top: document.body.scrollHeight,
+          behavior: "smooth",
+        });
+      }
     }
     await sleep(1000);
   }
@@ -1492,7 +1949,9 @@ async function waitForLikelyApplicationSurface(
 
 // ─── JOB CANDIDATE COLLECTION ────────────────────────────────────────────────
 
-function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
+function collectJobDetailCandidates(
+  site: SiteKey
+): JobCandidate[] {
   switch (site) {
     case "indeed":
       return dedupeJobCandidates([
@@ -1657,19 +2116,32 @@ function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
           [
             "a[href*='/jobs/']",
             "a[href*='/job/']",
+            "a[href*='/role/']",
+            "a[href*='/roles/']",
             "a[href*='/positions/']",
             "a[href*='/position/']",
+            "a[href*='/opportunity/']",
+            "a[href*='/opportunities/']",
             "a[href*='/careers/']",
+            "a[href*='/career/']",
             "a[href*='/openings/']",
             "a[href*='/opening/']",
+            "a[href*='/job-posting/']",
+            "a[href*='/job-postings/']",
             "a[href*='/requisition/']",
             "a[href*='/req/']",
             "a[href*='gh_jid=']",
             "a[href*='lever.co']",
+            "a[href*='jobs.lever.co']",
             "a[href*='greenhouse.io']",
+            "a[href*='job-boards.greenhouse.io']",
             "a[href*='ashbyhq.com']",
+            "a[href*='jobs.ashbyhq.com']",
             "a[href*='workable.com']",
             "a[href*='jobvite.com']",
+            "a[href*='myworkdayjobs.com']",
+            "a[href*='workdayjobs.com']",
+            "a[href*='icims.com/jobs/']",
             "a[href*='smartrecruiters.com']",
           ],
           [
@@ -1684,20 +2156,36 @@ function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
         ...collectCandidatesFromAnchors([
           "a[href*='/jobs/']",
           "a[href*='/job/']",
+          "a[href*='/role/']",
+          "a[href*='/roles/']",
           "a[href*='/positions/']",
           "a[href*='/position/']",
+          "a[href*='/opportunity/']",
+          "a[href*='/opportunities/']",
+          "a[href*='/careers/']",
+          "a[href*='/career/']",
           "a[href*='/openings/']",
           "a[href*='/opening/']",
+          "a[href*='/job-posting/']",
+          "a[href*='/job-postings/']",
           "a[href*='/requisition/']",
           "a[href*='/req/']",
           "a[href*='gh_jid=']",
           "a[href*='lever.co']",
+          "a[href*='jobs.lever.co']",
           "a[href*='greenhouse.io']",
+          "a[href*='job-boards.greenhouse.io']",
           "a[href*='ashbyhq.com']",
+          "a[href*='jobs.ashbyhq.com']",
           "a[href*='workable.com']",
           "a[href*='jobvite.com']",
+          "a[href*='myworkdayjobs.com']",
+          "a[href*='workdayjobs.com']",
+          "a[href*='icims.com/jobs/']",
           "a[href*='smartrecruiters.com']",
         ]),
+        // FIX: Added broad fallback collector for career pages
+        ...collectFallbackJobCandidates(),
       ]);
 
     case "chatgpt":
@@ -1719,7 +2207,8 @@ function collectCandidatesFromContainers(
     );
     const title =
       cleanText(
-        container.querySelector<HTMLElement>(titleSels.join(","))?.textContent
+        container.querySelector<HTMLElement>(titleSels.join(","))
+          ?.textContent
       ) ||
       cleanText(anchor?.textContent) ||
       cleanText(container.getAttribute("data-testid")) ||
@@ -1743,7 +2232,9 @@ function collectCandidatesFromContainers(
   return candidates;
 }
 
-function collectCandidatesFromAnchors(selectors: string[]): JobCandidate[] {
+function collectCandidatesFromAnchors(
+  selectors: string[]
+): JobCandidate[] {
   const candidates: JobCandidate[] = [];
   for (const anchor of Array.from(
     document.querySelectorAll<HTMLAnchorElement>(selectors.join(","))
@@ -1804,10 +2295,109 @@ function collectMonsterFallbackCandidates(): JobCandidate[] {
         anchor.href,
         text,
         cleanText(
-          anchor.closest("article, li, section, div")?.textContent || text
+          anchor.closest("article, li, section, div")
+            ?.textContent || text
         )
       );
     }
+  }
+
+  return candidates;
+}
+
+// FIX: New broad fallback collector for startup/other career pages
+// that don't match the specific ATS selectors above
+function collectFallbackJobCandidates(): JobCandidate[] {
+  const candidates: JobCandidate[] = [];
+  const currentHost = window.location.hostname.toLowerCase();
+
+  for (const anchor of Array.from(
+    document.querySelectorAll<HTMLAnchorElement>("a[href]")
+  )) {
+    const href = anchor.href?.toLowerCase() ?? "";
+    const text = cleanText(anchor.textContent);
+
+    if (!text || text.length < 4 || text.length > 200) continue;
+
+    // Skip navigation/footer/utility links
+    if (
+      [
+        "sign in",
+        "sign up",
+        "log in",
+        "register",
+        "privacy",
+        "terms",
+        "cookie",
+        "about us",
+        "contact",
+        "blog",
+        "press",
+        "investors",
+        "help center",
+        "faq",
+        "support",
+      ].some((skip) => text.toLowerCase().includes(skip))
+    )
+      continue;
+
+    // Must be on same domain or a known ATS
+    let isSameDomain = false;
+    let isKnownAts = false;
+    try {
+      const linkHost = new URL(anchor.href).hostname.toLowerCase();
+      isSameDomain = linkHost === currentHost || linkHost.endsWith(`.${currentHost}`) || currentHost.endsWith(`.${linkHost}`);
+      isKnownAts = [
+        "lever.co",
+        "greenhouse.io",
+        "ashbyhq.com",
+        "workable.com",
+        "jobvite.com",
+        "myworkdayjobs.com",
+        "workdayjobs.com",
+        "icims.com",
+        "smartrecruiters.com",
+        "applytojob.com",
+        "recruitee.com",
+        "breezy.hr",
+        "bamboohr.com",
+      ].some((ats) => linkHost.includes(ats));
+    } catch {
+      continue;
+    }
+
+    if (!isSameDomain && !isKnownAts) continue;
+
+    // Must look like a job/role/position link
+    const pathSignals = [
+      "/jobs/",
+      "/job/",
+      "/role/",
+      "/roles/",
+      "/position/",
+      "/positions/",
+      "/opening/",
+      "/openings/",
+      "/career/",
+      "/careers/",
+      "/opportunity/",
+      "/apply",
+    ];
+
+    const hasPathSignal = pathSignals.some((s) => href.includes(s));
+    const hasTextSignal = looksLikeTechnicalRoleTitle(text);
+
+    if (!hasPathSignal && !hasTextSignal && !isKnownAts) continue;
+
+    addJobCandidate(
+      candidates,
+      anchor.href,
+      text,
+      cleanText(
+        anchor.closest("article, li, section, div")?.textContent ||
+          text
+      )
+    );
   }
 
   return candidates;
@@ -1825,15 +2415,30 @@ function addJobCandidate(
   candidates.push({ url, title, contextText: cleanText(rawCtx) });
 }
 
-function dedupeJobCandidates(candidates: JobCandidate[]): JobCandidate[] {
+function dedupeJobCandidates(
+  candidates: JobCandidate[]
+): JobCandidate[] {
   const unique = new Map<string, JobCandidate>();
   for (const c of candidates) {
-    if (c.url && c.title && !unique.has(c.url)) unique.set(c.url, c);
+    const key = getJobDedupKey(c.url);
+    if (!key || !c.url || !c.title) {
+      continue;
+    }
+
+    const existing = unique.get(key);
+    if (
+      !existing ||
+      c.contextText.length > existing.contextText.length
+    ) {
+      unique.set(key, c);
+    }
   }
   return Array.from(unique.values());
 }
 
-function pickRelevantJobUrls(candidates: JobCandidate[]): string[] {
+function pickRelevantJobUrls(
+  candidates: JobCandidate[]
+): string[] {
   const valid = candidates.filter((c) =>
     isLikelyJobDetailUrl(
       status.site === "unsupported" ? null : status.site,
@@ -1855,16 +2460,19 @@ function pickRelevantJobUrls(candidates: JobCandidate[]): string[] {
     .map((e) => e.c.url);
   return preferred.length > 0 ? preferred : valid.map((c) => c.url);
 }
+
 // ─── CHATGPT AI ANSWER ──────────────────────────────────────────────────────
 
 async function runGenerateAiAnswerStage(): Promise<void> {
-  const requestId = new URL(window.location.href).searchParams.get(
-    "remoteJobSearchRequest"
-  );
-  if (!requestId) throw new Error("Missing ChatGPT request details.");
+  const requestId = new URL(
+    window.location.href
+  ).searchParams.get("remoteJobSearchRequest");
+  if (!requestId)
+    throw new Error("Missing ChatGPT request details.");
 
   const request = await readAiAnswerRequest(requestId);
-  if (!request) throw new Error("Saved ChatGPT request not found.");
+  if (!request)
+    throw new Error("Saved ChatGPT request not found.");
 
   updateStatus(
     "running",
@@ -1877,17 +2485,24 @@ async function runGenerateAiAnswerStage(): Promise<void> {
     await waitForHumanVerificationToClear();
     const composer = await waitForChatGptComposer();
     if (!composer)
-      throw new Error("ChatGPT composer not found. Are you signed in?");
+      throw new Error(
+        "ChatGPT composer not found. Are you signed in?"
+      );
 
-    if (request.resume) await uploadResumeToChatGpt(request.resume);
+    if (request.resume)
+      await uploadResumeToChatGpt(request.resume);
 
     setComposerValue(composer, buildChatGptPrompt(request));
     const sendBtn = await waitForChatGptSendButton();
-    if (!sendBtn) throw new Error("ChatGPT send button not found.");
+    if (!sendBtn)
+      throw new Error("ChatGPT send button not found.");
 
     sendBtn.click();
     const answer = await waitForChatGptAnswerText();
-    if (!answer) throw new Error("ChatGPT did not return an answer in time.");
+    if (!answer)
+      throw new Error(
+        "ChatGPT did not return an answer in time."
+      );
 
     const copied = await copyTextToClipboard(answer);
     await writeAiAnswerResponse({
@@ -1907,7 +2522,8 @@ async function runGenerateAiAnswerStage(): Promise<void> {
     );
     await closeCurrentTab();
   } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : "ChatGPT failed.";
+    const msg =
+      error instanceof Error ? error.message : "ChatGPT failed.";
     await writeAiAnswerResponse({
       id: request.id,
       answer: "",
@@ -1961,7 +2577,9 @@ async function waitForChatGptSendButton(): Promise<HTMLButtonElement | null> {
   return null;
 }
 
-async function uploadResumeToChatGpt(resume: ResumeAsset): Promise<void> {
+async function uploadResumeToChatGpt(
+  resume: ResumeAsset
+): Promise<void> {
   let input = await waitForChatGptFileInput(800);
   if (input) {
     await setFileInputValue(input, resume);
@@ -1969,12 +2587,18 @@ async function uploadResumeToChatGpt(resume: ResumeAsset): Promise<void> {
   }
 
   const attachBtn = Array.from(
-    document.querySelectorAll<HTMLElement>("button, [role='button']")
+    document.querySelectorAll<HTMLElement>(
+      "button, [role='button']"
+    )
   ).find((el) => {
     const l = cleanText(
       [el.getAttribute("aria-label"), el.textContent].join(" ")
     ).toLowerCase();
-    return l.includes("attach") || l.includes("upload") || l.includes("file");
+    return (
+      l.includes("attach") ||
+      l.includes("upload") ||
+      l.includes("file")
+    );
   });
   attachBtn?.click();
   input = await waitForChatGptFileInput(5000);
@@ -1987,7 +2611,9 @@ async function waitForChatGptFileInput(
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const input = Array.from(
-      document.querySelectorAll<HTMLInputElement>("input[type='file']")
+      document.querySelectorAll<HTMLInputElement>(
+        "input[type='file']"
+      )
     ).find((i) => !i.disabled);
     if (input) return input;
     await sleep(250);
@@ -1995,7 +2621,10 @@ async function waitForChatGptFileInput(
   return null;
 }
 
-function setComposerValue(composer: HTMLElement, prompt: string): void {
+function setComposerValue(
+  composer: HTMLElement,
+  prompt: string
+): void {
   if (composer instanceof HTMLTextAreaElement) {
     setFieldValue(composer, prompt);
     return;
@@ -2098,13 +2727,19 @@ function getLatestChatGptAssistantText(): string {
     const author = cleanText(
       el.getAttribute("data-message-author-role") ||
         el
-          .querySelector<HTMLElement>("[data-message-author-role]")
+          .querySelector<HTMLElement>(
+            "[data-message-author-role]"
+          )
           ?.getAttribute("data-message-author-role") ||
         ""
     ).toLowerCase();
     const t = readChatGptMsgText(el);
     if (author === "assistant" && t.length > 20) return t;
-    if (!author && t.length > 80 && el.querySelector(".markdown, p, li, pre"))
+    if (
+      !author &&
+      t.length > 80 &&
+      el.querySelector(".markdown, p, li, pre")
+    )
       return t;
   }
   return "";
@@ -2112,7 +2747,9 @@ function getLatestChatGptAssistantText(): string {
 
 function hasActiveChatGptGeneration(): boolean {
   return Array.from(
-    document.querySelectorAll<HTMLElement>("button, [role='button']")
+    document.querySelectorAll<HTMLElement>(
+      "button, [role='button']"
+    )
   ).some((el) => {
     const l = cleanText(
       [
@@ -2131,12 +2768,15 @@ function hasActiveChatGptGeneration(): boolean {
 
 function readChatGptMsgText(container: HTMLElement): string {
   const node =
-    container.querySelector<HTMLElement>(".markdown, [class*='markdown']") ??
-    container;
+    container.querySelector<HTMLElement>(
+      ".markdown, [class*='markdown']"
+    ) ?? container;
   return cleanText(node.innerText || node.textContent || "");
 }
 
-async function copyTextToClipboard(text: string): Promise<boolean> {
+async function copyTextToClipboard(
+  text: string
+): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);
@@ -2173,7 +2813,10 @@ async function autofillVisibleApplication(
 
   const essayFields = collectEssayFieldsNeedingAi(settings);
   for (const candidate of essayFields) {
-    const generated = await generateAiAnswerForField(candidate, settings);
+    const generated = await generateAiAnswerForField(
+      candidate,
+      settings
+    );
     if (
       generated?.answer &&
       applyAnswerToField(candidate.field, generated.answer)
@@ -2186,10 +2829,13 @@ async function autofillVisibleApplication(
 
   const processedGroups = new Set<string>();
   for (const field of Array.from(
-    document.querySelectorAll<AutofillField>("input, textarea, select")
+    document.querySelectorAll<AutofillField>(
+      "input, textarea, select"
+    )
   )) {
     if (!shouldAutofillField(field)) continue;
-    if (field instanceof HTMLInputElement && field.type === "file") continue;
+    if (field instanceof HTMLInputElement && field.type === "file")
+      continue;
 
     if (
       field instanceof HTMLInputElement &&
@@ -2201,7 +2847,8 @@ async function autofillVisibleApplication(
     }
 
     const answer = getAnswerForField(field, settings);
-    if (!answer || !applyAnswerToField(field, answer.value)) continue;
+    if (!answer || !applyAnswerToField(field, answer.value))
+      continue;
 
     result.filledFields += 1;
     if (answer.source === "saved") result.usedSavedAnswers += 1;
@@ -2218,7 +2865,9 @@ async function uploadResumeIfNeeded(
   if (!resume) return null;
 
   const fileInputs = Array.from(
-    document.querySelectorAll<HTMLInputElement>("input[type='file']")
+    document.querySelectorAll<HTMLInputElement>(
+      "input[type='file']"
+    )
   );
   const usable = fileInputs.filter((i) =>
     shouldUseFileInputForResume(i, fileInputs.length)
@@ -2233,10 +2882,16 @@ async function uploadResumeIfNeeded(
   return null;
 }
 
-function pickResumeAsset(settings: AutomationSettings): ResumeAsset | null {
+function pickResumeAsset(
+  settings: AutomationSettings
+): ResumeAsset | null {
   if (currentResumeKind && settings.resumes[currentResumeKind])
     return settings.resumes[currentResumeKind] ?? null;
-  for (const kind of ["front_end", "back_end", "full_stack"] as ResumeKind[]) {
+  for (const kind of [
+    "front_end",
+    "back_end",
+    "full_stack",
+  ] as ResumeKind[]) {
     if (settings.resumes[kind]) return settings.resumes[kind]!;
   }
   return null;
@@ -2250,7 +2905,8 @@ async function setFileInputValue(
   const resp = await fetch(asset.dataUrl);
   const blob = await resp.blob();
   const file = new File([blob], asset.name, {
-    type: asset.type || blob.type || "application/octet-stream",
+    type:
+      asset.type || blob.type || "application/octet-stream",
   });
   const transfer = new DataTransfer();
   transfer.items.add(file);
@@ -2265,7 +2921,8 @@ function shouldUseFileInputForResume(
   count: number
 ): boolean {
   const ctx = getFieldDescriptor(input, getQuestionText(input));
-  if (ctx.includes("cover letter") || ctx.includes("transcript")) return false;
+  if (ctx.includes("cover letter") || ctx.includes("transcript"))
+    return false;
   if (ctx.includes("resume") || ctx.includes("cv")) return true;
   return count === 1;
 }
@@ -2275,11 +2932,12 @@ function collectEssayFieldsNeedingAi(
 ): EssayFieldCandidate[] {
   const result: EssayFieldCandidate[] = [];
   for (const field of Array.from(
-    document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
-      "textarea, input[type='text']"
-    )
+    document.querySelectorAll<
+      HTMLInputElement | HTMLTextAreaElement
+    >("textarea, input[type='text']")
   )) {
-    if (!shouldAutofillField(field) || field.value.trim()) continue;
+    if (!shouldAutofillField(field) || field.value.trim())
+      continue;
     const question = getQuestionText(field);
     if (
       !question ||
@@ -2313,7 +2971,8 @@ function isAiEssayQuestion(
     "additional information",
     "anything else",
   ];
-  if (signals.some((s) => desc.includes(normalizeChoiceText(s)))) return true;
+  if (signals.some((s) => desc.includes(normalizeChoiceText(s))))
+    return true;
   return (
     field instanceof HTMLTextAreaElement &&
     desc.length > 12 &&
@@ -2367,7 +3026,10 @@ async function generateAiAnswerForField(
       },
     ]);
 
-    const response = await waitForAiAnswerResponse(requestId, 180_000);
+    const response = await waitForAiAnswerResponse(
+      requestId,
+      180_000
+    );
     if (response?.error) {
       updateStatus(
         "running",
@@ -2397,7 +3059,9 @@ async function waitForAiAnswerResponse(
   return null;
 }
 
-function captureJobContextSnapshot(question: string): JobContextSnapshot {
+function captureJobContextSnapshot(
+  question: string
+): JobContextSnapshot {
   const title =
     cleanText(
       document.querySelector<HTMLElement>(
@@ -2447,7 +3111,8 @@ function getAnswerForField(
   const normalized = normalizeQuestionKey(question);
   if (normalized) {
     const saved = settings.answers[normalized];
-    if (saved?.value) return { value: saved.value, source: "saved" };
+    if (saved?.value)
+      return { value: saved.value, source: "saved" };
   }
   const profile = deriveProfileAnswer(field, question, settings);
   return profile ? { value: profile, source: "profile" } : null;
@@ -2473,7 +3138,11 @@ function deriveProfileAnswer(
   )
     return first || null;
   if (
-    matchesDescriptor(d, ["last name", "family name", "surname"]) ||
+    matchesDescriptor(d, [
+      "last name",
+      "family name",
+      "surname",
+    ]) ||
     field.autocomplete === "family-name"
   )
     return last || null;
@@ -2484,16 +3153,19 @@ function deriveProfileAnswer(
   )
     return p.fullName;
   if (
-    (field instanceof HTMLInputElement && field.type === "email") ||
+    (field instanceof HTMLInputElement &&
+      field.type === "email") ||
     matchesDescriptor(d, ["email", "e mail"])
   )
     return p.email || null;
   if (
-    (field instanceof HTMLInputElement && field.type === "tel") ||
+    (field instanceof HTMLInputElement &&
+      field.type === "tel") ||
     matchesDescriptor(d, ["phone", "mobile", "telephone"])
   )
     return p.phone || null;
-  if (matchesDescriptor(d, ["linkedin"])) return p.linkedinUrl || null;
+  if (matchesDescriptor(d, ["linkedin"]))
+    return p.linkedinUrl || null;
   if (
     matchesDescriptor(d, [
       "portfolio",
@@ -2504,10 +3176,12 @@ function deriveProfileAnswer(
     ])
   )
     return p.portfolioUrl || null;
-  if (matchesDescriptor(d, ["city", "town"])) return p.city || null;
+  if (matchesDescriptor(d, ["city", "town"]))
+    return p.city || null;
   if (matchesDescriptor(d, ["state", "province", "region"]))
     return p.state || null;
-  if (matchesDescriptor(d, ["country"])) return p.country || null;
+  if (matchesDescriptor(d, ["country"]))
+    return p.country || null;
   if (
     matchesDescriptor(d, [
       "current company",
@@ -2550,11 +3224,17 @@ function deriveProfileAnswer(
   return null;
 }
 
-function applyAnswerToField(field: AutofillField, answer: string): boolean {
+function applyAnswerToField(
+  field: AutofillField,
+  answer: string
+): boolean {
   if (!answer.trim()) return false;
   if (field instanceof HTMLInputElement && field.type === "radio")
     return applyAnswerToRadioGroup(field, answer);
-  if (field instanceof HTMLInputElement && field.type === "checkbox")
+  if (
+    field instanceof HTMLInputElement &&
+    field.type === "checkbox"
+  )
     return applyAnswerToCheckbox(field, answer);
   if (field instanceof HTMLSelectElement) {
     if (!isSelectBlank(field)) return false;
@@ -2566,8 +3246,13 @@ function applyAnswerToField(field: AutofillField, answer: string): boolean {
     return true;
   }
   if (field instanceof HTMLInputElement) {
-    if (!isTextLikeInput(field) || field.value.trim()) return false;
-    if (field.type === "number" && Number.isNaN(Number(answer))) return false;
+    if (!isTextLikeInput(field) || field.value.trim())
+      return false;
+    if (
+      field.type === "number" &&
+      Number.isNaN(Number(answer))
+    )
+      return false;
     setFieldValue(field, answer);
     return true;
   }
@@ -2601,14 +3286,22 @@ function applyAnswerToCheckbox(
     if (!values.length) return false;
     let changed = false;
     for (const box of boxes) {
-      const opt = normalizeChoiceText(getOptionLabelText(box) || box.value);
+      const opt = normalizeChoiceText(
+        getOptionLabelText(box) || box.value
+      );
       if (
-        values.some((v) => opt.includes(v) || v.includes(opt)) &&
+        values.some(
+          (v) => opt.includes(v) || v.includes(opt)
+        ) &&
         !box.checked
       ) {
         box.checked = true;
-        box.dispatchEvent(new Event("input", { bubbles: true }));
-        box.dispatchEvent(new Event("change", { bubbles: true }));
+        box.dispatchEvent(
+          new Event("input", { bubbles: true })
+        );
+        box.dispatchEvent(
+          new Event("change", { bubbles: true })
+        );
         changed = true;
       }
     }
@@ -2657,7 +3350,9 @@ function findBestChoice(
   for (const input of inputs) {
     const score = scoreChoiceMatch(
       norm,
-      normalizeChoiceText(`${getOptionLabelText(input)} ${input.value}`)
+      normalizeChoiceText(
+        `${getOptionLabelText(input)} ${input.value}`
+      )
     );
     if (score > bestScore) {
       best = input;
@@ -2673,7 +3368,9 @@ function getGroupedInputs(
 ): HTMLInputElement[] {
   if (!field.name) return [field];
   return Array.from(
-    (field.form ?? document).querySelectorAll<HTMLInputElement>(
+    (
+      field.form ?? document
+    ).querySelectorAll<HTMLInputElement>(
       `input[type='${type}'][name='${cssEscape(field.name)}']`
     )
   );
@@ -2681,6 +3378,8 @@ function getGroupedInputs(
 
 // ─── URL / JOB DETECTION ────────────────────────────────────────────────────
 
+// FIX: Relaxed career path detection — allow /careers/ URLs if they have
+// additional path segments (not just the root listing page)
 function isLikelyJobDetailUrl(
   site: SiteKey | null,
   url: string,
@@ -2705,7 +3404,8 @@ function isLikelyJobDetailUrl(
     ].some((e) => ltxt.includes(e))
   )
     return false;
-  if (isAppliedJobText(ltxt) || isAppliedJobText(lctx)) return false;
+  if (isAppliedJobText(ltxt) || isAppliedJobText(lctx))
+    return false;
 
   switch (site) {
     case "indeed":
@@ -2723,7 +3423,8 @@ function isLikelyJobDetailUrl(
       );
     case "dice":
       return (
-        lurl.includes("/job-detail/") || lurl.includes("/jobs/detail/")
+        lurl.includes("/job-detail/") ||
+        lurl.includes("/jobs/detail/")
       );
     case "monster":
       return (
@@ -2738,35 +3439,84 @@ function isLikelyJobDetailUrl(
         lurl.includes("m=portal&a=details")
       );
     case "startup":
-    case "other_sites":
-      return (
-        [
-          "/jobs/",
-          "/job/",
-          "/positions/",
-          "/position/",
-          "/openings/",
-          "/opening/",
-          "/requisition/",
-          "/req/",
-          "gh_jid=",
-          "lever.co",
-          "greenhouse.io",
-          "ashbyhq.com",
-          "workable.com",
-          "jobvite.com",
-          "smartrecruiters.com",
-        ].some((e) => lurl.includes(e)) && !isListingOrCategoryUrl(lurl)
-      );
+    case "other_sites": {
+      if (isListingOrCategoryUrl(lurl)) return false;
+
+      // Check for known ATS URLs — always accept
+      const atsSignals = [
+        "gh_jid=",
+        "lever.co",
+        "jobs.lever.co",
+        "greenhouse.io",
+        "job-boards.greenhouse.io",
+        "ashbyhq.com",
+        "jobs.ashbyhq.com",
+        "workable.com",
+        "jobvite.com",
+        "myworkdayjobs.com",
+        "workdayjobs.com",
+        "icims.com/jobs/",
+        "smartrecruiters.com",
+        "applytojob.com",
+        "recruitee.com",
+        "breezy.hr",
+        "bamboohr.com",
+      ];
+      if (atsSignals.some((e) => lurl.includes(e))) return true;
+
+      // Path-based signals
+      const pathSignals = [
+        "/jobs/",
+        "/job/",
+        "/role/",
+        "/roles/",
+        "/positions/",
+        "/position/",
+        "/opportunity/",
+        "/opportunities/",
+        "/openings/",
+        "/opening/",
+        "/job-posting/",
+        "/job-postings/",
+        "/requisition/",
+        "/req/",
+      ];
+      if (pathSignals.some((e) => lurl.includes(e))) return true;
+
+      // Career path — only accept if text looks like a tech role
+      const hasCareerPath =
+        lurl.includes("/careers/") ||
+        lurl.includes("/career/");
+      if (hasCareerPath) {
+        // Accept if it has extra path beyond /careers/ (i.e., a specific role page)
+        try {
+          const parsed = new URL(lurl);
+          const path = parsed.pathname
+            .toLowerCase()
+            .replace(/\/+$/, "");
+          const segments = path
+            .split("/")
+            .filter(Boolean);
+          // /careers alone = 1 segment, /careers/some-role = 2+ segments
+          if (segments.length >= 2) return true;
+        } catch {}
+        return looksLikeTechnicalRoleTitle(text);
+      }
+
+      return false;
+    }
     case "chatgpt":
       return false;
   }
 }
 
+// FIX: Expanded listing exclusions
 function isListingOrCategoryUrl(lurl: string): boolean {
   try {
     const parsed = new URL(lurl);
-    const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+    const path = parsed.pathname
+      .toLowerCase()
+      .replace(/\/+$/, "");
     const excludedPaths = [
       "/careers",
       "/jobs",
@@ -2775,6 +3525,14 @@ function isListingOrCategoryUrl(lurl: string): boolean {
       "/locations",
       "/teams",
       "/departments",
+      "/roles",
+      "/positions",
+      "/opportunities",
+      "/about",
+      "/benefits",
+      "/culture",
+      "/values",
+      "/diversity",
     ];
     return excludedPaths.includes(path);
   } catch {
@@ -2803,7 +3561,9 @@ function scoreJobTitleForResume(
     case "back_end": {
       let s = 0;
       if (
-        /\b(back\s*end|backend|server|api|platform engineer)\b/.test(t)
+        /\b(back\s*end|backend|server|api|platform engineer)\b/.test(
+          t
+        )
       )
         s += 4;
       if (/\b(full\s*stack|fullstack)\b/.test(t)) s += 1;
@@ -2812,27 +3572,82 @@ function scoreJobTitleForResume(
     }
     case "full_stack":
       if (/\b(full\s*stack|fullstack)\b/.test(t)) return 5;
-      if (/\b(front\s*end|frontend|back\s*end|backend)\b/.test(t)) return 1;
+      if (
+        /\b(front\s*end|frontend|back\s*end|backend)\b/.test(t)
+      )
+        return 1;
       return 0;
   }
 }
 
+function looksLikeTechnicalRoleTitle(text: string): boolean {
+  const normalized = normalizeChoiceText(text);
+
+  if (!normalized) {
+    return false;
+  }
+
+  return [
+    "software engineer",
+    "engineer",
+    "developer",
+    "front end",
+    "frontend",
+    "back end",
+    "backend",
+    "full stack",
+    "fullstack",
+    "web",
+    "platform",
+    "api",
+    "devops",
+    "sre",
+    "site reliability",
+    "qa",
+    "test automation",
+    "react",
+    "angular",
+    "vue",
+    "node",
+    "python",
+    "java",
+    "golang",
+    "rust",
+    "typescript",
+    "javascript",
+    "infrastructure",
+    "cloud",
+    "data engineer",
+    "machine learning",
+  ].some((keyword) =>
+    normalized.includes(normalizeChoiceText(keyword))
+  );
+}
+
 function isAppliedJobText(text: string): boolean {
   if (!text) return false;
+  const normalized = cleanText(text).toLowerCase();
+
   if (
-    /\b(not applied|apply now|ready to apply|applied (machine|deep|data))\b/.test(
-      text
+    /\b(not applied|apply now|ready to apply|applied (machine|deep|data|ai)|applied scientist|applied research)\b/.test(
+      normalized
     )
   )
     return false;
   return [
     /\balready applied\b/,
     /\byou applied\b/,
+    /\byou(?:'ve| have)? applied\b/,
     /\bapplication submitted\b/,
     /\bapplication sent\b/,
+    /\bapplication status:\s*applied\b/,
+    /\bjob status:\s*applied\b/,
+    /\bjob activity:\s*applied\b/,
+    /\bcandidate status:\s*applied\b/,
     /\bapplied on \d/,
+    /\bapplied\s+\d+\s+(minute|hour|day|week|month)s?\s+ago\b/,
     /\bstatus:\s*applied\b/,
-  ].some((p) => p.test(text));
+  ].some((p) => p.test(normalized));
 }
 
 function isCurrentPageAppliedJob(): boolean {
@@ -2843,7 +3658,10 @@ function isCurrentPageAppliedJob(): boolean {
   );
 }
 
-function isLikelyApplyUrl(url: string, site: SiteKey): boolean {
+function isLikelyApplyUrl(
+  url: string,
+  site: SiteKey
+): boolean {
   const l = url.toLowerCase();
   if (
     l.includes("smartapply.indeed.com") ||
@@ -2861,13 +3679,18 @@ function isLikelyApplyUrl(url: string, site: SiteKey): boolean {
       l.includes("candidate")
     );
   try {
-    return !new URL(url).hostname.toLowerCase().endsWith(getSiteRoot(site));
+    return !new URL(url).hostname
+      .toLowerCase()
+      .endsWith(getSiteRoot(site));
   } catch {
     return false;
   }
 }
 
-function isAlreadyOnApplyPage(site: SiteKey, url: string): boolean {
+function isAlreadyOnApplyPage(
+  site: SiteKey,
+  url: string
+): boolean {
   return isLikelyApplyUrl(url, site);
 }
 
@@ -2885,18 +3708,25 @@ function getActionText(el: HTMLElement): string {
   );
 }
 
-function getClickableApplyElement(el: HTMLElement): HTMLElement {
-  const shadowTarget = el.shadowRoot?.querySelector<HTMLElement>(
+function getClickableApplyElement(
+  el: HTMLElement
+): HTMLElement {
+  const shadowTarget =
+    el.shadowRoot?.querySelector<HTMLElement>(
+      "a[href], button, input[type='submit'], input[type='button'], [role='button']"
+    );
+  const childTarget = el.querySelector<HTMLElement>(
     "a[href], button, input[type='submit'], input[type='button'], [role='button']"
   );
-  return shadowTarget ?? el;
+  return shadowTarget ?? childTarget ?? el;
 }
 
 function getNavigationUrl(el: HTMLElement): string | null {
   if (el instanceof HTMLAnchorElement && el.href)
     return normalizeUrl(el.href);
   const parentAnchor = el.closest("a");
-  if (parentAnchor?.href) return normalizeUrl(parentAnchor.href);
+  if (parentAnchor?.href)
+    return normalizeUrl(parentAnchor.href);
   if (
     el instanceof HTMLButtonElement &&
     el.formAction &&
@@ -2912,13 +3742,39 @@ function getNavigationUrl(el: HTMLElement): string | null {
   const d =
     el.getAttribute("data-href") ??
     el.getAttribute("data-url") ??
-    el.getAttribute("data-apply-url");
+    el.getAttribute("data-apply-url") ??
+    el.getAttribute("data-apply-href") ??
+    el.getAttribute("data-link") ??
+    el.getAttribute("data-link-to") ??
+    el.getAttribute("data-target-url") ??
+    el.getAttribute("data-job-url") ??
+    el.getAttribute("data-destination");
   if (d) return normalizeUrl(d);
+
+  const onclick = el.getAttribute("onclick");
+  if (onclick) {
+    const match =
+      onclick.match(
+        /(?:window\.open|window\.location(?:\.href)?|document\.location(?:\.href)?)\s*\(?\s*['"]([^'"]+)['"]/i
+      ) ??
+      onclick.match(
+        /location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/i
+      );
+    if (match?.[1]) {
+      return normalizeUrl(match[1]);
+    }
+  }
+
   return null;
 }
 
 function normalizeUrl(url: string): string | null {
-  if (!url || url.startsWith("javascript:") || url === "#") return null;
+  if (
+    !url ||
+    url.startsWith("javascript:") ||
+    url === "#"
+  )
+    return null;
   try {
     const n = new URL(url, window.location.href);
     n.hash = "";
@@ -2928,10 +3784,16 @@ function normalizeUrl(url: string): string | null {
   }
 }
 
-function describeApplyTarget(url: string, text: string): string {
+function describeApplyTarget(
+  url: string,
+  text: string
+): string {
   if (url.toLowerCase().includes("smartapply.indeed.com"))
     return "the Indeed apply page";
-  if (isExternalUrl(url) || text.toLowerCase().includes("company site"))
+  if (
+    isExternalUrl(url) ||
+    text.toLowerCase().includes("company site")
+  )
     return "the company career page";
   return text || "the apply page";
 }
@@ -2982,25 +3844,34 @@ function findFirstVisibleElement<T extends HTMLElement>(
   selectors: string[]
 ): T | null {
   for (const sel of selectors)
-    for (const el of Array.from(document.querySelectorAll<T>(sel)))
+    for (const el of Array.from(
+      document.querySelectorAll<T>(sel)
+    ))
       if (isElementVisible(el)) return el;
   return null;
 }
 
 function hasLikelyApplicationForm(): boolean {
   const relevantFields = Array.from(
-    document.querySelectorAll<AutofillField>("input, textarea, select")
+    document.querySelectorAll<AutofillField>(
+      "input, textarea, select"
+    )
   ).filter(
-    (f) => shouldAutofillField(f, true) && isLikelyApplicationField(f)
+    (f) =>
+      shouldAutofillField(f, true) &&
+      isLikelyApplicationField(f)
   );
 
   if (relevantFields.length >= 2) return true;
 
   return Array.from(
-    document.querySelectorAll<HTMLInputElement>("input[type='file']")
+    document.querySelectorAll<HTMLInputElement>(
+      "input[type='file']"
+    )
   ).some(
     (input) =>
-      shouldAutofillField(input, true) && isLikelyApplicationField(input)
+      shouldAutofillField(input, true) &&
+      isLikelyApplicationField(input)
   );
 }
 
@@ -3035,13 +3906,16 @@ function hasLikelyApplicationSurface(site: SiteKey): boolean {
     hasLikelyApplicationForm() ||
     hasLikelyApplicationFrame() ||
     Boolean(findProgressionAction()) ||
+    Boolean(findCompanySiteAction()) ||
     Boolean(findApplyAction(null, "follow-up")) ||
     (isAlreadyOnApplyPage(site, window.location.href) &&
       hasLikelyApplicationPageContent())
   );
 }
 
-function isLikelyApplicationField(field: AutofillField): boolean {
+function isLikelyApplicationField(
+  field: AutofillField
+): boolean {
   const question = getQuestionText(field);
   const descriptor = getFieldDescriptor(field, question);
   if (!descriptor) return false;
@@ -3082,7 +3956,9 @@ function isLikelyApplicationField(field: AutofillField): boolean {
     }
   }
 
-  const autocomplete = (field.getAttribute("autocomplete") || "")
+  const autocomplete = (
+    field.getAttribute("autocomplete") || ""
+  )
     .toLowerCase()
     .trim();
   if (
@@ -3182,7 +4058,9 @@ function isLikelyApplicationField(field: AutofillField): boolean {
       "find jobs",
       "company reviews",
       "find salaries",
-    ].some((term) => containerText.includes(normalizeChoiceText(term)))
+    ].some((term) =>
+      containerText.includes(normalizeChoiceText(term))
+    )
   ) {
     return false;
   }
@@ -3200,7 +4078,9 @@ function isLikelyApplicationField(field: AutofillField): boolean {
     "education",
     "equal opportunity",
     "demographic",
-  ].some((term) => containerText.includes(normalizeChoiceText(term)));
+  ].some((term) =>
+    containerText.includes(normalizeChoiceText(term))
+  );
 }
 
 function shouldAutofillField(
@@ -3210,11 +4090,19 @@ function shouldAutofillField(
   if (field.disabled) return false;
   if (field instanceof HTMLInputElement) {
     const t = field.type.toLowerCase();
-    if (["hidden", "submit", "button", "reset", "image"].includes(t))
+    if (
+      ["hidden", "submit", "button", "reset", "image"].includes(
+        t
+      )
+    )
       return false;
     if (t !== "file" && !isElementVisible(field)) return false;
     if (t === "file") return true;
-    if (!ignoreBlankCheck && (t === "radio" || t === "checkbox")) return true;
+    if (
+      !ignoreBlankCheck &&
+      (t === "radio" || t === "checkbox")
+    )
+      return true;
   } else if (!isElementVisible(field)) return false;
   const d = getFieldDescriptor(field, getQuestionText(field));
   if (
@@ -3228,7 +4116,8 @@ function shouldAutofillField(
     ])
   )
     return false;
-  if (d === "what" || d === "where" || d === "search") return false;
+  if (d === "what" || d === "where" || d === "search")
+    return false;
   if (
     d.includes("captcha") ||
     d.includes("social security") ||
@@ -3236,7 +4125,10 @@ function shouldAutofillField(
     d.includes("password")
   )
     return false;
-  if (!ignoreBlankCheck && field instanceof HTMLSelectElement)
+  if (
+    !ignoreBlankCheck &&
+    field instanceof HTMLSelectElement
+  )
     return isSelectBlank(field);
   return true;
 }
@@ -3265,7 +4157,10 @@ function isSelectBlank(s: HTMLSelectElement): boolean {
 }
 
 function setFieldValue(
-  field: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+  field:
+    | HTMLInputElement
+    | HTMLTextAreaElement
+    | HTMLSelectElement,
   value: string
 ): void {
   const desc = Object.getOwnPropertyDescriptor(
@@ -3278,9 +4173,13 @@ function setFieldValue(
   field.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-function getQuestionText(field: AutofillField | HTMLInputElement): string {
+function getQuestionText(
+  field: AutofillField | HTMLInputElement
+): string {
   const legend = cleanText(
-    field.closest("fieldset")?.querySelector("legend")?.textContent
+    field
+      .closest("fieldset")
+      ?.querySelector("legend")?.textContent
   );
   if (legend) return legend;
   const ariaBy = field.getAttribute("aria-labelledby");
@@ -3288,7 +4187,10 @@ function getQuestionText(field: AutofillField | HTMLInputElement): string {
     const t = cleanText(
       ariaBy
         .split(/\s+/)
-        .map((id) => document.getElementById(id)?.textContent ?? "")
+        .map(
+          (id) =>
+            document.getElementById(id)?.textContent ?? ""
+        )
         .join(" ")
     );
     if (t) return t;
@@ -3318,14 +4220,18 @@ function getAssociatedLabelText(field: Element): string {
   const id = field.getAttribute("id");
   if (id) {
     const l = cleanText(
-      document.querySelector(`label[for='${cssEscape(id)}']`)?.textContent
+      document.querySelector(
+        `label[for='${cssEscape(id)}']`
+      )?.textContent
     );
     if (l) return l;
   }
   return cleanText(field.closest("label")?.textContent);
 }
 
-function getOptionLabelText(field: HTMLInputElement): string {
+function getOptionLabelText(
+  field: HTMLInputElement
+): string {
   return (
     getAssociatedLabelText(field) ||
     cleanText(field.parentElement?.textContent) ||
@@ -3352,8 +4258,13 @@ function getFieldDescriptor(
   );
 }
 
-function matchesDescriptor(d: string, phrases: string[]): boolean {
-  return phrases.some((p) => d.includes(normalizeChoiceText(p)));
+function matchesDescriptor(
+  d: string,
+  phrases: string[]
+): boolean {
+  return phrases.some((p) =>
+    d.includes(normalizeChoiceText(p))
+  );
 }
 
 function normalizeChoiceText(v: string): string {
@@ -3364,10 +4275,17 @@ function normalizeChoiceText(v: string): string {
     .trim();
 }
 
-function scoreChoiceMatch(answer: string, candidate: string): number {
+function scoreChoiceMatch(
+  answer: string,
+  candidate: string
+): number {
   if (!answer || !candidate) return -1;
   if (answer === candidate) return 100;
-  if (candidate.includes(answer) || answer.includes(candidate)) return 70;
+  if (
+    candidate.includes(answer) ||
+    answer.includes(candidate)
+  )
+    return 70;
   const bool = normalizeBooleanAnswer(answer);
   if (bool !== null) {
     if (
@@ -3390,17 +4308,28 @@ function scoreChoiceMatch(answer: string, candidate: string): number {
 
 function normalizeBooleanAnswer(a: string): boolean | null {
   const n = normalizeChoiceText(a);
-  if (["yes", "y", "true", "authorized", "eligible"].includes(n))
+  if (
+    ["yes", "y", "true", "authorized", "eligible"].includes(
+      n
+    )
+  )
     return true;
-  if (["no", "n", "false", "not authorized"].includes(n)) return false;
+  if (
+    ["no", "n", "false", "not authorized"].includes(n)
+  )
+    return false;
   return null;
 }
 
 function isConsentField(f: HTMLInputElement): boolean {
   const d = getFieldDescriptor(f, getQuestionText(f));
-  return ["privacy", "terms", "agree", "consent", "policy"].some((e) =>
-    d.includes(e)
-  );
+  return [
+    "privacy",
+    "terms",
+    "agree",
+    "consent",
+    "policy",
+  ].some((e) => d.includes(e));
 }
 
 function performClickAction(element: HTMLElement): void {
@@ -3417,13 +4346,59 @@ async function spawnTabs(
     maxJobPages,
   });
   if (!response?.ok)
-    throw new Error(response?.error ?? "Could not open tabs.");
+    throw new Error(
+      response?.error ?? "Could not open tabs."
+    );
   return { opened: response.opened as number };
+}
+
+async function claimJobOpenings(
+  urls: string[],
+  requested: number
+): Promise<string[]> {
+  const candidates = Array.from(
+    new Map(
+      urls
+        .map(
+          (url) => [getJobDedupKey(url), url] as const
+        )
+        .filter(
+          ([key, url]) => Boolean(key) && Boolean(url)
+        )
+    ).entries()
+  ).map(([key, url]) => ({ key, url }));
+
+  if (candidates.length === 0) {
+    return [];
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "claim-job-openings",
+      requested,
+      candidates,
+    });
+
+    if (
+      response?.ok &&
+      Array.isArray(response.approvedUrls)
+    ) {
+      return response.approvedUrls as string[];
+    }
+  } catch {
+    // Fall back to local dedupe if the background claim fails.
+  }
+
+  return candidates
+    .slice(0, Math.max(0, Math.floor(requested)))
+    .map((candidate) => candidate.url);
 }
 
 async function closeCurrentTab(): Promise<void> {
   try {
-    await chrome.runtime.sendMessage({ type: "close-current-tab" });
+    await chrome.runtime.sendMessage({
+      type: "close-current-tab",
+    });
   } catch {}
 }
 
@@ -3494,8 +4469,16 @@ function updateStatus(
 function createInitialStatus(): AutomationStatus {
   const site = detectSiteFromUrl(window.location.href);
   return site
-    ? createStatus(site, "idle", `Ready on ${getSiteLabel(site)}.`)
-    : createStatus("unsupported", "idle", "Waiting for automation.");
+    ? createStatus(
+        site,
+        "idle",
+        `Ready on ${getSiteLabel(site)}.`
+      )
+    : createStatus(
+        "unsupported",
+        "idle",
+        "Waiting for automation."
+      );
 }
 
 function ensureOverlay(): void {
@@ -3513,10 +4496,13 @@ function ensureOverlay(): void {
   wrapper.append(title, text);
   shadow.append(style, wrapper);
   const mount = () => {
-    if (!host.isConnected) document.documentElement.append(host);
+    if (!host.isConnected)
+      document.documentElement.append(host);
   };
   document.readyState === "loading"
-    ? window.addEventListener("DOMContentLoaded", mount, { once: true })
+    ? window.addEventListener("DOMContentLoaded", mount, {
+        once: true,
+      })
     : mount();
   overlay.host = host;
   overlay.title = title;
@@ -3528,12 +4514,21 @@ function renderOverlay(): void {
     window.clearTimeout(overlayHideTimerId);
     overlayHideTimerId = null;
   }
-  if (status.site === "unsupported" && status.phase === "idle") {
-    if (overlay.host) overlay.host.style.display = "none";
+  if (
+    status.site === "unsupported" &&
+    status.phase === "idle"
+  ) {
+    if (overlay.host)
+      overlay.host.style.display = "none";
     return;
   }
   ensureOverlay();
-  if (!overlay.host || !overlay.title || !overlay.text) return;
+  if (
+    !overlay.host ||
+    !overlay.title ||
+    !overlay.text
+  )
+    return;
   const siteText =
     status.site === "unsupported"
       ? "Automation"
@@ -3547,9 +4542,13 @@ function renderOverlay(): void {
     return;
   }
   overlay.host.style.display = "block";
-  if (status.phase === "completed" || status.phase === "error") {
+  if (
+    status.phase === "completed" ||
+    status.phase === "error"
+  ) {
     overlayHideTimerId = window.setTimeout(() => {
-      if (overlay.host) overlay.host.style.display = "none";
+      if (overlay.host)
+        overlay.host.style.display = "none";
       overlayHideTimerId = null;
     }, OVERLAY_AUTO_HIDE_MS);
   }
@@ -3557,7 +4556,9 @@ function renderOverlay(): void {
 
 // ─── ANSWER MEMORY ───────────────────────────────────────────────────────────
 
-async function handlePotentialAnswerMemory(event: Event): Promise<void> {
+async function handlePotentialAnswerMemory(
+  event: Event
+): Promise<void> {
   if (
     status.site === "unsupported" ||
     currentStage !== "autofill-form" ||
@@ -3576,16 +4577,26 @@ async function handlePotentialAnswerMemory(event: Event): Promise<void> {
     value = readFieldAnswerForMemory(target),
     key = normalizeQuestionKey(question);
   if (!question || !value || !key) return;
-  pendingAnswers.set(key, { question, value, updatedAt: Date.now() });
-  if (answerFlushTimerId !== null) window.clearTimeout(answerFlushTimerId);
+  pendingAnswers.set(key, {
+    question,
+    value,
+    updatedAt: Date.now(),
+  });
+  if (answerFlushTimerId !== null)
+    window.clearTimeout(answerFlushTimerId);
   answerFlushTimerId = window.setTimeout(
     () => void flushPendingAnswers(),
     400
   );
 }
 
-function shouldRememberField(field: AutofillField): boolean {
-  const d = getFieldDescriptor(field, getQuestionText(field));
+function shouldRememberField(
+  field: AutofillField
+): boolean {
+  const d = getFieldDescriptor(
+    field,
+    getQuestionText(field)
+  );
   if (
     d.includes("password") ||
     d.includes("social security") ||
@@ -3634,23 +4645,34 @@ function shouldRememberField(field: AutofillField): boolean {
     ])
   )
     return false;
-  if (field instanceof HTMLInputElement && field.type === "file") return false;
+  if (
+    field instanceof HTMLInputElement &&
+    field.type === "file"
+  )
+    return false;
   return true;
 }
 
-function readFieldAnswerForMemory(field: AutofillField): string {
+function readFieldAnswerForMemory(
+  field: AutofillField
+): string {
   if (field instanceof HTMLSelectElement)
     return cleanText(
-      field.selectedOptions[0]?.textContent || field.value
+      field.selectedOptions[0]?.textContent ||
+        field.value
     );
-  if (field instanceof HTMLTextAreaElement) return field.value.trim();
+  if (field instanceof HTMLTextAreaElement)
+    return field.value.trim();
   if ((field as HTMLInputElement).type === "radio")
     return (field as HTMLInputElement).checked
-      ? getOptionLabelText(field as HTMLInputElement) ||
-          (field as HTMLInputElement).value
+      ? getOptionLabelText(
+          field as HTMLInputElement
+        ) || (field as HTMLInputElement).value
       : "";
   if ((field as HTMLInputElement).type === "checkbox")
-    return (field as HTMLInputElement).checked ? "Yes" : "No";
+    return (field as HTMLInputElement).checked
+      ? "Yes"
+      : "No";
   return (field as HTMLInputElement).value.trim();
 }
 
@@ -3663,20 +4685,27 @@ async function flushPendingAnswers(): Promise<void> {
     for (const [key, value] of pendingAnswers.entries())
       answers[key] = value;
     pendingAnswers.clear();
-    await writeAutomationSettings({ ...settings, answers });
+    await writeAutomationSettings({
+      ...settings,
+      answers,
+    });
   } catch {}
 }
 
 // ─── UTILITIES ───────────────────────────────────────────────────────────────
 
-function buildAutofillSummary(result: AutofillResult): string {
+function buildAutofillSummary(
+  result: AutofillResult
+): string {
   const parts: string[] = [];
   if (result.filledFields > 0)
     parts.push(
       `Filled ${result.filledFields} field${result.filledFields === 1 ? "" : "s"}`
     );
   if (result.uploadedResume)
-    parts.push(`uploaded ${result.uploadedResume.name}`);
+    parts.push(
+      `uploaded ${result.uploadedResume.name}`
+    );
   if (result.usedSavedAnswers > 0)
     parts.push(
       `used ${result.usedSavedAnswers} remembered answer${result.usedSavedAnswers === 1 ? "" : "s"}`
@@ -3694,18 +4723,24 @@ function buildAutofillSummary(result: AutofillResult): string {
     : `${parts.join(", ")}. Review before submitting.`;
 }
 
-function cleanText(value: string | null | undefined): string {
+function cleanText(
+  value: string | null | undefined
+): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
 }
 
-function truncateText(value: string, max: number): string {
+function truncateText(
+  value: string,
+  max: number
+): string {
   return value.length <= max
     ? value
     : `${value.slice(0, max - 3).trim()}...`;
 }
 
 function cssEscape(value: string): string {
-  return typeof CSS !== "undefined" && typeof CSS.escape === "function"
+  return typeof CSS !== "undefined" &&
+    typeof CSS.escape === "function"
     ? CSS.escape(value)
     : value.replace(/["\\]/g, "\\$&");
 }

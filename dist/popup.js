@@ -170,13 +170,16 @@
     if (!Number.isFinite(numeric)) {
       return DEFAULT_SETTINGS.jobPageLimit;
     }
-    return Math.min(MAX_JOB_PAGE_LIMIT, Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric)));
+    return Math.min(
+      MAX_JOB_PAGE_LIMIT,
+      Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric))
+    );
   }
   function readString(value) {
     return typeof value === "string" ? value.trim() : "";
   }
   function isRecord(value) {
-    return typeof value === "object" && value !== null;
+    return typeof value === "object" && value !== null && !Array.isArray(value);
   }
   function sanitizeSearchMode(value) {
     return value === "startup_careers" || value === "other_job_sites" ? value : DEFAULT_SETTINGS.searchMode;
@@ -265,16 +268,30 @@
     }
   });
   async function initialize() {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [tab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true
+    });
     activeTabId = tab?.id ?? null;
     activeSite = detectSiteFromUrl(tab?.url ?? "");
     settings = await readAutomationSettings();
     populateSettingsForm(settings);
     updateModeUi();
     updateOverviewPreview();
-    siteName.textContent = getSiteLabel(isJobBoardSite(activeSite) ? activeSite : null);
+    const searchMode = getSelectedSearchMode();
+    if (searchMode === "startup_careers") {
+      siteName.textContent = "Startup Careers";
+    } else if (searchMode === "other_job_sites") {
+      siteName.textContent = "Other Job Sites";
+    } else {
+      siteName.textContent = getSiteLabel(
+        isJobBoardSite(activeSite) ? activeSite : null
+      );
+    }
     if (!activeTabId) {
-      applyStatus(createStatus("unsupported", "error", "No active tab was found."));
+      applyStatus(
+        createStatus("unsupported", "error", "No active tab was found.")
+      );
       startButton.disabled = true;
       return;
     }
@@ -357,10 +374,23 @@
       return;
     }
     if (!isJobBoardSite(activeSite)) {
+      applyStatus(
+        createStatus(
+          "unsupported",
+          "error",
+          "Open Indeed, ZipRecruiter, Dice, or Monster in the active tab to use Job Board mode."
+        )
+      );
       startButton.disabled = false;
       return;
     }
-    applyStatus(createStatus(activeSite, "running", `Starting on ${getSiteLabel(activeSite)}...`));
+    applyStatus(
+      createStatus(
+        activeSite,
+        "running",
+        `Starting on ${getSiteLabel(activeSite)}...`
+      )
+    );
     const response = await chrome.runtime.sendMessage({
       type: "start-automation",
       tabId: activeTabId
@@ -384,19 +414,20 @@
     }
     const searchMode = getSelectedSearchMode();
     const activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
-    const contentStatus = await getContentStatus(activeTabId);
-    if (contentStatus && (searchMode !== "job_board" || activeJobBoardSite || contentStatus.phase !== "idle")) {
-      applyStatus(contentStatus);
-      startButton.disabled = searchMode === "job_board" ? !activeJobBoardSite || isBusy(contentStatus.phase) : isBusy(contentStatus.phase);
-      return;
-    }
     const backgroundResponse = await chrome.runtime.sendMessage({
       type: "get-tab-session",
       tabId: activeTabId
     });
-    if (backgroundResponse?.session && (searchMode !== "job_board" || activeJobBoardSite || backgroundResponse.session.phase !== "idle")) {
-      applyStatus(backgroundResponse.session);
-      startButton.disabled = searchMode === "job_board" ? !activeJobBoardSite || isBusy(backgroundResponse.session.phase) : isBusy(backgroundResponse.session.phase);
+    const bgSession = backgroundResponse?.session;
+    if (bgSession && bgSession.phase !== "idle") {
+      applyStatus(bgSession);
+      startButton.disabled = searchMode === "job_board" ? !activeJobBoardSite || isBusy(bgSession.phase) : isBusy(bgSession.phase);
+      return;
+    }
+    const contentStatus = await getContentStatus(activeTabId);
+    if (contentStatus && contentStatus.phase !== "idle" && contentStatus.site !== "unsupported") {
+      applyStatus(contentStatus);
+      startButton.disabled = searchMode === "job_board" ? !activeJobBoardSite || isBusy(contentStatus.phase) : isBusy(contentStatus.phase);
       return;
     }
     if (searchMode === "startup_careers") {
@@ -432,12 +463,20 @@
       startButton.disabled = true;
       return;
     }
-    applyStatus(createStatus(activeJobBoardSite, "idle", `Ready on ${getSiteLabel(activeJobBoardSite)}.`));
+    applyStatus(
+      createStatus(
+        activeJobBoardSite,
+        "idle",
+        `Ready on ${getSiteLabel(activeJobBoardSite)}.`
+      )
+    );
     startButton.disabled = false;
   }
   async function getContentStatus(tabId) {
     try {
-      const response = await chrome.tabs.sendMessage(tabId, { type: "get-status" });
+      const response = await chrome.tabs.sendMessage(tabId, {
+        type: "get-status"
+      });
       return response?.status ?? null;
     } catch {
       return null;
@@ -538,7 +577,9 @@
     workAuthorizationInput.value = nextSettings.candidate.workAuthorization;
     needsSponsorshipInput.value = nextSettings.candidate.needsSponsorship;
     willingToRelocateInput.value = nextSettings.candidate.willingToRelocate;
-    answerCount.textContent = String(Object.keys(nextSettings.answers).length);
+    answerCount.textContent = String(
+      Object.keys(nextSettings.answers).length
+    );
     for (const resumeKind of Object.keys(resumeNameLabels)) {
       const asset = nextSettings.resumes[resumeKind];
       resumeNameLabels[resumeKind].textContent = asset ? `${asset.name} (${formatFileSize(asset.size)})` : "No file saved";
@@ -576,7 +617,9 @@
         reject(new Error("Could not read the selected file."));
       };
       reader.onerror = () => {
-        reject(reader.error ?? new Error("Could not read the selected file."));
+        reject(
+          reader.error ?? new Error("Could not read the selected file.")
+        );
       };
       reader.readAsDataURL(file);
     });
@@ -645,7 +688,9 @@
   function requireElement(selector) {
     const element = document.querySelector(selector);
     if (!element) {
-      throw new Error(`Popup UI is missing required element: ${selector}`);
+      throw new Error(
+        `Popup UI is missing required element: ${selector}`
+      );
     }
     return element;
   }

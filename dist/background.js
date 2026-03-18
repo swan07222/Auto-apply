@@ -250,8 +250,13 @@
     return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster";
   }
   function buildStartupSearchTargets(settings) {
-    const region = resolveStartupRegion(settings.startupRegion, settings.candidate.country);
-    const companies = STARTUP_COMPANIES.filter((company) => company.regions.includes(region));
+    const region = resolveStartupRegion(
+      settings.startupRegion,
+      settings.candidate.country
+    );
+    const companies = STARTUP_COMPANIES.filter(
+      (company) => company.regions.includes(region)
+    );
     return companies.flatMap(
       (company) => SEARCH_DEFINITIONS.map(({ label, resumeKind }) => ({
         label: `${company.name} ${label}`,
@@ -261,8 +266,13 @@
     );
   }
   function buildOtherJobSiteTargets(settings) {
-    const region = resolveStartupRegion(settings.startupRegion, settings.candidate.country);
-    return OTHER_JOB_SITE_TARGETS.filter((target) => target.regions.includes(region)).map((target) => ({
+    const region = resolveStartupRegion(
+      settings.startupRegion,
+      settings.candidate.country
+    );
+    return OTHER_JOB_SITE_TARGETS.filter(
+      (target) => target.regions.includes(region)
+    ).map((target) => ({
       label: target.label,
       url: target.url,
       resumeKind: target.resumeKind
@@ -279,7 +289,9 @@
     if (!normalized) {
       return "us";
     }
-    if (["us", "usa", "united states", "united states of america", "america"].includes(normalized)) {
+    if (["us", "usa", "united states", "united states of america", "america"].includes(
+      normalized
+    )) {
       return "us";
     }
     if ([
@@ -329,6 +341,38 @@
       "sweden"
     ]);
     return euCountries.has(normalized) ? "eu" : "us";
+  }
+  function getJobDedupKey(url) {
+    const raw = url.trim().toLowerCase();
+    if (!raw) {
+      return "";
+    }
+    try {
+      const parsed = new URL(url);
+      const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
+      const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+      const identifyingParams = [
+        "jk",
+        "vjk",
+        "jobid",
+        "job_id",
+        "jid",
+        "gh_jid",
+        "ashby_jid",
+        "requisitionid",
+        "requisition_id",
+        "reqid"
+      ];
+      for (const param of identifyingParams) {
+        const value = parsed.searchParams.get(param);
+        if (value) {
+          return `${hostname}${path}?${param}=${value.toLowerCase()}`;
+        }
+      }
+      return `${hostname}${path}`;
+    } catch {
+      return raw;
+    }
   }
   function normalizeQuestionKey(question) {
     return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
@@ -409,13 +453,16 @@
     if (!Number.isFinite(numeric)) {
       return DEFAULT_SETTINGS.jobPageLimit;
     }
-    return Math.min(MAX_JOB_PAGE_LIMIT, Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric)));
+    return Math.min(
+      MAX_JOB_PAGE_LIMIT,
+      Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric))
+    );
   }
   function readString(value) {
     return typeof value === "string" ? value.trim() : "";
   }
   function isRecord(value) {
-    return typeof value === "object" && value !== null;
+    return typeof value === "object" && value !== null && !Array.isArray(value);
   }
   function sanitizeSearchMode(value) {
     return value === "startup_careers" || value === "other_job_sites" ? value : DEFAULT_SETTINGS.searchMode;
@@ -426,23 +473,60 @@
 
   // src/background.ts
   var AUTOMATION_RUN_STORAGE_PREFIX = "remote-job-search-run:";
+  var SESSION_STORAGE_PREFIX = "remote-job-search-session:";
+  var ACTIVE_RUNS_STORAGE_KEY = "remote-job-search-active-runs";
   var runLocks = /* @__PURE__ */ new Map();
   var pendingExtensionTabSpawns = /* @__PURE__ */ new Map();
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    void handleMessage(message, sender).then((response) => sendResponse(response)).catch((error) => {
-      sendResponse({
-        ok: false,
-        error: error instanceof Error ? error.message : "Unknown background error."
+  chrome.runtime.onMessage.addListener(
+    (message, sender, sendResponse) => {
+      void handleMessage(message, sender).then((response) => sendResponse(response)).catch((error) => {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown background error."
+        });
       });
-    });
-    return true;
-  });
+      return true;
+    }
+  );
   chrome.tabs.onRemoved.addListener((tabId) => {
     void removeSession(tabId);
   });
   chrome.tabs.onCreated.addListener((tab) => {
     void attachSessionToSiteOpenedChildTab(tab);
   });
+  chrome.runtime.onStartup.addListener(() => {
+    void restorePendingSpawnsFromStorage();
+  });
+  chrome.runtime.onInstalled.addListener(() => {
+    void restorePendingSpawnsFromStorage();
+  });
+  async function restorePendingSpawnsFromStorage() {
+    try {
+      const key = "remote-job-search-pending-spawns";
+      const stored = await chrome.storage.local.get(key);
+      const data = stored[key];
+      if (data && typeof data === "object" && !Array.isArray(data)) {
+        for (const [tabIdStr, count] of Object.entries(data)) {
+          const tabId = Number(tabIdStr);
+          if (Number.isFinite(tabId) && typeof count === "number" && count > 0) {
+            pendingExtensionTabSpawns.set(tabId, count);
+          }
+        }
+      }
+    } catch {
+    }
+  }
+  async function persistPendingSpawns() {
+    try {
+      const key = "remote-job-search-pending-spawns";
+      const data = {};
+      for (const [tabId, count] of pendingExtensionTabSpawns.entries()) {
+        if (count > 0) data[String(tabId)] = count;
+      }
+      await chrome.storage.local.set({ [key]: data });
+    } catch {
+    }
+  }
   async function handleMessage(message, sender) {
     switch (message.type) {
       case "start-automation":
@@ -453,6 +537,12 @@
         return startOtherSitesAutomation(message.tabId);
       case "reserve-job-openings":
         return reserveJobOpeningsForSender(sender, message.requested);
+      case "claim-job-openings":
+        return claimJobOpeningsForSender(
+          sender,
+          message.candidates,
+          message.requested
+        );
       case "get-tab-session":
         return {
           ok: true,
@@ -474,8 +564,6 @@
         return updateSessionFromMessage(message, sender, false);
       case "finalize-session":
         return updateSessionFromMessage(message, sender, true);
-      // FIX: spawn-tabs now reads maxJobPages from the message and enforces it
-      // directly, instead of relying on session stage checks that have race conditions
       case "spawn-tabs": {
         const currentTab = sender.tab;
         if (!currentTab?.id) {
@@ -535,6 +623,12 @@
         }
         return { ok: true };
       }
+      // FIX: Added default case so unknown message types get a clear error
+      default:
+        return {
+          ok: false,
+          error: `Unknown message type: ${message.type ?? "undefined"}`
+        };
     }
   }
   async function updateSessionFromMessage(message, sender, isFinal) {
@@ -580,7 +674,7 @@
     if (!openerSession) {
       return;
     }
-    if (openerSession.site === "unsupported" || (openerSession.phase !== "running" && openerSession.phase !== "waiting_for_verification" || openerSession.stage !== "open-apply" && openerSession.stage !== "autofill-form")) {
+    if (openerSession.site === "unsupported" || openerSession.phase !== "running" && openerSession.phase !== "waiting_for_verification" || openerSession.stage !== "open-apply" && openerSession.stage !== "autofill-form") {
       return;
     }
     const childSession = createSession(
@@ -597,7 +691,9 @@
     childSession.jobSlots = openerSession.jobSlots;
     await setSession(childSession);
     try {
-      await chrome.tabs.sendMessage(openerTabId, { type: "automation-child-tab-opened" });
+      await chrome.tabs.sendMessage(openerTabId, {
+        type: "automation-child-tab-opened"
+      });
     } catch {
     }
   }
@@ -616,8 +712,10 @@
       id: runId,
       jobPageLimit: settings.jobPageLimit,
       openedJobPages: 0,
+      openedJobKeys: [],
       updatedAt: Date.now()
     });
+    await addActiveRunId(runId);
     const session = createSession(
       tabId,
       site,
@@ -633,6 +731,7 @@
     } catch {
       await removeSession(tabId);
       await removeRunState(runId);
+      await removeActiveRunId(runId);
       return {
         ok: false,
         error: "The page could not be reloaded to start a clean automation run."
@@ -669,8 +768,10 @@
       id: runId,
       jobPageLimit: settings.jobPageLimit,
       openedJobPages: 0,
+      openedJobKeys: [],
       updatedAt: Date.now()
     });
+    await addActiveRunId(runId);
     const session = createSession(
       tabId,
       "startup",
@@ -705,7 +806,10 @@
       }
       await delay(SEARCH_OPEN_DELAY_MS);
     }
-    const region = resolveStartupRegion(settings.startupRegion, settings.candidate.country);
+    const region = resolveStartupRegion(
+      settings.startupRegion,
+      settings.candidate.country
+    );
     await setSession(
       createSession(
         tabId,
@@ -749,8 +853,10 @@
       id: runId,
       jobPageLimit: settings.jobPageLimit,
       openedJobPages: 0,
+      openedJobKeys: [],
       updatedAt: Date.now()
     });
+    await addActiveRunId(runId);
     const session = createSession(
       tabId,
       "other_sites",
@@ -785,7 +891,10 @@
       }
       await delay(SEARCH_OPEN_DELAY_MS);
     }
-    const region = resolveStartupRegion(settings.startupRegion, settings.candidate.country);
+    const region = resolveStartupRegion(
+      settings.startupRegion,
+      settings.candidate.country
+    );
     await setSession(
       createSession(
         tabId,
@@ -831,6 +940,43 @@
       ...reservation
     };
   }
+  async function claimJobOpeningsForSender(sender, candidates, requested) {
+    const tabId = sender.tab?.id;
+    if (tabId === void 0) {
+      return {
+        ok: false,
+        approved: 0,
+        approvedUrls: [],
+        remaining: 0,
+        limit: 0
+      };
+    }
+    const session = await getSession(tabId);
+    const runId = session?.runId;
+    if (!runId) {
+      const settings = await readAutomationSettings();
+      const approvedUrls = pickUniqueCandidateUrls(
+        candidates,
+        Math.min(Math.max(0, requested), settings.jobPageLimit)
+      );
+      return {
+        ok: true,
+        approved: approvedUrls.length,
+        approvedUrls,
+        remaining: Math.max(0, settings.jobPageLimit - approvedUrls.length),
+        limit: settings.jobPageLimit
+      };
+    }
+    const reservation = await claimJobOpeningsForRunId(
+      runId,
+      candidates,
+      requested
+    );
+    return {
+      ok: true,
+      ...reservation
+    };
+  }
   async function reserveJobOpeningsForRunId(runId, requested) {
     return withRunLock(runId, async () => {
       const runState = await getRunState(runId);
@@ -838,7 +984,10 @@
         return { approved: 0, remaining: 0, limit: 0 };
       }
       const safeRequested = Math.max(0, Math.floor(requested));
-      const remainingBefore = Math.max(0, runState.jobPageLimit - runState.openedJobPages);
+      const remainingBefore = Math.max(
+        0,
+        runState.jobPageLimit - runState.openedJobPages
+      );
       const approved = Math.min(safeRequested, remainingBefore);
       const remainingAfter = Math.max(0, remainingBefore - approved);
       if (approved > 0) {
@@ -851,6 +1000,56 @@
       return {
         approved,
         remaining: remainingAfter,
+        limit: runState.jobPageLimit
+      };
+    });
+  }
+  async function claimJobOpeningsForRunId(runId, candidates, requested) {
+    return withRunLock(runId, async () => {
+      const runState = await getRunState(runId);
+      if (!runState) {
+        return {
+          approved: 0,
+          approvedUrls: [],
+          remaining: 0,
+          limit: 0
+        };
+      }
+      const safeRequested = Math.max(0, Math.floor(requested));
+      const remainingBefore = Math.max(
+        0,
+        runState.jobPageLimit - runState.openedJobPages
+      );
+      const targetCount = Math.min(safeRequested, remainingBefore);
+      const seenKeys = new Set(runState.openedJobKeys ?? []);
+      const approvedUrls = [];
+      for (const candidate of candidates) {
+        if (approvedUrls.length >= targetCount) {
+          break;
+        }
+        const url = candidate.url?.trim();
+        const key = (candidate.key || getJobDedupKey(url)).trim();
+        if (!url || !key || seenKeys.has(key)) {
+          continue;
+        }
+        seenKeys.add(key);
+        approvedUrls.push(url);
+      }
+      if (approvedUrls.length > 0) {
+        await setRunState({
+          ...runState,
+          openedJobPages: runState.openedJobPages + approvedUrls.length,
+          openedJobKeys: Array.from(seenKeys),
+          updatedAt: Date.now()
+        });
+      }
+      return {
+        approved: approvedUrls.length,
+        approvedUrls,
+        remaining: Math.max(
+          0,
+          runState.jobPageLimit - (runState.openedJobPages + approvedUrls.length)
+        ),
         limit: runState.jobPageLimit
       };
     });
@@ -933,11 +1132,33 @@
     }
     return capped;
   }
+  function pickUniqueCandidateUrls(candidates, limit) {
+    const approvedUrls = [];
+    const seenKeys = /* @__PURE__ */ new Set();
+    const safeLimit = Math.max(0, Math.floor(limit));
+    for (const candidate of candidates) {
+      if (approvedUrls.length >= safeLimit) {
+        break;
+      }
+      const url = candidate.url?.trim();
+      const key = (candidate.key || getJobDedupKey(url)).trim();
+      if (!url || !key || seenKeys.has(key)) {
+        continue;
+      }
+      seenKeys.add(key);
+      approvedUrls.push(url);
+    }
+    return approvedUrls;
+  }
   function reserveExtensionSpawnSlots(tabId, count) {
     if (!Number.isFinite(count) || count <= 0) {
       return;
     }
-    pendingExtensionTabSpawns.set(tabId, (pendingExtensionTabSpawns.get(tabId) ?? 0) + count);
+    pendingExtensionTabSpawns.set(
+      tabId,
+      (pendingExtensionTabSpawns.get(tabId) ?? 0) + count
+    );
+    void persistPendingSpawns();
   }
   function consumePendingExtensionSpawn(tabId) {
     const remaining = pendingExtensionTabSpawns.get(tabId) ?? 0;
@@ -949,30 +1170,63 @@
     } else {
       pendingExtensionTabSpawns.set(tabId, remaining - 1);
     }
+    void persistPendingSpawns();
     return true;
   }
   function releaseExtensionSpawnSlots(tabId, count) {
     if (!Number.isFinite(count) || count <= 0) {
       return;
     }
-    const remaining = Math.max(0, (pendingExtensionTabSpawns.get(tabId) ?? 0) - Math.floor(count));
+    const remaining = Math.max(
+      0,
+      (pendingExtensionTabSpawns.get(tabId) ?? 0) - Math.floor(count)
+    );
     if (remaining <= 0) {
       pendingExtensionTabSpawns.delete(tabId);
-      return;
+    } else {
+      pendingExtensionTabSpawns.set(tabId, remaining);
     }
-    pendingExtensionTabSpawns.set(tabId, remaining);
+    void persistPendingSpawns();
+  }
+  async function addActiveRunId(runId) {
+    const stored = await chrome.storage.local.get(ACTIVE_RUNS_STORAGE_KEY);
+    const activeRuns = Array.isArray(stored[ACTIVE_RUNS_STORAGE_KEY]) ? stored[ACTIVE_RUNS_STORAGE_KEY] : [];
+    if (!activeRuns.includes(runId)) {
+      activeRuns.push(runId);
+      await chrome.storage.local.set({
+        [ACTIVE_RUNS_STORAGE_KEY]: activeRuns
+      });
+    }
+  }
+  async function removeActiveRunId(runId) {
+    const stored = await chrome.storage.local.get(ACTIVE_RUNS_STORAGE_KEY);
+    const activeRuns = Array.isArray(stored[ACTIVE_RUNS_STORAGE_KEY]) ? stored[ACTIVE_RUNS_STORAGE_KEY] : [];
+    const filtered = activeRuns.filter((id) => id !== runId);
+    await chrome.storage.local.set({
+      [ACTIVE_RUNS_STORAGE_KEY]: filtered
+    });
   }
   async function removeRunStateIfUnused(runId) {
-    const stored = await chrome.storage.local.get(null);
-    const sessionPrefix = "remote-job-search-session:";
-    const hasActiveSession = Object.entries(stored).some(([key, value]) => {
-      if (!key.startsWith(sessionPrefix) || typeof value !== "object" || value === null) {
+    const allStored = await chrome.storage.local.get(null);
+    const allKeys = Object.keys(allStored);
+    const sessionKeys = allKeys.filter(
+      (key) => key.startsWith(SESSION_STORAGE_PREFIX)
+    );
+    if (sessionKeys.length === 0) {
+      await removeRunState(runId);
+      await removeActiveRunId(runId);
+      return;
+    }
+    const sessionEntries = await chrome.storage.local.get(sessionKeys);
+    const hasActiveSession = Object.values(sessionEntries).some((value) => {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
         return false;
       }
       return "runId" in value && value.runId === runId;
     });
     if (!hasActiveSession) {
       await removeRunState(runId);
+      await removeActiveRunId(runId);
     }
   }
   function getReadableSiteName(site) {
@@ -991,6 +1245,8 @@
         return "Other Job Sites";
       case "chatgpt":
         return "ChatGPT";
+      case "unsupported":
+        return "Unsupported Site";
     }
   }
   function getReadableStageName(stage) {
@@ -1041,7 +1297,11 @@
         finish(() => reject(new Error("Timed out reloading tab.")));
       }, 3e4);
       chrome.tabs.reload(tabId).catch((error) => {
-        finish(() => reject(error instanceof Error ? error : new Error("Failed to reload tab.")));
+        finish(
+          () => reject(
+            error instanceof Error ? error : new Error("Failed to reload tab.")
+          )
+        );
       });
     });
   }

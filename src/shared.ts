@@ -176,25 +176,81 @@ export const RESUME_KIND_LABELS: Record<ResumeKind, string> = {
 export const SEARCH_DEFINITIONS: SearchDefinition[] = [
   { label: "Front End", query: "front end developer", resumeKind: "front_end" },
   { label: "Back End", query: "back end developer", resumeKind: "back_end" },
-  { label: "Full Stack", query: "full stack developer", resumeKind: "full_stack" },
+  {
+    label: "Full Stack",
+    query: "full stack developer",
+    resumeKind: "full_stack",
+  },
 ];
 
 export const STARTUP_COMPANIES: StartupCompany[] = [
   { name: "Ramp", careersUrl: "https://ramp.com/careers", regions: ["us"] },
-  { name: "Vercel", careersUrl: "https://vercel.com/careers", regions: ["us"] },
-  { name: "Plaid", careersUrl: "https://plaid.com/careers/", regions: ["us"] },
-  { name: "Figma", careersUrl: "https://www.figma.com/careers/", regions: ["us"] },
-  { name: "Notion", careersUrl: "https://www.notion.so/careers", regions: ["us"] },
-  { name: "Monzo", careersUrl: "https://monzo.com/careers/", regions: ["uk"] },
+  {
+    name: "Vercel",
+    careersUrl: "https://vercel.com/careers",
+    regions: ["us"],
+  },
+  {
+    name: "Plaid",
+    careersUrl: "https://plaid.com/careers/",
+    regions: ["us"],
+  },
+  {
+    name: "Figma",
+    careersUrl: "https://www.figma.com/careers/",
+    regions: ["us"],
+  },
+  {
+    name: "Notion",
+    careersUrl: "https://www.notion.so/careers",
+    regions: ["us"],
+  },
+  {
+    name: "Monzo",
+    careersUrl: "https://monzo.com/careers/",
+    regions: ["uk"],
+  },
   { name: "Wise", careersUrl: "https://wise.jobs/", regions: ["uk"] },
-  { name: "Synthesia", careersUrl: "https://synthesia.io/careers", regions: ["uk"] },
-  { name: "Snyk", careersUrl: "https://snyk.io/careers/", regions: ["uk"] },
-  { name: "Checkout.com", careersUrl: "https://www.checkout.com/careers", regions: ["uk"] },
-  { name: "N26", careersUrl: "https://n26.com/en-eu/careers", regions: ["eu"] },
-  { name: "Bolt", careersUrl: "https://bolt.eu/en/careers/", regions: ["eu"] },
-  { name: "Adyen", careersUrl: "https://careers.adyen.com/", regions: ["eu"] },
-  { name: "GetYourGuide", careersUrl: "https://www.getyourguide.careers/", regions: ["eu"] },
-  { name: "Klarna", careersUrl: "https://www.klarna.com/careers/", regions: ["eu"] },
+  {
+    name: "Synthesia",
+    careersUrl: "https://synthesia.io/careers",
+    regions: ["uk"],
+  },
+  {
+    name: "Snyk",
+    careersUrl: "https://snyk.io/careers/",
+    regions: ["uk"],
+  },
+  {
+    name: "Checkout.com",
+    careersUrl: "https://www.checkout.com/careers",
+    regions: ["uk"],
+  },
+  {
+    name: "N26",
+    careersUrl: "https://n26.com/en-eu/careers",
+    regions: ["eu"],
+  },
+  {
+    name: "Bolt",
+    careersUrl: "https://bolt.eu/en/careers/",
+    regions: ["eu"],
+  },
+  {
+    name: "Adyen",
+    careersUrl: "https://careers.adyen.com/",
+    regions: ["eu"],
+  },
+  {
+    name: "GetYourGuide",
+    careersUrl: "https://www.getyourguide.careers/",
+    regions: ["eu"],
+  },
+  {
+    name: "Klarna",
+    careersUrl: "https://www.klarna.com/careers/",
+    regions: ["eu"],
+  },
 ];
 
 export const OTHER_JOB_SITE_TARGETS: CuratedJobSiteTarget[] = [
@@ -346,8 +402,7 @@ export const OTHER_JOB_SITE_TARGETS: CuratedJobSiteTarget[] = [
 
 export const SEARCH_OPEN_DELAY_MS = 900;
 export const VERIFICATION_POLL_MS = 2500;
-// FIX: Add verification timeout so it doesn't loop forever on false positives
-export const VERIFICATION_TIMEOUT_MS = 300_000; // 5 minutes
+export const VERIFICATION_TIMEOUT_MS = 300_000;
 export const AUTOMATION_SETTINGS_STORAGE_KEY = "remote-job-search-settings";
 export const AI_REQUEST_STORAGE_PREFIX = "remote-job-search-ai-request:";
 export const AI_RESPONSE_STORAGE_PREFIX = "remote-job-search-ai-response:";
@@ -386,7 +441,10 @@ export function detectSiteFromUrl(url: string): SiteKey | null {
       return "indeed";
     }
 
-    if (hostname === "ziprecruiter.com" || hostname.endsWith(".ziprecruiter.com")) {
+    if (
+      hostname === "ziprecruiter.com" ||
+      hostname.endsWith(".ziprecruiter.com")
+    ) {
       return "ziprecruiter";
     }
 
@@ -547,9 +605,13 @@ export function inferStartupRegionFromCountry(
   }
 
   if (
-    ["us", "usa", "united states", "united states of america", "america"].includes(
-      normalized
-    )
+    [
+      "us",
+      "usa",
+      "united states",
+      "united states of america",
+      "america",
+    ].includes(normalized)
   ) {
     return "us";
   }
@@ -607,53 +669,85 @@ export function inferStartupRegionFromCountry(
   return euCountries.has(normalized) ? "eu" : "us";
 }
 
-// FIX: Updated Monster and ZipRecruiter search URL builders
+const CANONICAL_JOB_BOARD_ORIGINS: Record<JobBoardSite, string> = {
+  indeed: "https://www.indeed.com",
+  ziprecruiter: "https://www.ziprecruiter.com",
+  dice: "https://www.dice.com",
+  monster: "https://www.monster.com",
+};
+
+export function getJobDedupKey(url: string): string {
+  const raw = url.trim().toLowerCase();
+  if (!raw) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+    const identifyingParams = [
+      "jk",
+      "vjk",
+      "jobid",
+      "job_id",
+      "jid",
+      "gh_jid",
+      "ashby_jid",
+      "requisitionid",
+      "requisition_id",
+      "reqid",
+    ];
+
+    for (const param of identifyingParams) {
+      const value = parsed.searchParams.get(param);
+      if (value) {
+        return `${hostname}${path}?${param}=${value.toLowerCase()}`;
+      }
+    }
+
+    return `${hostname}${path}`;
+  } catch {
+    return raw;
+  }
+}
+
 function buildSingleSearchUrl(
   site: JobBoardSite,
-  origin: string,
+  _origin: string,
   query: string
 ): string {
+  const baseOrigin = CANONICAL_JOB_BOARD_ORIGINS[site];
+
   switch (site) {
     case "indeed": {
-      const url = new URL("/jobs", origin);
+      const url = new URL("/jobs", baseOrigin);
       url.searchParams.set("q", query);
       url.searchParams.set("l", "Remote");
       return url.toString();
     }
 
-    // FIX: ZipRecruiter now uses /jobs-search path
     case "ziprecruiter": {
-      const url = new URL("/jobs-search", origin);
+      const url = new URL("/jobs-search", baseOrigin);
       url.searchParams.set("search", query);
       url.searchParams.set("location", "Remote");
       return url.toString();
     }
 
     case "dice": {
-      const url = new URL("/jobs", origin);
+      const url = new URL("/jobs", baseOrigin);
       url.searchParams.set("q", query);
       url.searchParams.set("location", "Remote");
       return url.toString();
     }
 
-    // FIX: Monster now uses /jobs/search path
     case "monster": {
-      const url = new URL("/jobs/search", origin);
+      const url = new URL("/jobs/search", baseOrigin);
       url.searchParams.set("q", query);
       url.searchParams.set("where", "Remote");
       return url.toString();
     }
   }
-}
-
-function slugifySearchQuery(query: string): string {
-  const slug = query
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-  return slug || "developer";
 }
 
 export function sleep(ms: number): Promise<void> {
@@ -662,15 +756,11 @@ export function sleep(ms: number): Promise<void> {
   });
 }
 
-// FIX: Reduced false positives – "just a moment" and "captcha" only trigger
-// on minimal pages (< 800 chars) to avoid matching legitimate content.
-// Removed overly broad [id*='captcha'] and [class*='captcha'] selectors.
 export function isProbablyHumanVerificationPage(doc: Document): boolean {
   const title = doc.title.toLowerCase();
   const bodyText = (doc.body?.innerText ?? "").toLowerCase().slice(0, 6000);
   const bodyLength = (doc.body?.innerText ?? "").trim().length;
 
-  // Strong signals – always trigger regardless of page size
   const strongPhrases = [
     "verify you are human",
     "verification required",
@@ -691,7 +781,6 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
     return true;
   }
 
-  // Weak signals – only match on pages with very little content (challenge pages)
   const isMinimalPage = bodyLength < 800;
 
   if (isMinimalPage) {
@@ -711,7 +800,6 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
     }
   }
 
-  // Element-based detection for known captcha providers
   const verificationSelectors = [
     "iframe[src*='captcha']",
     "iframe[title*='challenge']",
@@ -734,7 +822,9 @@ export function normalizeQuestionKey(question: string): string {
 }
 
 export async function readAutomationSettings(): Promise<AutomationSettings> {
-  const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
+  const stored = await chrome.storage.local.get(
+    AUTOMATION_SETTINGS_STORAGE_KEY
+  );
   return sanitizeAutomationSettings(stored[AUTOMATION_SETTINGS_STORAGE_KEY]);
 }
 
@@ -766,7 +856,9 @@ export async function readAiAnswerRequest(
   return isRecord(value) ? sanitizeAiAnswerRequest(value) : null;
 }
 
-export async function deleteAiAnswerRequest(requestId: string): Promise<void> {
+export async function deleteAiAnswerRequest(
+  requestId: string
+): Promise<void> {
   await chrome.storage.local.remove(getAiRequestStorageKey(requestId));
 }
 
@@ -794,9 +886,13 @@ export async function deleteAiAnswerResponse(
   await chrome.storage.local.remove(getAiResponseStorageKey(requestId));
 }
 
-export function sanitizeAutomationSettings(raw: unknown): AutomationSettings {
+export function sanitizeAutomationSettings(
+  raw: unknown
+): AutomationSettings {
   const source = isRecord(raw) ? raw : {};
-  const candidateSource = isRecord(source.candidate) ? source.candidate : {};
+  const candidateSource = isRecord(source.candidate)
+    ? source.candidate
+    : {};
   const resumesSource = isRecord(source.resumes) ? source.resumes : {};
   const answersSource = isRecord(source.answers) ? source.answers : {};
 
@@ -900,7 +996,6 @@ function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-// FIX: Exclude arrays so corrupted data doesn't silently produce empty values
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -912,7 +1007,10 @@ function sanitizeSearchMode(value: unknown): SearchMode {
 }
 
 function sanitizeStartupRegion(value: unknown): StartupRegion {
-  return value === "us" || value === "uk" || value === "eu" || value === "auto"
+  return value === "us" ||
+    value === "uk" ||
+    value === "eu" ||
+    value === "auto"
     ? value
     : DEFAULT_SETTINGS.startupRegion;
 }
@@ -978,7 +1076,9 @@ function sanitizeResumeAsset(value: unknown): ResumeAsset | undefined {
 }
 
 function sanitizeResumeKind(value: unknown): ResumeKind | undefined {
-  return value === "front_end" || value === "back_end" || value === "full_stack"
+  return value === "front_end" ||
+    value === "back_end" ||
+    value === "full_stack"
     ? value
     : undefined;
 }
