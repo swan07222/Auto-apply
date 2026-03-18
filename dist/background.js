@@ -574,13 +574,13 @@
     );
     await setSession(session);
     try {
-      await chrome.tabs.sendMessage(tabId, { type: "start-automation", session });
+      await reloadTabAndWait(tabId);
     } catch {
       await removeSession(tabId);
       await removeRunState(runId);
       return {
         ok: false,
-        error: "The page is still loading. Wait a moment and try again."
+        error: "The page could not be reloaded to start a clean automation run."
       };
     }
     return {
@@ -944,6 +944,49 @@
   function delay(ms) {
     return new Promise((resolve) => {
       globalThis.setTimeout(resolve, ms);
+    });
+  }
+  async function reloadTabAndWait(tabId) {
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      let timeoutId = null;
+      const cleanup = () => {
+        chrome.tabs.onUpdated.removeListener(handleUpdated);
+        chrome.tabs.onRemoved.removeListener(handleRemoved);
+        if (timeoutId !== null) {
+          globalThis.clearTimeout(timeoutId);
+        }
+      };
+      const finish = (callback) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        callback();
+      };
+      const handleUpdated = (updatedTabId, changeInfo) => {
+        if (updatedTabId !== tabId) {
+          return;
+        }
+        if (changeInfo.status === "complete") {
+          finish(resolve);
+        }
+      };
+      const handleRemoved = (removedTabId) => {
+        if (removedTabId !== tabId) {
+          return;
+        }
+        finish(() => reject(new Error("The tab was closed before automation could start.")));
+      };
+      chrome.tabs.onUpdated.addListener(handleUpdated);
+      chrome.tabs.onRemoved.addListener(handleRemoved);
+      timeoutId = globalThis.setTimeout(() => {
+        finish(() => reject(new Error("Timed out while reloading the tab.")));
+      }, 3e4);
+      chrome.tabs.reload(tabId).catch((error) => {
+        finish(() => reject(error instanceof Error ? error : new Error("Failed to reload the tab.")));
+      });
     });
   }
 })();

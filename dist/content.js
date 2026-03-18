@@ -342,6 +342,26 @@
   }
 
   // src/content.ts
+  function createEmptyAutofillResult() {
+    return {
+      filledFields: 0,
+      usedSavedAnswers: 0,
+      usedProfileAnswers: 0,
+      uploadedResume: null,
+      generatedAiAnswers: 0,
+      copiedAiAnswers: 0
+    };
+  }
+  function mergeAutofillResult(target, source) {
+    target.filledFields += source.filledFields;
+    target.usedSavedAnswers += source.usedSavedAnswers;
+    target.usedProfileAnswers += source.usedProfileAnswers;
+    target.generatedAiAnswers += source.generatedAiAnswers;
+    target.copiedAiAnswers += source.copiedAiAnswers;
+    if (!target.uploadedResume && source.uploadedResume) {
+      target.uploadedResume = source.uploadedResume;
+    }
+  }
   var status = createInitialStatus();
   var currentStage = "bootstrap";
   var currentLabel;
@@ -597,12 +617,14 @@
     updateStatus("running", "Looking for the application form and blank fields...", true, "autofill-form");
     await waitForHumanVerificationToClear();
     await waitForLikelyApplicationSurface(site);
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    const combinedResult = createEmptyAutofillResult();
+    for (let attempt = 0; attempt < 5; attempt += 1) {
       const settings = await readAutomationSettings();
       const result = await autofillVisibleApplication(settings);
+      mergeAutofillResult(combinedResult, result);
       if (result.filledFields > 0 || result.uploadedResume) {
-        updateStatus("completed", buildAutofillSummary(result), false, "autofill-form");
-        return;
+        await sleep(result.uploadedResume ? 3e3 : 1200);
+        continue;
       }
       const followUpAction = findApplyAction(null, "follow-up");
       if (!followUpAction) {
@@ -619,8 +641,9 @@
     }
     const finalSettings = await readAutomationSettings();
     const finalResult = await autofillVisibleApplication(finalSettings);
-    if (finalResult.filledFields > 0 || finalResult.uploadedResume) {
-      updateStatus("completed", buildAutofillSummary(finalResult), false, "autofill-form");
+    mergeAutofillResult(combinedResult, finalResult);
+    if (combinedResult.filledFields > 0 || combinedResult.uploadedResume) {
+      updateStatus("completed", buildAutofillSummary(combinedResult), false, "autofill-form");
       return;
     }
     if (hasLikelyApplicationForm()) {
@@ -990,19 +1013,11 @@
     };
   }
   async function autofillVisibleApplication(settings) {
-    const result = {
-      filledFields: 0,
-      usedSavedAnswers: 0,
-      usedProfileAnswers: 0,
-      uploadedResume: null,
-      generatedAiAnswers: 0,
-      copiedAiAnswers: 0
-    };
+    const result = createEmptyAutofillResult();
     if (settings.autoUploadResumes) {
       const uploadedResume = await uploadResumeIfNeeded(settings);
       if (uploadedResume) {
         result.uploadedResume = uploadedResume;
-        result.filledFields += 1;
       }
     }
     const essayFields = collectEssayFieldsNeedingAi(settings);
