@@ -25,6 +25,7 @@ import {
   getResumeKindLabel,
   getJobDedupKey,
   getSiteLabel,
+  inferResumeKindFromTitle,
   isProbablyHumanVerificationPage,
   normalizeQuestionKey,
   readAiAnswerRequest,
@@ -83,7 +84,7 @@ type ContentRequest =
 
 const MAX_AUTOFILL_STEPS = 15;
 const OVERLAY_AUTO_HIDE_MS = 10_000;
-const MAX_STAGE_DEPTH = 3;
+const MAX_STAGE_DEPTH = 5; // FIX: Increased from 3→5 for deeper company-site flows
 
 // ─── RESULT HELPERS ──────────────────────────────────────────────────────────
 
@@ -202,8 +203,6 @@ renderOverlay();
 
 // ─── RESUME / RUN ────────────────────────────────────────────────────────────
 
-// FIX: Increased retries from 10→20, relaxed early-exit for non-detected sites
-// so that startup/other_sites tabs reliably pick up their session
 async function resumeAutomationIfNeeded(): Promise<void> {
   const detectedSite = detectSiteFromUrl(window.location.href);
   childApplicationTabOpened = false;
@@ -420,7 +419,24 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     return;
   }
 
+  // FIX: For startup/other_sites, infer resume kind per-job from title
+  const candidates = collectJobDetailCandidates(site);
+  const titleMap = new Map<string, string>();
+  for (const c of candidates) {
+    const key = getJobDedupKey(c.url);
+    if (key && c.title) titleMap.set(key, c.title);
+  }
+
   const items: SpawnTabRequest[] = approvedUrls.map((url) => {
+    // FIX: Infer resume kind from job title for startup/other_sites
+    let itemResumeKind = currentResumeKind;
+    if (site === "startup" || site === "other_sites") {
+      const jobTitle = titleMap.get(getJobDedupKey(url)) ?? "";
+      if (jobTitle) {
+        itemResumeKind = inferResumeKindFromTitle(jobTitle);
+      }
+    }
+
     if (isLikelyApplyUrl(url, site)) {
       return {
         url,
@@ -429,7 +445,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
         runId: currentRunId,
         message: `Autofilling ${labelPrefix}${getSiteLabel(site)} apply page...`,
         label: currentLabel,
-        resumeKind: currentResumeKind,
+        resumeKind: itemResumeKind,
       };
     }
     return {
@@ -439,7 +455,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
       runId: currentRunId,
       message: `Opening ${labelPrefix}${getSiteLabel(site)} job page...`,
       label: currentLabel,
-      resumeKind: currentResumeKind,
+      resumeKind: itemResumeKind,
     };
   });
 
@@ -519,19 +535,35 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
   for (let attempt = 0; attempt < 30; attempt += 1) {
     if (window.location.href !== urlBeforeSearch) {
-      currentStage = "autofill-form";
+      // FIX: After navigation, re-enter open-apply to handle company site redirects
+      await sleep(2000);
+      await waitForHumanVerificationToClear();
+
+      if (hasLikelyApplicationForm() || hasLikelyApplicationSurface(site)) {
+        currentStage = "autofill-form";
+        updateStatus(
+          "running",
+          "Application form found after navigation. Autofilling...",
+          true,
+          "autofill-form"
+        );
+        await waitForLikelyApplicationSurface(site);
+        await runAutofillStage(site);
+        return;
+      }
+
+      // FIX: Recursively try open-apply on the new page (company career page)
       updateStatus(
         "running",
-        "Page navigated. Looking for application form...",
+        "Navigated to new page. Looking for apply button...",
         true,
-        "autofill-form"
+        "open-apply"
       );
-      await sleep(1500);
-      await waitForLikelyApplicationSurface(site);
-      await runAutofillStage(site);
+      await runOpenApplyStage(site);
       return;
     }
 
+    // FIX: Try ALL site-specific finders regardless of site type
     if (site === "monster") {
       action = findMonsterApplyAction();
       if (action) break;
@@ -542,19 +574,12 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       if (action) break;
     }
 
-    if (site === "startup" || site === "other_sites") {
-      action = findApplyAction(site, "job-page");
-      if (action) break;
+    // FIX: Always try generic company-site action first, then site-specific
+    action = findCompanySiteAction();
+    if (action) break;
 
-      action = findCompanySiteAction();
-      if (action) break;
-    } else {
-      action = findCompanySiteAction();
-      if (action) break;
-
-      action = findApplyAction(site, "job-page");
-      if (action) break;
-    }
+    action = findApplyAction(site, "job-page");
+    if (action) break;
 
     if (hasLikelyApplicationForm()) {
       currentStage = "autofill-form";
@@ -624,7 +649,8 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       "running",
       `Navigating to ${action.description}...`,
       true,
-      "autofill-form"
+      // FIX: Keep stage as open-apply so we can find the apply button on company page
+      "open-apply"
     );
     navigateCurrentTab(action.url);
     return;
@@ -693,7 +719,8 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
         "running",
         `Navigating to ${action.description}...`,
         true,
-        "autofill-form"
+        // FIX: Use open-apply stage so post-navigation picks up correctly
+        "open-apply"
       );
       navigateCurrentTab(href);
       return;
@@ -710,11 +737,23 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     if (window.location.href !== urlBeforeClick) {
       await sleep(2000);
       await waitForHumanVerificationToClear();
-      await waitForLikelyApplicationSurface(site);
+
+      // FIX: After click-navigation, check if we landed on an apply page or need to keep searching
       if (hasLikelyApplicationSurface(site)) {
+        await waitForLikelyApplicationSurface(site);
         await runAutofillStage(site);
         return;
       }
+
+      // FIX: If we navigated to a company page, recursively look for apply button
+      currentStage = "open-apply";
+      updateStatus(
+        "running",
+        "Navigated to company page. Looking for apply button...",
+        true,
+        "open-apply"
+      );
+      await runOpenApplyStage(site);
       return;
     }
 
@@ -765,6 +804,34 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
   if (childApplicationTabOpened) return;
 
+  // FIX: Try company site action as a retry before giving up
+  const retryCompanyAction = findCompanySiteAction();
+  if (retryCompanyAction) {
+    updateStatus(
+      "running",
+      `Retrying: navigating to ${retryCompanyAction.description}...`,
+      true,
+      "open-apply"
+    );
+    if (retryCompanyAction.type === "navigate") {
+      navigateCurrentTab(retryCompanyAction.url);
+      return;
+    }
+    retryCompanyAction.element.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+    await sleep(400);
+    performClickAction(retryCompanyAction.element);
+    await sleep(3000);
+
+    if (window.location.href !== urlBeforeClick) {
+      await waitForHumanVerificationToClear();
+      await runOpenApplyStage(site);
+      return;
+    }
+  }
+
   const retryAction = findApplyAction(site, "job-page");
   if (
     retryAction &&
@@ -789,6 +856,17 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       window.location.href !== urlBeforeClick ||
       hasLikelyApplicationSurface(site)
     ) {
+      if (window.location.href !== urlBeforeClick) {
+        await waitForHumanVerificationToClear();
+        if (hasLikelyApplicationSurface(site)) {
+          await waitForLikelyApplicationSurface(site);
+          await runAutofillStage(site);
+          return;
+        }
+        // FIX: Try open-apply recursively on the new page
+        await runOpenApplyStage(site);
+        return;
+      }
       await waitForLikelyApplicationSurface(site);
       await runAutofillStage(site);
       return;
@@ -803,12 +881,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   );
 }
 
-// ─── SITE-SPECIFIC APPLY FINDERS ─────────────────────────────────────────────
-
-// FIX: Renamed from findIndeedCompanySiteAction → findCompanySiteAction
-// Now works for ALL sites (Monster, ZipRecruiter, startup, other_sites, etc.)
-// FIX: Completely rewritten Monster apply action finder with robust
-// data-attribute extraction from the apply-button-wc web component
 // ─── AUTOFILL ────────────────────────────────────────────────────────────────
 
 async function runAutofillStage(site: SiteKey): Promise<void> {
@@ -903,7 +975,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       continue;
     }
 
-    // FIX: Use generic findCompanySiteAction for ALL sites
+    // FIX: Try company site action during autofill for ALL sites
     const companySiteAction = findCompanySiteAction();
     if (companySiteAction) {
       noProgressCount = 0;
@@ -911,7 +983,8 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
         "running",
         `Continuing to ${companySiteAction.description}...`,
         true,
-        "autofill-form"
+        // FIX: Use open-apply stage so the recursive handler works
+        "open-apply"
       );
 
       previousUrl = window.location.href;
@@ -928,6 +1001,15 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       await sleep(400);
       performClickAction(companySiteAction.element);
       await sleep(2500);
+
+      // FIX: After clicking company site link, check if we navigated
+      if (window.location.href !== previousUrl) {
+        await waitForHumanVerificationToClear();
+        // Re-enter open-apply to handle the company career page
+        await runOpenApplyStage(site);
+        return;
+      }
+
       await waitForLikelyApplicationSurface(site);
       continue;
     }
@@ -956,6 +1038,19 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       await sleep(400);
       performClickAction(followUp.element);
       await sleep(2500);
+
+      // FIX: After clicking follow-up, check if we navigated to a new page
+      if (window.location.href !== previousUrl) {
+        await waitForHumanVerificationToClear();
+        if (hasLikelyApplicationSurface(site)) {
+          await waitForLikelyApplicationSurface(site);
+          continue;
+        }
+        // Might have landed on company page
+        await runOpenApplyStage(site);
+        return;
+      }
+
       await waitForLikelyApplicationSurface(site);
       continue;
     }
@@ -1063,7 +1158,6 @@ async function waitForHumanVerificationToClear(): Promise<void> {
   await sleep(1000);
 }
 
-// FIX: More aggressive scrolling for career pages that load content dynamically
 async function waitForJobDetailUrls(
   site: SiteKey
 ): Promise<string[]> {
@@ -1079,7 +1173,6 @@ async function waitForJobDetailUrls(
     );
     if (urls.length > 0) return urls;
 
-    // More aggressive scrolling for career pages
     if (isCareerSite) {
       if (attempt % 3 === 0) {
         window.scrollTo({
@@ -2633,17 +2726,18 @@ async function claimJobOpenings(
   urls: string[],
   requested: number
 ): Promise<string[]> {
-  const candidates = Array.from(
-    new Map(
-      urls
-        .map(
-          (url) => [getJobDedupKey(url), url] as const
-        )
-        .filter(
-          ([key, url]) => Boolean(key) && Boolean(url)
-        )
-    ).entries()
-  ).map(([key, url]) => ({ key, url }));
+  // FIX: Deduplicate URLs before sending to background
+  const uniqueMap = new Map<string, string>();
+  for (const url of urls) {
+    const key = getJobDedupKey(url);
+    if (key && !uniqueMap.has(key)) {
+      uniqueMap.set(key, url);
+    }
+  }
+
+  const candidates = Array.from(uniqueMap.entries()).map(
+    ([key, url]) => ({ key, url })
+  );
 
   if (candidates.length === 0) {
     return [];
@@ -2981,4 +3075,3 @@ function buildAutofillSummary(
     ? "Application opened, nothing auto-filled."
     : `${parts.join(", ")}. Review before submitting.`;
 }
-

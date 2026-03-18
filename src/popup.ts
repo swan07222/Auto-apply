@@ -126,16 +126,7 @@ async function initialize(): Promise<void> {
   updateOverviewPreview();
 
   // FIX: Show mode-aware site name from the start
-  const searchMode = getSelectedSearchMode();
-  if (searchMode === "startup_careers") {
-    siteName.textContent = "Startup Careers";
-  } else if (searchMode === "other_job_sites") {
-    siteName.textContent = "Other Job Sites";
-  } else {
-    siteName.textContent = getSiteLabel(
-      isJobBoardSite(activeSite) ? activeSite : null
-    );
-  }
+  updateSiteNameDisplay();
 
   if (!activeTabId) {
     applyStatus(
@@ -282,7 +273,6 @@ async function startAutomation(): Promise<void> {
   await refreshStatus();
 }
 
-// FIX: Complete rewrite of refreshStatus to properly handle all modes
 async function refreshStatus(): Promise<void> {
   await refreshActiveTabContext();
 
@@ -293,17 +283,21 @@ async function refreshStatus(): Promise<void> {
   const searchMode = getSelectedSearchMode();
   const activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
 
-  // 1. Check background session — most authoritative for automation state
-  const backgroundResponse = await chrome.runtime.sendMessage({
-    type: "get-tab-session",
-    tabId: activeTabId,
-  });
+  // FIX: Update site name display on every refresh
+  updateSiteNameDisplay();
 
-  const bgSession = backgroundResponse?.session as
-    | AutomationStatus
-    | undefined;
+  // 1. Check background session
+  let bgSession: AutomationStatus | undefined;
+  try {
+    const backgroundResponse = await chrome.runtime.sendMessage({
+      type: "get-tab-session",
+      tabId: activeTabId,
+    });
+    bgSession = backgroundResponse?.session as AutomationStatus | undefined;
+  } catch {
+    // Extension context may be invalidated
+  }
 
-  // If background has a non-idle session, always use it (automation in progress or finished)
   if (bgSession && bgSession.phase !== "idle") {
     applyStatus(bgSession);
     startButton.disabled =
@@ -313,7 +307,7 @@ async function refreshStatus(): Promise<void> {
     return;
   }
 
-  // 2. Check content script status — only use for active non-idle, non-unsupported states
+  // 2. Check content script status
   const contentStatus = await getContentStatus(activeTabId);
 
   if (
@@ -330,7 +324,6 @@ async function refreshStatus(): Promise<void> {
   }
 
   // 3. Show mode-specific idle state
-  // FIX: Startup and Other modes always show ready state, regardless of current page
   if (searchMode === "startup_careers") {
     applyStatus(
       createStatus(
@@ -391,25 +384,27 @@ async function getContentStatus(
   }
 }
 
-function applyStatus(status: AutomationStatus): void {
+// FIX: Extracted site name display into its own function for consistency
+function updateSiteNameDisplay(): void {
   const searchMode = getSelectedSearchMode();
-  const statusSite = status.site === "unsupported" ? null : status.site;
-  const displaySite = isJobBoardSite(statusSite)
-    ? statusSite
-    : isJobBoardSite(activeSite)
-      ? activeSite
-      : null;
+  if (searchMode === "startup_careers") {
+    siteName.textContent = "Startup Careers";
+  } else if (searchMode === "other_job_sites") {
+    siteName.textContent = "Other Job Sites";
+  } else {
+    // FIX: For job board mode, always show the detected site name including Monster
+    siteName.textContent = isJobBoardSite(activeSite)
+      ? getSiteLabel(activeSite)
+      : "No supported site";
+  }
+}
 
-  // FIX: Always show mode-aware site name
-  siteName.textContent =
-    searchMode === "startup_careers"
-      ? "Startup Careers"
-      : searchMode === "other_job_sites"
-        ? "Other Job Sites"
-        : getSiteLabel(displaySite);
-
+function applyStatus(status: AutomationStatus): void {
   statusPanel.dataset.phase = status.phase;
   statusText.textContent = status.message;
+
+  // FIX: Don't override the site name here — let updateSiteNameDisplay handle it
+  // This prevents the site name from flickering between status updates
 }
 
 async function saveCurrentSettings(showFeedback: boolean): Promise<void> {
@@ -608,6 +603,7 @@ function updateModeUi(): void {
       : searchMode === "other_job_sites"
         ? "Start Other Sites Search"
         : "Start Auto Search";
+  updateSiteNameDisplay();
 }
 
 function updateOverviewPreview(): void {
@@ -678,11 +674,17 @@ function requireElement<T extends Element>(selector: string): T {
 }
 
 async function refreshActiveTabContext(): Promise<void> {
-  const [tab] = await chrome.tabs.query({
-    active: true,
-    currentWindow: true,
-  });
+  try {
+    const [tab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
 
-  activeTabId = tab?.id ?? null;
-  activeSite = detectSiteFromUrl(tab?.url ?? "");
+    activeTabId = tab?.id ?? null;
+    activeSite = detectSiteFromUrl(tab?.url ?? "");
+  } catch {
+    // FIX: Gracefully handle query failures (e.g. extension context invalidated)
+    activeTabId = null;
+    activeSite = null;
+  }
 }

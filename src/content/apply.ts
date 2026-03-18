@@ -34,6 +34,18 @@ const COMPANY_SITE_GATE_TOKENS = [
   "employer's website",
   "company career",
   "employer career",
+  // FIX: Additional tokens for Monster and other sites
+  "apply on company's site",
+  "apply on the employer",
+  "apply at company",
+  "apply at employer",
+  "go to company site",
+  "go to employer site",
+  "view on company site",
+  "apply directly",
+  "direct application",
+  "original posting",
+  "original job posting",
 ];
 
 export function findCompanySiteAction(): ApplyAction | null {
@@ -95,6 +107,8 @@ export function findCompanySiteAction(): ApplyAction | null {
         "sign up",
         "dismiss",
         "close",
+        "back to search",
+        "back to results",
       ].some((blocked) => lower.includes(blocked))
     ) {
       continue;
@@ -112,7 +126,7 @@ export function findCompanySiteAction(): ApplyAction | null {
       lower.includes("apply on employer")
     ) {
       score += 105;
-    } else if (lower.includes("apply externally")) {
+    } else if (lower.includes("apply externally") || lower.includes("apply directly")) {
       score += 102;
     } else if (
       lower.includes("company site") ||
@@ -121,10 +135,12 @@ export function findCompanySiteAction(): ApplyAction | null {
       score += 96;
     } else if (
       lower.includes("visit company") ||
-      lower.includes("visit employer")
+      lower.includes("visit employer") ||
+      lower.includes("go to company") ||
+      lower.includes("go to employer")
     ) {
       score += 90;
-    } else if (lower.includes("external application")) {
+    } else if (lower.includes("external application") || lower.includes("direct application")) {
       score += 85;
     } else if (
       lower.includes("apply now") ||
@@ -154,7 +170,8 @@ export function findCompanySiteAction(): ApplyAction | null {
       score += 18;
     }
 
-    const threshold = hasGateText ? 50 : 85;
+    // FIX: Lower threshold so company-site buttons are found more reliably
+    const threshold = hasGateText ? 40 : 75;
     if (score < threshold) {
       continue;
     }
@@ -197,14 +214,17 @@ export function findCompanySiteAction(): ApplyAction | null {
   };
 }
 
+// FIX: Completely rewritten Monster apply action finder
 export function findMonsterApplyAction(): ApplyAction | null {
+  // 1. Try custom web components first
   const customComponents = Array.from(
     document.querySelectorAll<HTMLElement>(
-      "apply-button-wc, monster-apply-button, [data-testid*='applyButton'], [data-testid*='apply-button']"
+      "apply-button-wc, monster-apply-button, [data-testid*='applyButton'], [data-testid*='apply-button'], [data-testid='svx_applyButton']"
     )
   );
 
   for (const component of customComponents) {
+    // Check all attributes for URLs
     const attributeUrl = extractLikelyApplyUrl(component);
     if (attributeUrl) {
       return {
@@ -214,6 +234,7 @@ export function findMonsterApplyAction(): ApplyAction | null {
       };
     }
 
+    // Check shadow DOM
     const shadowTarget = component.shadowRoot?.querySelector<HTMLElement>(
       "a[href], button, input[type='submit'], input[type='button'], [role='button']"
     );
@@ -234,6 +255,7 @@ export function findMonsterApplyAction(): ApplyAction | null {
       };
     }
 
+    // Check child elements
     const childTarget = getClickableApplyElement(component);
     if (childTarget !== component && isElementVisible(childTarget)) {
       const url = getNavigationUrl(childTarget);
@@ -252,6 +274,7 @@ export function findMonsterApplyAction(): ApplyAction | null {
       };
     }
 
+    // Click the component itself
     if (isElementVisible(component)) {
       return {
         type: "click",
@@ -261,6 +284,7 @@ export function findMonsterApplyAction(): ApplyAction | null {
     }
   }
 
+  // 2. Try specific Monster selectors
   const monsterSelectors = [
     "a[data-testid*='apply' i]",
     "button[data-testid*='apply' i]",
@@ -276,6 +300,15 @@ export function findMonsterApplyAction(): ApplyAction | null {
     "a[class*='apply' i]",
     "button[class*='Apply']",
     "a[class*='Apply']",
+    // FIX: Additional Monster selectors
+    "[class*='applyBtn']",
+    "[class*='apply-btn']",
+    "[class*='apply_btn']",
+    "[id*='applyBtn']",
+    "[id*='apply-btn']",
+    "[id*='apply_btn']",
+    "a[href*='apply.monster']",
+    "a[href*='/apply']",
   ];
 
   for (const selector of monsterSelectors) {
@@ -312,6 +345,7 @@ export function findMonsterApplyAction(): ApplyAction | null {
     }
   }
 
+  // 3. Fallback: score all visible links/buttons
   const fallbackCandidates = Array.from(
     document.querySelectorAll<HTMLElement>("a[href], button, a[role='button']")
   );
@@ -347,10 +381,27 @@ export function findMonsterApplyAction(): ApplyAction | null {
     if (text.includes("apply now") || text.includes("apply on company")) {
       score += 25;
     }
+    // FIX: Boost score for buttons with apply-like text
+    if (text === "apply" || text === "apply now") {
+      score += 40;
+    }
 
     const url = getNavigationUrl(element);
     if (url && shouldPreferApplyNavigation(url, text, "monster")) {
       score += 30;
+    }
+
+    // FIX: Check element attributes for apply signals
+    const attrs = [
+      element.getAttribute("data-testid"),
+      element.getAttribute("aria-label"),
+      element.className,
+      element.id,
+    ]
+      .join(" ")
+      .toLowerCase();
+    if (attrs.includes("apply")) {
+      score += 20;
     }
 
     if (score < 50) {
@@ -721,7 +772,7 @@ function extractLikelyApplyUrl(element: HTMLElement): string | null {
 
     if (/^https?:\/\//i.test(value) || value.startsWith("/")) {
       const normalized = normalizeUrl(value);
-      if (normalized && /apply|application|candidate|jobapply|company/i.test(normalized)) {
+      if (normalized && /apply|application|candidate|jobapply|company|career/i.test(normalized)) {
         return normalized;
       }
     }
@@ -924,6 +975,9 @@ function scoreApplyElement(
   if (lower.includes("apply externally")) score += 88;
   if (lower.includes("continue to company")) score += 86;
   if (lower.includes("company website to apply")) score += 86;
+  // FIX: Additional apply text patterns
+  if (lower.includes("apply directly")) score += 86;
+  if (lower.includes("apply on the company")) score += 85;
 
   if (lower.includes("apply now")) score += 80;
   if (lower.includes("start application")) score += 72;
@@ -1037,6 +1091,13 @@ function getApplyCandidateSelectors(site: SiteKey | null): string[] {
         "[class*='apply']",
         "button[class*='Apply']",
         "a[class*='Apply']",
+        // FIX: Additional Monster-specific selectors
+        "[class*='applyBtn']",
+        "[class*='apply-btn']",
+        "[id*='applyBtn']",
+        "[id*='apply-btn']",
+        "a[href*='/apply']",
+        "a[href*='apply.monster']",
         ...generic,
       ];
 
@@ -1096,7 +1157,8 @@ export function shouldPreferApplyNavigation(
   if (
     lowerText.includes("company site") ||
     lowerText.includes("employer site") ||
-    lowerText.includes("apply externally")
+    lowerText.includes("apply externally") ||
+    lowerText.includes("apply directly")
   ) {
     return true;
   }

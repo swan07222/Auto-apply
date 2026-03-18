@@ -52,7 +52,7 @@ type AutomationRunState = {
   id: string;
   jobPageLimit: number;
   openedJobPages: number;
-  openedJobKeys?: string[];
+  openedJobKeys: string[];
   updatedAt: number;
 };
 
@@ -195,6 +195,9 @@ async function handleMessage(
         const cap = Math.max(0, Math.floor(message.maxJobPages));
         itemsToOpen = capJobOpeningItems(itemsToOpen, cap);
       }
+
+      // FIX: Deduplicate items before opening — prevents same URL opened twice
+      itemsToOpen = deduplicateSpawnItems(itemsToOpen);
 
       const baseIndex = currentTab.index ?? 0;
       reserveExtensionSpawnSlots(currentTab.id, itemsToOpen.length);
@@ -439,7 +442,10 @@ async function startStartupAutomation(
   const settings = await readAutomationSettings();
   const runId = createRunId();
   const targets = buildStartupSearchTargets(settings);
+
+  // FIX: Now targets is one-per-company, so slots distribute properly
   const jobSlots = distributeJobSlots(settings.jobPageLimit, targets.length);
+
   const items: SpawnTabRequest[] = targets
     .map((target, index) => ({
       url: target.url,
@@ -447,7 +453,7 @@ async function startStartupAutomation(
       stage: "collect-results" as const,
       runId,
       jobSlots: jobSlots[index],
-      message: `Collecting ${target.label} startup roles...`,
+      message: `Collecting ${target.label} roles...`,
       label: target.label,
       resumeKind: target.resumeKind,
     }))
@@ -459,6 +465,9 @@ async function startStartupAutomation(
       error: "No startup career pages are configured for the selected region.",
     };
   }
+
+  // FIX: Deduplicate items so same careersUrl is never opened twice
+  const dedupedItems = deduplicateSpawnItems(items);
 
   await setRunState({
     id: runId,
@@ -484,7 +493,7 @@ async function startStartupAutomation(
 
   const baseIndex = tab.index ?? 0;
 
-  for (const [offset, item] of items.entries()) {
+  for (const [offset, item] of dedupedItems.entries()) {
     const createdTab = await chrome.tabs.create({
       url: item.url,
       active: item.active ?? false,
@@ -521,7 +530,7 @@ async function startStartupAutomation(
       tabId,
       "startup",
       "completed",
-      `Opened ${items.length} startup career pages for ${region.toUpperCase()} companies.`,
+      `Opened ${dedupedItems.length} startup career pages for ${region.toUpperCase()} companies.`,
       false,
       "bootstrap",
       runId
@@ -530,7 +539,7 @@ async function startStartupAutomation(
 
   return {
     ok: true,
-    opened: items.length,
+    opened: dedupedItems.length,
     regionLabel: region.toUpperCase(),
   };
 }
@@ -568,6 +577,9 @@ async function startOtherSitesAutomation(
     };
   }
 
+  // FIX: Deduplicate items
+  const dedupedItems = deduplicateSpawnItems(items);
+
   await setRunState({
     id: runId,
     jobPageLimit: settings.jobPageLimit,
@@ -592,7 +604,7 @@ async function startOtherSitesAutomation(
 
   const baseIndex = tab.index ?? 0;
 
-  for (const [offset, item] of items.entries()) {
+  for (const [offset, item] of dedupedItems.entries()) {
     const createdTab = await chrome.tabs.create({
       url: item.url,
       active: item.active ?? false,
@@ -629,7 +641,7 @@ async function startOtherSitesAutomation(
       tabId,
       "other_sites",
       "completed",
-      `Opened ${items.length} other job site searches for ${region.toUpperCase()}.`,
+      `Opened ${dedupedItems.length} other job site searches for ${region.toUpperCase()}.`,
       false,
       "bootstrap",
       runId
@@ -638,7 +650,7 @@ async function startOtherSitesAutomation(
 
   return {
     ok: true,
-    opened: items.length,
+    opened: dedupedItems.length,
     regionLabel: region.toUpperCase(),
   };
 }
@@ -811,7 +823,8 @@ async function claimJobOpeningsForRunId(
       }
 
       const url = candidate.url.trim();
-      const key = (candidate.key || getJobDedupKey(url)).trim();
+      // FIX: Always re-derive the key using getJobDedupKey for consistency
+      const key = getJobDedupKey(url);
 
       if (!url || !key || seenKeys.has(key)) {
         continue;
@@ -965,7 +978,8 @@ function pickUniqueCandidateUrls(
     }
 
     const url = candidate.url.trim();
-    const key = (candidate.key || getJobDedupKey(url)).trim();
+    // FIX: Always re-derive key for consistency
+    const key = getJobDedupKey(url);
 
     if (!url || !key || seenKeys.has(key)) {
       continue;
@@ -976,6 +990,30 @@ function pickUniqueCandidateUrls(
   }
 
   return approvedUrls;
+}
+
+// FIX: New function — dedup spawn items by URL so same page never opens twice
+function deduplicateSpawnItems(items: SpawnTabRequest[]): SpawnTabRequest[] {
+  const seen = new Set<string>();
+  const result: SpawnTabRequest[] = [];
+
+  for (const item of items) {
+    const key = getJobDedupKey(item.url);
+    if (!key || seen.has(key)) {
+      // If duplicate, aggregate job slots to the first occurrence
+      if (key && item.jobSlots) {
+        const existing = result.find((r) => getJobDedupKey(r.url) === key);
+        if (existing && existing.jobSlots !== undefined) {
+          existing.jobSlots += item.jobSlots;
+        }
+      }
+      continue;
+    }
+    seen.add(key);
+    result.push({ ...item });
+  }
+
+  return result;
 }
 
 function reserveExtensionSpawnSlots(tabId: number, count: number): void {
