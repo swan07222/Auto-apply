@@ -42,27 +42,30 @@
     answers: {}
   };
   function detectSiteFromUrl(url) {
+    if (!url || typeof url !== "string") return null;
+    let hostname;
     try {
-      const hostname = new URL(url).hostname.toLowerCase();
-      if (hostname === "indeed.com" || hostname.endsWith(".indeed.com")) {
-        return "indeed";
-      }
-      if (hostname === "ziprecruiter.com" || hostname.endsWith(".ziprecruiter.com")) {
-        return "ziprecruiter";
-      }
-      if (hostname === "dice.com" || hostname.endsWith(".dice.com")) {
-        return "dice";
-      }
-      if (hostname === "monster.com" || hostname.endsWith(".monster.com")) {
-        return "monster";
-      }
-      if (hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com")) {
-        return "chatgpt";
-      }
-      return null;
+      hostname = new URL(url).hostname.toLowerCase();
     } catch {
       return null;
     }
+    const bare = hostname.replace(/^www\./, "");
+    if (bare === "indeed.com" || bare.endsWith(".indeed.com")) {
+      return "indeed";
+    }
+    if (bare === "ziprecruiter.com" || bare.endsWith(".ziprecruiter.com")) {
+      return "ziprecruiter";
+    }
+    if (bare === "dice.com" || bare.endsWith(".dice.com")) {
+      return "dice";
+    }
+    if (/^monster\.[a-z.]+$/.test(bare) || /\.monster\.[a-z.]+$/.test(bare)) {
+      return "monster";
+    }
+    if (bare === "chatgpt.com" || bare.endsWith(".chatgpt.com")) {
+      return "chatgpt";
+    }
+    return null;
   }
   function createStatus(site, phase, message) {
     return {
@@ -88,16 +91,12 @@
     return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
   }
   async function readAutomationSettings() {
-    const stored = await chrome.storage.local.get(
-      AUTOMATION_SETTINGS_STORAGE_KEY
-    );
+    const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
     return sanitizeAutomationSettings(stored[AUTOMATION_SETTINGS_STORAGE_KEY]);
   }
   async function writeAutomationSettings(settings2) {
     const sanitized = sanitizeAutomationSettings(settings2);
-    await chrome.storage.local.set({
-      [AUTOMATION_SETTINGS_STORAGE_KEY]: sanitized
-    });
+    await chrome.storage.local.set({ [AUTOMATION_SETTINGS_STORAGE_KEY]: sanitized });
     return sanitized;
   }
   function sanitizeAutomationSettings(raw) {
@@ -123,9 +122,7 @@
     const resumes = {};
     for (const key of Object.keys(RESUME_KIND_LABELS)) {
       const asset = resumesSource[key];
-      if (!isRecord(asset)) {
-        continue;
-      }
+      if (!isRecord(asset)) continue;
       const sanitizedAsset = {
         name: readString(asset.name),
         type: readString(asset.type),
@@ -139,18 +136,12 @@
     }
     const answers = {};
     for (const [key, value] of Object.entries(answersSource)) {
-      if (!isRecord(value)) {
-        continue;
-      }
+      if (!isRecord(value)) continue;
       const question = readString(value.question);
       const savedValue = readString(value.value);
-      if (!question || !savedValue) {
-        continue;
-      }
+      if (!question || !savedValue) continue;
       const normalizedKey = normalizeQuestionKey(key || question);
-      if (!normalizedKey) {
-        continue;
-      }
+      if (!normalizedKey) continue;
       answers[normalizedKey] = {
         question,
         value: savedValue,
@@ -169,13 +160,8 @@
   }
   function clampJobPageLimit(raw) {
     const numeric = Number(raw);
-    if (!Number.isFinite(numeric)) {
-      return DEFAULT_SETTINGS.jobPageLimit;
-    }
-    return Math.min(
-      MAX_JOB_PAGE_LIMIT,
-      Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric))
-    );
+    if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.jobPageLimit;
+    return Math.min(MAX_JOB_PAGE_LIMIT, Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric)));
   }
   function readString(value) {
     return typeof value === "string" ? value.trim() : "";
@@ -278,23 +264,7 @@
     }
     updateModeUi();
     updateOverviewPreview();
-    const searchMode = getSelectedSearchMode();
-    if (searchMode === "startup_careers") {
-      siteName.textContent = "Startup Careers";
-    } else if (searchMode === "other_job_sites") {
-      siteName.textContent = "Other Job Sites";
-    } else {
-      siteName.textContent = getSiteLabel(
-        isJobBoardSite(activeSite) ? activeSite : null
-      );
-    }
-    if (!activeTabId) {
-      applyStatus(
-        createStatus("unsupported", "error", "No active tab was found.")
-      );
-      startButton.disabled = true;
-      return;
-    }
+    updateSiteNameDisplay();
     await refreshStatus();
     refreshIntervalId = window.setInterval(() => {
       void refreshStatus();
@@ -302,12 +272,9 @@
   }
   async function startAutomation() {
     await refreshActiveTabContext();
-    if (!activeTabId) {
-      return;
-    }
+    const searchMode = getSelectedSearchMode();
     await saveCurrentSettings(false);
     startButton.disabled = true;
-    const searchMode = getSelectedSearchMode();
     if (searchMode === "startup_careers") {
       applyStatus(
         createStatus(
@@ -316,28 +283,38 @@
           `Starting startup career pages for ${getStartupRegionLabel()} companies...`
         )
       );
-      const response2 = await chrome.runtime.sendMessage({
-        type: "start-startup-automation",
-        tabId: activeTabId
-      });
-      if (!response2?.ok) {
+      try {
+        const response = await chrome.runtime.sendMessage({
+          type: "start-startup-automation",
+          tabId: activeTabId ?? void 0
+        });
+        if (!response?.ok) {
+          applyStatus(
+            createStatus(
+              "startup",
+              "error",
+              response?.error ?? "The extension could not start the startup career search."
+            )
+          );
+          startButton.disabled = false;
+          return;
+        }
+        applyStatus(
+          createStatus(
+            "startup",
+            "completed",
+            `Opened ${response.opened ?? 0} startup career pages for ${response.regionLabel ?? getStartupRegionLabel()} companies.`
+          )
+        );
+      } catch (error) {
         applyStatus(
           createStatus(
             "startup",
             "error",
-            response2?.error ?? "The extension could not start the startup career search."
+            error instanceof Error ? error.message : "Failed to start startup search."
           )
         );
-        startButton.disabled = false;
-        return;
       }
-      applyStatus(
-        createStatus(
-          "startup",
-          "completed",
-          `Opened ${response2.opened ?? 0} startup career pages for ${response2.regionLabel ?? getStartupRegionLabel()} companies.`
-        )
-      );
       startButton.disabled = false;
       return;
     }
@@ -349,27 +326,44 @@
           `Starting other job site searches for ${getStartupRegionLabel()}...`
         )
       );
-      const response2 = await chrome.runtime.sendMessage({
-        type: "start-other-sites-automation",
-        tabId: activeTabId
-      });
-      if (!response2?.ok) {
+      try {
+        const response = await chrome.runtime.sendMessage({
+          type: "start-other-sites-automation",
+          tabId: activeTabId ?? void 0
+        });
+        if (!response?.ok) {
+          applyStatus(
+            createStatus(
+              "other_sites",
+              "error",
+              response?.error ?? "The extension could not start the other job site search."
+            )
+          );
+          startButton.disabled = false;
+          return;
+        }
+        applyStatus(
+          createStatus(
+            "other_sites",
+            "completed",
+            `Opened ${response.opened ?? 0} other job site searches for ${response.regionLabel ?? getStartupRegionLabel()}.`
+          )
+        );
+      } catch (error) {
         applyStatus(
           createStatus(
             "other_sites",
             "error",
-            response2?.error ?? "The extension could not start the other job site search."
+            error instanceof Error ? error.message : "Failed to start other sites search."
           )
         );
-        startButton.disabled = false;
-        return;
       }
+      startButton.disabled = false;
+      return;
+    }
+    if (!activeTabId) {
       applyStatus(
-        createStatus(
-          "other_sites",
-          "completed",
-          `Opened ${response2.opened ?? 0} other job site searches for ${response2.regionLabel ?? getStartupRegionLabel()}.`
-        )
+        createStatus("unsupported", "error", "No active tab was found.")
       );
       startButton.disabled = false;
       return;
@@ -392,16 +386,28 @@
         `Starting on ${getSiteLabel(activeSite)}...`
       )
     );
-    const response = await chrome.runtime.sendMessage({
-      type: "start-automation",
-      tabId: activeTabId
-    });
-    if (!response?.ok) {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "start-automation",
+        tabId: activeTabId
+      });
+      if (!response?.ok) {
+        applyStatus(
+          createStatus(
+            activeSite,
+            "error",
+            response?.error ?? "The extension could not start on this tab."
+          )
+        );
+        startButton.disabled = false;
+        return;
+      }
+    } catch (error) {
       applyStatus(
         createStatus(
           activeSite,
           "error",
-          response?.error ?? "The extension could not start on this tab."
+          error instanceof Error ? error.message : "Failed to start automation."
         )
       );
       startButton.disabled = false;
@@ -411,16 +417,47 @@
   }
   async function refreshStatus() {
     await refreshActiveTabContext();
-    if (!activeTabId) {
-      return;
-    }
     const searchMode = getSelectedSearchMode();
     const activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
-    const backgroundResponse = await chrome.runtime.sendMessage({
-      type: "get-tab-session",
-      tabId: activeTabId
-    });
-    const bgSession = backgroundResponse?.session;
+    updateSiteNameDisplay();
+    if (!activeTabId) {
+      if (searchMode === "startup_careers") {
+        applyStatus(
+          createStatus(
+            "startup",
+            "idle",
+            `Ready to open startup career pages for ${getStartupRegionLabel()} companies.`
+          )
+        );
+        startButton.disabled = false;
+        return;
+      }
+      if (searchMode === "other_job_sites") {
+        applyStatus(
+          createStatus(
+            "other_sites",
+            "idle",
+            `Ready to open other job site searches for ${getStartupRegionLabel()}.`
+          )
+        );
+        startButton.disabled = false;
+        return;
+      }
+      applyStatus(
+        createStatus("unsupported", "error", "No active tab was found.")
+      );
+      startButton.disabled = true;
+      return;
+    }
+    let bgSession;
+    try {
+      const backgroundResponse = await chrome.runtime.sendMessage({
+        type: "get-tab-session",
+        tabId: activeTabId
+      });
+      bgSession = backgroundResponse?.session;
+    } catch {
+    }
     if (bgSession && bgSession.phase !== "idle") {
       applyStatus(bgSession);
       startButton.disabled = searchMode === "job_board" ? !activeJobBoardSite || isBusy(bgSession.phase) : isBusy(bgSession.phase);
@@ -484,11 +521,17 @@
       return null;
     }
   }
-  function applyStatus(status) {
+  function updateSiteNameDisplay() {
     const searchMode = getSelectedSearchMode();
-    const statusSite = status.site === "unsupported" ? null : status.site;
-    const displaySite = isJobBoardSite(statusSite) ? statusSite : isJobBoardSite(activeSite) ? activeSite : null;
-    siteName.textContent = searchMode === "startup_careers" ? "Startup Careers" : searchMode === "other_job_sites" ? "Other Job Sites" : getSiteLabel(displaySite);
+    if (searchMode === "startup_careers") {
+      siteName.textContent = "Startup Careers";
+    } else if (searchMode === "other_job_sites") {
+      siteName.textContent = "Other Job Sites";
+    } else {
+      siteName.textContent = isJobBoardSite(activeSite) ? getSiteLabel(activeSite) : "No supported site";
+    }
+  }
+  function applyStatus(status) {
     statusPanel.dataset.phase = status.phase;
     statusText.textContent = status.message;
   }
@@ -619,9 +662,7 @@
         reject(new Error("Could not read the selected file."));
       };
       reader.onerror = () => {
-        reject(
-          reader.error ?? new Error("Could not read the selected file.")
-        );
+        reject(reader.error ?? new Error("Could not read the selected file."));
       };
       reader.readAsDataURL(file);
     });
@@ -654,6 +695,7 @@
   function updateModeUi() {
     const searchMode = getSelectedSearchMode();
     startButton.textContent = searchMode === "startup_careers" ? "Start Startup Search" : searchMode === "other_job_sites" ? "Start Other Sites Search" : "Start Auto Search";
+    updateSiteNameDisplay();
   }
   function updateOverviewPreview() {
     modePreview.textContent = getModePreviewLabel();
@@ -671,37 +713,73 @@
   }
   function getModePreviewLabel() {
     const searchMode = getSelectedSearchMode();
-    if (searchMode === "startup_careers") {
-      return "Startup careers";
-    }
-    if (searchMode === "other_job_sites") {
-      return "Other job sites";
-    }
+    if (searchMode === "startup_careers") return "Startup careers";
+    if (searchMode === "other_job_sites") return "Other job sites";
     return "Job boards";
   }
   function getRegionPreviewLabel() {
     const region = getSelectedStartupRegion();
-    if (region !== "auto") {
-      return region.toUpperCase();
-    }
+    if (region !== "auto") return region.toUpperCase();
     const country = countryInput.value.trim();
     return country ? `Auto - ${country}` : "Auto from country";
   }
   function requireElement(selector) {
     const element = document.querySelector(selector);
     if (!element) {
-      throw new Error(
-        `Popup UI is missing required element: ${selector}`
-      );
+      throw new Error(`Popup UI is missing required element: ${selector}`);
     }
     return element;
   }
   async function refreshActiveTabContext() {
-    const [tab] = await chrome.tabs.query({
-      active: true,
-      currentWindow: true
-    });
-    activeTabId = tab?.id ?? null;
-    activeSite = detectSiteFromUrl(tab?.url ?? "");
+    try {
+      const tab = await findBestActiveTab();
+      if (!tab) {
+        activeTabId = null;
+        activeSite = null;
+        return;
+      }
+      activeTabId = tab?.id ?? null;
+      activeSite = detectSiteFromUrl(getTabUrl(tab));
+    } catch {
+      activeTabId = null;
+      activeSite = null;
+    }
+  }
+  async function findBestActiveTab() {
+    const queryResults = await Promise.allSettled([
+      chrome.tabs.query({
+        active: true,
+        currentWindow: true
+      }),
+      chrome.tabs.query({
+        active: true,
+        lastFocusedWindow: true
+      })
+    ]);
+    const candidates = [];
+    const seenTabIds = /* @__PURE__ */ new Set();
+    for (const result of queryResults) {
+      if (result.status !== "fulfilled") {
+        continue;
+      }
+      for (const tab of result.value) {
+        if (tab.id === void 0 || seenTabIds.has(tab.id)) {
+          continue;
+        }
+        seenTabIds.add(tab.id);
+        candidates.push(tab);
+      }
+    }
+    if (candidates.length === 0) {
+      return null;
+    }
+    return candidates.find((tab) => isWebPageTab(tab)) ?? candidates[0] ?? null;
+  }
+  function getTabUrl(tab) {
+    return tab?.url ?? tab?.pendingUrl ?? "";
+  }
+  function isWebPageTab(tab) {
+    const url = getTabUrl(tab);
+    return url.startsWith("https://") || url.startsWith("http://");
   }
 })();

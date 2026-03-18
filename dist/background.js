@@ -6,83 +6,22 @@
     back_end: "Back End",
     full_stack: "Full Stack"
   };
-  var SEARCH_DEFINITIONS = [
-    { label: "Front End", query: "front end developer", resumeKind: "front_end" },
-    { label: "Back End", query: "back end developer", resumeKind: "back_end" },
-    {
-      label: "Full Stack",
-      query: "full stack developer",
-      resumeKind: "full_stack"
-    }
-  ];
   var STARTUP_COMPANIES = [
     { name: "Ramp", careersUrl: "https://ramp.com/careers", regions: ["us"] },
-    {
-      name: "Vercel",
-      careersUrl: "https://vercel.com/careers",
-      regions: ["us"]
-    },
-    {
-      name: "Plaid",
-      careersUrl: "https://plaid.com/careers/",
-      regions: ["us"]
-    },
-    {
-      name: "Figma",
-      careersUrl: "https://www.figma.com/careers/",
-      regions: ["us"]
-    },
-    {
-      name: "Notion",
-      careersUrl: "https://www.notion.so/careers",
-      regions: ["us"]
-    },
-    {
-      name: "Monzo",
-      careersUrl: "https://monzo.com/careers/",
-      regions: ["uk"]
-    },
+    { name: "Vercel", careersUrl: "https://vercel.com/careers", regions: ["us"] },
+    { name: "Plaid", careersUrl: "https://plaid.com/careers/", regions: ["us"] },
+    { name: "Figma", careersUrl: "https://www.figma.com/careers/", regions: ["us"] },
+    { name: "Notion", careersUrl: "https://www.notion.so/careers", regions: ["us"] },
+    { name: "Monzo", careersUrl: "https://monzo.com/careers/", regions: ["uk"] },
     { name: "Wise", careersUrl: "https://wise.jobs/", regions: ["uk"] },
-    {
-      name: "Synthesia",
-      careersUrl: "https://synthesia.io/careers",
-      regions: ["uk"]
-    },
-    {
-      name: "Snyk",
-      careersUrl: "https://snyk.io/careers/",
-      regions: ["uk"]
-    },
-    {
-      name: "Checkout.com",
-      careersUrl: "https://www.checkout.com/careers",
-      regions: ["uk"]
-    },
-    {
-      name: "N26",
-      careersUrl: "https://n26.com/en-eu/careers",
-      regions: ["eu"]
-    },
-    {
-      name: "Bolt",
-      careersUrl: "https://bolt.eu/en/careers/",
-      regions: ["eu"]
-    },
-    {
-      name: "Adyen",
-      careersUrl: "https://careers.adyen.com/",
-      regions: ["eu"]
-    },
-    {
-      name: "GetYourGuide",
-      careersUrl: "https://www.getyourguide.careers/",
-      regions: ["eu"]
-    },
-    {
-      name: "Klarna",
-      careersUrl: "https://www.klarna.com/careers/",
-      regions: ["eu"]
-    }
+    { name: "Synthesia", careersUrl: "https://synthesia.io/careers", regions: ["uk"] },
+    { name: "Snyk", careersUrl: "https://snyk.io/careers/", regions: ["uk"] },
+    { name: "Checkout.com", careersUrl: "https://www.checkout.com/careers", regions: ["uk"] },
+    { name: "N26", careersUrl: "https://n26.com/en-eu/careers", regions: ["eu"] },
+    { name: "Bolt", careersUrl: "https://bolt.eu/en/careers/", regions: ["eu"] },
+    { name: "Adyen", careersUrl: "https://careers.adyen.com/", regions: ["eu"] },
+    { name: "GetYourGuide", careersUrl: "https://www.getyourguide.careers/", regions: ["eu"] },
+    { name: "Klarna", careersUrl: "https://www.klarna.com/careers/", regions: ["eu"] }
   ];
   var OTHER_JOB_SITE_TARGETS = [
     {
@@ -258,27 +197,30 @@
     answers: {}
   };
   function detectSiteFromUrl(url) {
+    if (!url || typeof url !== "string") return null;
+    let hostname;
     try {
-      const hostname = new URL(url).hostname.toLowerCase();
-      if (hostname === "indeed.com" || hostname.endsWith(".indeed.com")) {
-        return "indeed";
-      }
-      if (hostname === "ziprecruiter.com" || hostname.endsWith(".ziprecruiter.com")) {
-        return "ziprecruiter";
-      }
-      if (hostname === "dice.com" || hostname.endsWith(".dice.com")) {
-        return "dice";
-      }
-      if (hostname === "monster.com" || hostname.endsWith(".monster.com")) {
-        return "monster";
-      }
-      if (hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com")) {
-        return "chatgpt";
-      }
-      return null;
+      hostname = new URL(url).hostname.toLowerCase();
     } catch {
       return null;
     }
+    const bare = hostname.replace(/^www\./, "");
+    if (bare === "indeed.com" || bare.endsWith(".indeed.com")) {
+      return "indeed";
+    }
+    if (bare === "ziprecruiter.com" || bare.endsWith(".ziprecruiter.com")) {
+      return "ziprecruiter";
+    }
+    if (bare === "dice.com" || bare.endsWith(".dice.com")) {
+      return "dice";
+    }
+    if (/^monster\.[a-z.]+$/.test(bare) || /\.monster\.[a-z.]+$/.test(bare)) {
+      return "monster";
+    }
+    if (bare === "chatgpt.com" || bare.endsWith(".chatgpt.com")) {
+      return "chatgpt";
+    }
+    return null;
   }
   function createStatus(site, phase, message) {
     return {
@@ -313,13 +255,11 @@
     const companies = STARTUP_COMPANIES.filter(
       (company) => company.regions.includes(region)
     );
-    return companies.flatMap(
-      (company) => SEARCH_DEFINITIONS.map(({ label, resumeKind }) => ({
-        label: `${company.name} ${label}`,
-        resumeKind,
-        url: company.careersUrl
-      }))
-    );
+    return companies.map((company) => ({
+      label: company.name,
+      resumeKind: "full_stack",
+      url: company.careersUrl
+    }));
   }
   function buildOtherJobSiteTargets(settings) {
     const region = resolveStartupRegion(
@@ -345,13 +285,7 @@
     if (!normalized) {
       return "us";
     }
-    if ([
-      "us",
-      "usa",
-      "united states",
-      "united states of america",
-      "america"
-    ].includes(normalized)) {
+    if (["us", "usa", "united states", "united states of america", "america"].includes(normalized)) {
       return "us";
     }
     if ([
@@ -402,28 +336,30 @@
     ]);
     return euCountries.has(normalized) ? "eu" : "us";
   }
+  var IDENTIFYING_PARAMS = [
+    "jk",
+    "vjk",
+    "jobid",
+    "job_id",
+    "jid",
+    "gh_jid",
+    "ashby_jid",
+    "requisitionid",
+    "requisition_id",
+    "reqid",
+    "id",
+    "posting_id",
+    "req_id"
+  ];
   function getJobDedupKey(url) {
     const raw = url.trim().toLowerCase();
-    if (!raw) {
-      return "";
-    }
+    if (!raw) return "";
     try {
       const parsed = new URL(url);
       const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
-      const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
-      const identifyingParams = [
-        "jk",
-        "vjk",
-        "jobid",
-        "job_id",
-        "jid",
-        "gh_jid",
-        "ashby_jid",
-        "requisitionid",
-        "requisition_id",
-        "reqid"
-      ];
-      for (const param of identifyingParams) {
+      let path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+      path = path.replace(/\/job-opening\//, "/job-openings/").replace(/\/jobs\/search$/, "/jobs").replace(/\/+/g, "/");
+      for (const param of IDENTIFYING_PARAMS) {
         const value = parsed.searchParams.get(param);
         if (value) {
           return `${hostname}${path}?${param}=${value.toLowerCase()}`;
@@ -438,9 +374,7 @@
     return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
   }
   async function readAutomationSettings() {
-    const stored = await chrome.storage.local.get(
-      AUTOMATION_SETTINGS_STORAGE_KEY
-    );
+    const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
     return sanitizeAutomationSettings(stored[AUTOMATION_SETTINGS_STORAGE_KEY]);
   }
   function sanitizeAutomationSettings(raw) {
@@ -466,9 +400,7 @@
     const resumes = {};
     for (const key of Object.keys(RESUME_KIND_LABELS)) {
       const asset = resumesSource[key];
-      if (!isRecord(asset)) {
-        continue;
-      }
+      if (!isRecord(asset)) continue;
       const sanitizedAsset = {
         name: readString(asset.name),
         type: readString(asset.type),
@@ -482,18 +414,12 @@
     }
     const answers = {};
     for (const [key, value] of Object.entries(answersSource)) {
-      if (!isRecord(value)) {
-        continue;
-      }
+      if (!isRecord(value)) continue;
       const question = readString(value.question);
       const savedValue = readString(value.value);
-      if (!question || !savedValue) {
-        continue;
-      }
+      if (!question || !savedValue) continue;
       const normalizedKey = normalizeQuestionKey(key || question);
-      if (!normalizedKey) {
-        continue;
-      }
+      if (!normalizedKey) continue;
       answers[normalizedKey] = {
         question,
         value: savedValue,
@@ -512,13 +438,8 @@
   }
   function clampJobPageLimit(raw) {
     const numeric = Number(raw);
-    if (!Number.isFinite(numeric)) {
-      return DEFAULT_SETTINGS.jobPageLimit;
-    }
-    return Math.min(
-      MAX_JOB_PAGE_LIMIT,
-      Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric))
-    );
+    if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.jobPageLimit;
+    return Math.min(MAX_JOB_PAGE_LIMIT, Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric)));
   }
   function readString(value) {
     return typeof value === "string" ? value.trim() : "";
@@ -638,6 +559,7 @@
           const cap = Math.max(0, Math.floor(message.maxJobPages));
           itemsToOpen = capJobOpeningItems(itemsToOpen, cap);
         }
+        itemsToOpen = deduplicateSpawnItems(itemsToOpen);
         const baseIndex = currentTab.index ?? 0;
         reserveExtensionSpawnSlots(currentTab.id, itemsToOpen.length);
         for (const [offset, item] of itemsToOpen.entries()) {
@@ -761,8 +683,14 @@
     }
   }
   async function startAutomationForTab(tabId) {
-    const tab = await chrome.tabs.get(tabId);
-    const site = detectSiteFromUrl(tab.url ?? "");
+    const tab = await resolvePreferredTab(tabId);
+    if (!tab) {
+      return {
+        ok: false,
+        error: "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, or Monster page and try again."
+      };
+    }
+    const site = detectSiteFromUrl(getTabUrl(tab));
     const settings = await readAutomationSettings();
     const runId = createRunId();
     if (!isJobBoardSite(site)) {
@@ -806,7 +734,7 @@
     };
   }
   async function startStartupAutomation(tabId) {
-    const tab = await chrome.tabs.get(tabId);
+    const sourceTab = await resolvePreferredTab(tabId);
     const settings = await readAutomationSettings();
     const runId = createRunId();
     const targets = buildStartupSearchTargets(settings);
@@ -817,7 +745,7 @@
       stage: "collect-results",
       runId,
       jobSlots: jobSlots[index],
-      message: `Collecting ${target.label} startup roles...`,
+      message: `Collecting ${target.label} roles...`,
       label: target.label,
       resumeKind: target.resumeKind
     })).filter((item) => (item.jobSlots ?? 0) > 0);
@@ -827,6 +755,7 @@
         error: "No startup career pages are configured for the selected region."
       };
     }
+    const dedupedItems = deduplicateSpawnItems(items);
     await setRunState({
       id: runId,
       jobPageLimit: settings.jobPageLimit,
@@ -835,23 +764,30 @@
       updatedAt: Date.now()
     });
     await addActiveRunId(runId);
-    const session = createSession(
-      tabId,
-      "startup",
-      "running",
-      "Opening startup career pages...",
-      false,
-      "bootstrap",
-      runId
-    );
-    await setSession(session);
-    const baseIndex = tab.index ?? 0;
-    for (const [offset, item] of items.entries()) {
-      const createdTab = await chrome.tabs.create({
+    if (sourceTab?.id !== void 0) {
+      const session = createSession(
+        sourceTab.id,
+        "startup",
+        "running",
+        "Opening startup career pages...",
+        false,
+        "bootstrap",
+        runId
+      );
+      await setSession(session);
+    }
+    for (const [offset, item] of dedupedItems.entries()) {
+      const createProperties = {
         url: item.url,
-        active: item.active ?? false,
-        index: baseIndex + offset + 1
-      });
+        active: item.active ?? false
+      };
+      if (sourceTab?.windowId !== void 0) {
+        createProperties.windowId = sourceTab.windowId;
+      }
+      if (sourceTab?.index !== void 0) {
+        createProperties.index = sourceTab.index + offset + 1;
+      }
+      const createdTab = await chrome.tabs.create(createProperties);
       if (item.stage && createdTab.id !== void 0) {
         const childSession = createSession(
           createdTab.id,
@@ -873,25 +809,27 @@
       settings.startupRegion,
       settings.candidate.country
     );
-    await setSession(
-      createSession(
-        tabId,
-        "startup",
-        "completed",
-        `Opened ${items.length} startup career pages for ${region.toUpperCase()} companies.`,
-        false,
-        "bootstrap",
-        runId
-      )
-    );
+    if (sourceTab?.id !== void 0) {
+      await setSession(
+        createSession(
+          sourceTab.id,
+          "startup",
+          "completed",
+          `Opened ${dedupedItems.length} startup career pages for ${region.toUpperCase()} companies.`,
+          false,
+          "bootstrap",
+          runId
+        )
+      );
+    }
     return {
       ok: true,
-      opened: items.length,
+      opened: dedupedItems.length,
       regionLabel: region.toUpperCase()
     };
   }
   async function startOtherSitesAutomation(tabId) {
-    const tab = await chrome.tabs.get(tabId);
+    const sourceTab = await resolvePreferredTab(tabId);
     const settings = await readAutomationSettings();
     const runId = createRunId();
     const targets = buildOtherJobSiteTargets(settings);
@@ -912,6 +850,7 @@
         error: "No other job site searches are configured for the selected region."
       };
     }
+    const dedupedItems = deduplicateSpawnItems(items);
     await setRunState({
       id: runId,
       jobPageLimit: settings.jobPageLimit,
@@ -920,23 +859,30 @@
       updatedAt: Date.now()
     });
     await addActiveRunId(runId);
-    const session = createSession(
-      tabId,
-      "other_sites",
-      "running",
-      "Opening other job site searches...",
-      false,
-      "bootstrap",
-      runId
-    );
-    await setSession(session);
-    const baseIndex = tab.index ?? 0;
-    for (const [offset, item] of items.entries()) {
-      const createdTab = await chrome.tabs.create({
+    if (sourceTab?.id !== void 0) {
+      const session = createSession(
+        sourceTab.id,
+        "other_sites",
+        "running",
+        "Opening other job site searches...",
+        false,
+        "bootstrap",
+        runId
+      );
+      await setSession(session);
+    }
+    for (const [offset, item] of dedupedItems.entries()) {
+      const createProperties = {
         url: item.url,
-        active: item.active ?? false,
-        index: baseIndex + offset + 1
-      });
+        active: item.active ?? false
+      };
+      if (sourceTab?.windowId !== void 0) {
+        createProperties.windowId = sourceTab.windowId;
+      }
+      if (sourceTab?.index !== void 0) {
+        createProperties.index = sourceTab.index + offset + 1;
+      }
+      const createdTab = await chrome.tabs.create(createProperties);
       if (item.stage && createdTab.id !== void 0) {
         const childSession = createSession(
           createdTab.id,
@@ -958,20 +904,22 @@
       settings.startupRegion,
       settings.candidate.country
     );
-    await setSession(
-      createSession(
-        tabId,
-        "other_sites",
-        "completed",
-        `Opened ${items.length} other job site searches for ${region.toUpperCase()}.`,
-        false,
-        "bootstrap",
-        runId
-      )
-    );
+    if (sourceTab?.id !== void 0) {
+      await setSession(
+        createSession(
+          sourceTab.id,
+          "other_sites",
+          "completed",
+          `Opened ${dedupedItems.length} other job site searches for ${region.toUpperCase()}.`,
+          false,
+          "bootstrap",
+          runId
+        )
+      );
+    }
     return {
       ok: true,
-      opened: items.length,
+      opened: dedupedItems.length,
       regionLabel: region.toUpperCase()
     };
   }
@@ -1091,7 +1039,7 @@
           break;
         }
         const url = candidate.url.trim();
-        const key = (candidate.key || getJobDedupKey(url)).trim();
+        const key = getJobDedupKey(url);
         if (!url || !key || seenKeys.has(key)) {
           continue;
         }
@@ -1206,7 +1154,7 @@
         break;
       }
       const url = candidate.url.trim();
-      const key = (candidate.key || getJobDedupKey(url)).trim();
+      const key = getJobDedupKey(url);
       if (!url || !key || seenKeys.has(key)) {
         continue;
       }
@@ -1214,6 +1162,76 @@
       approvedUrls.push(url);
     }
     return approvedUrls;
+  }
+  function deduplicateSpawnItems(items) {
+    const seen = /* @__PURE__ */ new Set();
+    const result = [];
+    for (const item of items) {
+      const key = getJobDedupKey(item.url);
+      if (!key || seen.has(key)) {
+        if (key && item.jobSlots) {
+          const existing = result.find((r) => getJobDedupKey(r.url) === key);
+          if (existing && existing.jobSlots !== void 0) {
+            existing.jobSlots += item.jobSlots;
+          }
+        }
+        continue;
+      }
+      seen.add(key);
+      result.push({ ...item });
+    }
+    return result;
+  }
+  async function getTabSafely(tabId) {
+    try {
+      return await chrome.tabs.get(tabId);
+    } catch {
+      return null;
+    }
+  }
+  async function resolvePreferredTab(preferredTabId) {
+    const candidates = [];
+    const seenTabIds = /* @__PURE__ */ new Set();
+    if (typeof preferredTabId === "number") {
+      const preferredTab = await getTabSafely(preferredTabId);
+      if (preferredTab?.id !== void 0) {
+        seenTabIds.add(preferredTab.id);
+        candidates.push(preferredTab);
+      }
+    }
+    const queryResults = await Promise.allSettled([
+      chrome.tabs.query({
+        active: true,
+        currentWindow: true
+      }),
+      chrome.tabs.query({
+        active: true,
+        lastFocusedWindow: true
+      })
+    ]);
+    for (const result of queryResults) {
+      if (result.status !== "fulfilled") {
+        continue;
+      }
+      for (const tab of result.value) {
+        if (tab.id === void 0 || seenTabIds.has(tab.id)) {
+          continue;
+        }
+        seenTabIds.add(tab.id);
+        candidates.push(tab);
+      }
+    }
+    if (candidates.length === 0) {
+      return null;
+    }
+    return candidates.find((tab) => isWebPageTab(tab)) ?? candidates[0] ?? null;
+  }
+  function getTabUrl(tab) {
+    return tab?.url ?? tab?.pendingUrl ?? "";
+  }
+  function isWebPageTab(tab) {
+    const url = getTabUrl(tab);
+    return url.startsWith("https://") || url.startsWith("http://");
   }
   function reserveExtensionSpawnSlots(tabId, count) {
     if (!Number.isFinite(count) || count <= 0) {

@@ -1,4 +1,5 @@
 // src/background.ts
+// COMPLETE FILE — replace entirely
 
 import {
   AutomationSession,
@@ -12,6 +13,7 @@ import {
   createSession,
   detectSiteFromUrl,
   getJobDedupKey,
+  getSpawnDedupKey,
   getSessionStorageKey,
   isJobBoardSite,
   readAutomationSettings,
@@ -20,8 +22,8 @@ import {
 
 type BackgroundRequest =
   | { type: "start-automation"; tabId: number }
-  | { type: "start-startup-automation"; tabId: number }
-  | { type: "start-other-sites-automation"; tabId: number }
+  | { type: "start-startup-automation"; tabId?: number }
+  | { type: "start-other-sites-automation"; tabId?: number }
   | { type: "reserve-job-openings"; requested: number }
   | {
       type: "claim-job-openings";
@@ -196,11 +198,13 @@ async function handleMessage(
         itemsToOpen = capJobOpeningItems(itemsToOpen, cap);
       }
 
-      // FIX: Deduplicate items before opening — prevents same URL opened twice
+      // FIX: Deduplicate items before opening — uses getSpawnDedupKey to preserve query params
       itemsToOpen = deduplicateSpawnItems(itemsToOpen);
 
       const baseIndex = currentTab.index ?? 0;
       reserveExtensionSpawnSlots(currentTab.id, itemsToOpen.length);
+
+      let openedCount = 0;
 
       for (const [offset, item] of itemsToOpen.entries()) {
         let createdTab: chrome.tabs.Tab;
@@ -211,9 +215,11 @@ async function handleMessage(
             index: baseIndex + offset + 1,
             openerTabId: currentTab.id,
           });
+          openedCount += 1;
         } catch (error: unknown) {
           releaseExtensionSpawnSlots(currentTab.id, 1);
-          throw error;
+          // FIX: Don't throw on individual tab creation failure — continue with others
+          continue;
         }
 
         if (item.stage && createdTab.id !== undefined) {
@@ -238,7 +244,7 @@ async function handleMessage(
 
       return {
         ok: true,
-        opened: itemsToOpen.length,
+        opened: openedCount,
       };
     }
 
@@ -378,8 +384,17 @@ async function startAutomationForTab(
   error?: string;
   session?: AutomationSession;
 }> {
-  const tab = await chrome.tabs.get(tabId);
-  const site = detectSiteFromUrl(tab.url ?? "");
+  const tab = await resolvePreferredTab(tabId);
+
+  if (!tab) {
+    return {
+      ok: false,
+      error:
+        "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, or Monster page and try again.",
+    };
+  }
+
+  const site = detectSiteFromUrl(getTabUrl(tab));
   const settings = await readAutomationSettings();
   const runId = createRunId();
 
@@ -431,19 +446,25 @@ async function startAutomationForTab(
 }
 
 async function startStartupAutomation(
-  tabId: number
+  tabId?: number
 ): Promise<{
   ok: boolean;
   error?: string;
   opened?: number;
   regionLabel?: string;
 }> {
-  const tab = await chrome.tabs.get(tabId);
+  const sourceTab = await resolvePreferredTab(tabId);
   const settings = await readAutomationSettings();
   const runId = createRunId();
   const targets = buildStartupSearchTargets(settings);
 
-  // FIX: Now targets is one-per-company, so slots distribute properly
+  if (targets.length === 0) {
+    return {
+      ok: false,
+      error: "No startup career pages are configured for the selected region.",
+    };
+  }
+
   const jobSlots = distributeJobSlots(settings.jobPageLimit, targets.length);
 
   const items: SpawnTabRequest[] = targets
@@ -462,11 +483,11 @@ async function startStartupAutomation(
   if (items.length === 0) {
     return {
       ok: false,
-      error: "No startup career pages are configured for the selected region.",
+      error: "No startup career pages have available job slots.",
     };
   }
 
-  // FIX: Deduplicate items so same careersUrl is never opened twice
+  // FIX: Deduplicate using spawn-specific dedup key (preserves query params)
   const dedupedItems = deduplicateSpawnItems(items);
 
   await setRunState({
@@ -479,26 +500,43 @@ async function startStartupAutomation(
 
   await addActiveRunId(runId);
 
-  const session = createSession(
-    tabId,
-    "startup",
-    "running",
-    "Opening startup career pages...",
-    false,
-    "bootstrap",
-    runId
-  );
+  if (sourceTab?.id !== undefined) {
+    const session = createSession(
+      sourceTab.id,
+      "startup",
+      "running",
+      "Opening startup career pages...",
+      false,
+      "bootstrap",
+      runId
+    );
 
-  await setSession(session);
+    await setSession(session);
+  }
 
-  const baseIndex = tab.index ?? 0;
+  let openedCount = 0;
 
   for (const [offset, item] of dedupedItems.entries()) {
-    const createdTab = await chrome.tabs.create({
+    const createProperties: chrome.tabs.CreateProperties = {
       url: item.url,
       active: item.active ?? false,
-      index: baseIndex + offset + 1,
-    });
+    };
+
+    if (sourceTab?.windowId !== undefined) {
+      createProperties.windowId = sourceTab.windowId;
+    }
+
+    if (sourceTab?.index !== undefined) {
+      createProperties.index = sourceTab.index + offset + 1;
+    }
+
+    let createdTab: chrome.tabs.Tab;
+    try {
+      createdTab = await chrome.tabs.create(createProperties);
+      openedCount += 1;
+    } catch {
+      continue;
+    }
 
     if (item.stage && createdTab.id !== undefined) {
       const childSession = createSession(
@@ -525,38 +563,49 @@ async function startStartupAutomation(
     settings.candidate.country
   );
 
-  await setSession(
-    createSession(
-      tabId,
-      "startup",
-      "completed",
-      `Opened ${dedupedItems.length} startup career pages for ${region.toUpperCase()} companies.`,
-      false,
-      "bootstrap",
-      runId
-    )
-  );
+  if (sourceTab?.id !== undefined) {
+    await setSession(
+      createSession(
+        sourceTab.id,
+        "startup",
+        "completed",
+        `Opened ${openedCount} startup career pages for ${region.toUpperCase()} companies.`,
+        false,
+        "bootstrap",
+        runId
+      )
+    );
+  }
 
   return {
     ok: true,
-    opened: dedupedItems.length,
+    opened: openedCount,
     regionLabel: region.toUpperCase(),
   };
 }
 
 async function startOtherSitesAutomation(
-  tabId: number
+  tabId?: number
 ): Promise<{
   ok: boolean;
   error?: string;
   opened?: number;
   regionLabel?: string;
 }> {
-  const tab = await chrome.tabs.get(tabId);
+  const sourceTab = await resolvePreferredTab(tabId);
   const settings = await readAutomationSettings();
   const runId = createRunId();
   const targets = buildOtherJobSiteTargets(settings);
+
+  if (targets.length === 0) {
+    return {
+      ok: false,
+      error: "No other job site searches are configured for the selected region.",
+    };
+  }
+
   const jobSlots = distributeJobSlots(settings.jobPageLimit, targets.length);
+
   const items: SpawnTabRequest[] = targets
     .map((target, index) => ({
       url: target.url,
@@ -573,11 +622,11 @@ async function startOtherSitesAutomation(
   if (items.length === 0) {
     return {
       ok: false,
-      error: "No other job site searches are configured for the selected region.",
+      error: "No other job site searches have available job slots.",
     };
   }
 
-  // FIX: Deduplicate items
+  // FIX: Deduplicate using spawn-specific dedup key
   const dedupedItems = deduplicateSpawnItems(items);
 
   await setRunState({
@@ -590,26 +639,43 @@ async function startOtherSitesAutomation(
 
   await addActiveRunId(runId);
 
-  const session = createSession(
-    tabId,
-    "other_sites",
-    "running",
-    "Opening other job site searches...",
-    false,
-    "bootstrap",
-    runId
-  );
+  if (sourceTab?.id !== undefined) {
+    const session = createSession(
+      sourceTab.id,
+      "other_sites",
+      "running",
+      "Opening other job site searches...",
+      false,
+      "bootstrap",
+      runId
+    );
 
-  await setSession(session);
+    await setSession(session);
+  }
 
-  const baseIndex = tab.index ?? 0;
+  let openedCount = 0;
 
   for (const [offset, item] of dedupedItems.entries()) {
-    const createdTab = await chrome.tabs.create({
+    const createProperties: chrome.tabs.CreateProperties = {
       url: item.url,
       active: item.active ?? false,
-      index: baseIndex + offset + 1,
-    });
+    };
+
+    if (sourceTab?.windowId !== undefined) {
+      createProperties.windowId = sourceTab.windowId;
+    }
+
+    if (sourceTab?.index !== undefined) {
+      createProperties.index = sourceTab.index + offset + 1;
+    }
+
+    let createdTab: chrome.tabs.Tab;
+    try {
+      createdTab = await chrome.tabs.create(createProperties);
+      openedCount += 1;
+    } catch {
+      continue;
+    }
 
     if (item.stage && createdTab.id !== undefined) {
       const childSession = createSession(
@@ -636,21 +702,23 @@ async function startOtherSitesAutomation(
     settings.candidate.country
   );
 
-  await setSession(
-    createSession(
-      tabId,
-      "other_sites",
-      "completed",
-      `Opened ${dedupedItems.length} other job site searches for ${region.toUpperCase()}.`,
-      false,
-      "bootstrap",
-      runId
-    )
-  );
+  if (sourceTab?.id !== undefined) {
+    await setSession(
+      createSession(
+        sourceTab.id,
+        "other_sites",
+        "completed",
+        `Opened ${openedCount} other job site searches for ${region.toUpperCase()}.`,
+        false,
+        "bootstrap",
+        runId
+      )
+    );
+  }
 
   return {
     ok: true,
-    opened: dedupedItems.length,
+    opened: openedCount,
     regionLabel: region.toUpperCase(),
   };
 }
@@ -992,17 +1060,17 @@ function pickUniqueCandidateUrls(
   return approvedUrls;
 }
 
-// FIX: New function — dedup spawn items by URL so same page never opens twice
+// FIX: Dedup spawn items using getSpawnDedupKey so different search URLs are preserved
 function deduplicateSpawnItems(items: SpawnTabRequest[]): SpawnTabRequest[] {
   const seen = new Set<string>();
   const result: SpawnTabRequest[] = [];
 
   for (const item of items) {
-    const key = getJobDedupKey(item.url);
+    const key = getSpawnDedupKey(item.url);
     if (!key || seen.has(key)) {
       // If duplicate, aggregate job slots to the first occurrence
       if (key && item.jobSlots) {
-        const existing = result.find((r) => getJobDedupKey(r.url) === key);
+        const existing = result.find((r) => getSpawnDedupKey(r.url) === key);
         if (existing && existing.jobSlots !== undefined) {
           existing.jobSlots += item.jobSlots;
         }
@@ -1014,6 +1082,72 @@ function deduplicateSpawnItems(items: SpawnTabRequest[]): SpawnTabRequest[] {
   }
 
   return result;
+}
+
+type BackgroundSourceTab = chrome.tabs.Tab & { pendingUrl?: string };
+
+async function getTabSafely(tabId: number): Promise<BackgroundSourceTab | null> {
+  try {
+    return (await chrome.tabs.get(tabId)) as BackgroundSourceTab;
+  } catch {
+    return null;
+  }
+}
+
+async function resolvePreferredTab(
+  preferredTabId?: number
+): Promise<BackgroundSourceTab | null> {
+  const candidates: BackgroundSourceTab[] = [];
+  const seenTabIds = new Set<number>();
+
+  if (typeof preferredTabId === "number") {
+    const preferredTab = await getTabSafely(preferredTabId);
+    if (preferredTab?.id !== undefined) {
+      seenTabIds.add(preferredTab.id);
+      candidates.push(preferredTab);
+    }
+  }
+
+  const queryResults = await Promise.allSettled([
+    chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    }),
+    chrome.tabs.query({
+      active: true,
+      lastFocusedWindow: true,
+    }),
+  ]);
+
+  for (const result of queryResults) {
+    if (result.status !== "fulfilled") {
+      continue;
+    }
+
+    for (const tab of result.value as BackgroundSourceTab[]) {
+      if (tab.id === undefined || seenTabIds.has(tab.id)) {
+        continue;
+      }
+
+      seenTabIds.add(tab.id);
+      candidates.push(tab);
+    }
+  }
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  return candidates.find((tab) => isWebPageTab(tab)) ?? candidates[0] ?? null;
+}
+
+function getTabUrl(tab: BackgroundSourceTab | null | undefined): string {
+  return tab?.url ?? tab?.pendingUrl ?? "";
+}
+
+function isWebPageTab(tab: BackgroundSourceTab): boolean {
+  const url = getTabUrl(tab);
+  return url.startsWith("https://") || url.startsWith("http://");
 }
 
 function reserveExtensionSpawnSlots(tabId: number, count: number): void {

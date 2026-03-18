@@ -55,27 +55,30 @@
     answers: {}
   };
   function detectSiteFromUrl(url) {
+    if (!url || typeof url !== "string") return null;
+    let hostname;
     try {
-      const hostname = new URL(url).hostname.toLowerCase();
-      if (hostname === "indeed.com" || hostname.endsWith(".indeed.com")) {
-        return "indeed";
-      }
-      if (hostname === "ziprecruiter.com" || hostname.endsWith(".ziprecruiter.com")) {
-        return "ziprecruiter";
-      }
-      if (hostname === "dice.com" || hostname.endsWith(".dice.com")) {
-        return "dice";
-      }
-      if (hostname === "monster.com" || hostname.endsWith(".monster.com")) {
-        return "monster";
-      }
-      if (hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com")) {
-        return "chatgpt";
-      }
-      return null;
+      hostname = new URL(url).hostname.toLowerCase();
     } catch {
       return null;
     }
+    const bare = hostname.replace(/^www\./, "");
+    if (bare === "indeed.com" || bare.endsWith(".indeed.com")) {
+      return "indeed";
+    }
+    if (bare === "ziprecruiter.com" || bare.endsWith(".ziprecruiter.com")) {
+      return "ziprecruiter";
+    }
+    if (bare === "dice.com" || bare.endsWith(".dice.com")) {
+      return "dice";
+    }
+    if (/^monster\.[a-z.]+$/.test(bare) || /\.monster\.[a-z.]+$/.test(bare)) {
+      return "monster";
+    }
+    if (bare === "chatgpt.com" || bare.endsWith(".chatgpt.com")) {
+      return "chatgpt";
+    }
+    return null;
   }
   function createStatus(site, phase, message) {
     return {
@@ -113,28 +116,30 @@
     dice: "https://www.dice.com",
     monster: "https://www.monster.com"
   };
+  var IDENTIFYING_PARAMS = [
+    "jk",
+    "vjk",
+    "jobid",
+    "job_id",
+    "jid",
+    "gh_jid",
+    "ashby_jid",
+    "requisitionid",
+    "requisition_id",
+    "reqid",
+    "id",
+    "posting_id",
+    "req_id"
+  ];
   function getJobDedupKey(url) {
     const raw = url.trim().toLowerCase();
-    if (!raw) {
-      return "";
-    }
+    if (!raw) return "";
     try {
       const parsed = new URL(url);
       const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
-      const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
-      const identifyingParams = [
-        "jk",
-        "vjk",
-        "jobid",
-        "job_id",
-        "jid",
-        "gh_jid",
-        "ashby_jid",
-        "requisitionid",
-        "requisition_id",
-        "reqid"
-      ];
-      for (const param of identifyingParams) {
+      let path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+      path = path.replace(/\/job-opening\//, "/job-openings/").replace(/\/jobs\/search$/, "/jobs").replace(/\/+/g, "/");
+      for (const param of IDENTIFYING_PARAMS) {
         const value = parsed.searchParams.get(param);
         if (value) {
           return `${hostname}${path}?${param}=${value.toLowerCase()}`;
@@ -144,6 +149,16 @@
     } catch {
       return raw;
     }
+  }
+  function inferResumeKindFromTitle(title) {
+    const lower = title.toLowerCase();
+    if (/\b(front\s*end|frontend|ui\s+engineer|ui\s+developer|react|angular|vue|css)\b/.test(lower)) {
+      return "front_end";
+    }
+    if (/\b(back\s*end|backend|server|api\b|platform\s+engineer|python|java\b|golang|rust|node\.?js|ruby|rails|django|spring)\b/.test(lower)) {
+      return "back_end";
+    }
+    return "full_stack";
   }
   function buildSingleSearchUrl(site, _origin, query) {
     const baseOrigin = CANONICAL_JOB_BOARD_ORIGINS[site];
@@ -194,9 +209,7 @@
       "i'm not a robot",
       "verify that you are human"
     ];
-    if (strongPhrases.some(
-      (phrase) => title.includes(phrase) || bodyText.includes(phrase)
-    )) {
+    if (strongPhrases.some((phrase) => title.includes(phrase) || bodyText.includes(phrase))) {
       return true;
     }
     const isMinimalPage = bodyLength < 800;
@@ -207,9 +220,7 @@
         "enable javascript and cookies to continue",
         "captcha"
       ];
-      if (weakPhrases.some(
-        (phrase) => title.includes(phrase) || bodyText.includes(phrase)
-      )) {
+      if (weakPhrases.some((phrase) => title.includes(phrase) || bodyText.includes(phrase))) {
         return true;
       }
     }
@@ -228,27 +239,19 @@
     return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
   }
   async function readAutomationSettings() {
-    const stored = await chrome.storage.local.get(
-      AUTOMATION_SETTINGS_STORAGE_KEY
-    );
+    const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
     return sanitizeAutomationSettings(stored[AUTOMATION_SETTINGS_STORAGE_KEY]);
   }
   async function writeAutomationSettings(settings) {
     const sanitized = sanitizeAutomationSettings(settings);
-    await chrome.storage.local.set({
-      [AUTOMATION_SETTINGS_STORAGE_KEY]: sanitized
-    });
+    await chrome.storage.local.set({ [AUTOMATION_SETTINGS_STORAGE_KEY]: sanitized });
     return sanitized;
   }
   async function writeAiAnswerRequest(request) {
-    await chrome.storage.local.set({
-      [getAiRequestStorageKey(request.id)]: request
-    });
+    await chrome.storage.local.set({ [getAiRequestStorageKey(request.id)]: request });
   }
   async function readAiAnswerRequest(requestId) {
-    const stored = await chrome.storage.local.get(
-      getAiRequestStorageKey(requestId)
-    );
+    const stored = await chrome.storage.local.get(getAiRequestStorageKey(requestId));
     const value = stored[getAiRequestStorageKey(requestId)];
     return isRecord(value) ? sanitizeAiAnswerRequest(value) : null;
   }
@@ -256,14 +259,10 @@
     await chrome.storage.local.remove(getAiRequestStorageKey(requestId));
   }
   async function writeAiAnswerResponse(response) {
-    await chrome.storage.local.set({
-      [getAiResponseStorageKey(response.id)]: response
-    });
+    await chrome.storage.local.set({ [getAiResponseStorageKey(response.id)]: response });
   }
   async function readAiAnswerResponse(requestId) {
-    const stored = await chrome.storage.local.get(
-      getAiResponseStorageKey(requestId)
-    );
+    const stored = await chrome.storage.local.get(getAiResponseStorageKey(requestId));
     const value = stored[getAiResponseStorageKey(requestId)];
     return isRecord(value) ? sanitizeAiAnswerResponse(value) : null;
   }
@@ -293,9 +292,7 @@
     const resumes = {};
     for (const key of Object.keys(RESUME_KIND_LABELS)) {
       const asset = resumesSource[key];
-      if (!isRecord(asset)) {
-        continue;
-      }
+      if (!isRecord(asset)) continue;
       const sanitizedAsset = {
         name: readString(asset.name),
         type: readString(asset.type),
@@ -309,18 +306,12 @@
     }
     const answers = {};
     for (const [key, value] of Object.entries(answersSource)) {
-      if (!isRecord(value)) {
-        continue;
-      }
+      if (!isRecord(value)) continue;
       const question = readString(value.question);
       const savedValue = readString(value.value);
-      if (!question || !savedValue) {
-        continue;
-      }
+      if (!question || !savedValue) continue;
       const normalizedKey = normalizeQuestionKey(key || question);
-      if (!normalizedKey) {
-        continue;
-      }
+      if (!normalizedKey) continue;
       answers[normalizedKey] = {
         question,
         value: savedValue,
@@ -339,13 +330,8 @@
   }
   function clampJobPageLimit(raw) {
     const numeric = Number(raw);
-    if (!Number.isFinite(numeric)) {
-      return DEFAULT_SETTINGS.jobPageLimit;
-    }
-    return Math.min(
-      MAX_JOB_PAGE_LIMIT,
-      Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric))
-    );
+    if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.jobPageLimit;
+    return Math.min(MAX_JOB_PAGE_LIMIT, Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric)));
   }
   function readString(value) {
     return typeof value === "string" ? value.trim() : "";
@@ -389,9 +375,7 @@
     };
   }
   function sanitizeResumeAsset(value) {
-    if (!isRecord(value)) {
-      return void 0;
-    }
+    if (!isRecord(value)) return void 0;
     const asset = {
       name: readString(value.name),
       type: readString(value.type),
@@ -1222,7 +1206,19 @@
     "company's website",
     "employer's website",
     "company career",
-    "employer career"
+    "employer career",
+    // FIX: Additional tokens for Monster and other sites
+    "apply on company's site",
+    "apply on the employer",
+    "apply at company",
+    "apply at employer",
+    "go to company site",
+    "go to employer site",
+    "view on company site",
+    "apply directly",
+    "direct application",
+    "original posting",
+    "original job posting"
   ];
   function findCompanySiteAction() {
     const pageText = cleanText(document.body?.innerText || "").toLowerCase().slice(0, 6e3);
@@ -1262,7 +1258,9 @@
         "sign in",
         "sign up",
         "dismiss",
-        "close"
+        "close",
+        "back to search",
+        "back to results"
       ].some((blocked) => lower.includes(blocked))) {
         continue;
       }
@@ -1271,13 +1269,13 @@
         score += 110;
       } else if (lower.includes("apply on company") || lower.includes("apply on employer")) {
         score += 105;
-      } else if (lower.includes("apply externally")) {
+      } else if (lower.includes("apply externally") || lower.includes("apply directly")) {
         score += 102;
       } else if (lower.includes("company site") || lower.includes("company website")) {
         score += 96;
-      } else if (lower.includes("visit company") || lower.includes("visit employer")) {
+      } else if (lower.includes("visit company") || lower.includes("visit employer") || lower.includes("go to company") || lower.includes("go to employer")) {
         score += 90;
-      } else if (lower.includes("external application")) {
+      } else if (lower.includes("external application") || lower.includes("direct application")) {
         score += 85;
       } else if (lower.includes("apply now") || lower.includes("apply for this") || lower.includes("continue")) {
         score += 62;
@@ -1301,7 +1299,7 @@
       if (hasGateText) {
         score += 18;
       }
-      const threshold = hasGateText ? 50 : 85;
+      const threshold = hasGateText ? 40 : 75;
       if (score < threshold) {
         continue;
       }
@@ -1336,7 +1334,7 @@
   function findMonsterApplyAction() {
     const customComponents = Array.from(
       document.querySelectorAll(
-        "apply-button-wc, monster-apply-button, [data-testid*='applyButton'], [data-testid*='apply-button']"
+        "apply-button-wc, monster-apply-button, [data-testid*='applyButton'], [data-testid*='apply-button'], [data-testid='svx_applyButton']"
       )
     );
     for (const component of customComponents) {
@@ -1404,7 +1402,16 @@
       "button[class*='apply' i]",
       "a[class*='apply' i]",
       "button[class*='Apply']",
-      "a[class*='Apply']"
+      "a[class*='Apply']",
+      // FIX: Additional Monster selectors
+      "[class*='applyBtn']",
+      "[class*='apply-btn']",
+      "[class*='apply_btn']",
+      "[id*='applyBtn']",
+      "[id*='apply-btn']",
+      "[id*='apply_btn']",
+      "a[href*='apply.monster']",
+      "a[href*='/apply']"
     ];
     for (const selector of monsterSelectors) {
       for (const element of Array.from(document.querySelectorAll(selector))) {
@@ -1449,9 +1456,21 @@
       if (text.includes("apply now") || text.includes("apply on company")) {
         score += 25;
       }
+      if (text === "apply" || text === "apply now") {
+        score += 40;
+      }
       const url = getNavigationUrl(element);
       if (url && shouldPreferApplyNavigation(url, text, "monster")) {
         score += 30;
+      }
+      const attrs = [
+        element.getAttribute("data-testid"),
+        element.getAttribute("aria-label"),
+        element.className,
+        element.id
+      ].join(" ").toLowerCase();
+      if (attrs.includes("apply")) {
+        score += 20;
       }
       if (score < 50) {
         continue;
@@ -1711,7 +1730,7 @@
       }
       if (/^https?:\/\//i.test(value) || value.startsWith("/")) {
         const normalized = normalizeUrl(value);
-        if (normalized && /apply|application|candidate|jobapply|company/i.test(normalized)) {
+        if (normalized && /apply|application|candidate|jobapply|company|career/i.test(normalized)) {
           return normalized;
         }
       }
@@ -1867,6 +1886,8 @@
     if (lower.includes("apply externally")) score += 88;
     if (lower.includes("continue to company")) score += 86;
     if (lower.includes("company website to apply")) score += 86;
+    if (lower.includes("apply directly")) score += 86;
+    if (lower.includes("apply on the company")) score += 85;
     if (lower.includes("apply now")) score += 80;
     if (lower.includes("start application")) score += 72;
     if (lower.includes("begin application")) score += 72;
@@ -1966,6 +1987,13 @@
           "[class*='apply']",
           "button[class*='Apply']",
           "a[class*='Apply']",
+          // FIX: Additional Monster-specific selectors
+          "[class*='applyBtn']",
+          "[class*='apply-btn']",
+          "[id*='applyBtn']",
+          "[id*='apply-btn']",
+          "a[href*='/apply']",
+          "a[href*='apply.monster']",
           ...generic
         ];
       case "startup":
@@ -2012,7 +2040,7 @@
   }
   function shouldPreferApplyNavigation(url, text, site) {
     const lowerText = text.toLowerCase();
-    if (lowerText.includes("company site") || lowerText.includes("employer site") || lowerText.includes("apply externally")) {
+    if (lowerText.includes("company site") || lowerText.includes("employer site") || lowerText.includes("apply externally") || lowerText.includes("apply directly")) {
       return true;
     }
     if (isExternalUrl(url)) {
@@ -2044,7 +2072,7 @@
   // src/content.ts
   var MAX_AUTOFILL_STEPS = 15;
   var OVERLAY_AUTO_HIDE_MS = 1e4;
-  var MAX_STAGE_DEPTH = 3;
+  var MAX_STAGE_DEPTH = 5;
   function createEmptyAutofillResult() {
     return {
       filledFields: 0,
@@ -2297,7 +2325,20 @@
       await closeCurrentTab();
       return;
     }
+    const candidates = collectJobDetailCandidates(site);
+    const titleMap = /* @__PURE__ */ new Map();
+    for (const c of candidates) {
+      const key = getJobDedupKey(c.url);
+      if (key && c.title) titleMap.set(key, c.title);
+    }
     const items = approvedUrls.map((url) => {
+      let itemResumeKind = currentResumeKind;
+      if (site === "startup" || site === "other_sites") {
+        const jobTitle = titleMap.get(getJobDedupKey(url)) ?? "";
+        if (jobTitle) {
+          itemResumeKind = inferResumeKindFromTitle(jobTitle);
+        }
+      }
       if (isLikelyApplyUrl(url, site)) {
         return {
           url,
@@ -2306,7 +2347,7 @@
           runId: currentRunId,
           message: `Autofilling ${labelPrefix}${getSiteLabel(site)} apply page...`,
           label: currentLabel,
-          resumeKind: currentResumeKind
+          resumeKind: itemResumeKind
         };
       }
       return {
@@ -2316,7 +2357,7 @@
         runId: currentRunId,
         message: `Opening ${labelPrefix}${getSiteLabel(site)} job page...`,
         label: currentLabel,
-        resumeKind: currentResumeKind
+        resumeKind: itemResumeKind
       };
     });
     const response = await spawnTabs(items, effectiveLimit);
@@ -2376,16 +2417,27 @@
     const scrollPositions = [0, 300, -1, -2, 0, -3];
     for (let attempt = 0; attempt < 30; attempt += 1) {
       if (window.location.href !== urlBeforeSearch) {
-        currentStage = "autofill-form";
+        await sleep(2e3);
+        await waitForHumanVerificationToClear();
+        if (hasLikelyApplicationForm() || hasLikelyApplicationSurface(site)) {
+          currentStage = "autofill-form";
+          updateStatus(
+            "running",
+            "Application form found after navigation. Autofilling...",
+            true,
+            "autofill-form"
+          );
+          await waitForLikelyApplicationSurface(site);
+          await runAutofillStage(site);
+          return;
+        }
         updateStatus(
           "running",
-          "Page navigated. Looking for application form...",
+          "Navigated to new page. Looking for apply button...",
           true,
-          "autofill-form"
+          "open-apply"
         );
-        await sleep(1500);
-        await waitForLikelyApplicationSurface(site);
-        await runAutofillStage(site);
+        await runOpenApplyStage(site);
         return;
       }
       if (site === "monster") {
@@ -2396,17 +2448,10 @@
         action = findZipRecruiterApplyAction();
         if (action) break;
       }
-      if (site === "startup" || site === "other_sites") {
-        action = findApplyAction(site, "job-page");
-        if (action) break;
-        action = findCompanySiteAction();
-        if (action) break;
-      } else {
-        action = findCompanySiteAction();
-        if (action) break;
-        action = findApplyAction(site, "job-page");
-        if (action) break;
-      }
+      action = findCompanySiteAction();
+      if (action) break;
+      action = findApplyAction(site, "job-page");
+      if (action) break;
       if (hasLikelyApplicationForm()) {
         currentStage = "autofill-form";
         updateStatus(
@@ -2469,7 +2514,8 @@
         "running",
         `Navigating to ${action.description}...`,
         true,
-        "autofill-form"
+        // FIX: Keep stage as open-apply so we can find the apply button on company page
+        "open-apply"
       );
       navigateCurrentTab(action.url);
       return;
@@ -2523,7 +2569,8 @@
           "running",
           `Navigating to ${action.description}...`,
           true,
-          "autofill-form"
+          // FIX: Use open-apply stage so post-navigation picks up correctly
+          "open-apply"
         );
         navigateCurrentTab(href);
         return;
@@ -2536,11 +2583,19 @@
       if (window.location.href !== urlBeforeClick) {
         await sleep(2e3);
         await waitForHumanVerificationToClear();
-        await waitForLikelyApplicationSurface(site);
         if (hasLikelyApplicationSurface(site)) {
+          await waitForLikelyApplicationSurface(site);
           await runAutofillStage(site);
           return;
         }
+        currentStage = "open-apply";
+        updateStatus(
+          "running",
+          "Navigated to company page. Looking for apply button...",
+          true,
+          "open-apply"
+        );
+        await runOpenApplyStage(site);
         return;
       }
       if (site === "indeed" && hasIndeedApplyIframe()) {
@@ -2584,6 +2639,31 @@
       return;
     }
     if (childApplicationTabOpened) return;
+    const retryCompanyAction = findCompanySiteAction();
+    if (retryCompanyAction) {
+      updateStatus(
+        "running",
+        `Retrying: navigating to ${retryCompanyAction.description}...`,
+        true,
+        "open-apply"
+      );
+      if (retryCompanyAction.type === "navigate") {
+        navigateCurrentTab(retryCompanyAction.url);
+        return;
+      }
+      retryCompanyAction.element.scrollIntoView({
+        behavior: "smooth",
+        block: "center"
+      });
+      await sleep(400);
+      performClickAction(retryCompanyAction.element);
+      await sleep(3e3);
+      if (window.location.href !== urlBeforeClick) {
+        await waitForHumanVerificationToClear();
+        await runOpenApplyStage(site);
+        return;
+      }
+    }
     const retryAction = findApplyAction(site, "job-page");
     if (retryAction && retryAction.type === "click" && retryAction.element !== action.element) {
       updateStatus(
@@ -2600,6 +2680,16 @@
       performClickAction(retryAction.element);
       await sleep(3e3);
       if (window.location.href !== urlBeforeClick || hasLikelyApplicationSurface(site)) {
+        if (window.location.href !== urlBeforeClick) {
+          await waitForHumanVerificationToClear();
+          if (hasLikelyApplicationSurface(site)) {
+            await waitForLikelyApplicationSurface(site);
+            await runAutofillStage(site);
+            return;
+          }
+          await runOpenApplyStage(site);
+          return;
+        }
         await waitForLikelyApplicationSurface(site);
         await runAutofillStage(site);
         return;
@@ -2694,7 +2784,8 @@
           "running",
           `Continuing to ${companySiteAction.description}...`,
           true,
-          "autofill-form"
+          // FIX: Use open-apply stage so the recursive handler works
+          "open-apply"
         );
         previousUrl = window.location.href;
         if (companySiteAction.type === "navigate") {
@@ -2708,6 +2799,11 @@
         await sleep(400);
         performClickAction(companySiteAction.element);
         await sleep(2500);
+        if (window.location.href !== previousUrl) {
+          await waitForHumanVerificationToClear();
+          await runOpenApplyStage(site);
+          return;
+        }
         await waitForLikelyApplicationSurface(site);
         continue;
       }
@@ -2732,6 +2828,15 @@
         await sleep(400);
         performClickAction(followUp.element);
         await sleep(2500);
+        if (window.location.href !== previousUrl) {
+          await waitForHumanVerificationToClear();
+          if (hasLikelyApplicationSurface(site)) {
+            await waitForLikelyApplicationSurface(site);
+            continue;
+          }
+          await runOpenApplyStage(site);
+          return;
+        }
         await waitForLikelyApplicationSurface(site);
         continue;
       }
@@ -3968,15 +4073,16 @@
     return { opened: response.opened };
   }
   async function claimJobOpenings(urls, requested) {
-    const candidates = Array.from(
-      new Map(
-        urls.map(
-          (url) => [getJobDedupKey(url), url]
-        ).filter(
-          ([key, url]) => Boolean(key) && Boolean(url)
-        )
-      ).entries()
-    ).map(([key, url]) => ({ key, url }));
+    const uniqueMap = /* @__PURE__ */ new Map();
+    for (const url of urls) {
+      const key = getJobDedupKey(url);
+      if (key && !uniqueMap.has(key)) {
+        uniqueMap.set(key, url);
+      }
+    }
+    const candidates = Array.from(uniqueMap.entries()).map(
+      ([key, url]) => ({ key, url })
+    );
     if (candidates.length === 0) {
       return [];
     }

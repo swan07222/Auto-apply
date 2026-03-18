@@ -1,3 +1,6 @@
+// src/content/jobSearch.ts
+// COMPLETE FILE — replace entirely
+
 import { ResumeKind, SiteKey, getJobDedupKey } from "../shared";
 import { JobCandidate } from "./types";
 import { cleanText, normalizeChoiceText } from "./text";
@@ -102,6 +105,16 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "[class*='JobResult']",
             "[class*='search-result']",
             "[class*='card-content']",
+            "[class*='results-card']",
+            "[class*='job-cardstyle']",
+            "[class*='JobCardStyle']",
+            "[class*='flip-card']",
+            "[class*='job-search-resultsstyle']",
+            // FIX: Additional Monster container patterns
+            "[class*='job-search-result']",
+            "[class*='JobSearchResult']",
+            "[class*='job-list-item']",
+            "[class*='JobListItem']",
             "article",
             "section",
             "li",
@@ -110,7 +123,8 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "a[href*='/job-openings/']",
             "a[href*='/job-opening/']",
             "a[href*='monster.com/job/']",
-            "a[href*='/jobs/search/']",
+            "a[href*='monster.com/jobs/']",
+            "a[href*='/job-detail/']",
             "a[href*='/jobs/l-']",
             "a[href*='/jobs/q-']",
             "a[href*='job-openings.monster.com']",
@@ -120,6 +134,11 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "a[data-testid='job-title']",
             "a[class*='job']",
             "a[class*='title']",
+            "a[data-bypass]",
+            "a[href*='?jobid=']",
+            // FIX: Additional Monster anchor patterns
+            "a[href*='job_id=']",
+            "a[href*='monster'][href*='/job']",
           ],
           [
             "h1",
@@ -132,12 +151,16 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "[class*='title']",
             "[class*='job-title']",
             "[class*='jobTitle']",
+            "[class*='job-name']",
+            "[class*='JobName']",
           ]
         ),
         ...collectCandidatesFromAnchors([
           "a[href*='/job-openings/']",
           "a[href*='/job-opening/']",
           "a[href*='monster.com/job/']",
+          "a[href*='monster.com/jobs/']",
+          "a[href*='/job-detail/']",
           "a[href*='/jobs/l-']",
           "a[href*='/jobs/q-']",
           "a[href*='job-openings.monster.com']",
@@ -145,6 +168,8 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
           "a[data-testid*='job']",
           "a[data-testid='jobTitle']",
           "a[data-testid='job-title']",
+          "a[href*='?jobid=']",
+          "a[href*='job_id=']",
         ]),
         ...collectMonsterFallbackCandidates(),
       ]);
@@ -161,6 +186,15 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "[class*='position']",
             "[class*='opening']",
             "[class*='posting']",
+            "[class*='role']",
+            "[class*='vacancy']",
+            "[class*='listing']",
+            "[class*='opportunity']",
+            // FIX: Additional career site container patterns
+            "[class*='career']",
+            "[class*='Career']",
+            "[class*='openings']",
+            "[class*='Openings']",
             "article",
             "section",
             "li",
@@ -197,6 +231,10 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "a[href*='workdayjobs.com']",
             "a[href*='icims.com/jobs/']",
             "a[href*='smartrecruiters.com']",
+            "a[href*='applytojob.com']",
+            "a[href*='recruitee.com']",
+            "a[href*='breezy.hr']",
+            "a[href*='bamboohr.com']",
           ],
           ["h1", "h2", "h3", "h4", "[data-testid*='title']", "[class*='title']"]
         ),
@@ -232,6 +270,10 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
           "a[href*='workdayjobs.com']",
           "a[href*='icims.com/jobs/']",
           "a[href*='smartrecruiters.com']",
+          "a[href*='applytojob.com']",
+          "a[href*='recruitee.com']",
+          "a[href*='breezy.hr']",
+          "a[href*='bamboohr.com']",
         ]),
         ...collectFallbackJobCandidates(),
       ]);
@@ -321,18 +363,72 @@ export function isLikelyJobDetailUrl(
     case "dice":
       return lowerUrl.includes("/job-detail/") || lowerUrl.includes("/jobs/detail/");
 
-    case "monster":
-      return (
+    case "monster": {
+      // FIX: Exclude listing/search/category pages
+      if (
+        /\/jobs\/?$/i.test(lowerUrl) ||
+        lowerUrl.includes("/jobs/search") ||
+        lowerUrl.includes("/jobs/browse") ||
+        lowerUrl.includes("/salary/") ||
+        lowerUrl.includes("/career-advice/") ||
+        lowerUrl.includes("/company/") ||
+        lowerUrl.includes("/profile/") ||
+        lowerUrl.includes("/account/")
+      ) {
+        return false;
+      }
+
+      // Explicit job detail patterns
+      if (
         lowerUrl.includes("/job-openings/") ||
         lowerUrl.includes("/job-opening/") ||
-        lowerUrl.includes("monster.com/job/") ||
-        (lowerUrl.includes("monster.com/jobs/") &&
-          !lowerUrl.endsWith("/jobs/") &&
-          !lowerUrl.includes("/jobs/search")) ||
+        lowerUrl.includes("/job-detail/") ||
         lowerUrl.includes("job-openings.monster.com/") ||
         lowerUrl.includes("jobview.monster.com") ||
-        lowerUrl.includes("m=portal&a=details")
-      );
+        lowerUrl.includes("m=portal&a=details") ||
+        /[?&]jobid=/i.test(lowerUrl) ||
+        /[?&]job_id=/i.test(lowerUrl)
+      ) {
+        return true;
+      }
+
+      // FIX: Monster /job/ path with a slug after it
+      // Matches: monster.com/job/some-title-123, monster.co.uk/job/some-title
+      if (/monster\.[a-z.]+\/job\/[^/?#]+/i.test(lowerUrl)) {
+        return true;
+      }
+
+      // FIX: Monster /jobs/ with an actual job slug (not a search/category)
+      if (/monster\.[a-z.]+\/jobs\/[^/?#]+/i.test(lowerUrl)) {
+        // Exclude search-like patterns
+        if (
+          lowerUrl.includes("/jobs/search") ||
+          lowerUrl.includes("/jobs/browse") ||
+          lowerUrl.includes("/jobs/q-") ||
+          lowerUrl.includes("/jobs/l-")
+        ) {
+          return false;
+        }
+
+        try {
+          const parsed = new URL(lowerUrl);
+          const pathParts = parsed.pathname.split("/").filter(Boolean);
+          // e.g. /jobs/some-job-title-123 => ["jobs", "some-job-title-123"]
+          if (pathParts.length >= 2 && pathParts[1].length > 3) {
+            return true;
+          }
+        } catch {
+          // Fall through
+        }
+      }
+
+      // FIX: Match Monster job links that have a numeric or hash-like ID in the path
+      if (/monster\.[a-z.]+\/.*\/[a-f0-9-]{8,}/i.test(lowerUrl)) {
+        return true;
+      }
+
+      return false;
+    }
 
     case "startup":
     case "other_sites": {
@@ -381,8 +477,30 @@ export function isLikelyJobDetailUrl(
         "/requisition/",
         "/req/",
       ];
+
       if (pathSignals.some((token) => lowerUrl.includes(token))) {
-        return true;
+        try {
+          const parsed = new URL(lowerUrl);
+          const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+          const segments = path.split("/").filter(Boolean);
+
+          // FIX: Check if there's a segment after the signal segment
+          for (const signal of pathSignals) {
+            const trimmedSignal = signal.replace(/\//g, "");
+            const signalIndex = segments.indexOf(trimmedSignal);
+            if (signalIndex >= 0 && signalIndex < segments.length - 1) {
+              return true;
+            }
+          }
+
+          // If query params contain an ID, still count it
+          if (parsed.search.length > 1) {
+            return true;
+          }
+        } catch {
+          // Fall through to title check
+        }
+        return looksLikeTechnicalRoleTitle(text);
       }
 
       const hasCareerPath = lowerUrl.includes("/careers/") || lowerUrl.includes("/career/");
@@ -391,11 +509,12 @@ export function isLikelyJobDetailUrl(
           const parsed = new URL(lowerUrl);
           const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
           const segments = path.split("/").filter(Boolean);
+          // FIX: Need at least 2 segments for a detail page (e.g. /careers/software-engineer)
           if (segments.length >= 2) {
             return true;
           }
         } catch {
-          // Ignore malformed URLs and fall back to title scoring.
+          // Ignore
         }
 
         return looksLikeTechnicalRoleTitle(text);
@@ -448,6 +567,27 @@ export function looksLikeTechnicalRoleTitle(text: string): boolean {
     "cloud",
     "data engineer",
     "machine learning",
+    "mobile",
+    "ios",
+    "android",
+    "security",
+    "architect",
+    "systems",
+    "embedded",
+    "firmware",
+    "network",
+    // FIX: Additional role title keywords
+    "product engineer",
+    "staff engineer",
+    "senior engineer",
+    "principal engineer",
+    "lead engineer",
+    "engineering manager",
+    "tech lead",
+    "technical lead",
+    "software development",
+    "sdet",
+    "automation engineer",
   ].some((keyword) => normalized.includes(normalizeChoiceText(keyword)));
 }
 
@@ -496,26 +636,78 @@ function collectCandidatesFromContainers(
 ): JobCandidate[] {
   const candidates: JobCandidate[] = [];
 
-  for (const container of Array.from(
-    document.querySelectorAll<HTMLElement>(containerSelectors.join(","))
-  )) {
-    const anchor = container.querySelector<HTMLAnchorElement>(linkSelectors.join(","));
-    const title =
-      cleanText(container.querySelector<HTMLElement>(titleSelectors.join(","))?.textContent) ||
-      cleanText(anchor?.textContent) ||
-      cleanText(container.getAttribute("data-testid")) ||
-      "";
+  const containers: HTMLElement[] = [];
+  for (const selector of containerSelectors) {
+    try {
+      for (const el of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
+        containers.push(el);
+      }
+    } catch {
+      // Skip invalid selectors
+    }
+  }
+
+  // FIX: Build joined selectors safely
+  let joinedLinkSelectors = "";
+  const validLinkSelectors: string[] = [];
+  for (const sel of linkSelectors) {
+    try {
+      document.querySelector(sel);
+      validLinkSelectors.push(sel);
+    } catch {
+      // Skip invalid selector
+    }
+  }
+  joinedLinkSelectors = validLinkSelectors.join(",");
+
+  let joinedTitleSelectors = "";
+  const validTitleSelectors: string[] = [];
+  for (const sel of titleSelectors) {
+    try {
+      document.querySelector(sel);
+      validTitleSelectors.push(sel);
+    } catch {
+      // Skip invalid selector
+    }
+  }
+  joinedTitleSelectors = validTitleSelectors.join(",");
+
+  for (const container of containers) {
+    let anchor: HTMLAnchorElement | null = null;
+    try {
+      if (joinedLinkSelectors) {
+        anchor = container.querySelector<HTMLAnchorElement>(joinedLinkSelectors);
+      }
+    } catch {
+      // Skip
+    }
+
+    let titleText = "";
+    try {
+      if (joinedTitleSelectors) {
+        titleText =
+          cleanText(container.querySelector<HTMLElement>(joinedTitleSelectors)?.textContent) ||
+          cleanText(anchor?.textContent) ||
+          cleanText(container.getAttribute("data-testid")) ||
+          "";
+      } else {
+        titleText = cleanText(anchor?.textContent) || "";
+      }
+    } catch {
+      titleText = cleanText(anchor?.textContent) || "";
+    }
+
     const contextText = cleanText(container.innerText || container.textContent || "");
 
     if (!anchor) {
       const dataJk = container.getAttribute("data-jk");
       if (dataJk) {
-        addJobCandidate(candidates, `/viewjob?jk=${dataJk}`, title, contextText);
+        addJobCandidate(candidates, `/viewjob?jk=${dataJk}`, titleText, contextText);
       }
       continue;
     }
 
-    addJobCandidate(candidates, anchor.href, title, contextText);
+    addJobCandidate(candidates, anchor.href, titleText, contextText);
   }
 
   return candidates;
@@ -524,13 +716,19 @@ function collectCandidatesFromContainers(
 function collectCandidatesFromAnchors(selectors: string[]): JobCandidate[] {
   const candidates: JobCandidate[] = [];
 
-  for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>(selectors.join(",")))) {
-    addJobCandidate(
-      candidates,
-      anchor.href,
-      cleanText(anchor.textContent),
-      cleanText(anchor.closest("article, li, section, div")?.textContent || anchor.textContent || "")
-    );
+  for (const selector of selectors) {
+    try {
+      for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>(selector))) {
+        addJobCandidate(
+          candidates,
+          anchor.href,
+          cleanText(anchor.textContent),
+          cleanText(anchor.closest("article, li, section, div")?.textContent || anchor.textContent || "")
+        );
+      }
+    } catch {
+      // Skip invalid selectors
+    }
   }
 
   return candidates;
@@ -561,20 +759,36 @@ function collectMonsterFallbackCandidates(): JobCandidate[] {
         "privacy",
         "terms",
         "cookie",
+        "help",
+        "about",
+        "contact",
+        "blog",
+        "log in",
+        "register",
+        "create account",
       ].some((skip) => text.toLowerCase().includes(skip))
     ) {
       continue;
     }
 
+    // FIX: Expanded Monster URL matching with all known patterns
     const isJobUrl =
       href.includes("/job-opening") ||
       href.includes("/job/") ||
+      href.includes("/job-detail/") ||
       href.includes("job-openings.monster") ||
       href.includes("jobview.monster") ||
-      (href.includes("monster.com") &&
-        href.includes("/jobs/") &&
-        !href.endsWith("/jobs/") &&
-        !href.includes("/jobs/search"));
+      /[?&]jobid=/i.test(href) ||
+      /[?&]job_id=/i.test(href) ||
+      // FIX: Match /jobs/ with an actual slug (not just /jobs/ or /jobs/search)
+      (href.includes("monster.") &&
+        /\/jobs\/[^/?#]{4,}/.test(href) &&
+        !href.includes("/jobs/search") &&
+        !href.includes("/jobs/browse") &&
+        !href.includes("/jobs/q-") &&
+        !href.includes("/jobs/l-")) ||
+      // FIX: Match Monster URLs with UUID-like IDs
+      (href.includes("monster.") && /\/[a-f0-9-]{8,}(?:[?#]|$)/i.test(href));
 
     if (!isJobUrl) {
       continue;

@@ -1,4 +1,5 @@
 // src/shared.ts
+// COMPLETE FILE — replace entirely
 
 export type SiteKey =
   | "indeed"
@@ -185,72 +186,20 @@ export const SEARCH_DEFINITIONS: SearchDefinition[] = [
 
 export const STARTUP_COMPANIES: StartupCompany[] = [
   { name: "Ramp", careersUrl: "https://ramp.com/careers", regions: ["us"] },
-  {
-    name: "Vercel",
-    careersUrl: "https://vercel.com/careers",
-    regions: ["us"],
-  },
-  {
-    name: "Plaid",
-    careersUrl: "https://plaid.com/careers/",
-    regions: ["us"],
-  },
-  {
-    name: "Figma",
-    careersUrl: "https://www.figma.com/careers/",
-    regions: ["us"],
-  },
-  {
-    name: "Notion",
-    careersUrl: "https://www.notion.so/careers",
-    regions: ["us"],
-  },
-  {
-    name: "Monzo",
-    careersUrl: "https://monzo.com/careers/",
-    regions: ["uk"],
-  },
+  { name: "Vercel", careersUrl: "https://vercel.com/careers", regions: ["us"] },
+  { name: "Plaid", careersUrl: "https://plaid.com/careers/", regions: ["us"] },
+  { name: "Figma", careersUrl: "https://www.figma.com/careers/", regions: ["us"] },
+  { name: "Notion", careersUrl: "https://www.notion.so/careers", regions: ["us"] },
+  { name: "Monzo", careersUrl: "https://monzo.com/careers/", regions: ["uk"] },
   { name: "Wise", careersUrl: "https://wise.jobs/", regions: ["uk"] },
-  {
-    name: "Synthesia",
-    careersUrl: "https://synthesia.io/careers",
-    regions: ["uk"],
-  },
-  {
-    name: "Snyk",
-    careersUrl: "https://snyk.io/careers/",
-    regions: ["uk"],
-  },
-  {
-    name: "Checkout.com",
-    careersUrl: "https://www.checkout.com/careers",
-    regions: ["uk"],
-  },
-  {
-    name: "N26",
-    careersUrl: "https://n26.com/en-eu/careers",
-    regions: ["eu"],
-  },
-  {
-    name: "Bolt",
-    careersUrl: "https://bolt.eu/en/careers/",
-    regions: ["eu"],
-  },
-  {
-    name: "Adyen",
-    careersUrl: "https://careers.adyen.com/",
-    regions: ["eu"],
-  },
-  {
-    name: "GetYourGuide",
-    careersUrl: "https://www.getyourguide.careers/",
-    regions: ["eu"],
-  },
-  {
-    name: "Klarna",
-    careersUrl: "https://www.klarna.com/careers/",
-    regions: ["eu"],
-  },
+  { name: "Synthesia", careersUrl: "https://synthesia.io/careers", regions: ["uk"] },
+  { name: "Snyk", careersUrl: "https://snyk.io/careers/", regions: ["uk"] },
+  { name: "Checkout.com", careersUrl: "https://www.checkout.com/careers", regions: ["uk"] },
+  { name: "N26", careersUrl: "https://n26.com/en-eu/careers", regions: ["eu"] },
+  { name: "Bolt", careersUrl: "https://bolt.eu/en/careers/", regions: ["eu"] },
+  { name: "Adyen", careersUrl: "https://careers.adyen.com/", regions: ["eu"] },
+  { name: "GetYourGuide", careersUrl: "https://www.getyourguide.careers/", regions: ["eu"] },
+  { name: "Klarna", careersUrl: "https://www.klarna.com/careers/", regions: ["eu"] },
 ];
 
 export const OTHER_JOB_SITE_TARGETS: CuratedJobSiteTarget[] = [
@@ -433,65 +382,50 @@ export const DEFAULT_SETTINGS: AutomationSettings = {
   answers: {},
 };
 
-// ── FIX: More robust Monster detection including international domains ──
+// FIX: Monster detection — completely rewritten to handle all TLD variants
 export function detectSiteFromUrl(url: string): SiteKey | null {
-  if (!url) return null;
+  if (!url || typeof url !== "string") return null;
+
+  let hostname: string;
   try {
-    const hostname = new URL(url).hostname.toLowerCase();
-
-    if (hostname === "indeed.com" || hostname.endsWith(".indeed.com")) {
-      return "indeed";
-    }
-
-    if (
-      hostname === "ziprecruiter.com" ||
-      hostname.endsWith(".ziprecruiter.com")
-    ) {
-      return "ziprecruiter";
-    }
-
-    if (hostname === "dice.com" || hostname.endsWith(".dice.com")) {
-      return "dice";
-    }
-
-    // FIX: Catch all Monster domains including international variants
-    if (
-      hostname === "monster.com" ||
-      hostname.endsWith(".monster.com") ||
-      hostname === "monster.co.uk" ||
-      hostname.endsWith(".monster.co.uk") ||
-      hostname === "monster.de" ||
-      hostname.endsWith(".monster.de") ||
-      hostname === "monster.fr" ||
-      hostname.endsWith(".monster.fr") ||
-      hostname === "monster.ca" ||
-      hostname.endsWith(".monster.ca") ||
-      hostname === "monster.at" ||
-      hostname.endsWith(".monster.at") ||
-      hostname === "monster.be" ||
-      hostname.endsWith(".monster.be") ||
-      hostname === "monster.ch" ||
-      hostname.endsWith(".monster.ch") ||
-      hostname === "monster.ie" ||
-      hostname.endsWith(".monster.ie") ||
-      hostname === "monster.lu" ||
-      hostname.endsWith(".monster.lu") ||
-      hostname === "monster.nl" ||
-      hostname.endsWith(".monster.nl") ||
-      hostname === "monster.se" ||
-      hostname.endsWith(".monster.se")
-    ) {
-      return "monster";
-    }
-
-    if (hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com")) {
-      return "chatgpt";
-    }
-
-    return null;
+    hostname = new URL(url).hostname.toLowerCase();
   } catch {
     return null;
   }
+
+  const bare = hostname.replace(/^www\./, "");
+
+  if (bare === "indeed.com" || bare.endsWith(".indeed.com")) {
+    return "indeed";
+  }
+
+  if (bare === "ziprecruiter.com" || bare.endsWith(".ziprecruiter.com")) {
+    return "ziprecruiter";
+  }
+
+  if (bare === "dice.com" || bare.endsWith(".dice.com")) {
+    return "dice";
+  }
+
+  // FIX: Monster — split hostname into parts and check if "monster" is a domain segment
+  // This handles: monster.com, monster.co.uk, monster.de, monster.fr, monster.ca,
+  // job-openings.monster.com, jobview.monster.com, etc.
+  const hostParts = bare.split(".");
+  for (let i = 0; i < hostParts.length; i++) {
+    if (hostParts[i] === "monster") {
+      // Ensure "monster" is not a subdomain prefix of a non-monster site
+      // It must be followed by a TLD pattern (at least one more part)
+      if (i < hostParts.length - 1) {
+        return "monster";
+      }
+    }
+  }
+
+  if (bare === "chatgpt.com" || bare.endsWith(".chatgpt.com")) {
+    return "chatgpt";
+  }
+
+  return null;
 }
 
 export function createStatus(
@@ -545,7 +479,6 @@ export function getSiteLabel(site: SiteKey | "unsupported" | null): string {
   if (site === null || site === "unsupported") {
     return "Unsupported";
   }
-
   return SUPPORTED_SITE_LABELS[site];
 }
 
@@ -575,7 +508,6 @@ export function buildSearchTargets(
   }));
 }
 
-// ── FIX: One entry per company instead of 3 — prevents opening same URL 3× ──
 export function buildStartupSearchTargets(
   settings: AutomationSettings
 ): SearchTarget[] {
@@ -587,8 +519,8 @@ export function buildStartupSearchTargets(
     company.regions.includes(region)
   );
 
-  // Each company career page opens ONCE.  The content script picks the best
-  // resume per-job via inferResumeKindFromTitle when spawning job tabs.
+  // FIX: Each company gets one target with full_stack as default resume kind.
+  // The content script will infer per-job resume kind from job titles found on the page.
   return companies.map((company) => ({
     label: company.name,
     resumeKind: "full_stack" as ResumeKind,
@@ -620,7 +552,6 @@ export function resolveStartupRegion(
   if (startupRegion !== "auto") {
     return startupRegion;
   }
-
   return inferStartupRegionFromCountry(candidateCountry);
 }
 
@@ -634,65 +565,26 @@ export function inferStartupRegionFromCountry(
   }
 
   if (
-    [
-      "us",
-      "usa",
-      "united states",
-      "united states of america",
-      "america",
-    ].includes(normalized)
+    ["us", "usa", "united states", "united states of america", "america"].includes(normalized)
   ) {
     return "us";
   }
 
   if (
     [
-      "uk",
-      "u k",
-      "united kingdom",
-      "great britain",
-      "britain",
-      "england",
-      "scotland",
-      "wales",
-      "northern ireland",
+      "uk", "u k", "united kingdom", "great britain", "britain",
+      "england", "scotland", "wales", "northern ireland",
     ].includes(normalized)
   ) {
     return "uk";
   }
 
   const euCountries = new Set([
-    "eu",
-    "europe",
-    "european union",
-    "austria",
-    "belgium",
-    "bulgaria",
-    "croatia",
-    "cyprus",
-    "czech republic",
-    "czechia",
-    "denmark",
-    "estonia",
-    "finland",
-    "france",
-    "germany",
-    "greece",
-    "hungary",
-    "ireland",
-    "italy",
-    "latvia",
-    "lithuania",
-    "luxembourg",
-    "malta",
-    "netherlands",
-    "poland",
-    "portugal",
-    "romania",
-    "slovakia",
-    "slovenia",
-    "spain",
-    "sweden",
+    "eu", "europe", "european union", "austria", "belgium", "bulgaria",
+    "croatia", "cyprus", "czech republic", "czechia", "denmark", "estonia",
+    "finland", "france", "germany", "greece", "hungary", "ireland", "italy",
+    "latvia", "lithuania", "luxembourg", "malta", "netherlands", "poland",
+    "portugal", "romania", "slovakia", "slovenia", "spain", "sweden",
   ]);
 
   return euCountries.has(normalized) ? "eu" : "us";
@@ -705,75 +597,25 @@ const CANONICAL_JOB_BOARD_ORIGINS: Record<JobBoardSite, string> = {
   monster: "https://www.monster.com",
 };
 
-// ── FIX: Strip tracking params & normalise Monster path variants so the
-//    same job never produces two different keys ──
-const TRACKING_PARAMS_TO_STRIP = new Set([
-  "utm_source",
-  "utm_medium",
-  "utm_campaign",
-  "utm_content",
-  "utm_term",
-  "from",
-  "ref",
-  "referer",
-  "referrer",
-  "source",
-  "src",
-  "sid",
-  "clickid",
-  "tk",
-  "trk",
-  "trkInfo",
-  "refId",
-  "trackingId",
-  "sc_cmp",
-  "mc_cid",
-  "mc_eid",
-  "fbclid",
-  "gclid",
-  "gad_source",
-  "msclkid",
-  "li_fat_id",
-  "_ga",
-  "position",
-  "pageNumber",
-  "page",
-]);
-
 const IDENTIFYING_PARAMS = [
-  "jk",
-  "vjk",
-  "jobid",
-  "job_id",
-  "jid",
-  "gh_jid",
-  "ashby_jid",
-  "requisitionid",
-  "requisition_id",
-  "reqid",
-  "id",
-  "posting_id",
-  "req_id",
+  "jk", "vjk", "jobid", "job_id", "jid", "gh_jid", "ashby_jid",
+  "requisitionid", "requisition_id", "reqid", "id", "posting_id", "req_id",
 ];
 
 export function getJobDedupKey(url: string): string {
   const raw = url.trim().toLowerCase();
-  if (!raw) {
-    return "";
-  }
+  if (!raw) return "";
 
   try {
     const parsed = new URL(url);
     const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
     let path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
 
-    // FIX: Normalise Monster path variants so /job-opening/ == /job-openings/
     path = path
       .replace(/\/job-opening\//, "/job-openings/")
       .replace(/\/jobs\/search$/, "/jobs")
       .replace(/\/+/g, "/");
 
-    // If an identifying param exists, key on that
     for (const param of IDENTIFYING_PARAMS) {
       const value = parsed.searchParams.get(param);
       if (value) {
@@ -781,34 +623,45 @@ export function getJobDedupKey(url: string): string {
       }
     }
 
-    // Otherwise key on hostname + clean path (no tracking noise)
     return `${hostname}${path}`;
   } catch {
     return raw;
   }
 }
 
-// ── NEW: Infer the best resume kind from a job title so startup/career-page
-//    tabs can assign the right resume per job ──
+// FIX: Separate dedup key for spawn items — preserves query params so different
+// search URLs on the same site don't collapse into one
+export function getSpawnDedupKey(url: string): string {
+  const raw = url.trim().toLowerCase();
+  if (!raw) return "";
+
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    const path = parsed.pathname.toLowerCase().replace(/\/+$/, "").replace(/\/+/g, "/");
+    const search = parsed.search.toLowerCase();
+    return `${hostname}${path}${search}`;
+  } catch {
+    return raw;
+  }
+}
+
 export function inferResumeKindFromTitle(title: string): ResumeKind {
   const lower = title.toLowerCase();
   if (
-    /\b(front\s*end|frontend|ui\s+engineer|ui\s+developer|react|angular|vue|css)\b/.test(
-      lower
-    )
+    /\b(front\s*end|frontend|ui\s+engineer|ui\s+developer|react|angular|vue|css)\b/.test(lower)
   ) {
     return "front_end";
   }
   if (
-    /\b(back\s*end|backend|server|api\b|platform\s+engineer|python|java\b|golang|rust|node\.?js|ruby|rails|django|spring)\b/.test(
-      lower
-    )
+    /\b(back\s*end|backend|server|api\b|platform\s+engineer|python|java\b|golang|rust|node\.?js|ruby|rails|django|spring)\b/.test(lower)
   ) {
     return "back_end";
   }
   return "full_stack";
 }
 
+// FIX: Monster search — use the working URL format with path-based query
 function buildSingleSearchUrl(
   site: JobBoardSite,
   _origin: string,
@@ -823,22 +676,23 @@ function buildSingleSearchUrl(
       url.searchParams.set("l", "Remote");
       return url.toString();
     }
-
     case "ziprecruiter": {
       const url = new URL("/jobs-search", baseOrigin);
       url.searchParams.set("search", query);
       url.searchParams.set("location", "Remote");
       return url.toString();
     }
-
     case "dice": {
       const url = new URL("/jobs", baseOrigin);
       url.searchParams.set("q", query);
       url.searchParams.set("location", "Remote");
       return url.toString();
     }
-
     case "monster": {
+      // FIX: Monster's search works better with q= containing the full query
+      // and where= set to "Remote" or left empty. The old approach of appending
+      // "remote" to the query string was unreliable.
+      // Monster's current search URL format: /jobs/search?q=...&where=...
       const url = new URL("/jobs/search", baseOrigin);
       url.searchParams.set("q", query);
       url.searchParams.set("where", "Remote");
@@ -859,69 +713,40 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
   const bodyLength = (doc.body?.innerText ?? "").trim().length;
 
   const strongPhrases = [
-    "verify you are human",
-    "verification required",
-    "complete the security check",
-    "press and hold",
-    "human verification",
-    "security challenge",
-    "i am human",
-    "i'm not a robot",
-    "verify that you are human",
+    "verify you are human", "verification required", "complete the security check",
+    "press and hold", "human verification", "security challenge",
+    "i am human", "i'm not a robot", "verify that you are human",
   ];
 
-  if (
-    strongPhrases.some(
-      (phrase) => title.includes(phrase) || bodyText.includes(phrase)
-    )
-  ) {
+  if (strongPhrases.some((phrase) => title.includes(phrase) || bodyText.includes(phrase))) {
     return true;
   }
 
   const isMinimalPage = bodyLength < 800;
-
   if (isMinimalPage) {
     const weakPhrases = [
-      "checking your browser",
-      "just a moment",
-      "enable javascript and cookies to continue",
-      "captcha",
+      "checking your browser", "just a moment",
+      "enable javascript and cookies to continue", "captcha",
     ];
-
-    if (
-      weakPhrases.some(
-        (phrase) => title.includes(phrase) || bodyText.includes(phrase)
-      )
-    ) {
+    if (weakPhrases.some((phrase) => title.includes(phrase) || bodyText.includes(phrase))) {
       return true;
     }
   }
 
   const verificationSelectors = [
-    "iframe[src*='captcha']",
-    "iframe[title*='challenge']",
-    "input[name*='captcha']",
-    "#px-captcha",
-    ".cf-turnstile",
-    ".g-recaptcha",
-    "[data-sitekey]",
+    "iframe[src*='captcha']", "iframe[title*='challenge']", "input[name*='captcha']",
+    "#px-captcha", ".cf-turnstile", ".g-recaptcha", "[data-sitekey]",
   ];
 
   return Boolean(doc.querySelector(verificationSelectors.join(",")));
 }
 
 export function normalizeQuestionKey(question: string): string {
-  return question
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 export async function readAutomationSettings(): Promise<AutomationSettings> {
-  const stored = await chrome.storage.local.get(
-    AUTOMATION_SETTINGS_STORAGE_KEY
-  );
+  const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
   return sanitizeAutomationSettings(stored[AUTOMATION_SETTINGS_STORAGE_KEY]);
 }
 
@@ -929,67 +754,41 @@ export async function writeAutomationSettings(
   settings: Partial<AutomationSettings> | AutomationSettings
 ): Promise<AutomationSettings> {
   const sanitized = sanitizeAutomationSettings(settings);
-  await chrome.storage.local.set({
-    [AUTOMATION_SETTINGS_STORAGE_KEY]: sanitized,
-  });
+  await chrome.storage.local.set({ [AUTOMATION_SETTINGS_STORAGE_KEY]: sanitized });
   return sanitized;
 }
 
-export async function writeAiAnswerRequest(
-  request: AiAnswerRequest
-): Promise<void> {
-  await chrome.storage.local.set({
-    [getAiRequestStorageKey(request.id)]: request,
-  });
+export async function writeAiAnswerRequest(request: AiAnswerRequest): Promise<void> {
+  await chrome.storage.local.set({ [getAiRequestStorageKey(request.id)]: request });
 }
 
-export async function readAiAnswerRequest(
-  requestId: string
-): Promise<AiAnswerRequest | null> {
-  const stored = await chrome.storage.local.get(
-    getAiRequestStorageKey(requestId)
-  );
+export async function readAiAnswerRequest(requestId: string): Promise<AiAnswerRequest | null> {
+  const stored = await chrome.storage.local.get(getAiRequestStorageKey(requestId));
   const value = stored[getAiRequestStorageKey(requestId)];
   return isRecord(value) ? sanitizeAiAnswerRequest(value) : null;
 }
 
-export async function deleteAiAnswerRequest(
-  requestId: string
-): Promise<void> {
+export async function deleteAiAnswerRequest(requestId: string): Promise<void> {
   await chrome.storage.local.remove(getAiRequestStorageKey(requestId));
 }
 
-export async function writeAiAnswerResponse(
-  response: AiAnswerResponse
-): Promise<void> {
-  await chrome.storage.local.set({
-    [getAiResponseStorageKey(response.id)]: response,
-  });
+export async function writeAiAnswerResponse(response: AiAnswerResponse): Promise<void> {
+  await chrome.storage.local.set({ [getAiResponseStorageKey(response.id)]: response });
 }
 
-export async function readAiAnswerResponse(
-  requestId: string
-): Promise<AiAnswerResponse | null> {
-  const stored = await chrome.storage.local.get(
-    getAiResponseStorageKey(requestId)
-  );
+export async function readAiAnswerResponse(requestId: string): Promise<AiAnswerResponse | null> {
+  const stored = await chrome.storage.local.get(getAiResponseStorageKey(requestId));
   const value = stored[getAiResponseStorageKey(requestId)];
   return isRecord(value) ? sanitizeAiAnswerResponse(value) : null;
 }
 
-export async function deleteAiAnswerResponse(
-  requestId: string
-): Promise<void> {
+export async function deleteAiAnswerResponse(requestId: string): Promise<void> {
   await chrome.storage.local.remove(getAiResponseStorageKey(requestId));
 }
 
-export function sanitizeAutomationSettings(
-  raw: unknown
-): AutomationSettings {
+export function sanitizeAutomationSettings(raw: unknown): AutomationSettings {
   const source = isRecord(raw) ? raw : {};
-  const candidateSource = isRecord(source.candidate)
-    ? source.candidate
-    : {};
+  const candidateSource = isRecord(source.candidate) ? source.candidate : {};
   const resumesSource = isRecord(source.resumes) ? source.resumes : {};
   const answersSource = isRecord(source.answers) ? source.answers : {};
 
@@ -1010,55 +809,33 @@ export function sanitizeAutomationSettings(
   };
 
   const resumes: Partial<Record<ResumeKind, ResumeAsset>> = {};
-
   for (const key of Object.keys(RESUME_KIND_LABELS) as ResumeKind[]) {
     const asset = resumesSource[key];
-
-    if (!isRecord(asset)) {
-      continue;
-    }
-
+    if (!isRecord(asset)) continue;
     const sanitizedAsset: ResumeAsset = {
       name: readString(asset.name),
       type: readString(asset.type),
       dataUrl: readString(asset.dataUrl),
       size: Number.isFinite(asset.size) ? Number(asset.size) : 0,
-      updatedAt: Number.isFinite(asset.updatedAt)
-        ? Number(asset.updatedAt)
-        : Date.now(),
+      updatedAt: Number.isFinite(asset.updatedAt) ? Number(asset.updatedAt) : Date.now(),
     };
-
     if (sanitizedAsset.name && sanitizedAsset.dataUrl) {
       resumes[key] = sanitizedAsset;
     }
   }
 
   const answers: Record<string, SavedAnswer> = {};
-
   for (const [key, value] of Object.entries(answersSource)) {
-    if (!isRecord(value)) {
-      continue;
-    }
-
+    if (!isRecord(value)) continue;
     const question = readString(value.question);
     const savedValue = readString(value.value);
-
-    if (!question || !savedValue) {
-      continue;
-    }
-
+    if (!question || !savedValue) continue;
     const normalizedKey = normalizeQuestionKey(key || question);
-
-    if (!normalizedKey) {
-      continue;
-    }
-
+    if (!normalizedKey) continue;
     answers[normalizedKey] = {
       question,
       value: savedValue,
-      updatedAt: Number.isFinite(value.updatedAt)
-        ? Number(value.updatedAt)
-        : Date.now(),
+      updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now(),
     };
   }
 
@@ -1078,15 +855,8 @@ export function sanitizeAutomationSettings(
 
 function clampJobPageLimit(raw: unknown): number {
   const numeric = Number(raw);
-
-  if (!Number.isFinite(numeric)) {
-    return DEFAULT_SETTINGS.jobPageLimit;
-  }
-
-  return Math.min(
-    MAX_JOB_PAGE_LIMIT,
-    Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric))
-  );
+  if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.jobPageLimit;
+  return Math.min(MAX_JOB_PAGE_LIMIT, Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric)));
 }
 
 function readString(value: unknown): string {
@@ -1104,47 +874,34 @@ function sanitizeSearchMode(value: unknown): SearchMode {
 }
 
 function sanitizeStartupRegion(value: unknown): StartupRegion {
-  return value === "us" ||
-    value === "uk" ||
-    value === "eu" ||
-    value === "auto"
+  return value === "us" || value === "uk" || value === "eu" || value === "auto"
     ? value
     : DEFAULT_SETTINGS.startupRegion;
 }
 
-function sanitizeAiAnswerRequest(
-  value: Record<string, unknown>
-): AiAnswerRequest {
+function sanitizeAiAnswerRequest(value: Record<string, unknown>): AiAnswerRequest {
   return {
     id: readString(value.id),
-    createdAt: Number.isFinite(value.createdAt)
-      ? Number(value.createdAt)
-      : Date.now(),
+    createdAt: Number.isFinite(value.createdAt) ? Number(value.createdAt) : Date.now(),
     resumeKind: sanitizeResumeKind(value.resumeKind),
     resume: sanitizeResumeAsset(value.resume),
-    candidate: sanitizeAutomationSettings({ candidate: value.candidate })
-      .candidate,
+    candidate: sanitizeAutomationSettings({ candidate: value.candidate }).candidate,
     job: sanitizeJobContextSnapshot(value.job),
   };
 }
 
-function sanitizeAiAnswerResponse(
-  value: Record<string, unknown>
-): AiAnswerResponse {
+function sanitizeAiAnswerResponse(value: Record<string, unknown>): AiAnswerResponse {
   return {
     id: readString(value.id),
     answer: readString(value.answer),
     error: readString(value.error) || undefined,
     copiedToClipboard: Boolean(value.copiedToClipboard),
-    updatedAt: Number.isFinite(value.updatedAt)
-      ? Number(value.updatedAt)
-      : Date.now(),
+    updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now(),
   };
 }
 
 function sanitizeJobContextSnapshot(value: unknown): JobContextSnapshot {
   const source = isRecord(value) ? value : {};
-
   return {
     title: readString(source.title),
     company: readString(source.company),
@@ -1155,27 +912,19 @@ function sanitizeJobContextSnapshot(value: unknown): JobContextSnapshot {
 }
 
 function sanitizeResumeAsset(value: unknown): ResumeAsset | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-
+  if (!isRecord(value)) return undefined;
   const asset: ResumeAsset = {
     name: readString(value.name),
     type: readString(value.type),
     dataUrl: readString(value.dataUrl),
     size: Number.isFinite(value.size) ? Number(value.size) : 0,
-    updatedAt: Number.isFinite(value.updatedAt)
-      ? Number(value.updatedAt)
-      : Date.now(),
+    updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now(),
   };
-
   return asset.name && asset.dataUrl ? asset : undefined;
 }
 
 function sanitizeResumeKind(value: unknown): ResumeKind | undefined {
-  return value === "front_end" ||
-    value === "back_end" ||
-    value === "full_stack"
+  return value === "front_end" || value === "back_end" || value === "full_stack"
     ? value
     : undefined;
 }
