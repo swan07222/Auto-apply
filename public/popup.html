@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Remote Job Search Starter</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup-shell">
+      <section class="card">
+        <p class="eyebrow">Chrome Extension</p>
+        <h1>Remote Job Search Starter</h1>
+        <p class="intro">
+          Start a site-aware search that walks matching jobs and opens their apply pages.
+        </p>
+
+        <div class="meta-row">
+          <span class="meta-label">Detected site</span>
+          <span id="site-name" class="pill">Checking...</span>
+        </div>
+
+        <div class="status-panel" id="status-panel" data-phase="idle">
+          <p class="status-label">Status</p>
+          <p id="status-text" class="status-text">Open Indeed, ZipRecruiter, or Dice to begin.</p>
+        </div>
+
+        <button id="start-button" class="start-button" type="button" disabled>
+          Start Auto Search
+        </button>
+
+        <p class="hint">
+          If the site asks you to verify that you are human, finish it manually and the extension will resume the apply flow.
+        </p>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
