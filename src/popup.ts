@@ -3,8 +3,11 @@ import {
   AutomationStatus,
   ResumeAsset,
   ResumeKind,
+  SearchMode,
+  StartupRegion,
   createStatus,
   detectSiteFromUrl,
+  isJobBoardSite,
   getResumeKindLabel,
   getSiteLabel,
   readAutomationSettings,
@@ -19,6 +22,11 @@ const statusPanel = requireElement<HTMLElement>("#status-panel");
 const statusText = requireElement<HTMLElement>("#status-text");
 const settingsStatus = requireElement<HTMLElement>("#settings-status");
 const answerCount = requireElement<HTMLElement>("#answer-count");
+const modePreview = requireElement<HTMLElement>("#mode-preview");
+const regionPreview = requireElement<HTMLElement>("#region-preview");
+const autoUploadPreview = requireElement<HTMLElement>("#auto-upload-preview");
+const searchModeInput = requireElement<HTMLSelectElement>("#search-mode");
+const startupRegionInput = requireElement<HTMLSelectElement>("#startup-region");
 const jobLimitInput = requireElement<HTMLInputElement>("#job-limit");
 const autoUploadInput = requireElement<HTMLInputElement>("#auto-upload");
 const fullNameInput = requireElement<HTMLInputElement>("#full-name");
@@ -66,6 +74,26 @@ clearAnswersButton.addEventListener("click", () => {
   void clearRememberedAnswers();
 });
 
+searchModeInput.addEventListener("change", () => {
+  updateModeUi();
+  updateOverviewPreview();
+  void refreshStatus();
+});
+
+startupRegionInput.addEventListener("change", () => {
+  updateOverviewPreview();
+  void refreshStatus();
+});
+
+autoUploadInput.addEventListener("change", () => {
+  updateOverviewPreview();
+});
+
+countryInput.addEventListener("input", () => {
+  updateOverviewPreview();
+  void refreshStatus();
+});
+
 for (const resumeKind of Object.keys(resumeInputs) as ResumeKind[]) {
   resumeInputs[resumeKind].addEventListener("change", () => {
     void storeResumeFile(resumeKind);
@@ -85,8 +113,10 @@ async function initialize(): Promise<void> {
   activeSite = detectSiteFromUrl(tab?.url ?? "");
   settings = await readAutomationSettings();
   populateSettingsForm(settings);
+  updateModeUi();
+  updateOverviewPreview();
 
-  siteName.textContent = getSiteLabel(activeSite);
+  siteName.textContent = getSiteLabel(isJobBoardSite(activeSite) ? activeSite : null);
 
   if (!activeTabId) {
     applyStatus(createStatus("unsupported", "error", "No active tab was found."));
@@ -102,12 +132,93 @@ async function initialize(): Promise<void> {
 }
 
 async function startAutomation(): Promise<void> {
-  if (!activeTabId || !activeSite) {
+  if (!activeTabId) {
     return;
   }
 
   await saveCurrentSettings(false);
   startButton.disabled = true;
+  const searchMode = getSelectedSearchMode();
+
+  if (searchMode === "startup_careers") {
+    applyStatus(
+      createStatus(
+        "startup",
+        "running",
+        `Starting startup career pages for ${getStartupRegionLabel()} companies...`
+      )
+    );
+
+    const response = await chrome.runtime.sendMessage({
+      type: "start-startup-automation",
+      tabId: activeTabId
+    });
+
+    if (!response?.ok) {
+      applyStatus(
+        createStatus(
+          "startup",
+          "error",
+          response?.error ?? "The extension could not start the startup career search."
+        )
+      );
+      startButton.disabled = false;
+      return;
+    }
+
+    applyStatus(
+      createStatus(
+        "startup",
+        "completed",
+        `Opened ${response.opened ?? 0} startup career pages for ${response.regionLabel ?? getStartupRegionLabel()} companies.`
+      )
+    );
+    startButton.disabled = false;
+    return;
+  }
+
+  if (searchMode === "other_job_sites") {
+    applyStatus(
+      createStatus(
+        "other_sites",
+        "running",
+        `Starting other job site searches for ${getStartupRegionLabel()}...`
+      )
+    );
+
+    const response = await chrome.runtime.sendMessage({
+      type: "start-other-sites-automation",
+      tabId: activeTabId
+    });
+
+    if (!response?.ok) {
+      applyStatus(
+        createStatus(
+          "other_sites",
+          "error",
+          response?.error ?? "The extension could not start the other job site search."
+        )
+      );
+      startButton.disabled = false;
+      return;
+    }
+
+    applyStatus(
+      createStatus(
+        "other_sites",
+        "completed",
+        `Opened ${response.opened ?? 0} other job site searches for ${response.regionLabel ?? getStartupRegionLabel()}.`
+      )
+    );
+    startButton.disabled = false;
+    return;
+  }
+
+  if (!isJobBoardSite(activeSite)) {
+    startButton.disabled = false;
+    return;
+  }
+
   applyStatus(createStatus(activeSite, "running", `Starting on ${getSiteLabel(activeSite)}...`));
 
   const response = await chrome.runtime.sendMessage({
@@ -135,11 +246,15 @@ async function refreshStatus(): Promise<void> {
     return;
   }
 
+  const searchMode = getSelectedSearchMode();
+  const activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
+
   const contentStatus = await getContentStatus(activeTabId);
 
-  if (contentStatus) {
+  if (contentStatus && (searchMode !== "job_board" || activeJobBoardSite || contentStatus.phase !== "idle")) {
     applyStatus(contentStatus);
-    startButton.disabled = !activeSite || isBusy(contentStatus.phase);
+    startButton.disabled =
+      searchMode === "job_board" ? !activeJobBoardSite || isBusy(contentStatus.phase) : isBusy(contentStatus.phase);
     return;
   }
 
@@ -148,13 +263,43 @@ async function refreshStatus(): Promise<void> {
     tabId: activeTabId
   });
 
-  if (backgroundResponse?.session) {
+  if (
+    backgroundResponse?.session &&
+    (searchMode !== "job_board" || activeJobBoardSite || backgroundResponse.session.phase !== "idle")
+  ) {
     applyStatus(backgroundResponse.session as AutomationStatus);
-    startButton.disabled = !activeSite || isBusy(backgroundResponse.session.phase);
+    startButton.disabled =
+      searchMode === "job_board"
+        ? !activeJobBoardSite || isBusy(backgroundResponse.session.phase)
+        : isBusy(backgroundResponse.session.phase);
     return;
   }
 
-  if (!activeSite) {
+  if (searchMode === "startup_careers") {
+    applyStatus(
+      createStatus(
+        "startup",
+        "idle",
+        `Ready to open startup career pages for ${getStartupRegionLabel()} companies.`
+      )
+    );
+    startButton.disabled = false;
+    return;
+  }
+
+  if (searchMode === "other_job_sites") {
+    applyStatus(
+      createStatus(
+        "other_sites",
+        "idle",
+        `Ready to open other job site searches for ${getStartupRegionLabel()}.`
+      )
+    );
+    startButton.disabled = false;
+    return;
+  }
+
+  if (!activeJobBoardSite) {
     applyStatus(
       createStatus(
         "unsupported",
@@ -166,7 +311,7 @@ async function refreshStatus(): Promise<void> {
     return;
   }
 
-  applyStatus(createStatus(activeSite, "idle", `Ready on ${getSiteLabel(activeSite)}.`));
+  applyStatus(createStatus(activeJobBoardSite, "idle", `Ready on ${getSiteLabel(activeJobBoardSite)}.`));
   startButton.disabled = false;
 }
 
@@ -180,7 +325,19 @@ async function getContentStatus(tabId: number): Promise<AutomationStatus | null>
 }
 
 function applyStatus(status: AutomationStatus): void {
-  siteName.textContent = getSiteLabel(status.site === "unsupported" ? activeSite : status.site);
+  const searchMode = getSelectedSearchMode();
+  const statusSite = status.site === "unsupported" ? null : status.site;
+  const displaySite = isJobBoardSite(statusSite)
+    ? statusSite
+    : isJobBoardSite(activeSite)
+      ? activeSite
+      : null;
+  siteName.textContent =
+    searchMode === "startup_careers"
+      ? "Startup Careers"
+      : searchMode === "other_job_sites"
+        ? "Other Job Sites"
+        : getSiteLabel(displaySite);
   statusPanel.dataset.phase = status.phase;
   statusText.textContent = status.message;
 }
@@ -192,6 +349,8 @@ async function saveCurrentSettings(showFeedback: boolean): Promise<void> {
   try {
     settings = await writeAutomationSettings({
       ...settings,
+      searchMode: getSelectedSearchMode(),
+      startupRegion: getSelectedStartupRegion(),
       jobPageLimit: Number(jobLimitInput.value),
       autoUploadResumes: autoUploadInput.checked,
       candidate: {
@@ -215,6 +374,7 @@ async function saveCurrentSettings(showFeedback: boolean): Promise<void> {
     settingsStatus.textContent = showFeedback
       ? "Settings saved."
       : "Settings are stored locally in the extension.";
+    updateOverviewPreview();
   } finally {
     saveButton.disabled = false;
   }
@@ -265,6 +425,8 @@ async function storeResumeFile(resumeKind: ResumeKind): Promise<void> {
 }
 
 function populateSettingsForm(nextSettings: AutomationSettings): void {
+  searchModeInput.value = nextSettings.searchMode;
+  startupRegionInput.value = nextSettings.startupRegion;
   jobLimitInput.value = String(nextSettings.jobPageLimit);
   autoUploadInput.checked = nextSettings.autoUploadResumes;
   fullNameInput.value = nextSettings.candidate.fullName;
@@ -288,6 +450,8 @@ function populateSettingsForm(nextSettings: AutomationSettings): void {
       ? `${asset.name} (${formatFileSize(asset.size)})`
       : "No file saved";
   }
+
+  updateOverviewPreview();
 }
 
 function formatFileSize(size: number): string {
@@ -340,6 +504,8 @@ function createEmptySettings(): AutomationSettings {
   return {
     jobPageLimit: 5,
     autoUploadResumes: true,
+    searchMode: "job_board",
+    startupRegion: "auto",
     candidate: {
       fullName: "",
       email: "",
@@ -358,6 +524,69 @@ function createEmptySettings(): AutomationSettings {
     resumes: {},
     answers: {}
   };
+}
+
+function updateModeUi(): void {
+  const searchMode = getSelectedSearchMode();
+  startButton.textContent =
+    searchMode === "startup_careers"
+      ? "Start Startup Search"
+      : searchMode === "other_job_sites"
+        ? "Start Other Sites Search"
+        : "Start Auto Search";
+}
+
+function updateOverviewPreview(): void {
+  modePreview.textContent = getModePreviewLabel();
+  regionPreview.textContent = getRegionPreviewLabel();
+  autoUploadPreview.textContent = autoUploadInput.checked ? "Enabled" : "Off";
+}
+
+function getSelectedSearchMode(): SearchMode {
+  return searchModeInput.value === "startup_careers" ||
+    searchModeInput.value === "other_job_sites"
+    ? searchModeInput.value
+    : "job_board";
+}
+
+function getSelectedStartupRegion(): StartupRegion {
+  return startupRegionInput.value === "us" ||
+    startupRegionInput.value === "uk" ||
+    startupRegionInput.value === "eu" ||
+    startupRegionInput.value === "auto"
+    ? startupRegionInput.value
+    : "auto";
+}
+
+function getStartupRegionLabel(): string {
+  return getSelectedStartupRegion() === "auto"
+    ? countryInput.value.trim() || "US"
+    : getSelectedStartupRegion().toUpperCase();
+}
+
+function getModePreviewLabel(): string {
+  const searchMode = getSelectedSearchMode();
+
+  if (searchMode === "startup_careers") {
+    return "Startup careers";
+  }
+
+  if (searchMode === "other_job_sites") {
+    return "Other job sites";
+  }
+
+  return "Job boards";
+}
+
+function getRegionPreviewLabel(): string {
+  const region = getSelectedStartupRegion();
+
+  if (region !== "auto") {
+    return region.toUpperCase();
+  }
+
+  const country = countryInput.value.trim();
+  return country ? `Auto - ${country}` : "Auto from country";
 }
 
 function requireElement<T extends Element>(selector: string): T {

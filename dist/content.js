@@ -5,7 +5,10 @@
     indeed: "Indeed",
     ziprecruiter: "ZipRecruiter",
     dice: "Dice",
-    monster: "Monster"
+    monster: "Monster",
+    startup: "Startup Careers",
+    other_sites: "Other Job Sites",
+    chatgpt: "ChatGPT"
   };
   var RESUME_KIND_LABELS = {
     front_end: "Front End",
@@ -19,11 +22,15 @@
   ];
   var VERIFICATION_POLL_MS = 2500;
   var AUTOMATION_SETTINGS_STORAGE_KEY = "remote-job-search-settings";
+  var AI_REQUEST_STORAGE_PREFIX = "remote-job-search-ai-request:";
+  var AI_RESPONSE_STORAGE_PREFIX = "remote-job-search-ai-response:";
   var MIN_JOB_PAGE_LIMIT = 1;
   var MAX_JOB_PAGE_LIMIT = 25;
   var DEFAULT_SETTINGS = {
     jobPageLimit: 5,
     autoUploadResumes: true,
+    searchMode: "job_board",
+    startupRegion: "auto",
     candidate: {
       fullName: "",
       email: "",
@@ -57,6 +64,9 @@
       if (hostname === "monster.com" || hostname.endsWith(".monster.com")) {
         return "monster";
       }
+      if (hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com")) {
+        return "chatgpt";
+      }
       return null;
     } catch {
       return null;
@@ -69,6 +79,12 @@
       message,
       updatedAt: Date.now()
     };
+  }
+  function getAiRequestStorageKey(requestId) {
+    return `${AI_REQUEST_STORAGE_PREFIX}${requestId}`;
+  }
+  function getAiResponseStorageKey(requestId) {
+    return `${AI_RESPONSE_STORAGE_PREFIX}${requestId}`;
   }
   function getSiteLabel(site) {
     if (site === null || site === "unsupported") {
@@ -167,6 +183,32 @@
     });
     return sanitized;
   }
+  async function writeAiAnswerRequest(request) {
+    await chrome.storage.local.set({
+      [getAiRequestStorageKey(request.id)]: request
+    });
+  }
+  async function readAiAnswerRequest(requestId) {
+    const stored = await chrome.storage.local.get(getAiRequestStorageKey(requestId));
+    const value = stored[getAiRequestStorageKey(requestId)];
+    return isRecord(value) ? sanitizeAiAnswerRequest(value) : null;
+  }
+  async function deleteAiAnswerRequest(requestId) {
+    await chrome.storage.local.remove(getAiRequestStorageKey(requestId));
+  }
+  async function writeAiAnswerResponse(response) {
+    await chrome.storage.local.set({
+      [getAiResponseStorageKey(response.id)]: response
+    });
+  }
+  async function readAiAnswerResponse(requestId) {
+    const stored = await chrome.storage.local.get(getAiResponseStorageKey(requestId));
+    const value = stored[getAiResponseStorageKey(requestId)];
+    return isRecord(value) ? sanitizeAiAnswerResponse(value) : null;
+  }
+  async function deleteAiAnswerResponse(requestId) {
+    await chrome.storage.local.remove(getAiResponseStorageKey(requestId));
+  }
   function sanitizeAutomationSettings(raw) {
     const source = isRecord(raw) ? raw : {};
     const candidateSource = isRecord(source.candidate) ? source.candidate : {};
@@ -227,6 +269,8 @@
     return {
       jobPageLimit: clampJobPageLimit(source.jobPageLimit),
       autoUploadResumes: typeof source.autoUploadResumes === "boolean" ? source.autoUploadResumes : DEFAULT_SETTINGS.autoUploadResumes,
+      searchMode: sanitizeSearchMode(source.searchMode),
+      startupRegion: sanitizeStartupRegion(source.startupRegion),
       candidate,
       resumes,
       answers
@@ -244,6 +288,57 @@
   }
   function isRecord(value) {
     return typeof value === "object" && value !== null;
+  }
+  function sanitizeSearchMode(value) {
+    return value === "startup_careers" || value === "other_job_sites" ? value : DEFAULT_SETTINGS.searchMode;
+  }
+  function sanitizeStartupRegion(value) {
+    return value === "us" || value === "uk" || value === "eu" || value === "auto" ? value : DEFAULT_SETTINGS.startupRegion;
+  }
+  function sanitizeAiAnswerRequest(value) {
+    return {
+      id: readString(value.id),
+      createdAt: Number.isFinite(value.createdAt) ? Number(value.createdAt) : Date.now(),
+      resumeKind: sanitizeResumeKind(value.resumeKind),
+      resume: sanitizeResumeAsset(value.resume),
+      candidate: sanitizeAutomationSettings({ candidate: value.candidate }).candidate,
+      job: sanitizeJobContextSnapshot(value.job)
+    };
+  }
+  function sanitizeAiAnswerResponse(value) {
+    return {
+      id: readString(value.id),
+      answer: readString(value.answer),
+      error: readString(value.error) || void 0,
+      copiedToClipboard: Boolean(value.copiedToClipboard),
+      updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now()
+    };
+  }
+  function sanitizeJobContextSnapshot(value) {
+    const source = isRecord(value) ? value : {};
+    return {
+      title: readString(source.title),
+      company: readString(source.company),
+      description: readString(source.description),
+      question: readString(source.question),
+      pageUrl: readString(source.pageUrl)
+    };
+  }
+  function sanitizeResumeAsset(value) {
+    if (!isRecord(value)) {
+      return void 0;
+    }
+    const asset = {
+      name: readString(value.name),
+      type: readString(value.type),
+      dataUrl: readString(value.dataUrl),
+      size: Number.isFinite(value.size) ? Number(value.size) : 0,
+      updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now()
+    };
+    return asset.name && asset.dataUrl ? asset : void 0;
+  }
+  function sanitizeResumeKind(value) {
+    return value === "front_end" || value === "back_end" || value === "full_stack" ? value : void 0;
   }
 
   // src/content.ts
@@ -273,7 +368,6 @@
       currentResumeKind = void 0;
       void ensureAutomationRunning().then(() => sendResponse({ ok: true, status })).catch((error) => {
         const messageText = error instanceof Error ? error.message : "Failed to start automation.";
-        updateStatus("error", messageText, false);
         sendResponse({ ok: false, error: messageText, status });
       });
       return true;
@@ -282,7 +376,8 @@
   });
   document.addEventListener("change", handlePotentialAnswerMemory, true);
   document.addEventListener("blur", handlePotentialAnswerMemory, true);
-  void resumeAutomationIfNeeded();
+  void resumeAutomationIfNeeded().catch(() => {
+  });
   renderOverlay();
   async function resumeAutomationIfNeeded() {
     let response = null;
@@ -307,9 +402,17 @@
     if (activeRun) {
       return activeRun;
     }
-    activeRun = runAutomation().finally(() => {
-      activeRun = null;
-    });
+    activeRun = (async () => {
+      try {
+        await runAutomation();
+      } catch (error) {
+        const messageText = error instanceof Error ? error.message : "Automation failed unexpectedly.";
+        updateStatus("error", messageText, false);
+        throw error;
+      } finally {
+        activeRun = null;
+      }
+    })();
     return activeRun;
   }
   async function runAutomation() {
@@ -318,6 +421,9 @@
     }
     switch (currentStage) {
       case "bootstrap":
+        if (status.site === "startup" || status.site === "other_sites" || status.site === "chatgpt") {
+          throw new Error("Curated search automation should begin on a search-result tab, not a bootstrap tab.");
+        }
         await runBootstrapStage(status.site);
         return;
       case "collect-results":
@@ -328,6 +434,9 @@
         return;
       case "autofill-form":
         await runAutofillStage(status.site);
+        return;
+      case "generate-ai-answer":
+        await runGenerateAiAnswerStage();
         return;
     }
   }
@@ -372,7 +481,14 @@
     }
     const limitedJobUrls = jobUrls.slice(0, settings.jobPageLimit);
     const items = limitedJobUrls.map(
-      (url) => isLikelyApplyUrl(url, site) ? {
+      (url) => site === "startup" || site === "other_sites" ? {
+        url,
+        site,
+        stage: "autofill-form",
+        message: `Opening the ${labelPrefix || ""}role and autofilling if possible...`,
+        label: currentLabel,
+        resumeKind: currentResumeKind
+      } : isLikelyApplyUrl(url, site) ? {
         url,
         site,
         stage: "autofill-form",
@@ -399,6 +515,11 @@
     await closeCurrentTab();
   }
   async function runOpenApplyStage(site) {
+    if (isCurrentPageAppliedJob()) {
+      updateStatus("completed", "Skipped a job that already appears to be applied.", false, "open-apply");
+      await closeCurrentTab();
+      return;
+    }
     if (isAlreadyOnApplyPage(site, window.location.href) || hasLikelyApplicationForm()) {
       updateStatus("running", "Application form found. Autofilling blank fields...", true, "autofill-form");
       await runAutofillStage(site);
@@ -431,6 +552,11 @@
     await runAutofillStage(site);
   }
   async function runAutofillStage(site) {
+    if (isCurrentPageAppliedJob()) {
+      updateStatus("completed", "Skipped a job that already appears to be applied.", false, "autofill-form");
+      await closeCurrentTab();
+      return;
+    }
     updateStatus("running", "Looking for the application form and blank fields...", true, "autofill-form");
     await waitForHumanVerificationToClear();
     await waitForLikelyApplicationSurface(site);
@@ -480,6 +606,66 @@
       return;
     }
     throw new Error("The job page opened, but no application form or follow-up apply button was found.");
+  }
+  async function runGenerateAiAnswerStage() {
+    const requestId = new URL(window.location.href).searchParams.get("remoteJobSearchRequest");
+    if (!requestId) {
+      throw new Error("Missing ChatGPT request details.");
+    }
+    const request = await readAiAnswerRequest(requestId);
+    if (!request) {
+      throw new Error("The saved ChatGPT request could not be found.");
+    }
+    updateStatus(
+      "running",
+      `Drafting an answer for "${truncateText(request.job.question, 70)}" in ChatGPT...`,
+      true,
+      "generate-ai-answer"
+    );
+    try {
+      await waitForHumanVerificationToClear();
+      const composer = await waitForChatGptComposer();
+      if (!composer) {
+        throw new Error("ChatGPT did not open a message composer. Make sure you are signed in.");
+      }
+      if (request.resume) {
+        await uploadResumeToChatGpt(request.resume);
+      }
+      setComposerValue(composer, buildChatGptPrompt(request));
+      const sendButton = await waitForChatGptSendButton();
+      if (!sendButton) {
+        throw new Error("ChatGPT send button was not found.");
+      }
+      sendButton.click();
+      const answer = await waitForChatGptAnswerText();
+      if (!answer) {
+        throw new Error("ChatGPT did not return an answer in time.");
+      }
+      const copiedToClipboard = await copyTextToClipboard(answer);
+      await writeAiAnswerResponse({
+        id: request.id,
+        answer,
+        copiedToClipboard,
+        updatedAt: Date.now()
+      });
+      updateStatus(
+        "completed",
+        copiedToClipboard ? "ChatGPT drafted and copied the answer." : "ChatGPT drafted the answer, but clipboard copy was unavailable.",
+        false,
+        "generate-ai-answer"
+      );
+      await closeCurrentTab();
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : "ChatGPT answer generation failed.";
+      await writeAiAnswerResponse({
+        id: request.id,
+        answer: "",
+        error: messageText,
+        copiedToClipboard: false,
+        updatedAt: Date.now()
+      });
+      throw error;
+    }
   }
   async function waitForHumanVerificationToClear() {
     if (!isProbablyHumanVerificationPage(document)) {
@@ -560,7 +746,7 @@
             [
               "a[href*='/jobs/']",
               "a[href*='/job/']",
-              "a[href*='/c/']",
+              "a[href*='/job-details/']",
               "a[data-testid*='job-title']",
               "a[class*='job']"
             ],
@@ -569,7 +755,7 @@
           ...collectCandidatesFromAnchors([
             "a[href*='/jobs/']",
             "a[href*='/job/']",
-            "a[href*='/c/']",
+            "a[href*='/job-details/']",
             "a[data-testid*='job-title']"
           ])
         ]);
@@ -601,6 +787,62 @@
             "a[data-testid*='job-title']"
           ])
         ]);
+      case "startup":
+      case "other_sites":
+        return dedupeJobCandidates([
+          ...collectCandidatesFromContainers(
+            [
+              "[data-qa*='job']",
+              "[data-testid*='job']",
+              "[data-test*='job']",
+              "[class*='job']",
+              "[class*='position']",
+              "[class*='opening']",
+              "[class*='posting']",
+              "article",
+              "section",
+              "li"
+            ],
+            [
+              "a[href*='/jobs/']",
+              "a[href*='/job/']",
+              "a[href*='/positions/']",
+              "a[href*='/position/']",
+              "a[href*='/careers/']",
+              "a[href*='/openings/']",
+              "a[href*='/opening/']",
+              "a[href*='/requisition/']",
+              "a[href*='/req/']",
+              "a[href*='gh_jid=']",
+              "a[href*='lever.co']",
+              "a[href*='greenhouse.io']",
+              "a[href*='ashbyhq.com']",
+              "a[href*='workable.com']",
+              "a[href*='jobvite.com']",
+              "a[href*='smartrecruiters.com']"
+            ],
+            ["h1", "h2", "h3", "h4", "[data-testid*='title']", "[class*='title']"]
+          ),
+          ...collectCandidatesFromAnchors([
+            "a[href*='/jobs/']",
+            "a[href*='/job/']",
+            "a[href*='/positions/']",
+            "a[href*='/position/']",
+            "a[href*='/openings/']",
+            "a[href*='/opening/']",
+            "a[href*='/requisition/']",
+            "a[href*='/req/']",
+            "a[href*='gh_jid=']",
+            "a[href*='lever.co']",
+            "a[href*='greenhouse.io']",
+            "a[href*='ashbyhq.com']",
+            "a[href*='workable.com']",
+            "a[href*='jobvite.com']",
+            "a[href*='smartrecruiters.com']"
+          ])
+        ]);
+      case "chatgpt":
+        return [];
     }
   }
   function collectCandidatesFromContainers(containerSelectors, linkSelectors, titleSelectors) {
@@ -610,31 +852,38 @@
     )) {
       const anchor = container.querySelector(linkSelectors.join(","));
       const title = cleanText(container.querySelector(titleSelectors.join(","))?.textContent) || cleanText(anchor?.textContent) || cleanText(container.getAttribute("data-testid")) || "";
+      const contextText = cleanText(container.innerText || container.textContent || "");
       if (!anchor) {
         const dataJk = container.getAttribute("data-jk");
         if (dataJk) {
-          addJobCandidate(candidates, `/viewjob?jk=${dataJk}`, title);
+          addJobCandidate(candidates, `/viewjob?jk=${dataJk}`, title, contextText);
         }
         continue;
       }
-      addJobCandidate(candidates, anchor.href, title);
+      addJobCandidate(candidates, anchor.href, title, contextText);
     }
     return candidates;
   }
   function collectCandidatesFromAnchors(selectors) {
     const candidates = [];
     for (const anchor of Array.from(document.querySelectorAll(selectors.join(",")))) {
-      addJobCandidate(candidates, anchor.href, cleanText(anchor.textContent));
+      addJobCandidate(
+        candidates,
+        anchor.href,
+        cleanText(anchor.textContent),
+        cleanText(anchor.closest("article, li, section, div")?.textContent || anchor.textContent || "")
+      );
     }
     return candidates;
   }
-  function addJobCandidate(candidates, rawUrl, rawTitle) {
+  function addJobCandidate(candidates, rawUrl, rawTitle, rawContextText) {
     const url = normalizeUrl(rawUrl);
     const title = cleanText(rawTitle);
+    const contextText = cleanText(rawContextText);
     if (!url || !title) {
       return;
     }
-    candidates.push({ url, title });
+    candidates.push({ url, title, contextText });
   }
   function dedupeJobCandidates(candidates) {
     const unique = /* @__PURE__ */ new Map();
@@ -650,7 +899,12 @@
   }
   function pickRelevantJobUrls(candidates) {
     const validCandidates = candidates.filter(
-      (candidate) => isLikelyJobDetailUrl(status.site === "unsupported" ? null : status.site, candidate.url, candidate.title)
+      (candidate) => isLikelyJobDetailUrl(
+        status.site === "unsupported" ? null : status.site,
+        candidate.url,
+        candidate.title,
+        candidate.contextText
+      )
     );
     const resumeKind = currentResumeKind;
     if (!resumeKind) {
@@ -713,13 +967,30 @@
       filledFields: 0,
       usedSavedAnswers: 0,
       usedProfileAnswers: 0,
-      uploadedResume: null
+      uploadedResume: null,
+      generatedAiAnswers: 0,
+      copiedAiAnswers: 0
     };
     if (settings.autoUploadResumes) {
       const uploadedResume = await uploadResumeIfNeeded(settings);
       if (uploadedResume) {
         result.uploadedResume = uploadedResume;
         result.filledFields += 1;
+      }
+    }
+    const essayFields = collectEssayFieldsNeedingAi(settings);
+    for (const candidate of essayFields) {
+      const generated = await generateAiAnswerForField(candidate, settings);
+      if (!generated?.answer) {
+        continue;
+      }
+      if (!applyAnswerToField(candidate.field, generated.answer)) {
+        continue;
+      }
+      result.filledFields += 1;
+      result.generatedAiAnswers += 1;
+      if (generated.copiedToClipboard) {
+        result.copiedAiAnswers += 1;
       }
     }
     const processedGroups = /* @__PURE__ */ new Set();
@@ -809,6 +1080,371 @@
       return true;
     }
     return inputCount === 1;
+  }
+  function collectEssayFieldsNeedingAi(settings) {
+    const candidates = [];
+    for (const field of Array.from(
+      document.querySelectorAll("textarea, input[type='text']")
+    )) {
+      if (!shouldAutofillField(field)) {
+        continue;
+      }
+      if (field.value.trim()) {
+        continue;
+      }
+      const question = getQuestionText(field);
+      if (!question || !isAiEssayQuestion(field, question)) {
+        continue;
+      }
+      if (getAnswerForField(field, settings)) {
+        continue;
+      }
+      candidates.push({ field, question });
+    }
+    return candidates;
+  }
+  function isAiEssayQuestion(field, question) {
+    const descriptor = getFieldDescriptor(field, question);
+    const essaySignals = [
+      "cover letter",
+      "why are you interested",
+      "why are you a fit",
+      "why do you want",
+      "why this job",
+      "why this role",
+      "why this company",
+      "why should we hire you",
+      "tell us why",
+      "tell us about yourself",
+      "motivation",
+      "interest in this role",
+      "interest in this job",
+      "additional information",
+      "anything else"
+    ];
+    if (essaySignals.some((signal) => descriptor.includes(normalizeChoiceText(signal)))) {
+      return true;
+    }
+    return field instanceof HTMLTextAreaElement && descriptor.length > 12 && !matchesDescriptor(descriptor, [
+      "address",
+      "city",
+      "country",
+      "state",
+      "phone",
+      "email",
+      "linkedin",
+      "portfolio"
+    ]);
+  }
+  async function generateAiAnswerForField(candidate, settings) {
+    const requestId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const request = {
+      id: requestId,
+      createdAt: Date.now(),
+      resumeKind: currentResumeKind,
+      resume: pickResumeAsset(settings) ?? void 0,
+      candidate: settings.candidate,
+      job: captureJobContextSnapshot(candidate.question)
+    };
+    try {
+      await deleteAiAnswerResponse(requestId);
+      await writeAiAnswerRequest(request);
+      updateStatus(
+        "running",
+        `Opening ChatGPT to draft an answer for "${truncateText(candidate.question, 80)}"...`,
+        true,
+        "autofill-form"
+      );
+      await spawnTabs([
+        {
+          url: buildChatGptRequestUrl(requestId),
+          site: "chatgpt",
+          stage: "generate-ai-answer",
+          active: false,
+          message: `Drafting an answer for "${truncateText(candidate.question, 60)}"...`,
+          label: currentLabel,
+          resumeKind: currentResumeKind
+        }
+      ]);
+      const response = await waitForAiAnswerResponse(requestId, 18e4);
+      if (response?.error) {
+        updateStatus(
+          "running",
+          `ChatGPT could not draft "${truncateText(candidate.question, 60)}": ${response.error}`,
+          true,
+          "autofill-form"
+        );
+        return null;
+      }
+      if (!response?.answer) {
+        updateStatus(
+          "running",
+          `ChatGPT timed out for "${truncateText(candidate.question, 60)}". Continuing with the rest of the form...`,
+          true,
+          "autofill-form"
+        );
+        return null;
+      }
+      return response;
+    } finally {
+      await deleteAiAnswerRequest(requestId);
+      await deleteAiAnswerResponse(requestId);
+    }
+  }
+  async function waitForAiAnswerResponse(requestId, timeoutMs) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const response = await readAiAnswerResponse(requestId);
+      if (response?.answer || response?.error) {
+        return response;
+      }
+      await sleep(1500);
+    }
+    return null;
+  }
+  function captureJobContextSnapshot(question) {
+    const title = cleanText(
+      document.querySelector("h1, [data-testid*='job-title'], [class*='job-title']")?.textContent
+    ) || cleanText(document.title);
+    const company = cleanText(
+      document.querySelector(
+        "[data-testid*='company'], [class*='company'], [data-company], .company"
+      )?.textContent
+    ) || "";
+    const descriptionSources = [
+      "[data-testid*='jobDescription']",
+      "[data-testid*='description']",
+      "[class*='description']",
+      "[class*='job-description']",
+      "main",
+      "article"
+    ];
+    let description = "";
+    for (const selector of descriptionSources) {
+      const value = cleanText(document.querySelector(selector)?.innerText);
+      if (value.length > description.length) {
+        description = value;
+      }
+    }
+    return {
+      title,
+      company,
+      question,
+      description: description.slice(0, 7e3),
+      pageUrl: window.location.href
+    };
+  }
+  function buildChatGptRequestUrl(requestId) {
+    const url = new URL("https://chatgpt.com/");
+    url.searchParams.set("remoteJobSearchRequest", requestId);
+    return url.toString();
+  }
+  async function waitForChatGptComposer() {
+    for (let attempt = 0; attempt < 45; attempt += 1) {
+      const composer = findFirstVisibleElement([
+        "#prompt-textarea",
+        "textarea[data-testid*='prompt']",
+        "textarea[data-testid*='composer']",
+        "textarea[placeholder*='Message']",
+        "form textarea",
+        "div[contenteditable='true'][id*='prompt']",
+        "div[contenteditable='true'][data-testid*='composer']",
+        "div[contenteditable='true'][role='textbox']"
+      ]);
+      if (composer) {
+        return composer;
+      }
+      await sleep(1e3);
+    }
+    return null;
+  }
+  async function waitForChatGptSendButton() {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const button = findFirstVisibleElement([
+        "button[data-testid='send-button']",
+        "button[data-testid*='send']",
+        "form button[aria-label*='Send']",
+        "form button[aria-label*='send']"
+      ]) ?? Array.from(document.querySelectorAll("button")).find((candidate) => {
+        const label = cleanText(
+          [
+            candidate.getAttribute("aria-label"),
+            candidate.getAttribute("data-testid"),
+            candidate.getAttribute("title"),
+            candidate.textContent
+          ].filter(Boolean).join(" ")
+        ).toLowerCase();
+        return !candidate.disabled && isElementVisible(candidate) && (label.includes("send") || label.includes("submit")) && !label.includes("stop");
+      });
+      if (button) {
+        return button;
+      }
+      await sleep(1e3);
+    }
+    return null;
+  }
+  async function uploadResumeToChatGpt(resume) {
+    const directInput = await waitForChatGptFileInput(800);
+    if (directInput) {
+      await setFileInputValue(directInput, resume);
+      return;
+    }
+    const attachButton = Array.from(document.querySelectorAll("button, [role='button']")).find(
+      (candidate) => {
+        const label = cleanText(
+          [
+            candidate.getAttribute("aria-label"),
+            candidate.getAttribute("title"),
+            candidate.textContent
+          ].filter(Boolean).join(" ")
+        ).toLowerCase();
+        return label.includes("attach") || label.includes("upload") || label.includes("file");
+      }
+    );
+    attachButton?.click();
+    const fileInput = await waitForChatGptFileInput(5e3);
+    if (fileInput) {
+      await setFileInputValue(fileInput, resume);
+    }
+  }
+  function setComposerValue(composer, prompt) {
+    if (composer instanceof HTMLTextAreaElement) {
+      setFieldValue(composer, prompt);
+      return;
+    }
+    composer.focus();
+    const selection = window.getSelection();
+    if (selection) {
+      const range = document.createRange();
+      range.selectNodeContents(composer);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    try {
+      document.execCommand("selectAll", false);
+      document.execCommand("insertText", false, prompt);
+    } catch {
+    }
+    if (cleanText(composer.textContent) !== cleanText(prompt)) {
+      composer.replaceChildren(document.createTextNode(prompt));
+    }
+    composer.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, data: prompt, inputType: "insertText" }));
+    composer.dispatchEvent(new InputEvent("input", { bubbles: true, data: prompt, inputType: "insertText" }));
+  }
+  function buildChatGptPrompt(request) {
+    const resumeNote = request.resume ? `The candidate resume is attached as "${request.resume.name}". Use it together with the profile details below.` : "No resume attachment is available, so rely on the profile details below.";
+    const companyLine = request.job.company ? `Company: ${request.job.company}` : "Company: Unknown";
+    return [
+      "Write a polished, job-application-ready answer.",
+      "Return only the final answer text with no preface, no bullets unless the question clearly asks for them, and no placeholders.",
+      "",
+      `Question: ${request.job.question}`,
+      `Job title: ${request.job.title || "Unknown"}`,
+      companyLine,
+      `Job page: ${request.job.pageUrl}`,
+      "",
+      "Candidate profile:",
+      `Name: ${request.candidate.fullName || "Not provided"}`,
+      `Email: ${request.candidate.email || "Not provided"}`,
+      `Phone: ${request.candidate.phone || "Not provided"}`,
+      `Location: ${[request.candidate.city, request.candidate.state, request.candidate.country].filter(Boolean).join(", ") || "Not provided"}`,
+      `LinkedIn: ${request.candidate.linkedinUrl || "Not provided"}`,
+      `Portfolio: ${request.candidate.portfolioUrl || "Not provided"}`,
+      `Current company: ${request.candidate.currentCompany || "Not provided"}`,
+      `Years of experience: ${request.candidate.yearsExperience || "Not provided"}`,
+      `Work authorization: ${request.candidate.workAuthorization || "Not provided"}`,
+      `Needs sponsorship: ${request.candidate.needsSponsorship || "Not provided"}`,
+      `Willing to relocate: ${request.candidate.willingToRelocate || "Not provided"}`,
+      "",
+      resumeNote,
+      "",
+      "Job description:",
+      request.job.description || "No job description text was found on the page.",
+      "",
+      "Keep the answer concise, specific to this role, and strong enough to paste directly into the application."
+    ].join("\n");
+  }
+  async function waitForChatGptAnswerText() {
+    let lastText = "";
+    let stableCount = 0;
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      const text = getLatestChatGptAssistantText();
+      const isGenerating = hasActiveChatGptGeneration();
+      if (text && text === lastText) {
+        stableCount += 1;
+      } else if (text) {
+        lastText = text;
+        stableCount = 1;
+      }
+      if (text && !isGenerating && stableCount >= 3) {
+        return text;
+      }
+      await sleep(1500);
+    }
+    return lastText || null;
+  }
+  function getLatestChatGptAssistantText() {
+    const explicitAssistantMessages = Array.from(
+      document.querySelectorAll("[data-message-author-role='assistant']")
+    );
+    for (let index = explicitAssistantMessages.length - 1; index >= 0; index -= 1) {
+      const text = readChatGptMessageText(explicitAssistantMessages[index]);
+      if (text.length > 20) {
+        return text;
+      }
+    }
+    const conversationTurns = Array.from(
+      document.querySelectorAll("article, [data-testid*='conversation-turn']")
+    );
+    for (let index = conversationTurns.length - 1; index >= 0; index -= 1) {
+      const element = conversationTurns[index];
+      const author = cleanText(
+        element.getAttribute("data-message-author-role") || element.querySelector("[data-message-author-role]")?.getAttribute("data-message-author-role") || ""
+      ).toLowerCase();
+      const text = readChatGptMessageText(element);
+      if (author === "assistant" && text.length > 20) {
+        return text;
+      }
+      if (!author && text.length > 80 && element.querySelector(".markdown, [class*='markdown'], p, li, pre")) {
+        return text;
+      }
+    }
+    return "";
+  }
+  function hasActiveChatGptGeneration() {
+    return Array.from(document.querySelectorAll("button, [role='button']")).some((element) => {
+      const label = cleanText(
+        [
+          element.getAttribute("aria-label"),
+          element.getAttribute("data-testid"),
+          element.textContent
+        ].filter(Boolean).join(" ")
+      ).toLowerCase();
+      return label.includes("stop generating") || label.includes("stop streaming") || label.includes("stop response");
+    });
+  }
+  async function copyTextToClipboard(text) {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch {
+    }
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "true");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      document.body.append(textarea);
+      textarea.select();
+      const copied = document.execCommand("copy");
+      textarea.remove();
+      return copied;
+    } catch {
+      return false;
+    }
   }
   function getAnswerForField(field, settings) {
     const question = getQuestionText(field);
@@ -1061,16 +1697,27 @@
           "[class*='apply']",
           ...generic
         ];
+      case "startup":
+      case "other_sites":
+        return [
+          "a[href*='apply']",
+          "a[href*='application']",
+          "button[data-qa*='apply']",
+          "button[data-testid*='apply']",
+          "[class*='apply']",
+          ...generic
+        ];
       default:
         return generic;
     }
   }
-  function isLikelyJobDetailUrl(site, url, text) {
+  function isLikelyJobDetailUrl(site, url, text, contextText = "") {
     if (!site) {
       return false;
     }
     const lowerUrl = url.toLowerCase();
     const lowerText = text.toLowerCase();
+    const lowerContext = contextText.toLowerCase();
     const excludedText = [
       "salary",
       "resume",
@@ -1087,15 +1734,48 @@
     if (excludedText.some((entry) => lowerText.includes(entry))) {
       return false;
     }
+    if (isAppliedJobText(lowerText) || isAppliedJobText(lowerContext)) {
+      return false;
+    }
     switch (site) {
       case "indeed":
         return lowerUrl.includes("/viewjob") || lowerUrl.includes("/rc/clk") || lowerUrl.includes("/pagead/clk");
       case "ziprecruiter":
-        return (lowerUrl.includes("/jobs/") || lowerUrl.includes("/job/") || lowerUrl.includes("/c/")) && !lowerUrl.includes("/jobs-search");
+        return (lowerUrl.includes("/jobs/") || lowerUrl.includes("/job/") || lowerUrl.includes("/job-details/")) && !lowerUrl.includes("/jobs-search");
       case "dice":
         return lowerUrl.includes("/job-detail/") || lowerUrl.includes("/jobs/detail/");
       case "monster":
         return lowerUrl.includes("/job-openings/") || lowerUrl.includes("/job-opening/") || lowerUrl.includes("m=portal&a=details");
+      case "startup":
+      case "other_sites":
+        return [
+          "/jobs/",
+          "/job/",
+          "/positions/",
+          "/position/",
+          "/openings/",
+          "/opening/",
+          "/requisition/",
+          "/req/",
+          "gh_jid=",
+          "lever.co",
+          "greenhouse.io",
+          "ashbyhq.com",
+          "workable.com",
+          "jobvite.com",
+          "smartrecruiters.com"
+        ].some((entry) => lowerUrl.includes(entry)) && ![
+          "/careers",
+          "/careers/",
+          "/jobs/search",
+          "/jobs?",
+          "/openings?",
+          "/locations",
+          "/teams",
+          "/departments"
+        ].some((entry) => lowerUrl.endsWith(entry) || lowerUrl.includes(`${entry}=`)) || hasStrongJobTitleSignal(lowerText);
+      case "chatgpt":
+        return false;
     }
   }
   function scoreJobTitleForResume(title, resumeKind) {
@@ -1137,8 +1817,41 @@
         return 0;
     }
   }
+  function hasStrongJobTitleSignal(title) {
+    return /\b(engineer|developer|frontend|front end|backend|back end|full stack|software|platform|react|api)\b/.test(
+      title
+    );
+  }
+  function isAppliedJobText(text) {
+    if (!text) {
+      return false;
+    }
+    if (/\b(not applied|apply now|ready to apply|application deadline)\b/.test(text)) {
+      return false;
+    }
+    return [
+      /\balready applied\b/,
+      /\byou applied\b/,
+      /\bapplication submitted\b/,
+      /\bsubmitted application\b/,
+      /\bapplication sent\b/,
+      /\bapplication received\b/,
+      /\bapplied on\b/,
+      /\bstatus:\s*applied\b/,
+      /\bstatus:\s*submitted\b/,
+      /\bsubmitted\b.*\bapplication\b/,
+      /\bapplied\b.*\bjob\b/
+    ].some((pattern) => pattern.test(text));
+  }
+  function isCurrentPageAppliedJob() {
+    const pageText = cleanText(document.body?.innerText || "").toLowerCase();
+    return isAppliedJobText(pageText.slice(0, 12e3));
+  }
   function isLikelyApplyUrl(url, site) {
     const lowerUrl = url.toLowerCase();
+    if (site === "startup" || site === "other_sites") {
+      return lowerUrl.includes("/apply") || lowerUrl.includes("application") || lowerUrl.includes("job-application") || lowerUrl.includes("candidate") || lowerUrl.includes("jobform");
+    }
     if (lowerUrl.includes("smartapply.indeed.com") || lowerUrl.includes("indeedapply") || lowerUrl.includes("zipapply") || lowerUrl.includes("jobapply") || lowerUrl.includes("/apply") || lowerUrl.includes("application")) {
       return true;
     }
@@ -1284,6 +1997,33 @@
     const style = window.getComputedStyle(element);
     const rect = element.getBoundingClientRect();
     return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+  }
+  function findFirstVisibleElement(selectors) {
+    for (const selector of selectors) {
+      for (const element of Array.from(document.querySelectorAll(selector))) {
+        if (isElementVisible(element)) {
+          return element;
+        }
+      }
+    }
+    return null;
+  }
+  async function waitForChatGptFileInput(timeoutMs) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const fileInput = Array.from(document.querySelectorAll("input[type='file']")).find(
+        (candidate) => !candidate.disabled
+      );
+      if (fileInput) {
+        return fileInput;
+      }
+      await sleep(250);
+    }
+    return null;
+  }
+  function readChatGptMessageText(container) {
+    const preferredNode = container.querySelector(".markdown, [class*='markdown']") ?? container;
+    return cleanText(preferredNode.innerText || preferredNode.textContent || "");
   }
   function hasLikelyApplicationForm() {
     const visibleFields = Array.from(
@@ -1480,6 +2220,11 @@
         return "dice.com";
       case "monster":
         return "monster.com";
+      case "startup":
+      case "other_sites":
+        return window.location.hostname.toLowerCase();
+      case "chatgpt":
+        return "chatgpt.com";
     }
   }
   function updateStatus(phase, message, shouldResume, nextStage = currentStage) {
@@ -1593,6 +2338,9 @@
     if (status.site === "unsupported" || currentStage !== "autofill-form") {
       return;
     }
+    if (!event.isTrusted) {
+      return;
+    }
     const target = event.target;
     if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLTextAreaElement) && !(target instanceof HTMLSelectElement)) {
       return;
@@ -1673,6 +2421,14 @@
     if (result.usedProfileAnswers > 0) {
       parts.push(`used ${result.usedProfileAnswers} profile value${result.usedProfileAnswers === 1 ? "" : "s"}`);
     }
+    if (result.generatedAiAnswers > 0) {
+      parts.push(
+        `generated ${result.generatedAiAnswers} ChatGPT answer${result.generatedAiAnswers === 1 ? "" : "s"}`
+      );
+    }
+    if (result.copiedAiAnswers > 0) {
+      parts.push(`copied ${result.copiedAiAnswers} AI answer${result.copiedAiAnswers === 1 ? "" : "s"}`);
+    }
     if (parts.length === 0) {
       return "Application page opened, but nothing was filled automatically.";
     }
@@ -1680,6 +2436,9 @@
   }
   function cleanText(value) {
     return (value ?? "").replace(/\s+/g, " ").trim();
+  }
+  function truncateText(value, maxLength) {
+    return value.length <= maxLength ? value : `${value.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
   }
   function cssEscape(value) {
     if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {

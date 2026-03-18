@@ -3,7 +3,7 @@
   "name": "Remote Job Search Starter",
   "description": "Searches Indeed, ZipRecruiter, Dice, and Monster, then opens application flows and autofills blank fields with saved resume and profile data.",
   "version": "1.0.0",
-  "permissions": ["storage", "tabs"],
+  "permissions": ["storage", "tabs", "clipboardWrite"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js"

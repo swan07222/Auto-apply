@@ -8,147 +8,199 @@
   </head>
   <body>
     <main class="popup-shell">
-      <section class="card">
-        <p class="eyebrow">Chrome Extension</p>
-        <h1>Remote Job Search Starter</h1>
-        <p class="intro">
-          Search supported job boards, open a limited number of job pages, and autofill
-          applications with the matching resume when a form is found.
-        </p>
+      <section class="dashboard">
+        <header class="hero">
+          <p class="eyebrow">AI-assisted Chrome extension</p>
+          <h1>Remote Job Search Starter</h1>
+          <p class="intro">
+            Launch structured job searches, open matching application flows, and keep your
+            resumes, profile details, remembered answers, and AI drafting tools ready in one
+            place.
+          </p>
+        </header>
 
-        <div class="meta-row">
-          <span class="meta-label">Detected site</span>
-          <span id="site-name" class="pill">Checking...</span>
-        </div>
+        <section class="overview-grid" aria-label="Quick overview">
+          <article class="overview-card">
+            <p class="overview-label">Detected site</p>
+            <p id="site-name" class="overview-value pill">Checking...</p>
+          </article>
 
-        <div class="status-panel" id="status-panel" data-phase="idle">
-          <p class="status-label">Status</p>
-          <p id="status-text" class="status-text">Open Indeed, ZipRecruiter, Dice, or Monster to begin.</p>
-        </div>
+          <article class="overview-card">
+            <p class="overview-label">Search mode</p>
+            <p id="mode-preview" class="overview-value">Job boards</p>
+          </article>
 
-        <div class="action-row">
-          <button id="start-button" class="start-button" type="button" disabled>
-            Start Auto Search
-          </button>
-          <button id="save-button" class="secondary-button" type="button">
-            Save Settings
-          </button>
-        </div>
+          <article class="overview-card">
+            <p class="overview-label">Search region</p>
+            <p id="region-preview" class="overview-value">Auto</p>
+          </article>
+
+          <article class="overview-card">
+            <p class="overview-label">Auto upload</p>
+            <p id="auto-upload-preview" class="overview-value">On</p>
+          </article>
+        </section>
+
+        <section class="status-panel" id="status-panel" data-phase="idle" aria-live="polite">
+          <div class="status-header">
+            <p class="status-label">Status</p>
+            <span class="status-dot" aria-hidden="true"></span>
+          </div>
+          <p id="status-text" class="status-text">Choose a search mode to begin.</p>
+        </section>
 
         <p id="settings-status" class="settings-status">
           Settings are stored locally in the extension.
         </p>
 
-        <section class="settings-group">
-          <div class="group-heading">
-            <h2>Automation</h2>
-            <p>Choose how many jobs each search should open and whether resumes should upload automatically.</p>
-          </div>
+        <details class="settings-group" open>
+          <summary class="group-summary">
+            <div class="group-heading">
+              <h2>Automation Setup</h2>
+              <p>Choose where to search, how broadly to open roles, and how uploads should behave.</p>
+            </div>
+          </summary>
 
           <div class="field-grid compact-grid">
+            <label class="field">
+              <span>Search mode</span>
+              <select id="search-mode">
+                <option value="job_board">Job boards</option>
+                <option value="startup_careers">Startup careers</option>
+                <option value="other_job_sites">Other job sites</option>
+              </select>
+            </label>
+
             <label class="field">
               <span>Job pages per search</span>
               <input id="job-limit" type="number" min="1" max="25" />
             </label>
 
+            <label class="field">
+              <span>Search region</span>
+              <select id="startup-region">
+                <option value="auto">Auto from country</option>
+                <option value="us">US</option>
+                <option value="uk">UK</option>
+                <option value="eu">EU</option>
+              </select>
+            </label>
+
             <label class="toggle-field">
               <input id="auto-upload" type="checkbox" />
-              <span>Auto-upload the matching resume when a resume field is detected.</span>
+              <span>Automatically upload the matching resume whenever a resume or CV field is detected.</span>
             </label>
           </div>
-        </section>
+        </details>
 
-        <section class="settings-group">
-          <div class="group-heading">
-            <h2>Candidate Profile</h2>
-            <p>These values are used for blank fields on Indeed, ZipRecruiter, Monster, and company career pages.</p>
+        <details class="settings-group" open>
+          <summary class="group-summary">
+            <div class="group-heading">
+              <h2>Candidate Profile</h2>
+              <p>Used for blank application fields and for region matching when Search region is set to Auto.</p>
+            </div>
+          </summary>
+
+          <div class="subsection">
+            <p class="subsection-title">Contact details</p>
+            <div class="field-grid">
+              <label class="field">
+                <span>Full name</span>
+                <input id="full-name" type="text" autocomplete="name" />
+              </label>
+
+              <label class="field">
+                <span>Email</span>
+                <input id="email" type="email" autocomplete="email" />
+              </label>
+
+              <label class="field">
+                <span>Phone</span>
+                <input id="phone" type="tel" autocomplete="tel" />
+              </label>
+
+              <label class="field">
+                <span>City</span>
+                <input id="city" type="text" autocomplete="address-level2" />
+              </label>
+
+              <label class="field">
+                <span>State / Region</span>
+                <input id="state" type="text" autocomplete="address-level1" />
+              </label>
+
+              <label class="field">
+                <span>Country</span>
+                <input id="country" type="text" autocomplete="country-name" />
+              </label>
+            </div>
           </div>
 
-          <div class="field-grid">
-            <label class="field">
-              <span>Full name</span>
-              <input id="full-name" type="text" autocomplete="name" />
-            </label>
+          <div class="subsection">
+            <p class="subsection-title">Links and experience</p>
+            <div class="field-grid">
+              <label class="field">
+                <span>LinkedIn URL</span>
+                <input id="linkedin-url" type="url" />
+              </label>
 
-            <label class="field">
-              <span>Email</span>
-              <input id="email" type="email" autocomplete="email" />
-            </label>
+              <label class="field">
+                <span>Portfolio / Website URL</span>
+                <input id="portfolio-url" type="url" />
+              </label>
 
-            <label class="field">
-              <span>Phone</span>
-              <input id="phone" type="tel" autocomplete="tel" />
-            </label>
+              <label class="field">
+                <span>Current company</span>
+                <input id="current-company" type="text" />
+              </label>
 
-            <label class="field">
-              <span>City</span>
-              <input id="city" type="text" autocomplete="address-level2" />
-            </label>
-
-            <label class="field">
-              <span>State / Region</span>
-              <input id="state" type="text" autocomplete="address-level1" />
-            </label>
-
-            <label class="field">
-              <span>Country</span>
-              <input id="country" type="text" autocomplete="country-name" />
-            </label>
-
-            <label class="field">
-              <span>LinkedIn URL</span>
-              <input id="linkedin-url" type="url" />
-            </label>
-
-            <label class="field">
-              <span>Portfolio / Website URL</span>
-              <input id="portfolio-url" type="url" />
-            </label>
-
-            <label class="field">
-              <span>Current company</span>
-              <input id="current-company" type="text" />
-            </label>
-
-            <label class="field">
-              <span>Years of experience</span>
-              <input id="years-experience" type="text" inputmode="numeric" />
-            </label>
-
-            <label class="field">
-              <span>Authorized to work in the U.S.</span>
-              <select id="work-authorization">
-                <option value="">Leave blank</option>
-                <option value="Yes">Yes</option>
-                <option value="No">No</option>
-              </select>
-            </label>
-
-            <label class="field">
-              <span>Need sponsorship now or later</span>
-              <select id="needs-sponsorship">
-                <option value="">Leave blank</option>
-                <option value="Yes">Yes</option>
-                <option value="No">No</option>
-              </select>
-            </label>
-
-            <label class="field">
-              <span>Willing to relocate</span>
-              <select id="willing-to-relocate">
-                <option value="">Leave blank</option>
-                <option value="Yes">Yes</option>
-                <option value="No">No</option>
-              </select>
-            </label>
+              <label class="field">
+                <span>Years of experience</span>
+                <input id="years-experience" type="text" inputmode="numeric" />
+              </label>
+            </div>
           </div>
-        </section>
 
-        <section class="settings-group">
-          <div class="group-heading">
-            <h2>Resume Files</h2>
-            <p>Each search uses its matching resume when a resume or CV upload is available.</p>
+          <div class="subsection">
+            <p class="subsection-title">Work preferences</p>
+            <div class="field-grid">
+              <label class="field">
+                <span>Authorized to work in the U.S.</span>
+                <select id="work-authorization">
+                  <option value="">Leave blank</option>
+                  <option value="Yes">Yes</option>
+                  <option value="No">No</option>
+                </select>
+              </label>
+
+              <label class="field">
+                <span>Need sponsorship now or later</span>
+                <select id="needs-sponsorship">
+                  <option value="">Leave blank</option>
+                  <option value="Yes">Yes</option>
+                  <option value="No">No</option>
+                </select>
+              </label>
+
+              <label class="field">
+                <span>Willing to relocate</span>
+                <select id="willing-to-relocate">
+                  <option value="">Leave blank</option>
+                  <option value="Yes">Yes</option>
+                  <option value="No">No</option>
+                </select>
+              </label>
+            </div>
           </div>
+        </details>
+
+        <details class="settings-group" open>
+          <summary class="group-summary">
+            <div class="group-heading">
+              <h2>Resume Library</h2>
+              <p>Each role type can use its own resume automatically during uploads and AI drafting.</p>
+            </div>
+          </summary>
 
           <div class="resume-list">
             <label class="resume-card">
@@ -169,29 +221,49 @@
               <span id="resume-full-stack-name" class="resume-name">No file saved</span>
             </label>
           </div>
-        </section>
+        </details>
 
-        <section class="settings-group">
-          <div class="group-heading">
-            <h2>Remembered Answers</h2>
-            <p>
-              When you manually answer application questions, the extension stores the question and
-              reuses the answer on matching forms later.
-            </p>
-          </div>
+        <details class="settings-group">
+          <summary class="group-summary">
+            <div class="group-heading">
+              <h2>Remembered Answers</h2>
+              <p>Manual answers are stored and reused later on matching application questions.</p>
+            </div>
+          </summary>
 
-          <div class="meta-row">
-            <span class="meta-label">Saved answers</span>
+          <div class="answer-row">
+            <div>
+              <p class="subsection-title">Saved answer count</p>
+              <p class="settings-copy">
+                Keep this list clean if you change your preferred responses over time.
+              </p>
+            </div>
             <span id="answer-count" class="pill subtle">0</span>
           </div>
 
-          <button id="clear-answers-button" class="secondary-button" type="button">
+          <button id="clear-answers-button" class="secondary-button utility-button" type="button">
             Clear Remembered Answers
           </button>
-        </section>
+        </details>
+
+        <footer class="action-bar">
+          <div class="action-copy">
+            <p class="action-title">Ready when you are</p>
+            <p class="action-note">Save updates anytime, then launch the selected search flow.</p>
+          </div>
+
+          <div class="action-row">
+            <button id="start-button" class="start-button" type="button" disabled>
+              Start Auto Search
+            </button>
+            <button id="save-button" class="secondary-button" type="button">
+              Save Settings
+            </button>
+          </div>
+        </footer>
 
         <p class="hint">
-          If the site asks you to verify that you are human, finish it manually and the extension
+          If a site asks you to verify that you are human, finish it manually and the extension
           will resume. The extension fills fields and uploads files, but it does not auto-submit
           applications.
         </p>
