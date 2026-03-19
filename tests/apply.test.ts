@@ -304,6 +304,20 @@ describe("application progression actions", () => {
     expect(action?.text).toBe("Continue application");
   });
 
+  it("detects Glassdoor upload-step progression controls from data-test metadata", () => {
+    document.body.innerHTML = `
+      <section role="dialog" aria-modal="true">
+        <div>Upload your resume and continue your application</div>
+        <button data-test="continue-button"></button>
+      </section>
+    `;
+
+    const action = findProgressionAction("glassdoor");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+  });
+
   it("detects ZipRecruiter apply modals rendered inside shadow DOM", () => {
     const host = document.createElement("zip-modal-host");
     const shadow = host.attachShadow({ mode: "open" });

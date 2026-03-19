@@ -930,7 +930,60 @@ export function sleep(ms: number): Promise<void> {
   });
 }
 
+export type BrokenPageReason = "access_denied" | "bad_gateway";
+
+function getDocumentTextSnapshot(doc: Document): string {
+  const title = doc.title ?? "";
+  const bodyText = doc.body?.innerText ?? doc.body?.textContent ?? "";
+  const rootText = doc.documentElement?.textContent ?? "";
+
+  return `${title}\n${bodyText}\n${rootText}`
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 8000);
+}
+
+export function detectBrokenPageReason(doc: Document): BrokenPageReason | null {
+  const text = getDocumentTextSnapshot(doc);
+  if (!text) {
+    return null;
+  }
+
+  const hasAccessDeniedSignal =
+    text.includes("access denied") ||
+    text.includes("accessdenied");
+  const hasXmlErrorSignal =
+    text.includes("this xml file does not appear to have any style information associated with it") ||
+    text.includes("<error>") ||
+    text.includes("requestid") ||
+    text.includes("hostid");
+
+  if (hasAccessDeniedSignal && hasXmlErrorSignal) {
+    return "access_denied";
+  }
+
+  const hasBadGatewaySignal =
+    text.includes("bad gateway") ||
+    text.includes("web server reported a bad gateway error") ||
+    text.includes("error reference number: 502") ||
+    text.includes("502 bad gateway");
+  const hasCloudflareGatewaySignal =
+    text.includes("cloudflare location") ||
+    text.includes("ray id:");
+
+  if (hasBadGatewaySignal && hasCloudflareGatewaySignal) {
+    return "bad_gateway";
+  }
+
+  return null;
+}
+
 export function isProbablyHumanVerificationPage(doc: Document): boolean {
+  if (detectBrokenPageReason(doc)) {
+    return false;
+  }
+
   const title = doc.title.toLowerCase();
   const bodyText = (doc.body?.innerText ?? "").toLowerCase().slice(0, 6000);
   const bodyLength = (doc.body?.innerText ?? "").trim().length;

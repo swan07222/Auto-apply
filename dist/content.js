@@ -37013,9 +37013,9 @@
   var require_nodes = __commonJS({
     "node_modules/mammoth/lib/xml/nodes.js"(exports2) {
       var _3 = (init_index_all(), __toCommonJS(index_all_exports));
-      exports2.Element = Element;
+      exports2.Element = Element2;
       exports2.element = function(name, attributes, children) {
-        return new Element(name, attributes, children);
+        return new Element2(name, attributes, children);
       };
       exports2.text = function(value) {
         return {
@@ -37033,27 +37033,27 @@
         attributes: {},
         children: []
       };
-      function Element(name, attributes, children) {
+      function Element2(name, attributes, children) {
         this.type = "element";
         this.name = name;
         this.attributes = attributes || {};
         this.children = children || [];
       }
-      Element.prototype.first = function(name) {
+      Element2.prototype.first = function(name) {
         return _3.find(this.children, function(child) {
           return child.name === name;
         });
       };
-      Element.prototype.firstOrEmpty = function(name) {
+      Element2.prototype.firstOrEmpty = function(name) {
         return this.first(name) || emptyElement;
       };
-      Element.prototype.getElementsByTagName = function(name) {
+      Element2.prototype.getElementsByTagName = function(name) {
         var elements = _3.filter(this.children, function(child) {
           return child.name === name;
         });
         return toElementList(elements);
       };
-      Element.prototype.text = function() {
+      Element2.prototype.text = function() {
         if (this.children.length === 0) {
           return "";
         } else if (this.children.length !== 1 || this.children[0].type !== "text") {
@@ -38046,7 +38046,7 @@
         },
         //document factory method:
         createElement: function(tagName) {
-          var node = new Element();
+          var node = new Element2();
           node.ownerDocument = this;
           node.nodeName = tagName;
           node.tagName = tagName;
@@ -38104,7 +38104,7 @@
         },
         // Introduced in DOM Level 2:
         createElementNS: function(namespaceURI, qualifiedName) {
-          var node = new Element();
+          var node = new Element2();
           var pl = qualifiedName.split(":");
           var attrs = node.attributes = new NamedNodeMap();
           node.childNodes = new NodeList();
@@ -38140,10 +38140,10 @@
         }
       };
       _extends(Document, Node2);
-      function Element() {
+      function Element2() {
         this._nsMap = {};
       }
-      Element.prototype = {
+      Element2.prototype = {
         nodeType: ELEMENT_NODE,
         hasAttribute: function(name) {
           return this.getAttributeNode(name) != null;
@@ -38224,9 +38224,9 @@
           });
         }
       };
-      Document.prototype.getElementsByTagName = Element.prototype.getElementsByTagName;
-      Document.prototype.getElementsByTagNameNS = Element.prototype.getElementsByTagNameNS;
-      _extends(Element, Node2);
+      Document.prototype.getElementsByTagName = Element2.prototype.getElementsByTagName;
+      Document.prototype.getElementsByTagNameNS = Element2.prototype.getElementsByTagNameNS;
+      _extends(Element2, Node2);
       function Attr() {
       }
       Attr.prototype.nodeType = ATTRIBUTE_NODE;
@@ -38641,7 +38641,7 @@
       exports2.DocumentType = DocumentType;
       exports2.DOMException = DOMException;
       exports2.DOMImplementation = DOMImplementation;
-      exports2.Element = Element;
+      exports2.Element = Element2;
       exports2.Node = Node2;
       exports2.NodeList = NodeList;
       exports2.XMLSerializer = XMLSerializer;
@@ -41637,7 +41637,7 @@
       var _3 = (init_index_all(), __toCommonJS(index_all_exports));
       var xmldom = require_xmldom();
       var nodes = require_nodes();
-      var Element = nodes.Element;
+      var Element2 = nodes.Element;
       exports2.readString = readString2;
       var Node2 = xmldom.Node;
       function readString2(xmlString, namespaceMap) {
@@ -41671,7 +41671,7 @@
           _3.forEach(element.attributes, function(attribute) {
             convertedAttributes[convertName(attribute)] = attribute.value;
           });
-          return new Element(convertedName, convertedAttributes, convertedChildren);
+          return new Element2(convertedName, convertedAttributes, convertedChildren);
         }
         function convertName(node) {
           if (node.namespaceURI) {
@@ -47015,9 +47015,9 @@
       };
       function element(tagName, attributes, options) {
         options = options || {};
-        return new Element(tagName, attributes, options);
+        return new Element2(tagName, attributes, options);
       }
-      function Element(tagName, attributes, options) {
+      function Element2(tagName, attributes, options) {
         var tagNames = {};
         if (_3.isArray(tagName)) {
           tagName.forEach(function(tagName2) {
@@ -47033,13 +47033,13 @@
         this.fresh = options.fresh;
         this.separator = options.separator;
       }
-      Element.prototype.matchesElement = function(element2) {
+      Element2.prototype.matchesElement = function(element2) {
         return this.tagNames[element2.tagName] && _3.isEqual(this.attributes || {}, element2.attributes || {});
       };
-      Element.prototype.wrap = function wrap2(generateNodes) {
+      Element2.prototype.wrap = function wrap2(generateNodes) {
         return this.wrapNodes(generateNodes());
       };
-      Element.prototype.wrapNodes = function wrapNodes(nodes) {
+      Element2.prototype.wrapNodes = function wrapNodes(nodes) {
         return [html.elementWithTag(this, nodes)];
       };
       exports2.empty = elements([]);
@@ -49674,7 +49674,35 @@
       globalThis.setTimeout(resolve, ms);
     });
   }
+  function getDocumentTextSnapshot(doc) {
+    const title = doc.title ?? "";
+    const bodyText = doc.body?.innerText ?? doc.body?.textContent ?? "";
+    const rootText = doc.documentElement?.textContent ?? "";
+    return `${title}
+${bodyText}
+${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
+  }
+  function detectBrokenPageReason(doc) {
+    const text = getDocumentTextSnapshot(doc);
+    if (!text) {
+      return null;
+    }
+    const hasAccessDeniedSignal = text.includes("access denied") || text.includes("accessdenied");
+    const hasXmlErrorSignal = text.includes("this xml file does not appear to have any style information associated with it") || text.includes("<error>") || text.includes("requestid") || text.includes("hostid");
+    if (hasAccessDeniedSignal && hasXmlErrorSignal) {
+      return "access_denied";
+    }
+    const hasBadGatewaySignal = text.includes("bad gateway") || text.includes("web server reported a bad gateway error") || text.includes("error reference number: 502") || text.includes("502 bad gateway");
+    const hasCloudflareGatewaySignal = text.includes("cloudflare location") || text.includes("ray id:");
+    if (hasBadGatewaySignal && hasCloudflareGatewaySignal) {
+      return "bad_gateway";
+    }
+    return null;
+  }
   function isProbablyHumanVerificationPage(doc) {
+    if (detectBrokenPageReason(doc)) {
+      return false;
+    }
     const title = doc.title.toLowerCase();
     const bodyText = (doc.body?.innerText ?? "").toLowerCase().slice(0, 6e3);
     const bodyLength = (doc.body?.innerText ?? "").trim().length;
@@ -50128,6 +50156,41 @@
       }
     }
     return overlap / Math.max(wordsA.size, wordsB.size);
+  }
+  function looksLikeQuestion(text) {
+    if (!text) {
+      return false;
+    }
+    const normalized = cleanText(text).toLowerCase();
+    if (normalized.endsWith("?")) {
+      return true;
+    }
+    const questionStarters = [
+      "what",
+      "why",
+      "how",
+      "when",
+      "where",
+      "which",
+      "who",
+      "whom",
+      "whose",
+      "do you",
+      "are you",
+      "have you",
+      "will you",
+      "would you",
+      "can you",
+      "could you",
+      "is your",
+      "please describe",
+      "please explain",
+      "please provide",
+      "tell us",
+      "describe",
+      "explain"
+    ];
+    return questionStarters.some((starter) => normalized.startsWith(starter));
   }
 
   // src/content/dom.ts
@@ -50995,6 +51058,128 @@
       (token, index, allTokens) => token.length > 1 && !QUESTION_STOP_WORDS.has(token) && allTokens.indexOf(token) === index
     );
     return tokens.join(" ");
+  }
+
+  // src/content/answerCapture.ts
+  var REMEMBERABLE_CHOICE_SELECTOR = "button, [role='radio'], [role='checkbox'], [role='option'], [aria-checked], [aria-selected], [aria-pressed]";
+  var BLOCKED_CHOICE_TOKENS = [
+    "continue",
+    "next",
+    "review",
+    "submit",
+    "apply",
+    "save",
+    "cancel",
+    "close",
+    "back",
+    "previous",
+    "upload resume",
+    "start my application",
+    "easy apply"
+  ];
+  var QUESTION_CONTAINER_SELECTOR = "fieldset, [role='radiogroup'], [role='group'], [role='listbox'], [role='dialog'], .field, .form-field, .question, .application-question, [class*='field'], [class*='question'], [data-testid*='question'], [data-test*='question']";
+  function findRememberableChoiceTarget(target) {
+    if (!(target instanceof Element)) {
+      return null;
+    }
+    const choice = target.closest(REMEMBERABLE_CHOICE_SELECTOR);
+    if (!choice || choice.closest("header, nav, footer, aside")) {
+      return null;
+    }
+    const metadata = normalizeChoiceText(
+      [
+        getActionText(choice),
+        choice.getAttribute("aria-label"),
+        choice.getAttribute("title"),
+        choice.getAttribute("data-test"),
+        choice.getAttribute("data-testid"),
+        choice.id,
+        choice.className
+      ].filter(Boolean).join(" ")
+    );
+    if (!metadata || BLOCKED_CHOICE_TOKENS.some((token) => metadata.includes(token))) {
+      return null;
+    }
+    return choice;
+  }
+  function readChoiceAnswerForMemory(choice) {
+    const value = cleanText(getActionText(choice));
+    if (!value) {
+      return null;
+    }
+    const question = extractChoiceQuestion(choice, value);
+    if (!question) {
+      return null;
+    }
+    const normalizedQuestion = normalizeChoiceText(question);
+    const normalizedValue = normalizeChoiceText(value);
+    if (!normalizedQuestion || normalizedQuestion === normalizedValue || normalizedQuestion.includes(normalizedValue)) {
+      return null;
+    }
+    return { question, value };
+  }
+  function extractChoiceQuestion(choice, value) {
+    const valueKey = normalizeChoiceText(value);
+    const container = choice.closest(QUESTION_CONTAINER_SELECTOR);
+    const labelledQuestion = readLabelledQuestion(choice) || readLabelledQuestion(container);
+    if (isUsableQuestionText(labelledQuestion, valueKey)) {
+      return labelledQuestion;
+    }
+    if (!container) {
+      return "";
+    }
+    const questionNodes = Array.from(
+      container.querySelectorAll(
+        "legend, label, .label, .question, .prompt, .title, [data-testid*='question'], [data-test*='question'], h1, h2, h3, h4, p, span"
+      )
+    );
+    for (const node of questionNodes) {
+      if (node === choice || node.contains(choice)) {
+        continue;
+      }
+      if (node.closest(
+        "button, [role='radio'], [role='checkbox'], [role='option'], [aria-checked], [aria-selected], [aria-pressed]"
+      )) {
+        continue;
+      }
+      const text = cleanText(node.textContent);
+      if (isUsableQuestionText(text, valueKey)) {
+        return text;
+      }
+    }
+    return "";
+  }
+  function readLabelledQuestion(element) {
+    if (!(element instanceof Element)) {
+      return "";
+    }
+    const labelledBy = element.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      return cleanText(
+        labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent || "").join(" ")
+      );
+    }
+    return cleanText(element.getAttribute("aria-label"));
+  }
+  function isUsableQuestionText(text, valueKey) {
+    const cleaned = cleanText(text);
+    const normalized = normalizeChoiceText(cleaned);
+    if (!cleaned || !normalized || normalized === valueKey) {
+      return false;
+    }
+    if ([
+      "yes",
+      "no",
+      "true",
+      "false",
+      "male",
+      "female",
+      "other",
+      "prefer not to say"
+    ].includes(normalized)) {
+      return false;
+    }
+    return looksLikeQuestion(cleaned) || normalized.split(" ").length >= 3;
   }
 
   // src/content/resumeUpload.ts
@@ -53562,6 +53747,19 @@
       } else if (lowerText.includes("continue") && !lowerText.includes("submit")) {
         score = 65;
       }
+      if (!lowerText) {
+        if (/\bnext\b/.test(lower)) {
+          score = Math.max(score, 88);
+        } else if (/\bcontinue\b/.test(lower)) {
+          score = Math.max(score, 84);
+        } else if (lower.includes("start my application") || lower.includes("start application")) {
+          score = Math.max(score, 90);
+        } else if (/\breview\b/.test(lower)) {
+          score = Math.max(score, 74);
+        } else if (/\bproceed\b/.test(lower)) {
+          score = Math.max(score, 72);
+        }
+      }
       const attrs = [
         element.getAttribute("data-test"),
         element.getAttribute("data-testid"),
@@ -53677,14 +53875,22 @@
         return [
           "button[data-test*='start' i]",
           "button[data-test*='continue' i]",
+          "button[data-test*='next' i]",
+          "button[data-test*='review' i]",
           "button[data-test*='apply' i]",
           "[data-test*='start' i]",
           "[data-test*='continue' i]",
+          "[data-test*='next' i]",
+          "[data-test*='review' i]",
           "[data-test*='apply' i]",
           "[aria-label*='start' i]",
           "[aria-label*='continue' i]",
+          "[aria-label*='next' i]",
+          "[aria-label*='review' i]",
           "[class*='start']",
           "[class*='continue']",
+          "[class*='next']",
+          "[class*='review']",
           ...generic
         ];
       default:
@@ -54465,6 +54671,7 @@
     site,
     progression,
     updateStatus: updateStatus2,
+    beforeAction,
     navigateCurrentTab: navigateCurrentTab2,
     waitForHumanVerificationToClear: waitForHumanVerificationToClear2,
     hasLikelyApplicationSurface: hasLikelyApplicationSurface3,
@@ -54474,6 +54681,7 @@
   }) {
     updateStatus2(`Clicking "${progression.text}"...`);
     const previousUrl = window.location.href;
+    await beforeAction?.();
     if (progression.type === "navigate") {
       navigateCurrentTab2(progression.url);
       return false;
@@ -54921,6 +55129,34 @@
       } catch {
       }
     }
+  }
+
+  // src/content/resumeStep.ts
+  function hasSelectedResumeUpload(input) {
+    return Boolean(input.files?.length) || Boolean(getSelectedFileName(input));
+  }
+  function hasPendingResumeUploadSurface(collectors) {
+    const resumeInputs = collectLikelyResumeInputs(collectors);
+    if (resumeInputs.length === 0) {
+      return false;
+    }
+    if (resumeInputs.some((input) => !hasSelectedResumeUpload(input))) {
+      return true;
+    }
+    return collectLikelyNonFileApplicationFields(collectors).length === 0;
+  }
+  function collectLikelyResumeInputs(collectors) {
+    return collectors.collectResumeFileInputs().filter(
+      (input) => shouldAutofillField(input, true) && isLikelyApplicationField(input)
+    );
+  }
+  function collectLikelyNonFileApplicationFields(collectors) {
+    return collectors.collectAutofillFields().filter((field) => {
+      if (field instanceof HTMLInputElement && field.type === "file") {
+        return false;
+      }
+      return shouldAutofillField(field, true) && isLikelyApplicationField(field);
+    });
   }
 
   // src/content/chatGpt.ts
@@ -55683,6 +55919,17 @@
     return Math.max(1, Math.floor(jobPageLimit));
   }
   function throwIfRateLimited(site) {
+    const brokenReason = detectBrokenPageReason(document);
+    if (brokenReason === "access_denied") {
+      throw new Error(
+        `${getSiteLabel(site)} redirected to an access-denied error page. Skipping this job.`
+      );
+    }
+    if (brokenReason === "bad_gateway") {
+      throw new Error(
+        `${getSiteLabel(site)} returned a bad gateway error page. Skipping this job.`
+      );
+    }
     if (!isProbablyRateLimitPage(document, site)) {
       return;
     }
@@ -55700,6 +55947,7 @@
       updateStatus: (message) => {
         updateStatus("running", message, true, "autofill-form");
       },
+      beforeAction: flushPendingAnswers,
       navigateCurrentTab,
       waitForHumanVerificationToClear,
       hasLikelyApplicationSurface: hasLikelyApplicationSurface2,
@@ -55831,7 +56079,12 @@
     }
   );
   document.addEventListener("change", handlePotentialAnswerMemory, true);
+  document.addEventListener("input", handlePotentialAnswerMemory, true);
   document.addEventListener("blur", handlePotentialAnswerMemory, true);
+  document.addEventListener("focusout", handlePotentialAnswerMemory, true);
+  document.addEventListener("click", handlePotentialChoiceAnswerMemory, true);
+  window.addEventListener("pagehide", flushPendingAnswersOnPageHide);
+  document.addEventListener("visibilitychange", flushPendingAnswersOnPageHide, true);
   void resumeAutomationIfNeeded().catch(() => {
   });
   renderOverlay();
@@ -56623,9 +56876,10 @@
       mergeAutofillResult(combinedResult, result2);
       if (result2.filledFields > 0 || result2.uploadedResume) {
         noProgressCount = 0;
+        const pendingResumeUploadSurface = Boolean(result2.uploadedResume) && hasPendingResumeUploadSurface(applicationSurfaceCollectors);
         const readyProgression = await waitForReadyProgressionAction2(
           site,
-          result2.uploadedResume ? 6e3 : site === "indeed" || site === "ziprecruiter" ? 3e3 : 1500
+          pendingResumeUploadSurface ? site === "indeed" ? 12e3 : 8e3 : result2.uploadedResume ? 6e3 : site === "indeed" || site === "ziprecruiter" ? 3e3 : 1500
         );
         if (readyProgression) {
           const shouldContinue = await handleProgressionAction2(
@@ -56637,7 +56891,9 @@
           }
           return;
         }
-        await sleep(result2.uploadedResume ? 3500 : 1800);
+        await sleep(
+          pendingResumeUploadSurface ? 1200 : result2.uploadedResume ? 3500 : 1800
+        );
         continue;
       }
       const progression = findProgressionAction(site);
@@ -56662,6 +56918,7 @@
           "open-apply"
         );
         previousUrl = window.location.href;
+        await flushPendingAnswers();
         if (companySiteAction.type === "navigate") {
           if (shouldKeepJobPageOpen(site)) {
             await openApplicationTargetInNewTab(
@@ -56700,6 +56957,7 @@
           "autofill-form"
         );
         previousUrl = window.location.href;
+        await flushPendingAnswers();
         if (followUp.type === "navigate") {
           if (shouldKeepJobPageOpen(site)) {
             await openApplicationTargetInNewTab(
@@ -56732,6 +56990,11 @@
         await waitForLikelyApplicationSurface2(site);
         continue;
       }
+      if (hasPendingResumeUploadSurface(applicationSurfaceCollectors)) {
+        noProgressCount = 0;
+        await sleep(site === "indeed" ? 1500 : 1e3);
+        continue;
+      }
       noProgressCount += 1;
       if (noProgressCount >= 4) break;
       await sleep(1200);
@@ -56739,6 +57002,16 @@
     const finalSettings = await readCurrentAutomationSettings();
     const finalResult = await autofillVisibleApplication(finalSettings);
     mergeAutofillResult(combinedResult, finalResult);
+    if (combinedResult.uploadedResume && hasPendingResumeUploadSurface(applicationSurfaceCollectors)) {
+      updateStatus(
+        "completed",
+        `Uploaded ${combinedResult.uploadedResume.name}, but the application is still waiting on the resume step. Continue manually from this page.`,
+        false,
+        "autofill-form",
+        "released"
+      );
+      return;
+    }
     if (combinedResult.filledFields > 0 || combinedResult.uploadedResume) {
       updateStatus(
         "completed",
@@ -56768,6 +57041,17 @@
     );
   }
   async function waitForHumanVerificationToClear() {
+    const brokenReason = detectBrokenPageReason(document);
+    if (brokenReason === "access_denied") {
+      throw new Error(
+        `The page returned an access-denied error instead of a usable application page.`
+      );
+    }
+    if (brokenReason === "bad_gateway") {
+      throw new Error(
+        `The page returned a bad gateway error instead of a usable application page.`
+      );
+    }
     if (!isProbablyHumanVerificationPage(document)) return;
     updateStatus(
       "waiting_for_verification",
@@ -56776,6 +57060,17 @@
     );
     let lastReminderAt = Date.now();
     while (isProbablyHumanVerificationPage(document)) {
+      const pendingBrokenReason = detectBrokenPageReason(document);
+      if (pendingBrokenReason === "access_denied") {
+        throw new Error(
+          `The page returned an access-denied error instead of a usable application page.`
+        );
+      }
+      if (pendingBrokenReason === "bad_gateway") {
+        throw new Error(
+          `The page returned a bad gateway error instead of a usable application page.`
+        );
+      }
       if (Date.now() - lastReminderAt > VERIFICATION_TIMEOUT_MS) {
         updateStatus(
           "waiting_for_verification",
@@ -57041,6 +57336,20 @@
       }
       input.dispatchEvent(new Event("blur", { bubbles: true }));
       try {
+        input.dispatchEvent(
+          new DragEvent("dragenter", {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: transfer
+          })
+        );
+        input.dispatchEvent(
+          new DragEvent("dragover", {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: transfer
+          })
+        );
         const dropEvent = new DragEvent("drop", {
           bubbles: true,
           cancelable: true,
@@ -57060,6 +57369,20 @@
         } catch {
         }
         try {
+          target.dispatchEvent(
+            new DragEvent("dragenter", {
+              bubbles: true,
+              cancelable: true,
+              dataTransfer: transfer
+            })
+          );
+          target.dispatchEvent(
+            new DragEvent("dragover", {
+              bubbles: true,
+              cancelable: true,
+              dataTransfer: transfer
+            })
+          );
           const dropEvent = new DragEvent("drop", {
             bubbles: true,
             cancelable: true,
@@ -57070,7 +57393,11 @@
         }
       }
       await sleep(500);
-      const success = Boolean(input.files?.length) || getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase();
+      let success = Boolean(input.files?.length) || getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase();
+      if (success) {
+        await sleep(900);
+        success = Boolean(input.files?.length) || getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase();
+      }
       return success;
     } catch {
       return false;
@@ -57088,14 +57415,19 @@
     }
     const candidates = [
       input.parentElement,
+      input.parentElement?.parentElement,
       input.closest("label"),
       input.closest("button"),
       input.closest("[role='button']"),
       input.closest("[class*='upload']"),
       input.closest("[class*='resume']"),
+      input.closest("[class*='file']"),
       input.closest("[class*='dropzone']"),
       input.closest("[data-upload]"),
+      input.closest("[data-test*='upload']"),
+      input.closest("[data-test*='resume']"),
       input.closest("[data-testid*='resume']"),
+      input.closest("[data-testid*='upload']"),
       input.form
     ];
     for (const candidate of candidates) {
@@ -57804,6 +58136,20 @@
     if (!rememberAnswer(question, value)) return;
     void flushPendingAnswers();
   }
+  async function handlePotentialChoiceAnswerMemory(event) {
+    if (status.site === "unsupported" || currentStage !== "autofill-form" || !event.isTrusted) {
+      return;
+    }
+    const choice = findRememberableChoiceTarget(event.target);
+    if (!choice) {
+      return;
+    }
+    const remembered = readChoiceAnswerForMemory(choice);
+    if (!remembered || !rememberAnswer(remembered.question, remembered.value)) {
+      return;
+    }
+    void flushPendingAnswers();
+  }
   async function flushPendingAnswers() {
     answerFlushPromise = answerFlushPromise.then(async () => {
       while (pendingAnswers.size > 0) {
@@ -57831,6 +58177,16 @@
       }
     });
     await answerFlushPromise;
+  }
+  function flushPendingAnswersOnPageHide(event) {
+    if (pendingAnswers.size === 0) {
+      return;
+    }
+    const visibilityState = document.visibilityState;
+    if (event?.type !== "pagehide" && visibilityState && visibilityState !== "hidden" && visibilityState !== "prerender") {
+      return;
+    }
+    void flushPendingAnswers();
   }
   function rememberAnswer(question, value) {
     const remembered = createRememberedAnswer(question, value);

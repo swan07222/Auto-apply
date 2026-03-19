@@ -21,6 +21,7 @@ import {
   VERIFICATION_TIMEOUT_MS,
   buildSearchTargets,
   createStatus,
+  detectBrokenPageReason,
   deleteAiAnswerRequest,
   deleteAiAnswerResponse,
   getResumeKindLabel,
@@ -70,6 +71,10 @@ import {
   createRememberedAnswer,
   findBestSavedAnswerMatch as findBestRememberedAnswerMatch,
 } from "./content/answerMemory";
+import {
+  findRememberableChoiceTarget,
+  readChoiceAnswerForMemory,
+} from "./content/answerCapture";
 import {
   cssEscape,
   cleanText,
@@ -130,6 +135,7 @@ import {
   scrollPageForLazyContent as scrollSearchResultsPage,
   waitForJobDetailUrls as collectJobDetailUrls,
 } from "./content/searchResults";
+import { hasPendingResumeUploadSurface } from "./content/resumeStep";
 import {
   buildChatGptPrompt,
   copyTextToClipboard,
@@ -278,6 +284,19 @@ function getJobResultCollectionTargetCount(
 }
 
 function throwIfRateLimited(site: SiteKey): void {
+  const brokenReason = detectBrokenPageReason(document);
+  if (brokenReason === "access_denied") {
+    throw new Error(
+      `${getSiteLabel(site)} redirected to an access-denied error page. Skipping this job.`
+    );
+  }
+
+  if (brokenReason === "bad_gateway") {
+    throw new Error(
+      `${getSiteLabel(site)} returned a bad gateway error page. Skipping this job.`
+    );
+  }
+
   if (!isProbablyRateLimitPage(document, site)) {
     return;
   }
@@ -304,6 +323,7 @@ async function handleProgressionAction(
     updateStatus: (message) => {
       updateStatus("running", message, true, "autofill-form");
     },
+    beforeAction: flushPendingAnswers,
     navigateCurrentTab,
     waitForHumanVerificationToClear,
     hasLikelyApplicationSurface,
@@ -476,7 +496,12 @@ chrome.runtime.onMessage.addListener(
 // ─── INIT ────────────────────────────────────────────────────────────────────
 
 document.addEventListener("change", handlePotentialAnswerMemory, true);
+document.addEventListener("input", handlePotentialAnswerMemory, true);
 document.addEventListener("blur", handlePotentialAnswerMemory, true);
+document.addEventListener("focusout", handlePotentialAnswerMemory, true);
+document.addEventListener("click", handlePotentialChoiceAnswerMemory, true);
+window.addEventListener("pagehide", flushPendingAnswersOnPageHide);
+document.addEventListener("visibilitychange", flushPendingAnswersOnPageHide, true);
 void resumeAutomationIfNeeded().catch(() => {});
 renderOverlay();
 
@@ -1465,10 +1490,17 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
 
     if (result.filledFields > 0 || result.uploadedResume) {
       noProgressCount = 0;
+      const pendingResumeUploadSurface =
+        Boolean(result.uploadedResume) &&
+        hasPendingResumeUploadSurface(applicationSurfaceCollectors);
       const readyProgression = await waitForReadyProgressionAction(
         site,
-        result.uploadedResume
-          ? 6_000
+        pendingResumeUploadSurface
+          ? site === "indeed"
+            ? 12_000
+            : 8_000
+          : result.uploadedResume
+            ? 6_000
           : site === "indeed" || site === "ziprecruiter"
             ? 3_000
             : 1_500
@@ -1483,7 +1515,13 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
         }
         return;
       }
-      await sleep(result.uploadedResume ? 3500 : 1800);
+      await sleep(
+        pendingResumeUploadSurface
+          ? 1_200
+          : result.uploadedResume
+            ? 3_500
+            : 1_800
+      );
       continue;
     }
 
@@ -1511,6 +1549,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       );
 
       previousUrl = window.location.href;
+      await flushPendingAnswers();
 
       if (companySiteAction.type === "navigate") {
         if (shouldKeepJobPageOpen(site)) {
@@ -1555,6 +1594,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       );
 
       previousUrl = window.location.href;
+      await flushPendingAnswers();
 
       if (followUp.type === "navigate") {
         if (shouldKeepJobPageOpen(site)) {
@@ -1592,6 +1632,12 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       continue;
     }
 
+    if (hasPendingResumeUploadSurface(applicationSurfaceCollectors)) {
+      noProgressCount = 0;
+      await sleep(site === "indeed" ? 1_500 : 1_000);
+      continue;
+    }
+
     noProgressCount += 1;
     if (noProgressCount >= 4) break;
 
@@ -1601,6 +1647,20 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
   const finalSettings = await readCurrentAutomationSettings();
   const finalResult = await autofillVisibleApplication(finalSettings);
   mergeAutofillResult(combinedResult, finalResult);
+
+  if (
+    combinedResult.uploadedResume &&
+    hasPendingResumeUploadSurface(applicationSurfaceCollectors)
+  ) {
+    updateStatus(
+      "completed",
+      `Uploaded ${combinedResult.uploadedResume.name}, but the application is still waiting on the resume step. Continue manually from this page.`,
+      false,
+      "autofill-form",
+      "released"
+    );
+    return;
+  }
 
   if (
     combinedResult.filledFields > 0 ||
@@ -1642,6 +1702,18 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
 // ─── WAITING HELPERS ─────────────────────────────────────────────────────────
 
 async function waitForHumanVerificationToClear(): Promise<void> {
+  const brokenReason = detectBrokenPageReason(document);
+  if (brokenReason === "access_denied") {
+    throw new Error(
+      `The page returned an access-denied error instead of a usable application page.`
+    );
+  }
+  if (brokenReason === "bad_gateway") {
+    throw new Error(
+      `The page returned a bad gateway error instead of a usable application page.`
+    );
+  }
+
   if (!isProbablyHumanVerificationPage(document)) return;
 
   updateStatus(
@@ -1653,6 +1725,18 @@ async function waitForHumanVerificationToClear(): Promise<void> {
   let lastReminderAt = Date.now();
 
   while (isProbablyHumanVerificationPage(document)) {
+    const pendingBrokenReason = detectBrokenPageReason(document);
+    if (pendingBrokenReason === "access_denied") {
+      throw new Error(
+        `The page returned an access-denied error instead of a usable application page.`
+      );
+    }
+    if (pendingBrokenReason === "bad_gateway") {
+      throw new Error(
+        `The page returned a bad gateway error instead of a usable application page.`
+      );
+    }
+
     if (Date.now() - lastReminderAt > VERIFICATION_TIMEOUT_MS) {
       updateStatus(
         "waiting_for_verification",
@@ -2016,8 +2100,22 @@ async function setFileInputValue(
 
     input.dispatchEvent(new Event("blur", { bubbles: true }));
 
-    // FIX: Also dispatch a drop event — some upload widgets listen for drag-and-drop
+    // Some upload widgets listen for drag-and-drop instead of the raw input events.
     try {
+      input.dispatchEvent(
+        new DragEvent("dragenter", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: transfer,
+        })
+      );
+      input.dispatchEvent(
+        new DragEvent("dragover", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: transfer,
+        })
+      );
       const dropEvent = new DragEvent("drop", {
         bubbles: true,
         cancelable: true,
@@ -2041,6 +2139,20 @@ async function setFileInputValue(
       }
 
       try {
+        target.dispatchEvent(
+          new DragEvent("dragenter", {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: transfer,
+          })
+        );
+        target.dispatchEvent(
+          new DragEvent("dragover", {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: transfer,
+          })
+        );
         const dropEvent = new DragEvent("drop", {
           bubbles: true,
           cancelable: true,
@@ -2052,12 +2164,19 @@ async function setFileInputValue(
       }
     }
 
-    // FIX: Give the framework a moment to process the file
+    // Give the page time to accept or clear the selected file.
     await sleep(500);
 
-    const success =
+    let success =
       Boolean(input.files?.length) ||
       getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase();
+
+    if (success) {
+      await sleep(900);
+      success =
+        Boolean(input.files?.length) ||
+        getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase();
+    }
 
     return success;
   } catch {
@@ -2081,14 +2200,19 @@ function collectResumeUploadEventTargets(
 
   const candidates = [
     input.parentElement,
+    input.parentElement?.parentElement,
     input.closest("label"),
     input.closest("button"),
     input.closest("[role='button']"),
     input.closest("[class*='upload']"),
     input.closest("[class*='resume']"),
+    input.closest("[class*='file']"),
     input.closest("[class*='dropzone']"),
     input.closest("[data-upload]"),
+    input.closest("[data-test*='upload']"),
+    input.closest("[data-test*='resume']"),
     input.closest("[data-testid*='resume']"),
+    input.closest("[data-testid*='upload']"),
     input.form,
   ];
 
@@ -3092,6 +3216,30 @@ async function handlePotentialAnswerMemory(
   void flushPendingAnswers();
 }
 
+async function handlePotentialChoiceAnswerMemory(
+  event: Event
+): Promise<void> {
+  if (
+    status.site === "unsupported" ||
+    currentStage !== "autofill-form" ||
+    !event.isTrusted
+  ) {
+    return;
+  }
+
+  const choice = findRememberableChoiceTarget(event.target);
+  if (!choice) {
+    return;
+  }
+
+  const remembered = readChoiceAnswerForMemory(choice);
+  if (!remembered || !rememberAnswer(remembered.question, remembered.value)) {
+    return;
+  }
+
+  void flushPendingAnswers();
+}
+
 async function flushPendingAnswers(): Promise<void> {
   answerFlushPromise = answerFlushPromise.then(async () => {
     while (pendingAnswers.size > 0) {
@@ -3121,6 +3269,24 @@ async function flushPendingAnswers(): Promise<void> {
   });
 
   await answerFlushPromise;
+}
+
+function flushPendingAnswersOnPageHide(event?: Event): void {
+  if (pendingAnswers.size === 0) {
+    return;
+  }
+
+  const visibilityState = document.visibilityState as string | undefined;
+  if (
+    event?.type !== "pagehide" &&
+    visibilityState &&
+    visibilityState !== "hidden" &&
+    visibilityState !== "prerender"
+  ) {
+    return;
+  }
+
+  void flushPendingAnswers();
 }
 
 function rememberAnswer(

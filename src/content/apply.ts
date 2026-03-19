@@ -1009,6 +1009,23 @@ export function findProgressionAction(
       score = 65;
     }
 
+    if (!lowerText) {
+      if (/\bnext\b/.test(lower)) {
+        score = Math.max(score, 88);
+      } else if (/\bcontinue\b/.test(lower)) {
+        score = Math.max(score, 84);
+      } else if (
+        lower.includes("start my application") ||
+        lower.includes("start application")
+      ) {
+        score = Math.max(score, 90);
+      } else if (/\breview\b/.test(lower)) {
+        score = Math.max(score, 74);
+      } else if (/\bproceed\b/.test(lower)) {
+        score = Math.max(score, 72);
+      }
+    }
+
     const attrs = [
       element.getAttribute("data-test"),
       element.getAttribute("data-testid"),
@@ -1166,14 +1183,22 @@ function getProgressionCandidateSelectors(
       return [
         "button[data-test*='start' i]",
         "button[data-test*='continue' i]",
+        "button[data-test*='next' i]",
+        "button[data-test*='review' i]",
         "button[data-test*='apply' i]",
         "[data-test*='start' i]",
         "[data-test*='continue' i]",
+        "[data-test*='next' i]",
+        "[data-test*='review' i]",
         "[data-test*='apply' i]",
         "[aria-label*='start' i]",
         "[aria-label*='continue' i]",
+        "[aria-label*='next' i]",
+        "[aria-label*='review' i]",
         "[class*='start']",
         "[class*='continue']",
+        "[class*='next']",
+        "[class*='review']",
         ...generic,
       ];
     default:

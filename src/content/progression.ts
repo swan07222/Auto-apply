@@ -8,6 +8,7 @@ type HandleProgressionActionOptions = {
   site: SiteKey;
   progression: ProgressionAction;
   updateStatus: (message: string) => void;
+  beforeAction?: () => Promise<void> | void;
   navigateCurrentTab: (url: string) => void;
   waitForHumanVerificationToClear: () => Promise<void>;
   hasLikelyApplicationSurface: (site: SiteKey) => boolean;
@@ -38,6 +39,7 @@ export async function handleProgressionAction({
   site,
   progression,
   updateStatus,
+  beforeAction,
   navigateCurrentTab,
   waitForHumanVerificationToClear,
   hasLikelyApplicationSurface,
@@ -48,6 +50,7 @@ export async function handleProgressionAction({
   updateStatus(`Clicking "${progression.text}"...`);
 
   const previousUrl = window.location.href;
+  await beforeAction?.();
 
   if (progression.type === "navigate") {
     navigateCurrentTab(progression.url);

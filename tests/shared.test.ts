@@ -5,6 +5,7 @@ import {
   buildOtherJobSiteTargets,
   buildSearchTargets,
   buildStartupSearchTargets,
+  detectBrokenPageReason,
   detectSiteFromUrl,
   formatStartupRegionList,
   getJobDedupKey,
@@ -273,6 +274,38 @@ describe("shared automation target logic", () => {
     `;
 
     expect(isProbablyRateLimitPage(document, "ziprecruiter")).toBe(true);
+  });
+
+  it("detects access-denied XML error pages and does not treat them as verification", () => {
+    document.title = "";
+    document.body.textContent = `
+      This XML file does not appear to have any style information associated with it.
+      <Error>
+        <Code>AccessDenied</Code>
+        <Message>Access Denied</Message>
+        <RequestId>RG6XFK4GTHN1BE7K</RequestId>
+        <HostId>WHORZALdomRXvwJjODTe2Nk6BJFUbyxH0FWyh9HDLyXgYnJs6ZOcjKoe3j/CIZAL+haTaPkT8hQ=</HostId>
+      </Error>
+    `;
+
+    expect(detectBrokenPageReason(document)).toBe("access_denied");
+    expect(isProbablyHumanVerificationPage(document)).toBe(false);
+  });
+
+  it("detects Cloudflare bad gateway pages and does not treat them as verification", () => {
+    document.title = "Bad gateway";
+    document.body.innerHTML = `
+      <main>
+        <h1>Bad gateway</h1>
+        <p>The web server reported a bad gateway error.</p>
+        <p>Ray ID: 9defd4c54af92b74</p>
+        <p>Error reference number: 502</p>
+        <p>Cloudflare Location: Los Angeles</p>
+      </main>
+    `;
+
+    expect(detectBrokenPageReason(document)).toBe("bad_gateway");
+    expect(isProbablyHumanVerificationPage(document)).toBe(false);
   });
 
   it("does not treat application forms with embedded captcha markers as verification pages", () => {

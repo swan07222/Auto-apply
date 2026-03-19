@@ -80,6 +80,7 @@ describe("progression helpers", () => {
 
   it("returns a navigate progression immediately without clicking the page", async () => {
     const navigateCurrentTab = vi.fn();
+    const beforeAction = vi.fn();
     const waitForHumanVerificationToClear = vi.fn();
     const reopenApplyStage = vi.fn();
 
@@ -93,6 +94,7 @@ describe("progression helpers", () => {
           text: "Continue to application",
         },
         updateStatus: vi.fn(),
+        beforeAction,
         navigateCurrentTab,
         waitForHumanVerificationToClear,
         hasLikelyApplicationSurface: vi.fn(),
@@ -102,6 +104,7 @@ describe("progression helpers", () => {
       })
     ).resolves.toBe(false);
 
+    expect(beforeAction).toHaveBeenCalledTimes(1);
     expect(navigateCurrentTab).toHaveBeenCalledWith("https://example.com/apply");
     expect(waitForHumanVerificationToClear).not.toHaveBeenCalled();
     expect(reopenApplyStage).not.toHaveBeenCalled();
@@ -185,5 +188,38 @@ describe("progression helpers", () => {
     await vi.runAllTimersAsync();
 
     await expect(promise).resolves.toBe(true);
+  });
+
+  it("runs the pre-action hook before clicking progression controls", async () => {
+    vi.useFakeTimers();
+
+    const button = document.createElement("button");
+    button.textContent = "Continue";
+    document.body.appendChild(button);
+
+    const beforeAction = vi.fn().mockResolvedValue(undefined);
+
+    const promise = handleProgressionAction({
+      site: "indeed",
+      progression: {
+        type: "click",
+        element: button,
+        description: "Continue",
+        text: "Continue",
+      },
+      updateStatus: vi.fn(),
+      beforeAction,
+      navigateCurrentTab: vi.fn(),
+      waitForHumanVerificationToClear: vi.fn().mockResolvedValue(undefined),
+      hasLikelyApplicationSurface: vi.fn().mockReturnValue(true),
+      waitForLikelyApplicationSurface: vi.fn().mockResolvedValue(false),
+      reopenApplyStage: vi.fn().mockResolvedValue(undefined),
+      collectAutofillFields: () => [],
+    });
+
+    await vi.runAllTimersAsync();
+
+    await expect(promise).resolves.toBe(true);
+    expect(beforeAction).toHaveBeenCalledTimes(1);
   });
 });
