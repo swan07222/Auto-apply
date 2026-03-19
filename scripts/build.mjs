@@ -49,6 +49,10 @@ const rootManifest = {
   content_scripts: distManifest.content_scripts.map((entry) => ({
     ...entry,
     js: entry.js.map((file) => `dist/${file}`)
+  })),
+  web_accessible_resources: distManifest.web_accessible_resources?.map((entry) => ({
+    ...entry,
+    resources: entry.resources.map((file) => `dist/${file}`)
   }))
 };
 

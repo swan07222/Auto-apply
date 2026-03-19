@@ -13,6 +13,11 @@
     { name: "Figma", careersUrl: "https://job-boards.greenhouse.io/figma", regions: ["us"] },
     { name: "Notion", careersUrl: "https://www.notion.so/careers", regions: ["us"] },
     {
+      name: "Veeva",
+      careersUrl: "https://careers.veeva.com/job-search-results/",
+      regions: ["us", "uk", "eu"]
+    },
+    {
       name: "Monzo",
       careersUrl: "https://job-boards.greenhouse.io/monzo",
       regions: ["uk"]

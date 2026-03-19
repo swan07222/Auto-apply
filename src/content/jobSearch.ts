@@ -484,6 +484,11 @@ export function isLikelyJobDetailUrl(
 
     // FIX: Completely rewritten ZipRecruiter URL matching
     case "ziprecruiter": {
+      // Search-result detail pages can still use the jobs-search route
+      // while pinning a specific job with lk/jid.
+      if (/[?&]jid=/i.test(lowerUrl)) return true;
+      if (/[?&]lk=/i.test(lowerUrl)) return true;
+
       // Exclude search/category pages
       if (
         lowerUrl.includes("/jobs-search") ||
@@ -497,8 +502,6 @@ export function isLikelyJobDetailUrl(
       }
 
       // Explicit job detail patterns
-      if (/[?&]jid=/i.test(lowerUrl)) return true;
-      if (/[?&]lk=/i.test(lowerUrl)) return true;
       if (lowerUrl.includes("/job-details/")) return true;
 
       // Path-based patterns: /k/HASH, /c/Company/job/Title

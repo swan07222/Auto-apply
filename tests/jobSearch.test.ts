@@ -76,6 +76,63 @@ describe("job search candidate filtering", () => {
     ]);
   });
 
+  it("accepts ZipRecruiter jobs-search URLs when they pin a specific job", () => {
+    expect(
+      isLikelyJobDetailUrl(
+        "ziprecruiter",
+        "https://www.ziprecruiter.com/jobs-search?search=front-end-developer&location=Remote&lk=abc123",
+        "Front End Engineer"
+      )
+    ).toBe(true);
+
+    expect(
+      isLikelyJobDetailUrl(
+        "ziprecruiter",
+        "https://www.ziprecruiter.com/jobs-search?search=front-end-developer&location=Remote&jid=job-456",
+        "Front End Engineer"
+      )
+    ).toBe(true);
+
+    expect(
+      isLikelyJobDetailUrl(
+        "ziprecruiter",
+        "https://www.ziprecruiter.com/jobs-search?search=front-end-developer&location=Remote",
+        "Front End Engineer"
+      )
+    ).toBe(false);
+  });
+
+  it("collects ZipRecruiter card and data-attribute candidates from search results", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/jobs-search?search=front-end-developer&location=Remote"
+    );
+
+    document.body.innerHTML = `
+      <article id="job-card-card123">
+        <h2>Front End Engineer</h2>
+        <button aria-label="View Front End Engineer"></button>
+      </article>
+      <article data-jid="job456">
+        <h2>Back End Engineer</h2>
+      </article>
+    `;
+
+    const urls = pickRelevantJobUrls(
+      collectJobDetailCandidates("ziprecruiter"),
+      "ziprecruiter",
+      "front_end"
+    );
+
+    expect(urls).toContain(
+      "https://example.com/jobs-search?search=front-end-developer&location=Remote&lk=card123"
+    );
+    expect(urls).toContain(
+      "https://example.com/jobs-search?search=front-end-developer&location=Remote&jid=job456"
+    );
+  });
+
   it("accepts Monster detail URLs and rejects listing URLs", () => {
     expect(
       isLikelyJobDetailUrl(

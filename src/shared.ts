@@ -207,6 +207,11 @@ export const DEFAULT_STARTUP_COMPANIES: StartupCompany[] = [
   { name: "Figma", careersUrl: "https://job-boards.greenhouse.io/figma", regions: ["us"] },
   { name: "Notion", careersUrl: "https://www.notion.so/careers", regions: ["us"] },
   {
+    name: "Veeva",
+    careersUrl: "https://careers.veeva.com/job-search-results/",
+    regions: ["us", "uk", "eu"],
+  },
+  {
     name: "Monzo",
     careersUrl: "https://job-boards.greenhouse.io/monzo",
     regions: ["uk"],
@@ -810,12 +815,87 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
     }
   }
 
-  const verificationSelectors = [
-    "iframe[src*='captcha']", "iframe[title*='challenge']", "input[name*='captcha']",
-    "#px-captcha", ".cf-turnstile", ".g-recaptcha", "[data-sitekey]",
+  const hasChallengeSignals = Boolean(
+    doc.querySelector(
+      [
+        "iframe[src*='captcha']",
+        "iframe[title*='challenge']",
+        "#px-captcha",
+        ".cf-turnstile",
+        ".g-recaptcha",
+        "[data-sitekey]",
+        "input[name*='captcha']",
+      ].join(",")
+    )
+  );
+
+  if (!hasChallengeSignals) {
+    return false;
+  }
+
+  return !hasLikelyApplicationFormSignals(doc);
+}
+
+function hasLikelyApplicationFormSignals(doc: Document): boolean {
+  const interactiveFields = Array.from(
+    doc.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
+      "input, textarea, select"
+    )
+  ).filter((field) => isLikelyVisibleFormField(field));
+
+  if (interactiveFields.length >= 3) {
+    return true;
+  }
+
+  const applicationText = (doc.body?.innerText ?? "").toLowerCase();
+  const strongFormSignals = [
+    "submit your application",
+    "submit application",
+    "attach resume",
+    "attach resume/cv",
+    "upload resume",
+    "resume/cv",
+    "full name",
+    "email",
+    "phone",
   ];
 
-  return Boolean(doc.querySelector(verificationSelectors.join(",")));
+  const signalCount = strongFormSignals.filter((signal) =>
+    applicationText.includes(signal)
+  ).length;
+
+  return signalCount >= 3 && interactiveFields.length >= 1;
+}
+
+function isLikelyVisibleFormField(
+  field: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
+): boolean {
+  if (field.disabled) {
+    return false;
+  }
+
+  if (
+    field instanceof HTMLInputElement &&
+    ["hidden", "submit", "button", "reset", "image"].includes(field.type.toLowerCase())
+  ) {
+    return false;
+  }
+
+  const styles = globalThis.getComputedStyle?.(field);
+  if (!styles) {
+    return true;
+  }
+
+  if (
+    styles.display === "none" ||
+    styles.visibility === "hidden" ||
+    Number.parseFloat(styles.opacity || "1") === 0
+  ) {
+    return false;
+  }
+
+  const rect = field.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
 }
 
 export function normalizeQuestionKey(question: string): string {

@@ -1,0 +1,86 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  createRememberedAnswer,
+  findBestSavedAnswerMatch,
+  getRelevantSavedAnswers,
+} from "../src/content/answerMemory";
+import { normalizeQuestionKey } from "../src/shared";
+
+describe("answer memory helpers", () => {
+  it("creates normalized remembered answers", () => {
+    const remembered = createRememberedAnswer(
+      "  Why do you want this role?  ",
+      "  Product scope and team quality.  ",
+      123
+    );
+
+    expect(remembered).toEqual({
+      key: normalizeQuestionKey("Why do you want this role?"),
+      answer: {
+        question: "Why do you want this role?",
+        value: "Product scope and team quality.",
+        updatedAt: 123,
+      },
+    });
+  });
+
+  it("matches remembered answers across phrasing variations", () => {
+    const answers = {
+      [normalizeQuestionKey("Years of experience with React")]: {
+        question: "Years of experience with React",
+        value: "5",
+        updatedAt: 1,
+      },
+      [normalizeQuestionKey("Are you authorized to work in the U.S.?")]: {
+        question: "Are you authorized to work in the U.S.?",
+        value: "Yes",
+        updatedAt: 2,
+      },
+    };
+
+    expect(
+      findBestSavedAnswerMatch(
+        "How many years of React experience do you have?",
+        "react experience years",
+        answers
+      )?.value
+    ).toBe("5");
+
+    expect(
+      findBestSavedAnswerMatch(
+        "Are you legally authorized to work in the United States?",
+        "work authorization",
+        answers
+      )?.value
+    ).toBe("Yes");
+  });
+
+  it("returns only relevant saved answers for prompt context", () => {
+    const answers = {
+      a: {
+        question: "Why do you want this role?",
+        value: "Mission fit.",
+        updatedAt: 10,
+      },
+      b: {
+        question: "How many years of React experience do you have?",
+        value: "5",
+        updatedAt: 20,
+      },
+      c: {
+        question: "What is your favorite editor?",
+        value: "VS Code",
+        updatedAt: 30,
+      },
+    };
+
+    const relevant = getRelevantSavedAnswers(
+      "Tell us why you're interested in this role.",
+      answers
+    );
+
+    expect(relevant.map((entry) => entry.value)).toContain("Mission fit.");
+    expect(relevant.map((entry) => entry.value)).not.toContain("VS Code");
+  });
+});

@@ -1,3 +1,10 @@
+import {
+  AutomationSettings,
+  ResumeAsset,
+  ResumeKind,
+  inferResumeKindFromTitle,
+} from "../shared";
+
 export function getSelectedFileName(input: HTMLInputElement): string {
   const fileName = input.files?.[0]?.name?.trim();
   if (fileName) {
@@ -40,4 +47,62 @@ export function shouldAttemptResumeUpload(
 
 function normalizeFileName(value: string): string {
   return value.trim().toLowerCase();
+}
+
+export function inferResumeKindFromLabel(
+  label: string | undefined
+): ResumeKind | undefined {
+  const normalizedLabel = label?.trim().toLowerCase() ?? "";
+  if (!normalizedLabel) {
+    return undefined;
+  }
+
+  if (/\b(front\s*end|frontend)\b/.test(normalizedLabel)) {
+    return "front_end";
+  }
+
+  if (/\b(back\s*end|backend)\b/.test(normalizedLabel)) {
+    return "back_end";
+  }
+
+  if (/\b(full\s*stack|fullstack)\b/.test(normalizedLabel)) {
+    return "full_stack";
+  }
+
+  return undefined;
+}
+
+export function resolveResumeKindForJob(options: {
+  preferredResumeKind?: ResumeKind;
+  label?: string;
+  jobTitle?: string;
+}): ResumeKind | undefined {
+  const { preferredResumeKind, label, jobTitle } = options;
+
+  return (
+    preferredResumeKind ??
+    inferResumeKindFromLabel(label) ??
+    (jobTitle ? inferResumeKindFromTitle(jobTitle) : undefined)
+  );
+}
+
+export function pickResumeAssetForUpload(
+  settings: Pick<AutomationSettings, "resumes">,
+  desiredResumeKind?: ResumeKind
+): ResumeAsset | null {
+  if (desiredResumeKind) {
+    return settings.resumes[desiredResumeKind] ?? null;
+  }
+
+  for (const kind of [
+    "full_stack",
+    "front_end",
+    "back_end",
+  ] as ResumeKind[]) {
+    if (settings.resumes[kind]) {
+      return settings.resumes[kind] ?? null;
+    }
+  }
+
+  return null;
 }

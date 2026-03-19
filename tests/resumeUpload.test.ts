@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   getSelectedFileName,
+  inferResumeKindFromLabel,
+  pickResumeAssetForUpload,
+  resolveResumeKindForJob,
   shouldAttemptResumeUpload,
 } from "../src/content/resumeUpload";
 
@@ -47,5 +50,75 @@ describe("resume upload helpers", () => {
 
     input.disabled = true;
     expect(shouldAttemptResumeUpload(input, "resume.pdf", null, 1_000_000)).toBe(false);
+  });
+
+  it("infers resume kind from known search labels", () => {
+    expect(inferResumeKindFromLabel("Front End")).toBe("front_end");
+    expect(inferResumeKindFromLabel("Built In Back End")).toBe("back_end");
+    expect(inferResumeKindFromLabel("Full Stack")).toBe("full_stack");
+    expect(inferResumeKindFromLabel("Ramp")).toBeUndefined();
+  });
+
+  it("keeps the selected resume track instead of overriding it from the job title", () => {
+    expect(
+      resolveResumeKindForJob({
+        preferredResumeKind: "full_stack",
+        label: "Full Stack",
+        jobTitle: "Senior React Engineer",
+      })
+    ).toBe("full_stack");
+
+    expect(
+      resolveResumeKindForJob({
+        preferredResumeKind: "front_end",
+        label: "Front End",
+        jobTitle: "Backend Platform Engineer",
+      })
+    ).toBe("front_end");
+  });
+
+  it("falls back to label or job title only when the selected track is missing", () => {
+    expect(
+      resolveResumeKindForJob({
+        label: "Built In Back End",
+        jobTitle: "Senior React Engineer",
+      })
+    ).toBe("back_end");
+
+    expect(
+      resolveResumeKindForJob({
+        jobTitle: "Senior React Engineer",
+      })
+    ).toBe("front_end");
+  });
+
+  it("only returns the matching saved resume when a specific track is requested", () => {
+    const frontEndResume = {
+      name: "frontend.pdf",
+      type: "application/pdf",
+      dataUrl: "data:application/pdf;base64,AA==",
+      textContent: "",
+      size: 1,
+      updatedAt: 1,
+    };
+    const fullStackResume = {
+      name: "fullstack.pdf",
+      type: "application/pdf",
+      dataUrl: "data:application/pdf;base64,BB==",
+      textContent: "",
+      size: 1,
+      updatedAt: 1,
+    };
+
+    const settings = {
+      resumes: {
+        front_end: frontEndResume,
+        full_stack: fullStackResume,
+      },
+    };
+
+    expect(pickResumeAssetForUpload(settings, "front_end")).toBe(frontEndResume);
+    expect(pickResumeAssetForUpload(settings, "back_end")).toBeNull();
+    expect(pickResumeAssetForUpload(settings)).toBe(fullStackResume);
   });
 });

@@ -68,7 +68,34 @@ describe("shared automation target logic", () => {
     expect(urls).toContain("https://job-boards.greenhouse.io/vercel");
     expect(urls).toContain("https://jobs.lever.co/plaid");
     expect(urls).toContain("https://job-boards.greenhouse.io/figma");
+    expect(urls).toContain("https://careers.veeva.com/job-search-results/");
     expect(urls).not.toContain("https://job-boards.greenhouse.io/monzo");
+  });
+
+  it("includes Veeva in UK and EU startup targets", () => {
+    const ukSettings = {
+      ...DEFAULT_SETTINGS,
+      startupRegion: "uk" as const,
+      candidate: {
+        ...DEFAULT_SETTINGS.candidate,
+        country: "United Kingdom",
+      },
+    };
+    const euSettings = {
+      ...DEFAULT_SETTINGS,
+      startupRegion: "eu" as const,
+      candidate: {
+        ...DEFAULT_SETTINGS.candidate,
+        country: "Germany",
+      },
+    };
+
+    expect(buildStartupSearchTargets(ukSettings).map((target) => target.url)).toContain(
+      "https://careers.veeva.com/job-search-results/"
+    );
+    expect(buildStartupSearchTargets(euSettings).map((target) => target.url)).toContain(
+      "https://careers.veeva.com/job-search-results/"
+    );
   });
 
   it("builds startup targets from refreshed company lists when provided", () => {
@@ -152,6 +179,21 @@ describe("shared automation target logic", () => {
 
     document.title = "Careers";
     document.body.innerHTML = `<main><h1>Open roles</h1><p>Find your next job.</p></main>`;
+    expect(isProbablyHumanVerificationPage(document)).toBe(false);
+  });
+
+  it("does not treat application forms with embedded captcha markers as verification pages", () => {
+    document.title = "Apply";
+    document.body.innerHTML = `
+      <main>
+        <h1>Submit Your Application</h1>
+        <label>Resume/CV <input type="file" /></label>
+        <label>Full name <input type="text" /></label>
+        <label>Email <input type="email" /></label>
+        <div data-sitekey="test-key"></div>
+      </main>
+    `;
+
     expect(isProbablyHumanVerificationPage(document)).toBe(false);
   });
 

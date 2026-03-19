@@ -62,6 +62,11 @@ import {
   shouldRememberField,
 } from "./content/autofill";
 import {
+  createRememberedAnswer,
+  findBestSavedAnswerMatch as findBestRememberedAnswerMatch,
+  getRelevantSavedAnswers as getRelevantRememberedAnswers,
+} from "./content/answerMemory";
+import {
   cleanText,
   cssEscape,
   normalizeChoiceText,
@@ -70,8 +75,11 @@ import {
 } from "./content/text";
 import {
   getSelectedFileName,
+  pickResumeAssetForUpload,
+  resolveResumeKindForJob,
   shouldAttemptResumeUpload,
 } from "./content/resumeUpload";
+import { ensurePdfJsWorkerPort } from "./content/pdfWorker";
 import {
   findFirstVisibleElement,
   getActionText,
@@ -169,7 +177,7 @@ let currentResumeKind: ResumeKind | undefined;
 let currentRunId: string | undefined;
 let currentJobSlots: number | undefined;
 let activeRun: Promise<void> | null = null;
-let answerFlushTimerId: number | null = null;
+let answerFlushPromise: Promise<void> = Promise.resolve();
 let overlayHideTimerId: number | null = null;
 let childApplicationTabOpened = false;
 let stageDepth = 0;
@@ -643,14 +651,12 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   }
 
   const items: SpawnTabRequest[] = approvedUrls.map((url) => {
-    let itemResumeKind = currentResumeKind;
     const jobTitle = titleMap.get(getJobDedupKey(url)) ?? "";
-    if (jobTitle) {
-      const inferred = inferResumeKindFromTitle(jobTitle);
-      if (inferred !== "full_stack" || !itemResumeKind) {
-        itemResumeKind = inferred;
-      }
-    }
+    const itemResumeKind = resolveResumeKindForJob({
+      preferredResumeKind: currentResumeKind,
+      label: currentLabel,
+      jobTitle,
+    });
 
     if (isLikelyApplyUrl(url, site)) {
       return {
@@ -1856,38 +1862,7 @@ function getRelevantSavedAnswersForPrompt(
   question: string,
   answers: Record<string, SavedAnswer>
 ): SavedAnswer[] {
-  const normalizedQuestion = normalizeQuestionKey(question);
-  if (!normalizedQuestion) {
-    return [];
-  }
-
-  return Object.values(answers)
-    .map((answer) => {
-      const normalizedSavedQuestion = normalizeQuestionKey(
-        answer.question
-      );
-      let score = textSimilarity(
-        normalizedQuestion,
-        normalizedSavedQuestion
-      );
-
-      if (
-        normalizedQuestion.includes(normalizedSavedQuestion) ||
-        normalizedSavedQuestion.includes(normalizedQuestion)
-      ) {
-        score = Math.max(score, 0.9);
-      }
-
-      return { answer, score };
-    })
-    .filter((entry) => entry.score >= 0.4)
-    .sort(
-      (a, b) =>
-        b.score - a.score ||
-        b.answer.updatedAt - a.answer.updatedAt
-    )
-    .slice(0, 5)
-    .map((entry) => entry.answer);
+  return getRelevantRememberedAnswers(question, answers);
 }
 
 async function submitChatGptPrompt(
@@ -2322,6 +2297,8 @@ async function autofillVisibleApplication(
         generated.answer
       )
     ) {
+      rememberAnswer(candidate.question, generated.answer);
+      await flushPendingAnswers();
       result.filledFields += 1;
       result.generatedAiAnswers += 1;
       if (generated.copiedToClipboard) result.copiedAiAnswers += 1;
@@ -2428,16 +2405,13 @@ async function uploadResumeIfNeeded(
 function pickResumeAsset(
   settings: AutomationSettings
 ): ResumeAsset | null {
-  if (currentResumeKind && settings.resumes[currentResumeKind])
-    return settings.resumes[currentResumeKind] ?? null;
-  for (const kind of [
-    "full_stack",
-    "front_end",
-    "back_end",
-  ] as ResumeKind[]) {
-    if (settings.resumes[kind]) return settings.resumes[kind]!;
-  }
-  return null;
+  const desiredResumeKind = resolveResumeKindForJob({
+    preferredResumeKind: currentResumeKind,
+    label: currentLabel,
+    jobTitle: document.title,
+  });
+
+  return pickResumeAssetForUpload(settings, desiredResumeKind);
 }
 
 async function setFileInputValue(
@@ -2494,6 +2468,30 @@ async function setFileInputValue(
       // DragEvent constructor may not be supported in all contexts
     }
 
+    for (const target of collectResumeUploadEventTargets(input)) {
+      try {
+        target.dispatchEvent(
+          new Event("input", { bubbles: true, cancelable: true })
+        );
+        target.dispatchEvent(
+          new Event("change", { bubbles: true, cancelable: true })
+        );
+      } catch {
+        // Some targets may reject synthetic events.
+      }
+
+      try {
+        const dropEvent = new DragEvent("drop", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: transfer,
+        });
+        target.dispatchEvent(dropEvent);
+      } catch {
+        // DragEvent constructor may not be supported in all contexts
+      }
+    }
+
     // FIX: Give the framework a moment to process the file
     await sleep(500);
 
@@ -2505,6 +2503,42 @@ async function setFileInputValue(
   } catch {
     return false;
   }
+}
+
+function collectResumeUploadEventTargets(
+  input: HTMLInputElement
+): HTMLElement[] {
+  const targets = new Set<HTMLElement>();
+
+  const id = input.id.trim();
+  if (id) {
+    for (const label of Array.from(
+      document.querySelectorAll<HTMLElement>(`label[for='${cssEscape(id)}']`)
+    )) {
+      targets.add(label);
+    }
+  }
+
+  const candidates = [
+    input.parentElement,
+    input.closest("label"),
+    input.closest("button"),
+    input.closest("[role='button']"),
+    input.closest("[class*='upload']"),
+    input.closest("[class*='resume']"),
+    input.closest("[class*='dropzone']"),
+    input.closest("[data-upload]"),
+    input.closest("[data-testid*='resume']"),
+    input.form,
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate instanceof HTMLElement && candidate !== input) {
+      targets.add(candidate);
+    }
+  }
+
+  return Array.from(targets);
 }
 
 function shouldUseFileInputForResume(
@@ -2909,8 +2943,7 @@ async function extractPdfResumeTextFromAsset(
   asset: ResumeAsset
 ): Promise<string> {
   const pdfjs = await import("pdfjs-dist");
-  pdfjs.GlobalWorkerOptions.workerSrc =
-    getBundledExtensionAssetUrl("pdf.worker.mjs");
+  ensurePdfJsWorkerPort(pdfjs);
 
   const response = await fetch(asset.dataUrl);
   const bytes = new Uint8Array(await response.arrayBuffer());
@@ -2997,19 +3030,6 @@ function getResumeAssetExtension(asset: ResumeAsset): string {
   return match?.[1] ?? "";
 }
 
-function getBundledExtensionAssetUrl(filename: string): string {
-  const manifest = chrome.runtime.getManifest();
-  const contentScriptPath =
-    manifest.content_scripts?.[0]?.js?.[0] ?? "";
-
-  if (!contentScriptPath.includes("/")) {
-    return chrome.runtime.getURL(filename);
-  }
-
-  const basePath = contentScriptPath.replace(/[^/]+$/, "");
-  return chrome.runtime.getURL(`${basePath}${filename}`);
-}
-
 function buildChatGptRequestUrl(requestId: string): string {
   const url = new URL("https://chatgpt.com/");
   url.searchParams.set("remoteJobSearchRequest", requestId);
@@ -3061,39 +3081,11 @@ function findBestSavedAnswerMatch(
   descriptor: string,
   answers: Record<string, SavedAnswer>
 ): SavedAnswer | null {
-  const normalizedQuestion = normalizeQuestionKey(question);
-  if (!normalizedQuestion) {
-    return null;
-  }
-
-  let best: { answer: SavedAnswer; score: number } | null = null;
-
-  for (const [key, answer] of Object.entries(answers)) {
-    const normalizedSavedQuestion = normalizeQuestionKey(
-      answer.question || key
-    );
-    if (!normalizedSavedQuestion) {
-      continue;
-    }
-
-    let score = Math.max(
-      textSimilarity(normalizedQuestion, normalizedSavedQuestion),
-      textSimilarity(descriptor, normalizedSavedQuestion)
-    );
-
-    if (
-      normalizedQuestion.includes(normalizedSavedQuestion) ||
-      normalizedSavedQuestion.includes(normalizedQuestion)
-    ) {
-      score = Math.max(score, 0.9);
-    }
-
-    if (!best || score > best.score) {
-      best = { answer, score };
-    }
-  }
-
-  return best && best.score >= 0.72 ? best.answer : null;
+  return findBestRememberedAnswerMatch(
+    question,
+    descriptor,
+    answers
+  );
 }
 
 function deriveProfileAnswer(
@@ -3734,36 +3726,52 @@ async function handlePotentialAnswerMemory(
     return;
   if (!shouldRememberField(target)) return;
   const question = getQuestionText(target),
-    value = readFieldAnswerForMemory(target),
-    key = normalizeQuestionKey(question);
-  if (!question || !value || !key) return;
-  pendingAnswers.set(key, {
-    question,
-    value,
-    updatedAt: Date.now(),
-  });
-  if (answerFlushTimerId !== null)
-    window.clearTimeout(answerFlushTimerId);
-  answerFlushTimerId = window.setTimeout(
-    () => void flushPendingAnswers(),
-    500
-  );
+    value = readFieldAnswerForMemory(target);
+  if (!rememberAnswer(question, value)) return;
+  void flushPendingAnswers();
 }
 
 async function flushPendingAnswers(): Promise<void> {
-  answerFlushTimerId = null;
-  if (pendingAnswers.size === 0) return;
-  try {
-    const settings = await readAutomationSettings();
-    const answers = { ...settings.answers };
-    for (const [key, value] of pendingAnswers.entries())
-      answers[key] = value;
-    pendingAnswers.clear();
-    await writeAutomationSettings({
-      ...settings,
-      answers,
-    });
-  } catch { /* ignore */ }
+  answerFlushPromise = answerFlushPromise.then(async () => {
+    while (pendingAnswers.size > 0) {
+      const batch = new Map(pendingAnswers);
+      pendingAnswers.clear();
+
+      try {
+        const settings = await readAutomationSettings();
+        const answers = { ...settings.answers };
+        for (const [key, value] of batch.entries()) {
+          answers[key] = value;
+        }
+        await writeAutomationSettings({
+          ...settings,
+          answers,
+        });
+      } catch {
+        for (const [key, value] of batch.entries()) {
+          if (!pendingAnswers.has(key)) {
+            pendingAnswers.set(key, value);
+          }
+        }
+        break;
+      }
+    }
+  });
+
+  await answerFlushPromise;
+}
+
+function rememberAnswer(
+  question: string,
+  value: string
+): boolean {
+  const remembered = createRememberedAnswer(question, value);
+  if (!remembered) {
+    return false;
+  }
+
+  pendingAnswers.set(remembered.key, remembered.answer);
+  return true;
 }
 
 // ─── UTILITIES ───────────────────────────────────────────────────────────────

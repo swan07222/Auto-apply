@@ -49610,16 +49610,66 @@
         return true;
       }
     }
-    const verificationSelectors = [
-      "iframe[src*='captcha']",
-      "iframe[title*='challenge']",
-      "input[name*='captcha']",
-      "#px-captcha",
-      ".cf-turnstile",
-      ".g-recaptcha",
-      "[data-sitekey]"
+    const hasChallengeSignals = Boolean(
+      doc.querySelector(
+        [
+          "iframe[src*='captcha']",
+          "iframe[title*='challenge']",
+          "#px-captcha",
+          ".cf-turnstile",
+          ".g-recaptcha",
+          "[data-sitekey]",
+          "input[name*='captcha']"
+        ].join(",")
+      )
+    );
+    if (!hasChallengeSignals) {
+      return false;
+    }
+    return !hasLikelyApplicationFormSignals(doc);
+  }
+  function hasLikelyApplicationFormSignals(doc) {
+    const interactiveFields = Array.from(
+      doc.querySelectorAll(
+        "input, textarea, select"
+      )
+    ).filter((field) => isLikelyVisibleFormField(field));
+    if (interactiveFields.length >= 3) {
+      return true;
+    }
+    const applicationText = (doc.body?.innerText ?? "").toLowerCase();
+    const strongFormSignals = [
+      "submit your application",
+      "submit application",
+      "attach resume",
+      "attach resume/cv",
+      "upload resume",
+      "resume/cv",
+      "full name",
+      "email",
+      "phone"
     ];
-    return Boolean(doc.querySelector(verificationSelectors.join(",")));
+    const signalCount = strongFormSignals.filter(
+      (signal) => applicationText.includes(signal)
+    ).length;
+    return signalCount >= 3 && interactiveFields.length >= 1;
+  }
+  function isLikelyVisibleFormField(field) {
+    if (field.disabled) {
+      return false;
+    }
+    if (field instanceof HTMLInputElement && ["hidden", "submit", "button", "reset", "image"].includes(field.type.toLowerCase())) {
+      return false;
+    }
+    const styles = globalThis.getComputedStyle?.(field);
+    if (!styles) {
+      return true;
+    }
+    if (styles.display === "none" || styles.visibility === "hidden" || Number.parseFloat(styles.opacity || "1") === 0) {
+      return false;
+    }
+    const rect = field.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
   }
   function normalizeQuestionKey(question) {
     return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
@@ -50364,6 +50414,148 @@
     return root2 instanceof ShadowRoot && root2.host instanceof HTMLElement && isElementVisible(root2.host);
   }
 
+  // src/content/answerMemory.ts
+  var QUESTION_STOP_WORDS = /* @__PURE__ */ new Set([
+    "a",
+    "an",
+    "and",
+    "are",
+    "be",
+    "can",
+    "could",
+    "describe",
+    "did",
+    "do",
+    "does",
+    "enter",
+    "for",
+    "have",
+    "how",
+    "i",
+    "if",
+    "in",
+    "is",
+    "many",
+    "of",
+    "on",
+    "or",
+    "please",
+    "provide",
+    "select",
+    "tell",
+    "that",
+    "the",
+    "this",
+    "to",
+    "us",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "why",
+    "will",
+    "with",
+    "would",
+    "you",
+    "your"
+  ]);
+  function createRememberedAnswer(question, value, now = Date.now()) {
+    const cleanedQuestion = cleanText(question);
+    const cleanedValue = cleanText(value);
+    const key = normalizeQuestionKey(cleanedQuestion);
+    if (!cleanedQuestion || !cleanedValue || !key) {
+      return null;
+    }
+    return {
+      key,
+      answer: {
+        question: cleanedQuestion,
+        value: cleanedValue,
+        updatedAt: now
+      }
+    };
+  }
+  function findBestSavedAnswerMatch(question, descriptor, answers) {
+    const lookupKeys = buildAnswerLookupKeys(question, descriptor);
+    if (lookupKeys.length === 0) {
+      return null;
+    }
+    let best = null;
+    for (const [key, answer] of Object.entries(answers)) {
+      const candidateKeys = buildAnswerLookupKeys(answer.question || key, key);
+      if (candidateKeys.length === 0) {
+        continue;
+      }
+      let score = 0;
+      for (const lookupKey of lookupKeys) {
+        for (const candidateKey of candidateKeys) {
+          if (lookupKey === candidateKey) {
+            score = Math.max(score, 1);
+            continue;
+          }
+          if (lookupKey.includes(candidateKey) || candidateKey.includes(lookupKey)) {
+            score = Math.max(score, 0.92);
+          }
+          score = Math.max(score, textSimilarity(lookupKey, candidateKey));
+        }
+      }
+      if (!best || score > best.score) {
+        best = { answer, score };
+      }
+    }
+    return best && best.score >= 0.68 ? best.answer : null;
+  }
+  function getRelevantSavedAnswers(question, answers) {
+    const lookupKeys = buildAnswerLookupKeys(question);
+    if (lookupKeys.length === 0) {
+      return [];
+    }
+    return Object.values(answers).map((answer) => {
+      const candidateKeys = buildAnswerLookupKeys(answer.question);
+      let score = 0;
+      for (const lookupKey of lookupKeys) {
+        for (const candidateKey of candidateKeys) {
+          if (lookupKey === candidateKey) {
+            score = Math.max(score, 1);
+            continue;
+          }
+          if (lookupKey.includes(candidateKey) || candidateKey.includes(lookupKey)) {
+            score = Math.max(score, 0.9);
+          }
+          score = Math.max(score, textSimilarity(lookupKey, candidateKey));
+        }
+      }
+      return { answer, score };
+    }).filter((entry) => entry.score >= 0.4).sort(
+      (a, b) => b.score - a.score || b.answer.updatedAt - a.answer.updatedAt
+    ).map((entry) => entry.answer).slice(0, 5);
+  }
+  function buildAnswerLookupKeys(question, descriptor = "") {
+    const keys2 = /* @__PURE__ */ new Set();
+    addLookupKey(keys2, normalizeQuestionKey(question));
+    addLookupKey(keys2, normalizeQuestionKey(descriptor));
+    addLookupKey(keys2, buildQuestionSignature(question));
+    addLookupKey(keys2, buildQuestionSignature(descriptor));
+    return Array.from(keys2);
+  }
+  function addLookupKey(keys2, value) {
+    const normalized = cleanText(value);
+    if (normalized) {
+      keys2.add(normalized);
+    }
+  }
+  function buildQuestionSignature(text) {
+    const normalized = normalizeChoiceText(text);
+    if (!normalized) {
+      return "";
+    }
+    const tokens = normalized.split(" ").filter(
+      (token, index, allTokens) => token.length > 1 && !QUESTION_STOP_WORDS.has(token) && allTokens.indexOf(token) === index
+    );
+    return tokens.join(" ");
+  }
+
   // src/content/resumeUpload.ts
   function getSelectedFileName(input) {
     const fileName = input.files?.[0]?.name?.trim();
@@ -50393,6 +50585,69 @@
   }
   function normalizeFileName(value) {
     return value.trim().toLowerCase();
+  }
+  function inferResumeKindFromLabel(label) {
+    const normalizedLabel = label?.trim().toLowerCase() ?? "";
+    if (!normalizedLabel) {
+      return void 0;
+    }
+    if (/\b(front\s*end|frontend)\b/.test(normalizedLabel)) {
+      return "front_end";
+    }
+    if (/\b(back\s*end|backend)\b/.test(normalizedLabel)) {
+      return "back_end";
+    }
+    if (/\b(full\s*stack|fullstack)\b/.test(normalizedLabel)) {
+      return "full_stack";
+    }
+    return void 0;
+  }
+  function resolveResumeKindForJob(options) {
+    const { preferredResumeKind, label, jobTitle } = options;
+    return preferredResumeKind ?? inferResumeKindFromLabel(label) ?? (jobTitle ? inferResumeKindFromTitle(jobTitle) : void 0);
+  }
+  function pickResumeAssetForUpload(settings, desiredResumeKind) {
+    if (desiredResumeKind) {
+      return settings.resumes[desiredResumeKind] ?? null;
+    }
+    for (const kind of [
+      "full_stack",
+      "front_end",
+      "back_end"
+    ]) {
+      if (settings.resumes[kind]) {
+        return settings.resumes[kind] ?? null;
+      }
+    }
+    return null;
+  }
+
+  // src/content/pdfWorker.ts
+  var sharedPdfWorkerPort = null;
+  function ensurePdfJsWorkerPort(pdfjs) {
+    if (typeof Worker === "undefined" || pdfjs.GlobalWorkerOptions.workerPort) {
+      return;
+    }
+    pdfjs.GlobalWorkerOptions.workerPort = getSharedPdfWorkerPort();
+  }
+  function getSharedPdfWorkerPort() {
+    sharedPdfWorkerPort ||= new Worker(
+      getBundledExtensionAssetUrl("pdf.worker.mjs"),
+      {
+        type: "module",
+        name: "pdfjs-content-worker"
+      }
+    );
+    return sharedPdfWorkerPort;
+  }
+  function getBundledExtensionAssetUrl(filename) {
+    const manifest = chrome.runtime.getManifest();
+    const contentScriptPath = manifest.content_scripts?.[0]?.js?.[0] ?? "";
+    if (!contentScriptPath.includes("/")) {
+      return chrome.runtime.getURL(filename);
+    }
+    const basePath = contentScriptPath.replace(/[^/]+$/, "");
+    return chrome.runtime.getURL(`${basePath}${filename}`);
   }
 
   // src/content/jobSearch.ts
@@ -50825,11 +51080,11 @@
         return lowerUrl.includes("/viewjob") || lowerUrl.includes("/rc/clk") || lowerUrl.includes("/pagead/clk");
       // FIX: Completely rewritten ZipRecruiter URL matching
       case "ziprecruiter": {
+        if (/[?&]jid=/i.test(lowerUrl)) return true;
+        if (/[?&]lk=/i.test(lowerUrl)) return true;
         if (lowerUrl.includes("/jobs-search") || lowerUrl.includes("/candidate/") || lowerUrl.includes("/post-a-job") || lowerUrl.includes("/salaries/") || /\/jobs\/?$/i.test(lowerUrl) || /\/jobs\?(?!.*(?:jid|lk)=)/i.test(lowerUrl)) {
           return false;
         }
-        if (/[?&]jid=/i.test(lowerUrl)) return true;
-        if (/[?&]lk=/i.test(lowerUrl)) return true;
         if (lowerUrl.includes("/job-details/")) return true;
         if (/\/k\/[^/?#]+/i.test(lowerUrl)) return true;
         if (/\/c\/[^/]+\/job\//i.test(lowerUrl)) return true;
@@ -53908,7 +54163,7 @@
   var currentRunId;
   var currentJobSlots;
   var activeRun = null;
-  var answerFlushTimerId = null;
+  var answerFlushPromise = Promise.resolve();
   var overlayHideTimerId = null;
   var childApplicationTabOpened = false;
   var stageDepth = 0;
@@ -54253,14 +54508,12 @@
       return;
     }
     const items = approvedUrls.map((url) => {
-      let itemResumeKind = currentResumeKind;
       const jobTitle = titleMap.get(getJobDedupKey(url)) ?? "";
-      if (jobTitle) {
-        const inferred = inferResumeKindFromTitle(jobTitle);
-        if (inferred !== "full_stack" || !itemResumeKind) {
-          itemResumeKind = inferred;
-        }
-      }
+      const itemResumeKind = resolveResumeKindForJob({
+        preferredResumeKind: currentResumeKind,
+        label: currentLabel,
+        jobTitle
+      });
       if (isLikelyApplyUrl(url, site)) {
         return {
           url,
@@ -55219,25 +55472,7 @@
     ].join("\n");
   }
   function getRelevantSavedAnswersForPrompt(question, answers) {
-    const normalizedQuestion = normalizeQuestionKey(question);
-    if (!normalizedQuestion) {
-      return [];
-    }
-    return Object.values(answers).map((answer) => {
-      const normalizedSavedQuestion = normalizeQuestionKey(
-        answer.question
-      );
-      let score = textSimilarity(
-        normalizedQuestion,
-        normalizedSavedQuestion
-      );
-      if (normalizedQuestion.includes(normalizedSavedQuestion) || normalizedSavedQuestion.includes(normalizedQuestion)) {
-        score = Math.max(score, 0.9);
-      }
-      return { answer, score };
-    }).filter((entry) => entry.score >= 0.4).sort(
-      (a, b) => b.score - a.score || b.answer.updatedAt - a.answer.updatedAt
-    ).slice(0, 5).map((entry) => entry.answer);
+    return getRelevantSavedAnswers(question, answers);
   }
   async function submitChatGptPrompt(composer, prompt) {
     const priorUserText = getLatestChatGptUserText();
@@ -55547,6 +55782,8 @@
         targetField,
         generated.answer
       )) {
+        rememberAnswer(candidate.question, generated.answer);
+        await flushPendingAnswers();
         result2.filledFields += 1;
         result2.generatedAiAnswers += 1;
         if (generated.copiedToClipboard) result2.copiedAiAnswers += 1;
@@ -55626,16 +55863,12 @@
     return null;
   }
   function pickResumeAsset(settings) {
-    if (currentResumeKind && settings.resumes[currentResumeKind])
-      return settings.resumes[currentResumeKind] ?? null;
-    for (const kind of [
-      "full_stack",
-      "front_end",
-      "back_end"
-    ]) {
-      if (settings.resumes[kind]) return settings.resumes[kind];
-    }
-    return null;
+    const desiredResumeKind = resolveResumeKindForJob({
+      preferredResumeKind: currentResumeKind,
+      label: currentLabel,
+      jobTitle: document.title
+    });
+    return pickResumeAssetForUpload(settings, desiredResumeKind);
   }
   async function setFileInputValue(input, asset) {
     if (input.disabled) return false;
@@ -55675,12 +55908,61 @@
         input.dispatchEvent(dropEvent);
       } catch {
       }
+      for (const target of collectResumeUploadEventTargets(input)) {
+        try {
+          target.dispatchEvent(
+            new Event("input", { bubbles: true, cancelable: true })
+          );
+          target.dispatchEvent(
+            new Event("change", { bubbles: true, cancelable: true })
+          );
+        } catch {
+        }
+        try {
+          const dropEvent = new DragEvent("drop", {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: transfer
+          });
+          target.dispatchEvent(dropEvent);
+        } catch {
+        }
+      }
       await sleep(500);
       const success = Boolean(input.files?.length) || getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase();
       return success;
     } catch {
       return false;
     }
+  }
+  function collectResumeUploadEventTargets(input) {
+    const targets = /* @__PURE__ */ new Set();
+    const id = input.id.trim();
+    if (id) {
+      for (const label of Array.from(
+        document.querySelectorAll(`label[for='${cssEscape(id)}']`)
+      )) {
+        targets.add(label);
+      }
+    }
+    const candidates = [
+      input.parentElement,
+      input.closest("label"),
+      input.closest("button"),
+      input.closest("[role='button']"),
+      input.closest("[class*='upload']"),
+      input.closest("[class*='resume']"),
+      input.closest("[class*='dropzone']"),
+      input.closest("[data-upload]"),
+      input.closest("[data-testid*='resume']"),
+      input.form
+    ];
+    for (const candidate of candidates) {
+      if (candidate instanceof HTMLElement && candidate !== input) {
+        targets.add(candidate);
+      }
+    }
+    return Array.from(targets);
   }
   function shouldUseFileInputForResume(input, count) {
     const ctx = getFieldDescriptor(input, getQuestionText(input));
@@ -55992,7 +56274,7 @@
   }
   async function extractPdfResumeTextFromAsset(asset) {
     const pdfjs = await Promise.resolve().then(() => (init_pdf(), pdf_exports));
-    pdfjs.GlobalWorkerOptions.workerSrc = getBundledExtensionAssetUrl("pdf.worker.mjs");
+    ensurePdfJsWorkerPort(pdfjs);
     const response = await fetch(asset.dataUrl);
     const bytes = new Uint8Array(await response.arrayBuffer());
     const loadingTask = pdfjs.getDocument({
@@ -56045,15 +56327,6 @@
     const match = asset.name.toLowerCase().match(/\.([a-z0-9]+)$/);
     return match?.[1] ?? "";
   }
-  function getBundledExtensionAssetUrl(filename) {
-    const manifest = chrome.runtime.getManifest();
-    const contentScriptPath = manifest.content_scripts?.[0]?.js?.[0] ?? "";
-    if (!contentScriptPath.includes("/")) {
-      return chrome.runtime.getURL(filename);
-    }
-    const basePath = contentScriptPath.replace(/[^/]+$/, "");
-    return chrome.runtime.getURL(`${basePath}${filename}`);
-  }
   function buildChatGptRequestUrl(requestId) {
     const url = new URL("https://chatgpt.com/");
     url.searchParams.set("remoteJobSearchRequest", requestId);
@@ -56069,7 +56342,7 @@
       if (saved?.value)
         return { value: saved.value, source: "saved" };
     }
-    const fuzzySaved = findBestSavedAnswerMatch(
+    const fuzzySaved = findBestSavedAnswerMatch2(
       question,
       descriptor,
       availableAnswers
@@ -56089,31 +56362,12 @@
     }
     return mergedAnswers;
   }
-  function findBestSavedAnswerMatch(question, descriptor, answers) {
-    const normalizedQuestion = normalizeQuestionKey(question);
-    if (!normalizedQuestion) {
-      return null;
-    }
-    let best = null;
-    for (const [key, answer] of Object.entries(answers)) {
-      const normalizedSavedQuestion = normalizeQuestionKey(
-        answer.question || key
-      );
-      if (!normalizedSavedQuestion) {
-        continue;
-      }
-      let score = Math.max(
-        textSimilarity(normalizedQuestion, normalizedSavedQuestion),
-        textSimilarity(descriptor, normalizedSavedQuestion)
-      );
-      if (normalizedQuestion.includes(normalizedSavedQuestion) || normalizedSavedQuestion.includes(normalizedQuestion)) {
-        score = Math.max(score, 0.9);
-      }
-      if (!best || score > best.score) {
-        best = { answer, score };
-      }
-    }
-    return best && best.score >= 0.72 ? best.answer : null;
+  function findBestSavedAnswerMatch2(question, descriptor, answers) {
+    return findBestSavedAnswerMatch(
+      question,
+      descriptor,
+      answers
+    );
   }
   function deriveProfileAnswer(field, question, settings) {
     const p = settings.candidate;
@@ -56557,35 +56811,44 @@
     if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLTextAreaElement) && !(target instanceof HTMLSelectElement))
       return;
     if (!shouldRememberField(target)) return;
-    const question = getQuestionText(target), value = readFieldAnswerForMemory(target), key = normalizeQuestionKey(question);
-    if (!question || !value || !key) return;
-    pendingAnswers.set(key, {
-      question,
-      value,
-      updatedAt: Date.now()
-    });
-    if (answerFlushTimerId !== null)
-      window.clearTimeout(answerFlushTimerId);
-    answerFlushTimerId = window.setTimeout(
-      () => void flushPendingAnswers(),
-      500
-    );
+    const question = getQuestionText(target), value = readFieldAnswerForMemory(target);
+    if (!rememberAnswer(question, value)) return;
+    void flushPendingAnswers();
   }
   async function flushPendingAnswers() {
-    answerFlushTimerId = null;
-    if (pendingAnswers.size === 0) return;
-    try {
-      const settings = await readAutomationSettings();
-      const answers = { ...settings.answers };
-      for (const [key, value] of pendingAnswers.entries())
-        answers[key] = value;
-      pendingAnswers.clear();
-      await writeAutomationSettings({
-        ...settings,
-        answers
-      });
-    } catch {
+    answerFlushPromise = answerFlushPromise.then(async () => {
+      while (pendingAnswers.size > 0) {
+        const batch = new Map(pendingAnswers);
+        pendingAnswers.clear();
+        try {
+          const settings = await readAutomationSettings();
+          const answers = { ...settings.answers };
+          for (const [key, value] of batch.entries()) {
+            answers[key] = value;
+          }
+          await writeAutomationSettings({
+            ...settings,
+            answers
+          });
+        } catch {
+          for (const [key, value] of batch.entries()) {
+            if (!pendingAnswers.has(key)) {
+              pendingAnswers.set(key, value);
+            }
+          }
+          break;
+        }
+      }
+    });
+    await answerFlushPromise;
+  }
+  function rememberAnswer(question, value) {
+    const remembered = createRememberedAnswer(question, value);
+    if (!remembered) {
+      return false;
     }
+    pendingAnswers.set(remembered.key, remembered.answer);
+    return true;
   }
   function buildAutofillSummary(result2) {
     const parts = [];
