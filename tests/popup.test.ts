@@ -290,6 +290,43 @@ describe("popup workflow", () => {
     expect(popup.regionPreview.textContent).toBe("Auto (UK)");
   });
 
+  it("uses the shared startup-region resolver for preview labels", async () => {
+    const popup = await createPopupHarness({
+      settings: createSettings({
+        searchMode: "startup_careers",
+        candidate: {
+          country: "European Union",
+        },
+      }),
+      activeTabs: [],
+    });
+
+    expect(popup.regionPreview.textContent).toBe("Auto (EU)");
+    expect(popup.statusText.textContent).toBe(
+      "Ready to open startup career pages for EU companies."
+    );
+  });
+
+  it("recognizes supported pending URLs while a tab is still loading", async () => {
+    const popup = await createPopupHarness({
+      activeTabs: [
+        {
+          id: 8,
+          url: "chrome://newtab/",
+          pendingUrl: "https://www.indeed.com/jobs?q=frontend&l=Remote",
+        },
+      ],
+    });
+
+    expect(popup.siteName.textContent).toBe("Indeed");
+    expect(popup.statusText.textContent).toBe("Ready on Indeed.");
+    expect(popup.startButton.disabled).toBe(false);
+    expect(popup.runtimeSendMessage).toHaveBeenCalledWith({
+      type: "get-tab-session",
+      tabId: 8,
+    });
+  });
+
   it("clears remembered answers and updates the visible count", async () => {
     const popup = await createPopupHarness({
       settings: createSettings({

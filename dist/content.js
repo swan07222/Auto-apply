@@ -51105,6 +51105,28 @@
         return [];
     }
   }
+  function collectMonsterEmbeddedCandidates(source) {
+    const jobResults = Array.isArray(source) ? source : typeof source === "object" && source !== null && Array.isArray(source.jobResults) ? source.jobResults : [];
+    const candidates = [];
+    for (const jobResult of jobResults) {
+      if (typeof jobResult !== "object" || jobResult === null) {
+        continue;
+      }
+      const record = jobResult;
+      const url = stringOrEmpty(record.normalizedJobPosting?.url) || stringOrEmpty(record.jobPosting?.url) || stringOrEmpty(record.enrichments?.localizedMonsterUrls?.[0]?.url) || stringOrEmpty(record.canonicalUrl);
+      const title = stringOrEmpty(record.normalizedJobPosting?.title) || stringOrEmpty(record.jobPosting?.title);
+      const contextText = cleanText(
+        [
+          stringOrEmpty(record.normalizedJobPosting?.hiringOrganization?.name) || stringOrEmpty(record.jobPosting?.hiringOrganization?.name),
+          stringOrEmpty(record.location?.displayText) || stringOrEmpty(record.location?.displayTextJobCard),
+          stringOrEmpty(record.dateRecency),
+          stringOrEmpty(record.enrichments?.processedDescriptions?.shortDescription)
+        ].filter(Boolean).join(" ")
+      );
+      addJobCandidate(candidates, url, title, contextText);
+    }
+    return dedupeJobCandidates(candidates);
+  }
   function pickRelevantJobUrls(candidates, site, resumeKind, datePostedWindow = "any") {
     const valid = candidates.filter(
       (candidate) => isLikelyJobDetailUrl(site, candidate.url, candidate.title, candidate.contextText)
@@ -51981,6 +52003,9 @@
       return Boolean(value && value.trim().length > 0);
     });
   }
+  function looksLikeUuidPathSegment(segment) {
+    return /^[a-f0-9]{8}-[a-f0-9-]{27,}$/i.test(segment);
+  }
   function isKnownAtsListingUrl(parsed) {
     const host = parsed.hostname.toLowerCase();
     const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
@@ -52000,6 +52025,9 @@
       return segments.length <= 1 || segments.length === 2 && lastSegment === "jobs";
     }
     if (host.includes("ashbyhq.com")) {
+      if (looksLikeUuidPathSegment(lastSegment)) {
+        return false;
+      }
       return segments.length <= 1 || segments.length === 2 && !path.includes("/job/");
     }
     if (segments.length <= 1) {
@@ -52050,6 +52078,9 @@
   }
   function extractContextLines(text) {
     return text.split(/\r?\n+/).map((line) => cleanText(line)).filter((line) => line.length >= 4 && line.length <= 180);
+  }
+  function stringOrEmpty(value) {
+    return typeof value === "string" ? value : "";
   }
   function isGenericListingSegment(segment) {
     return (/* @__PURE__ */ new Set([
@@ -53748,6 +53779,7 @@
     let bestUrls = [];
     let previousSignature = "";
     let stablePasses = 0;
+    let monsterEmbeddedAttempted = false;
     const maxAttempts = needsAggressiveScan ? 50 : 35;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const candidates = collectJobDetailCandidates(site);
@@ -53763,6 +53795,17 @@
       );
       if (urls.length >= bestUrls.length) {
         bestUrls = urls;
+      }
+      if (site === "monster" && !monsterEmbeddedAttempted && bestUrls.length === 0 && attempt >= 4) {
+        monsterEmbeddedAttempted = true;
+        const embeddedUrls = await collectMonsterEmbeddedUrls({
+          detectedSite,
+          resumeKind,
+          datePostedWindow
+        });
+        if (embeddedUrls.length > bestUrls.length) {
+          bestUrls = embeddedUrls;
+        }
       }
       const signature = urls.slice(0, Math.max(desiredCount, 8)).join("|");
       if (signature && signature === previousSignature) {
@@ -53852,6 +53895,32 @@
       await sleep(800);
     }
     return bestUrls;
+  }
+  async function collectMonsterEmbeddedUrls({
+    detectedSite,
+    resumeKind,
+    datePostedWindow
+  }) {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "extract-monster-search-results"
+      });
+      const embeddedCandidates = collectMonsterEmbeddedCandidates(
+        response?.jobResults
+      );
+      return Array.from(
+        new Set(
+          pickRelevantJobUrls(
+            embeddedCandidates,
+            detectedSite,
+            resumeKind,
+            datePostedWindow
+          )
+        )
+      );
+    } catch {
+      return [];
+    }
   }
   function getPostedWindowDescription(datePostedWindow) {
     if (datePostedWindow === "any") {

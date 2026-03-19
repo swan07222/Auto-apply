@@ -16,6 +16,7 @@ import {
 } from "./dom";
 import {
   collectJobDetailCandidates,
+  collectMonsterEmbeddedCandidates,
   pickRelevantJobUrls,
   shouldFinishJobResultScan,
 } from "./jobSearch";
@@ -70,6 +71,7 @@ export async function waitForJobDetailUrls({
   let bestUrls: string[] = [];
   let previousSignature = "";
   let stablePasses = 0;
+  let monsterEmbeddedAttempted = false;
 
   const maxAttempts = needsAggressiveScan ? 50 : 35;
 
@@ -88,6 +90,24 @@ export async function waitForJobDetailUrls({
 
     if (urls.length >= bestUrls.length) {
       bestUrls = urls;
+    }
+
+    if (
+      site === "monster" &&
+      !monsterEmbeddedAttempted &&
+      bestUrls.length === 0 &&
+      attempt >= 4
+    ) {
+      monsterEmbeddedAttempted = true;
+      const embeddedUrls = await collectMonsterEmbeddedUrls({
+        detectedSite,
+        resumeKind,
+        datePostedWindow,
+      });
+
+      if (embeddedUrls.length > bestUrls.length) {
+        bestUrls = embeddedUrls;
+      }
     }
 
     const signature = urls.slice(0, Math.max(desiredCount, 8)).join("|");
@@ -199,6 +219,37 @@ export async function waitForJobDetailUrls({
   }
 
   return bestUrls;
+}
+
+async function collectMonsterEmbeddedUrls({
+  detectedSite,
+  resumeKind,
+  datePostedWindow,
+}: Pick<
+  WaitForJobDetailUrlsOptions,
+  "detectedSite" | "resumeKind" | "datePostedWindow"
+>): Promise<string[]> {
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "extract-monster-search-results",
+    });
+    const embeddedCandidates = collectMonsterEmbeddedCandidates(
+      response?.jobResults
+    );
+
+    return Array.from(
+      new Set(
+        pickRelevantJobUrls(
+          embeddedCandidates,
+          detectedSite,
+          resumeKind,
+          datePostedWindow
+        )
+      )
+    );
+  } catch {
+    return [];
+  }
 }
 
 export function getPostedWindowDescription(

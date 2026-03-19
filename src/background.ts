@@ -28,6 +28,7 @@ type BackgroundRequest =
   | { type: "start-automation"; tabId: number }
   | { type: "start-startup-automation"; tabId?: number }
   | { type: "start-other-sites-automation"; tabId?: number }
+  | { type: "extract-monster-search-results" }
   | { type: "reserve-job-openings"; requested: number }
   | {
       type: "claim-job-openings";
@@ -143,6 +144,44 @@ async function scheduleStartupCompanyRefresh(): Promise<void> {
   }
 }
 
+async function extractMonsterSearchResults(tabId: number): Promise<{
+  ok: boolean;
+  error?: string;
+  jobResults?: unknown[];
+}> {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: () => {
+        const searchResults = (
+          window as Window & {
+            searchResults?: { jobResults?: unknown[] };
+          }
+        ).searchResults;
+
+        return Array.isArray(searchResults?.jobResults)
+          ? searchResults.jobResults
+          : [];
+      },
+    });
+    const jobResults = Array.isArray(results[0]?.result) ? results[0].result : [];
+
+    return {
+      ok: true,
+      jobResults,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Could not read Monster search results from the page.",
+    };
+  }
+}
+
 async function persistPendingSpawns(): Promise<void> {
   try {
     const key = "remote-job-search-pending-spawns";
@@ -171,6 +210,18 @@ async function handleMessage(
 
     case "start-other-sites-automation":
       return startOtherSitesAutomation(message.tabId);
+
+    case "extract-monster-search-results": {
+      const tabId = sender.tab?.id;
+      if (tabId === undefined) {
+        return {
+          ok: false,
+          error: "No active tab was available for Monster search extraction.",
+        };
+      }
+
+      return extractMonsterSearchResults(tabId);
+    }
 
     case "reserve-job-openings":
       return reserveJobOpeningsForSender(sender, message.requested);

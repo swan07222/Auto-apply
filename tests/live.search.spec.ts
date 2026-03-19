@@ -12,6 +12,7 @@ import {
 } from "../src/shared";
 import {
   collectJobDetailCandidates,
+  collectMonsterEmbeddedCandidates,
   pickRelevantJobUrls,
 } from "../src/content/jobSearch";
 import {
@@ -210,6 +211,23 @@ function extractCandidateUrlsFromHtml(
   });
 }
 
+async function extractMonsterPageCandidateUrls(page: Page): Promise<string[]> {
+  const currentUrl = page.url();
+  const jobResults = await page.evaluate(() => {
+    const searchResults = (
+      window as Window & {
+        searchResults?: { jobResults?: unknown[] };
+      }
+    ).searchResults;
+
+    return Array.isArray(searchResults?.jobResults) ? searchResults.jobResults : [];
+  });
+
+  return withDomGlobals("<!doctype html><html><body></body></html>", currentUrl, () =>
+    pickRelevantJobUrls(collectMonsterEmbeddedCandidates(jobResults), "monster")
+  );
+}
+
 function detectVerificationFromHtml(html: string, url: string): boolean {
   return withDomGlobals(html, url, () =>
     isProbablyHumanVerificationPage(document)
@@ -249,6 +267,37 @@ async function settlePage(page: Page): Promise<void> {
 
   await page.mouse.wheel(0, -2400);
   await page.waitForTimeout(900);
+  await waitForMeaningfulLiveContent(page);
+}
+
+async function waitForMeaningfulLiveContent(page: Page): Promise<void> {
+  await page
+    .waitForFunction(() => {
+      const bodyText = (document.body?.innerText || document.body?.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+      const anchorCount = document.querySelectorAll("a[href]").length;
+      const verificationSignals = [
+        "additional verification required",
+        "verify you are human",
+        "verification required",
+        "security challenge",
+        "cloudflare",
+        "ray id",
+      ];
+
+      if (verificationSignals.some((signal) => bodyText.includes(signal))) {
+        return true;
+      }
+
+      if (bodyText.includes("you need to enable javascript to run this app")) {
+        return false;
+      }
+
+      return anchorCount >= 5 && bodyText.length >= 300;
+    }, { timeout: 10_000 })
+    .catch(() => {});
 }
 
 async function snapshotCurrentPage(page: Page): Promise<DomSnapshot> {
@@ -474,13 +523,17 @@ async function navigateAndCollect(
       snapshot.url,
       site
     );
+    const fallbackCandidateUrls =
+      site === "monster" && candidateUrls.length === 0
+        ? await extractMonsterPageCandidateUrls(page)
+        : candidateUrls;
     const verificationDetected = detectVerificationFromHtml(
       snapshot.html,
       snapshot.url
     );
 
     if (
-      candidateUrls.length > 0 ||
+      fallbackCandidateUrls.length > 0 ||
       verificationDetected ||
       !allowCareerSurfaceDiscovery
     ) {
@@ -488,7 +541,7 @@ async function navigateAndCollect(
         title: snapshot.title,
         finalUrl: snapshot.url,
         bodySnippet: snapshot.bodyText,
-        candidateUrls,
+        candidateUrls: fallbackCandidateUrls,
         verificationDetected,
         followedCareerSurface,
       };
@@ -500,7 +553,7 @@ async function navigateAndCollect(
         title: snapshot.title,
         finalUrl: snapshot.url,
         bodySnippet: snapshot.bodyText,
-        candidateUrls,
+        candidateUrls: fallbackCandidateUrls,
         verificationDetected,
         followedCareerSurface,
       };

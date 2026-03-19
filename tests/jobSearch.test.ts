@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   collectJobDetailCandidates,
+  collectMonsterEmbeddedCandidates,
   isCurrentPageAppliedJob,
   isAppliedJobText,
   isLikelyJobDetailUrl,
@@ -222,6 +223,37 @@ describe("job search candidate filtering", () => {
     expect(urls).toEqual(["https://www.monster.com/job/senior-front-end-engineer-abc123"]);
   });
 
+  it("collects Monster candidates from embedded search results when the DOM has no links", () => {
+    const urls = pickRelevantJobUrls(
+      collectMonsterEmbeddedCandidates([
+        {
+          normalizedJobPosting: {
+            title: "Back End Java Developer",
+            url: "https://www.monster.com/job-openings/back-end-java-developer-remote-fargo-nd--eabee747-01c9-4b2b-a94c-868b0d2b35d1",
+            hiringOrganization: {
+              name: "ConsultNet",
+            },
+          },
+          location: {
+            displayText: "Fargo, ND",
+          },
+          dateRecency: "30+ days ago",
+          enrichments: {
+            processedDescriptions: {
+              shortDescription:
+                "Remote Java services role working across APIs and backend systems.",
+            },
+          },
+        },
+      ]),
+      "monster"
+    );
+
+    expect(urls).toEqual([
+      "https://www.monster.com/job-openings/back-end-java-developer-remote-fargo-nd--eabee747-01c9-4b2b-a94c-868b0d2b35d1",
+    ]);
+  });
+
   it("collects ATS-backed startup roles and ignores listing CTAs", () => {
     document.body.innerHTML = `
       <section class="careers">
@@ -273,6 +305,16 @@ describe("job search candidate filtering", () => {
     ).toBe(true);
     expect(
       isLikelyJobDetailUrl("startup", "https://example.com/careers/jobs", "Open jobs")
+    ).toBe(false);
+    expect(
+      isLikelyJobDetailUrl(
+        "startup",
+        "https://jobs.ashbyhq.com/ramp/4e64ab86-4e30-403b-b1b9-41dc052570ce",
+        "Software Engineer, Frontend"
+      )
+    ).toBe(true);
+    expect(
+      isLikelyJobDetailUrl("startup", "https://jobs.ashbyhq.com/ramp", "Open positions")
     ).toBe(false);
     expect(
       isLikelyJobDetailUrl(

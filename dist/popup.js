@@ -49359,6 +49359,12 @@
     other_sites: "Other Job Sites",
     chatgpt: "ChatGPT"
   };
+  var STARTUP_REGION_LABELS = {
+    auto: "Auto",
+    us: "US",
+    uk: "UK",
+    eu: "EU"
+  };
   var RESUME_KIND_LABELS = {
     front_end: "Front End",
     back_end: "Back End",
@@ -49442,6 +49448,68 @@
   }
   function getResumeKindLabel(resumeKind) {
     return RESUME_KIND_LABELS[resumeKind];
+  }
+  function resolveStartupRegion(startupRegion, candidateCountry) {
+    if (startupRegion !== "auto") {
+      return startupRegion;
+    }
+    return inferStartupRegionFromCountry(candidateCountry);
+  }
+  function inferStartupRegionFromCountry(candidateCountry) {
+    const normalized = normalizeQuestionKey(candidateCountry);
+    if (!normalized) {
+      return "us";
+    }
+    if (["us", "usa", "united states", "united states of america", "america"].includes(normalized)) {
+      return "us";
+    }
+    if ([
+      "uk",
+      "u k",
+      "united kingdom",
+      "great britain",
+      "britain",
+      "england",
+      "scotland",
+      "wales",
+      "northern ireland"
+    ].includes(normalized)) {
+      return "uk";
+    }
+    const euCountries = /* @__PURE__ */ new Set([
+      "eu",
+      "europe",
+      "european union",
+      "austria",
+      "belgium",
+      "bulgaria",
+      "croatia",
+      "cyprus",
+      "czech republic",
+      "czechia",
+      "denmark",
+      "estonia",
+      "finland",
+      "france",
+      "germany",
+      "greece",
+      "hungary",
+      "ireland",
+      "italy",
+      "latvia",
+      "lithuania",
+      "luxembourg",
+      "malta",
+      "netherlands",
+      "poland",
+      "portugal",
+      "romania",
+      "slovakia",
+      "slovenia",
+      "spain",
+      "sweden"
+    ]);
+    return euCountries.has(normalized) ? "eu" : "us";
   }
   function normalizeQuestionKey(question) {
     return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
@@ -49636,19 +49704,45 @@
   });
   async function initialize() {
     await refreshActiveTabContext();
-    settings = await readAutomationSettings();
+    let settingsLoadFailed = false;
+    try {
+      settings = await readAutomationSettings();
+    } catch {
+      settings = createEmptySettings();
+      settingsLoadFailed = true;
+    }
     populateSettingsForm(settings);
-    setSettingsStatus(
-      "Settings are stored locally in the extension.",
-      "muted",
-      false
-    );
+    if (settingsLoadFailed) {
+      setSettingsStatus(
+        "Could not read saved settings. Using defaults for this popup session.",
+        "error",
+        true
+      );
+    } else {
+      setSettingsStatus(
+        "Settings are stored locally in the extension.",
+        "muted",
+        false
+      );
+    }
     updateModeUi();
     updateOverviewPreview();
     updateSiteNameDisplay();
-    await refreshStatus();
+    try {
+      await refreshStatus();
+    } catch {
+      applyStatus(
+        createStatus(
+          "unsupported",
+          "error",
+          "Could not refresh the current tab status."
+        )
+      );
+      startButton.disabled = getSelectedSearchMode() === "job_board";
+    }
     refreshIntervalId = window.setInterval(() => {
-      void refreshStatus();
+      void refreshStatus().catch(() => {
+      });
     }, 1500);
   }
   async function startAutomation() {
@@ -50326,54 +50420,7 @@
     return "any";
   }
   function getStartupRegionLabel() {
-    const region = getSelectedStartupRegion();
-    if (region === "auto") {
-      const country = countryInput.value.trim();
-      if (country) {
-        const normalized = country.toLowerCase();
-        if (["us", "usa", "united states", "america"].some((v) => normalized.includes(v))) {
-          return "US";
-        }
-        if (["uk", "united kingdom", "britain", "england"].some((v) => normalized.includes(v))) {
-          return "UK";
-        }
-        if ([
-          "germany",
-          "france",
-          "spain",
-          "italy",
-          "netherlands",
-          "poland",
-          "austria",
-          "belgium",
-          "sweden",
-          "denmark",
-          "finland",
-          "norway",
-          "ireland",
-          "portugal",
-          "greece",
-          "czech",
-          "hungary",
-          "romania",
-          "bulgaria",
-          "croatia",
-          "estonia",
-          "latvia",
-          "lithuania",
-          "luxembourg",
-          "malta",
-          "slovakia",
-          "slovenia",
-          "cyprus"
-        ].some((v) => normalized.includes(v))) {
-          return "EU";
-        }
-        return "US";
-      }
-      return "US";
-    }
-    return region.toUpperCase();
+    return STARTUP_REGION_LABELS[getResolvedStartupRegion()];
   }
   function getModePreviewLabel() {
     const searchMode = getSelectedSearchMode();
@@ -50386,6 +50433,12 @@
     if (region !== "auto") return region.toUpperCase();
     const country = countryInput.value.trim();
     return country ? `Auto (${getStartupRegionLabel()})` : "Auto from country";
+  }
+  function getResolvedStartupRegion() {
+    return resolveStartupRegion(
+      getSelectedStartupRegion(),
+      countryInput.value.trim()
+    );
   }
   function requireElement(selector) {
     const element = document.querySelector(selector);
@@ -50446,10 +50499,21 @@
     return webPageTab ?? candidates[0] ?? null;
   }
   function getTabUrl(tab) {
-    return tab?.url ?? tab?.pendingUrl ?? "";
+    const currentUrl = tab?.url ?? "";
+    const pendingUrl = tab?.pendingUrl ?? "";
+    if (!currentUrl) {
+      return pendingUrl;
+    }
+    if (pendingUrl && (detectSiteFromUrl(pendingUrl) !== null || isHttpUrl(pendingUrl)) && (detectSiteFromUrl(currentUrl) === null || !isHttpUrl(currentUrl))) {
+      return pendingUrl;
+    }
+    return currentUrl;
   }
   function isWebPageTab(tab) {
     const url = getTabUrl(tab);
+    return isHttpUrl(url);
+  }
+  function isHttpUrl(url) {
     return url.startsWith("https://") || url.startsWith("http://");
   }
   function delay(ms) {

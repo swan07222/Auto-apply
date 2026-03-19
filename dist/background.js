@@ -677,6 +677,28 @@
     } catch {
     }
   }
+  async function extractMonsterSearchResults(tabId) {
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        func: () => {
+          const searchResults = window.searchResults;
+          return Array.isArray(searchResults?.jobResults) ? searchResults.jobResults : [];
+        }
+      });
+      const jobResults = Array.isArray(results[0]?.result) ? results[0].result : [];
+      return {
+        ok: true,
+        jobResults
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : "Could not read Monster search results from the page."
+      };
+    }
+  }
   async function persistPendingSpawns() {
     try {
       const key = "remote-job-search-pending-spawns";
@@ -698,6 +720,16 @@
         return startStartupAutomation(message.tabId);
       case "start-other-sites-automation":
         return startOtherSitesAutomation(message.tabId);
+      case "extract-monster-search-results": {
+        const tabId = sender.tab?.id;
+        if (tabId === void 0) {
+          return {
+            ok: false,
+            error: "No active tab was available for Monster search extraction."
+          };
+        }
+        return extractMonsterSearchResults(tabId);
+      }
       case "reserve-job-openings":
         return reserveJobOpeningsForSender(sender, message.requested);
       case "claim-job-openings":

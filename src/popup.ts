@@ -10,12 +10,14 @@ import {
   SavedAnswer,
   SearchMode,
   StartupRegion,
+  STARTUP_REGION_LABELS,
   createStatus,
   detectSiteFromUrl,
   isJobBoardSite,
   getResumeKindLabel,
   getSiteLabel,
   readAutomationSettings,
+  resolveStartupRegion,
   writeAutomationSettings,
 } from "./shared";
 
@@ -143,23 +145,52 @@ window.addEventListener("beforeunload", () => {
 
 async function initialize(): Promise<void> {
   await refreshActiveTabContext();
-  settings = await readAutomationSettings();
+  let settingsLoadFailed = false;
+
+  try {
+    settings = await readAutomationSettings();
+  } catch {
+    settings = createEmptySettings();
+    settingsLoadFailed = true;
+  }
+
   populateSettingsForm(settings);
-  setSettingsStatus(
-    "Settings are stored locally in the extension.",
-    "muted",
-    false
-  );
+  if (settingsLoadFailed) {
+    setSettingsStatus(
+      "Could not read saved settings. Using defaults for this popup session.",
+      "error",
+      true
+    );
+  } else {
+    setSettingsStatus(
+      "Settings are stored locally in the extension.",
+      "muted",
+      false
+    );
+  }
 
   // FIX: Respect the saved searchMode — don't override it
   updateModeUi();
   updateOverviewPreview();
   updateSiteNameDisplay();
 
-  await refreshStatus();
+  try {
+    await refreshStatus();
+  } catch {
+    applyStatus(
+      createStatus(
+        "unsupported",
+        "error",
+        "Could not refresh the current tab status."
+      )
+    );
+    startButton.disabled = getSelectedSearchMode() === "job_board";
+  }
 
   refreshIntervalId = window.setInterval(() => {
-    void refreshStatus();
+    void refreshStatus().catch(() => {
+      // Ignore transient popup refresh failures so the UI stays usable.
+    });
   }, 1500);
 }
 
@@ -1043,31 +1074,7 @@ function getSelectedDatePostedWindow(): DatePostedWindow {
 }
 
 function getStartupRegionLabel(): string {
-  const region = getSelectedStartupRegion();
-  if (region === "auto") {
-    const country = countryInput.value.trim();
-    if (country) {
-      const normalized = country.toLowerCase();
-      if (["us", "usa", "united states", "america"].some(v => normalized.includes(v))) {
-        return "US";
-      }
-      if (["uk", "united kingdom", "britain", "england"].some(v => normalized.includes(v))) {
-        return "UK";
-      }
-      if ([
-        "germany", "france", "spain", "italy", "netherlands", "poland",
-        "austria", "belgium", "sweden", "denmark", "finland", "norway",
-        "ireland", "portugal", "greece", "czech", "hungary", "romania",
-        "bulgaria", "croatia", "estonia", "latvia", "lithuania",
-        "luxembourg", "malta", "slovakia", "slovenia", "cyprus",
-      ].some(v => normalized.includes(v))) {
-        return "EU";
-      }
-      return "US";
-    }
-    return "US";
-  }
-  return region.toUpperCase();
+  return STARTUP_REGION_LABELS[getResolvedStartupRegion()];
 }
 
 function getModePreviewLabel(): string {
@@ -1082,6 +1089,13 @@ function getRegionPreviewLabel(): string {
   if (region !== "auto") return region.toUpperCase();
   const country = countryInput.value.trim();
   return country ? `Auto (${getStartupRegionLabel()})` : "Auto from country";
+}
+
+function getResolvedStartupRegion(): Exclude<StartupRegion, "auto"> {
+  return resolveStartupRegion(
+    getSelectedStartupRegion(),
+    countryInput.value.trim()
+  );
 }
 
 function requireElement<T extends Element>(selector: string): T {
@@ -1159,11 +1173,30 @@ async function findBestActiveTab(): Promise<ActiveContextTab | null> {
 }
 
 function getTabUrl(tab: ActiveContextTab | null | undefined): string {
-  return tab?.url ?? tab?.pendingUrl ?? "";
+  const currentUrl = tab?.url ?? "";
+  const pendingUrl = tab?.pendingUrl ?? "";
+
+  if (!currentUrl) {
+    return pendingUrl;
+  }
+
+  if (
+    pendingUrl &&
+    (detectSiteFromUrl(pendingUrl) !== null || isHttpUrl(pendingUrl)) &&
+    (detectSiteFromUrl(currentUrl) === null || !isHttpUrl(currentUrl))
+  ) {
+    return pendingUrl;
+  }
+
+  return currentUrl;
 }
 
 function isWebPageTab(tab: ActiveContextTab): boolean {
   const url = getTabUrl(tab);
+  return isHttpUrl(url);
+}
+
+function isHttpUrl(url: string): boolean {
   return url.startsWith("https://") || url.startsWith("http://");
 }
 

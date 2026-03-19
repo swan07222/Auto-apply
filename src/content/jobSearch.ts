@@ -334,6 +334,71 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
   }
 }
 
+export function collectMonsterEmbeddedCandidates(source: unknown): JobCandidate[] {
+  const jobResults = Array.isArray(source)
+    ? source
+    : typeof source === "object" &&
+        source !== null &&
+        Array.isArray((source as { jobResults?: unknown[] }).jobResults)
+      ? (source as { jobResults: unknown[] }).jobResults
+      : [];
+  const candidates: JobCandidate[] = [];
+
+  for (const jobResult of jobResults) {
+    if (typeof jobResult !== "object" || jobResult === null) {
+      continue;
+    }
+
+    const record = jobResult as {
+      canonicalUrl?: unknown;
+      dateRecency?: unknown;
+      enrichments?: {
+        localizedMonsterUrls?: Array<{ url?: unknown }>;
+        processedDescriptions?: { shortDescription?: unknown };
+      };
+      jobPosting?: {
+        hiringOrganization?: { name?: unknown };
+        title?: unknown;
+        url?: unknown;
+      };
+      location?: {
+        displayText?: unknown;
+        displayTextJobCard?: unknown;
+      };
+      normalizedJobPosting?: {
+        hiringOrganization?: { name?: unknown };
+        title?: unknown;
+        url?: unknown;
+      };
+    };
+
+    const url =
+      stringOrEmpty(record.normalizedJobPosting?.url) ||
+      stringOrEmpty(record.jobPosting?.url) ||
+      stringOrEmpty(record.enrichments?.localizedMonsterUrls?.[0]?.url) ||
+      stringOrEmpty(record.canonicalUrl);
+    const title =
+      stringOrEmpty(record.normalizedJobPosting?.title) ||
+      stringOrEmpty(record.jobPosting?.title);
+    const contextText = cleanText(
+      [
+        stringOrEmpty(record.normalizedJobPosting?.hiringOrganization?.name) ||
+          stringOrEmpty(record.jobPosting?.hiringOrganization?.name),
+        stringOrEmpty(record.location?.displayText) ||
+          stringOrEmpty(record.location?.displayTextJobCard),
+        stringOrEmpty(record.dateRecency),
+        stringOrEmpty(record.enrichments?.processedDescriptions?.shortDescription),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+
+    addJobCandidate(candidates, url, title, contextText);
+  }
+
+  return dedupeJobCandidates(candidates);
+}
+
 export function pickRelevantJobUrls(
   candidates: JobCandidate[],
   site: SiteKey | null,
@@ -1557,6 +1622,10 @@ function hasJobIdentifyingSearchParam(parsed: URL): boolean {
   });
 }
 
+function looksLikeUuidPathSegment(segment: string): boolean {
+  return /^[a-f0-9]{8}-[a-f0-9-]{27,}$/i.test(segment);
+}
+
 function isKnownAtsListingUrl(parsed: URL): boolean {
   const host = parsed.hostname.toLowerCase();
   const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
@@ -1585,6 +1654,10 @@ function isKnownAtsListingUrl(parsed: URL): boolean {
   }
 
   if (host.includes("ashbyhq.com")) {
+    if (looksLikeUuidPathSegment(lastSegment)) {
+      return false;
+    }
+
     return segments.length <= 1 || (segments.length === 2 && !path.includes("/job/"));
   }
 
@@ -1656,6 +1729,10 @@ function extractContextLines(text: string): string[] {
     .split(/\r?\n+/)
     .map((line) => cleanText(line))
     .filter((line) => line.length >= 4 && line.length <= 180);
+}
+
+function stringOrEmpty(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 function isGenericListingSegment(segment: string): boolean {
