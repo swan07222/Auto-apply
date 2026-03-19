@@ -3,6 +3,7 @@ import {
   DatePostedWindow,
   ResumeKind,
   SiteKey,
+  getJobDedupKey,
   getSiteLabel,
   sleep,
 } from "../shared";
@@ -84,7 +85,7 @@ export async function waitForJobDetailUrls({
   let bestUrls: string[] = [];
   let previousSignature = "";
   let stablePasses = 0;
-  let monsterEmbeddedAttempted = false;
+  let monsterEmbeddedAttempts = 0;
 
   const maxAttempts = needsAggressiveScan ? 50 : 35;
 
@@ -102,17 +103,18 @@ export async function waitForJobDetailUrls({
       )
     );
 
-    if (urls.length >= bestUrls.length) {
-      bestUrls = urls;
+    const combinedUrls = mergeJobUrlLists(bestUrls, urls);
+    if (combinedUrls.length >= bestUrls.length) {
+      bestUrls = combinedUrls;
     }
 
     if (
       site === "monster" &&
-      !monsterEmbeddedAttempted &&
-      bestUrls.length === 0 &&
-      attempt >= 4
+      bestUrls.length < desiredCount &&
+      monsterEmbeddedAttempts < 2 &&
+      (attempt === 4 || attempt === 12)
     ) {
-      monsterEmbeddedAttempted = true;
+      monsterEmbeddedAttempts += 1;
       const embeddedUrls = await collectMonsterEmbeddedUrls({
         detectedSite,
         resumeKind,
@@ -120,8 +122,9 @@ export async function waitForJobDetailUrls({
         searchKeywords,
       });
 
-      if (embeddedUrls.length > bestUrls.length) {
-        bestUrls = embeddedUrls;
+      const mergedUrls = mergeJobUrlLists(bestUrls, urls, embeddedUrls);
+      if (mergedUrls.length > bestUrls.length) {
+        bestUrls = mergedUrls;
       }
     }
 
@@ -239,6 +242,27 @@ export async function waitForJobDetailUrls({
   }
 
   return bestUrls;
+}
+
+function mergeJobUrlLists(...lists: string[][]): string[] {
+  const merged: string[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const list of lists) {
+    for (const url of list) {
+      const trimmedUrl = url.trim();
+      const key = getJobDedupKey(trimmedUrl) || trimmedUrl.toLowerCase();
+
+      if (!trimmedUrl || seenKeys.has(key)) {
+        continue;
+      }
+
+      seenKeys.add(key);
+      merged.push(trimmedUrl);
+    }
+  }
+
+  return merged;
 }
 
 async function waitForResultSurfaceSettle(site: SiteKey): Promise<void> {

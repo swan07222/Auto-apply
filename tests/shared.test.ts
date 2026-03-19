@@ -9,6 +9,7 @@ import {
   formatStartupRegionList,
   getJobDedupKey,
   inferResumeKindFromTitle,
+  isProbablyRateLimitPage,
   inferStartupRegionFromCountry,
   isStartupCompaniesCacheFresh,
   isProbablyHumanVerificationPage,
@@ -259,6 +260,19 @@ describe("shared automation target logic", () => {
     `;
 
     expect(isProbablyHumanVerificationPage(document)).toBe(true);
+  });
+
+  it("detects ZipRecruiter rate-limit pages from their block copy", () => {
+    document.title = "Rate limit exceeded";
+    document.body.innerHTML = `
+      <main>
+        <h1>Rate limit exceeded</h1>
+        <p>Please try again later.</p>
+        <p>If you'd like an XML feed containing an up-to-date list of jobs, please reach out to us at:</p>
+      </main>
+    `;
+
+    expect(isProbablyRateLimitPage(document, "ziprecruiter")).toBe(true);
   });
 
   it("does not treat application forms with embedded captcha markers as verification pages", () => {

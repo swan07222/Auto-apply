@@ -465,8 +465,11 @@ export function pickRelevantJobUrls(
 
   const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
   const eligible = datePostedWindow === "any" ? valid : recencyFiltered;
+  const shouldKeywordFilter =
+    searchKeywords.length > 0 &&
+    (site === "startup" || site === "other_sites");
   const keywordEligible =
-    searchKeywords.length > 0
+    shouldKeywordFilter
       ? eligible.filter((candidate) =>
           matchesConfiguredSearchKeywords(candidate, searchKeywords)
         )
@@ -478,7 +481,7 @@ export function pickRelevantJobUrls(
         )
       : keywordEligible;
 
-  if (searchKeywords.length > 0 && keywordEligible.length === 0) {
+  if (shouldKeywordFilter && keywordEligible.length === 0) {
     return [];
   }
 
@@ -2005,10 +2008,21 @@ function filterCandidatesByDatePostedWindow(
     return candidates;
   }
 
-  return candidates.filter((candidate) => {
-    const ageHours = extractPostedAgeHours(candidate.contextText);
-    return ageHours !== null && ageHours <= maxAgeHours;
-  });
+  const annotatedCandidates = candidates.map((candidate) => ({
+    candidate,
+    ageHours: extractPostedAgeHours(candidate.contextText),
+  }));
+  const hasKnownPostedAge = annotatedCandidates.some(
+    (entry) => entry.ageHours !== null
+  );
+
+  if (!hasKnownPostedAge) {
+    return candidates;
+  }
+
+  return annotatedCandidates
+    .filter((entry) => entry.ageHours !== null && entry.ageHours <= maxAgeHours)
+    .map((entry) => entry.candidate);
 }
 
 function sortCandidatesByRecency(

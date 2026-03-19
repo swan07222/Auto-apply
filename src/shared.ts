@@ -981,6 +981,29 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
   return !hasLikelyApplicationFormSignals(doc);
 }
 
+export function isProbablyRateLimitPage(
+  doc: Document,
+  site: SiteKey | null = null
+): boolean {
+  const title = doc.title.toLowerCase();
+  const bodyText = (doc.body?.innerText ?? "").toLowerCase().slice(0, 6000);
+  const text = `${title} ${bodyText}`;
+
+  if (site === "ziprecruiter" || text.includes("ziprecruiter")) {
+    const hasStrongSignal = text.includes("rate limit exceeded");
+    const hasRetrySignal = text.includes("please try again later");
+    const hasFeedSignal =
+      text.includes("xml feed containing an up-to-date list of jobs") ||
+      text.includes("xml feed containing an up to date list of jobs");
+
+    if (hasStrongSignal || (hasRetrySignal && hasFeedSignal)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function hasLikelyApplicationFormSignals(doc: Document): boolean {
   const interactiveFields = Array.from(
     doc.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(

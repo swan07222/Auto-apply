@@ -49486,6 +49486,9 @@
     }
     return SUPPORTED_SITE_LABELS[site];
   }
+  function isJobBoardSite(site) {
+    return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor";
+  }
   function getResumeKindLabel(resumeKind) {
     return RESUME_KIND_LABELS[resumeKind];
   }
@@ -49725,6 +49728,20 @@
       return false;
     }
     return !hasLikelyApplicationFormSignals(doc);
+  }
+  function isProbablyRateLimitPage(doc, site = null) {
+    const title = doc.title.toLowerCase();
+    const bodyText = (doc.body?.innerText ?? "").toLowerCase().slice(0, 6e3);
+    const text = `${title} ${bodyText}`;
+    if (site === "ziprecruiter" || text.includes("ziprecruiter")) {
+      const hasStrongSignal = text.includes("rate limit exceeded");
+      const hasRetrySignal = text.includes("please try again later");
+      const hasFeedSignal = text.includes("xml feed containing an up-to-date list of jobs") || text.includes("xml feed containing an up to date list of jobs");
+      if (hasStrongSignal || hasRetrySignal && hasFeedSignal) {
+        return true;
+      }
+    }
+    return false;
   }
   function hasLikelyApplicationFormSignals(doc) {
     const interactiveFields = Array.from(
@@ -51588,13 +51605,14 @@
     );
     const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
     const eligible = datePostedWindow === "any" ? valid : recencyFiltered;
-    const keywordEligible = searchKeywords.length > 0 ? eligible.filter(
+    const shouldKeywordFilter = searchKeywords.length > 0 && (site === "startup" || site === "other_sites");
+    const keywordEligible = shouldKeywordFilter ? eligible.filter(
       (candidate) => matchesConfiguredSearchKeywords(candidate, searchKeywords)
     ) : eligible;
     const technicalEligible = site === "startup" || site === "other_sites" ? keywordEligible.filter(
       (candidate) => looksLikeTechnicalRoleTitle(candidate.title)
     ) : keywordEligible;
-    if (searchKeywords.length > 0 && keywordEligible.length === 0) {
+    if (shouldKeywordFilter && keywordEligible.length === 0) {
       return [];
     }
     if (!resumeKind) {
@@ -52697,10 +52715,17 @@
     if (maxAgeHours === null) {
       return candidates;
     }
-    return candidates.filter((candidate) => {
-      const ageHours = extractPostedAgeHours(candidate.contextText);
-      return ageHours !== null && ageHours <= maxAgeHours;
-    });
+    const annotatedCandidates = candidates.map((candidate) => ({
+      candidate,
+      ageHours: extractPostedAgeHours(candidate.contextText)
+    }));
+    const hasKnownPostedAge = annotatedCandidates.some(
+      (entry) => entry.ageHours !== null
+    );
+    if (!hasKnownPostedAge) {
+      return candidates;
+    }
+    return annotatedCandidates.filter((entry) => entry.ageHours !== null && entry.ageHours <= maxAgeHours).map((entry) => entry.candidate);
   }
   function sortCandidatesByRecency(candidates, datePostedWindow) {
     if (datePostedWindow === "any") {
@@ -54537,7 +54562,7 @@
     let bestUrls = [];
     let previousSignature = "";
     let stablePasses = 0;
-    let monsterEmbeddedAttempted = false;
+    let monsterEmbeddedAttempts = 0;
     const maxAttempts = needsAggressiveScan ? 50 : 35;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const candidates = collectJobDetailCandidates(site);
@@ -54552,19 +54577,21 @@
           )
         )
       );
-      if (urls.length >= bestUrls.length) {
-        bestUrls = urls;
+      const combinedUrls = mergeJobUrlLists(bestUrls, urls);
+      if (combinedUrls.length >= bestUrls.length) {
+        bestUrls = combinedUrls;
       }
-      if (site === "monster" && !monsterEmbeddedAttempted && bestUrls.length === 0 && attempt >= 4) {
-        monsterEmbeddedAttempted = true;
+      if (site === "monster" && bestUrls.length < desiredCount && monsterEmbeddedAttempts < 2 && (attempt === 4 || attempt === 12)) {
+        monsterEmbeddedAttempts += 1;
         const embeddedUrls = await collectMonsterEmbeddedUrls({
           detectedSite,
           resumeKind,
           datePostedWindow,
           searchKeywords
         });
-        if (embeddedUrls.length > bestUrls.length) {
-          bestUrls = embeddedUrls;
+        const mergedUrls = mergeJobUrlLists(bestUrls, urls, embeddedUrls);
+        if (mergedUrls.length > bestUrls.length) {
+          bestUrls = mergedUrls;
         }
       }
       const signature = urls.slice(0, Math.max(desiredCount, 8)).join("|");
@@ -54656,6 +54683,22 @@
       await waitForResultSurfaceSettle(site);
     }
     return bestUrls;
+  }
+  function mergeJobUrlLists(...lists) {
+    const merged = [];
+    const seenKeys = /* @__PURE__ */ new Set();
+    for (const list of lists) {
+      for (const url of list) {
+        const trimmedUrl = url.trim();
+        const key = getJobDedupKey(trimmedUrl) || trimmedUrl.toLowerCase();
+        if (!trimmedUrl || seenKeys.has(key)) {
+          continue;
+        }
+        seenKeys.add(key);
+        merged.push(trimmedUrl);
+      }
+    }
+    return merged;
   }
   async function waitForResultSurfaceSettle(site) {
     const maxWaitMs = site === "startup" || site === "other_sites" || site === "glassdoor" ? 1600 : site === "dice" || site === "ziprecruiter" ? 1400 : 1e3;
@@ -55625,6 +55668,20 @@
       }
     });
   }
+  function getJobResultCollectionTargetCount(site, jobPageLimit) {
+    if (isJobBoardSite(site)) {
+      return Math.max(25, Math.floor(jobPageLimit) * 4);
+    }
+    return Math.max(1, Math.floor(jobPageLimit));
+  }
+  function throwIfRateLimited(site) {
+    if (!isProbablyRateLimitPage(document, site)) {
+      return;
+    }
+    throw new Error(
+      `${getSiteLabel(site)} temporarily rate limited this run. Wait a few minutes and try again.`
+    );
+  }
   async function waitForReadyProgressionAction2(site, timeoutMs) {
     return waitForReadyProgressionAction(site, timeoutMs);
   }
@@ -55835,6 +55892,7 @@
       "bootstrap"
     );
     await waitForHumanVerificationToClear();
+    throwIfRateLimited(site);
     const targets = buildSearchTargets(
       site,
       window.location.origin,
@@ -55860,7 +55918,7 @@
     const response = await spawnTabs(items);
     updateStatus(
       "completed",
-      `Opened ${response.opened} search tabs. Will open up to ${settings.jobPageLimit} total job pages.`,
+      `Opened ${response.opened} search tabs. Will open up to ${settings.jobPageLimit} job pages in this run.`,
       false,
       "bootstrap"
     );
@@ -55872,6 +55930,10 @@
       settings.datePostedWindow
     );
     const effectiveLimit = typeof currentJobSlots === "number" ? Math.max(0, Math.floor(currentJobSlots)) : Math.max(1, Math.floor(settings.jobPageLimit));
+    const collectionTargetCount = getJobResultCollectionTargetCount(
+      site,
+      effectiveLimit
+    );
     updateStatus(
       "running",
       `Scanning ${labelPrefix}${getSiteLabel(site)} results for job pages${postedWindowDescription}...`,
@@ -55891,13 +55953,14 @@
     await waitForHumanVerificationToClear();
     const renderWaitMs = site === "startup" || site === "other_sites" ? 5e3 : site === "dice" || site === "ziprecruiter" || site === "glassdoor" ? 5e3 : site === "monster" ? 5e3 : 2500;
     await sleep(renderWaitMs);
+    throwIfRateLimited(site);
     if (site === "startup" || site === "other_sites" || site === "dice" || site === "ziprecruiter" || site === "monster" || site === "glassdoor") {
       await scrollPageForLazyContent2();
     }
     const jobUrls = await waitForJobDetailUrls2(
       site,
       settings.datePostedWindow,
-      effectiveLimit,
+      collectionTargetCount,
       parseSearchKeywords(settings.searchKeywords)
     );
     if (jobUrls.length === 0) {
@@ -55910,7 +55973,19 @@
       await closeCurrentTab();
       return;
     }
-    const candidates = collectJobDetailCandidates(site);
+    let candidates = collectJobDetailCandidates(site);
+    if (site === "monster") {
+      try {
+        const response2 = await chrome.runtime.sendMessage({
+          type: "extract-monster-search-results"
+        });
+        candidates = [
+          ...candidates,
+          ...collectMonsterEmbeddedCandidates(response2?.jobResults)
+        ];
+      } catch {
+      }
+    }
     const titleMap = /* @__PURE__ */ new Map();
     const contextMap = /* @__PURE__ */ new Map();
     for (const c of candidates) {
@@ -56059,15 +56134,18 @@
       "open-apply"
     );
     await waitForHumanVerificationToClear();
+    throwIfRateLimited(site);
     await sleep(
       site === "dice" || site === "monster" || site === "glassdoor" ? 4e3 : 2500
     );
+    throwIfRateLimited(site);
     let action = null;
     const scrollPositions = [0, 300, 600, -1, -2, 0, -3, 200];
     for (let attempt = 0; attempt < 35; attempt += 1) {
       if (window.location.href !== urlAtStart) {
         await sleep(2500);
         await waitForHumanVerificationToClear();
+        throwIfRateLimited(site);
         if (hasLikelyApplicationForm2() || hasLikelyApplicationSurface2(site)) {
           currentStage = "autofill-form";
           updateStatus(
@@ -56446,6 +56524,7 @@
       "autofill-form"
     );
     await waitForHumanVerificationToClear();
+    throwIfRateLimited(site);
     await waitForLikelyApplicationSurface2(site);
     await rememberCurrentJobContextIfUseful();
     const standaloneFrameUrl = findStandaloneApplicationFrameUrl2();
@@ -56483,6 +56562,7 @@
         previousUrl = window.location.href;
         noProgressCount = 0;
         await waitForHumanVerificationToClear();
+        throwIfRateLimited(site);
         await waitForLikelyApplicationSurface2(site);
         if (childApplicationTabOpened) return;
       }

@@ -51,6 +51,28 @@ describe("job search candidate filtering", () => {
     ]);
   });
 
+  it("keeps candidates when a posted-date filter is requested but the board exposes no recency metadata", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://example.com/jobs/frontend-engineer-1",
+        title: "Frontend Engineer",
+        contextText: "Remote role with React and TypeScript.",
+      },
+      {
+        url: "https://example.com/jobs/platform-engineer-2",
+        title: "Platform Engineer",
+        contextText: "Remote infrastructure role.",
+      },
+    ];
+
+    expect(
+      pickRelevantJobUrls(candidates, "other_sites", undefined, "24h")
+    ).toEqual([
+      "https://example.com/jobs/frontend-engineer-1",
+      "https://example.com/jobs/platform-engineer-2",
+    ]);
+  });
+
   it("keeps fallback generic jobs after preferred matches so boards can fill the requested limit", () => {
     const candidates: JobCandidate[] = [
       {
@@ -74,6 +96,34 @@ describe("job search candidate filtering", () => {
       "https://www.ziprecruiter.com/jobs/front-end-engineer-1?jid=fe-1",
       "https://www.ziprecruiter.com/jobs/software-engineer-2?jid=se-2",
       "https://www.ziprecruiter.com/jobs/software-engineer-3?jid=se-3",
+    ]);
+  });
+
+  it("does not re-filter job-board results by keyword text after the board already ran the search", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://www.indeed.com/viewjob?jk=alpha123",
+        title: "Software Engineer",
+        contextText: "Remote role. Posted today.",
+      },
+      {
+        url: "https://www.indeed.com/viewjob?jk=beta456",
+        title: "Platform Engineer",
+        contextText: "Remote role. Posted today.",
+      },
+    ];
+
+    expect(
+      pickRelevantJobUrls(
+        candidates,
+        "indeed",
+        undefined,
+        "any",
+        ["react developer"]
+      )
+    ).toEqual([
+      "https://www.indeed.com/viewjob?jk=alpha123",
+      "https://www.indeed.com/viewjob?jk=beta456",
     ]);
   });
 

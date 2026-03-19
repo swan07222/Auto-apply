@@ -27,6 +27,8 @@ import {
   getJobDedupKey,
   getSiteLabel,
   inferResumeKindFromTitle,
+  isJobBoardSite,
+  isProbablyRateLimitPage,
   isProbablyHumanVerificationPage,
   normalizeQuestionKey,
   parseSearchKeywords,
@@ -90,6 +92,7 @@ import {
 } from "./content/dom";
 import {
   collectJobDetailCandidates,
+  collectMonsterEmbeddedCandidates,
   isAppliedJobText,
   isCurrentPageAppliedJob,
   pickRelevantJobUrls,
@@ -251,6 +254,27 @@ async function waitForJobDetailUrls(
       updateStatus("running", message, true, "collect-results");
     },
   });
+}
+
+function getJobResultCollectionTargetCount(
+  site: SiteKey,
+  jobPageLimit: number
+): number {
+  if (isJobBoardSite(site)) {
+    return Math.max(25, Math.floor(jobPageLimit) * 4);
+  }
+
+  return Math.max(1, Math.floor(jobPageLimit));
+}
+
+function throwIfRateLimited(site: SiteKey): void {
+  if (!isProbablyRateLimitPage(document, site)) {
+    return;
+  }
+
+  throw new Error(
+    `${getSiteLabel(site)} temporarily rate limited this run. Wait a few minutes and try again.`
+  );
 }
 
 async function waitForReadyProgressionAction(
@@ -537,6 +561,7 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
   );
 
   await waitForHumanVerificationToClear();
+  throwIfRateLimited(site);
 
   const targets = buildSearchTargets(
     site,
@@ -565,7 +590,7 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
 
   updateStatus(
     "completed",
-    `Opened ${response.opened} search tabs. Will open up to ${settings.jobPageLimit} total job pages.`,
+    `Opened ${response.opened} search tabs. Will open up to ${settings.jobPageLimit} job pages in this run.`,
     false,
     "bootstrap"
   );
@@ -583,6 +608,10 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     typeof currentJobSlots === "number"
       ? Math.max(0, Math.floor(currentJobSlots))
       : Math.max(1, Math.floor(settings.jobPageLimit));
+  const collectionTargetCount = getJobResultCollectionTargetCount(
+    site,
+    effectiveLimit
+  );
 
   updateStatus(
     "running",
@@ -614,6 +643,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
           ? 5000
           : 2500;
   await sleep(renderWaitMs);
+  throwIfRateLimited(site);
 
   // FIX: Scroll for Dice too – its cards may lazy-load
   if (
@@ -630,7 +660,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   const jobUrls = await waitForJobDetailUrls(
     site,
     settings.datePostedWindow,
-    effectiveLimit,
+    collectionTargetCount,
     parseSearchKeywords(settings.searchKeywords)
   );
 
@@ -646,7 +676,20 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   }
 
   // FIX: Build a title map for resume-kind inference AND applied-job filtering
-  const candidates = collectJobDetailCandidates(site);
+  let candidates = collectJobDetailCandidates(site);
+  if (site === "monster") {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "extract-monster-search-results",
+      });
+      candidates = [
+        ...candidates,
+        ...collectMonsterEmbeddedCandidates(response?.jobResults),
+      ];
+    } catch {
+      // Ignore embedded result extraction failures.
+    }
+  }
   const titleMap = new Map<string, string>();
   const contextMap = new Map<string, string>();
   for (const c of candidates) {
@@ -824,6 +867,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     "open-apply"
   );
   await waitForHumanVerificationToClear();
+  throwIfRateLimited(site);
 
   // FIX: Dice needs extra render time for its web components
   await sleep(
@@ -831,6 +875,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       ? 4000
       : 2500
   );
+  throwIfRateLimited(site);
 
   let action: ApplyAction | null = null;
   const scrollPositions = [0, 300, 600, -1, -2, 0, -3, 200];
@@ -839,6 +884,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     if (window.location.href !== urlAtStart) {
       await sleep(2500);
       await waitForHumanVerificationToClear();
+      throwIfRateLimited(site);
 
       if (hasLikelyApplicationForm() || hasLikelyApplicationSurface(site)) {
         currentStage = "autofill-form";
@@ -1291,6 +1337,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     "autofill-form"
   );
   await waitForHumanVerificationToClear();
+  throwIfRateLimited(site);
   await waitForLikelyApplicationSurface(site);
   await rememberCurrentJobContextIfUseful();
 
@@ -1338,6 +1385,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       previousUrl = window.location.href;
       noProgressCount = 0;
       await waitForHumanVerificationToClear();
+      throwIfRateLimited(site);
       await waitForLikelyApplicationSurface(site);
       if (childApplicationTabOpened) return;
     }
