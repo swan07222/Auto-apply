@@ -296,7 +296,7 @@ describe("background spawn quota handling", () => {
     );
   });
 
-  it("queues extra job tabs and only resumes up to the successful-application target", async () => {
+  it("starts opened job tabs immediately when they are spawned from search results", async () => {
     const runId = "run-queue";
     const firstUrl = "https://www.indeed.com/viewjob?jk=alpha123";
     const secondUrl = "https://www.indeed.com/viewjob?jk=beta456";
@@ -309,7 +309,7 @@ describe("background spawn quota handling", () => {
       {
         [runStateKey]: {
           id: runId,
-          jobPageLimit: 1,
+          jobPageLimit: 2,
           openedJobPages: 2,
           openedJobKeys: [
             getJobDedupKey(firstUrl),
@@ -318,6 +318,16 @@ describe("background spawn quota handling", () => {
           successfulJobPages: 0,
           successfulJobKeys: [],
           updatedAt: 1,
+        },
+        "remote-job-search-session:42": {
+          tabId: 42,
+          site: "indeed",
+          phase: "running",
+          message: "Collecting job pages...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "collect-results",
+          runId,
         },
       },
       createTabMock
@@ -365,18 +375,12 @@ describe("background spawn quota handling", () => {
     );
     expect(chromeMock.local.state["remote-job-search-session:102"]).toEqual(
       expect.objectContaining({
-        shouldResume: false,
-        phase: "idle",
+        shouldResume: true,
+        phase: "running",
         runId,
       })
     );
-    expect(chrome.tabs.sendMessage).toHaveBeenCalledTimes(1);
-    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
-      101,
-      expect.objectContaining({
-        type: "start-automation",
-      })
-    );
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
 
   it("counts successful application-ready completions and resumes the next queued job", async () => {

@@ -1315,7 +1315,7 @@ FNDA:0,(anonymous_9)
 FNDA:110,detectSiteFromUrl
 FNDA:28,createStatus
 FNDA:3,createSession
-FNDA:13,getSessionStorageKey
+FNDA:12,getSessionStorageKey
 FNDA:8,getAiRequestStorageKey
 FNDA:8,getAiResponseStorageKey
 FNDA:68,getSiteLabel
@@ -1465,7 +1465,7 @@ DA:404,0
 DA:407,13
 DA:415,28
 DA:435,3
-DA:448,13
+DA:448,12
 DA:452,8
 DA:456,8
 DA:460,68

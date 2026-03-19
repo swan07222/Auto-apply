@@ -1609,6 +1609,9 @@
     if (!item.runId || !isManagedJobStage(item.stage)) {
       return false;
     }
+    if (sourceSession?.stage === "collect-results") {
+      return false;
+    }
     if (sourceSession?.runId === item.runId && isManagedJobSession(sourceSession)) {
       return false;
     }

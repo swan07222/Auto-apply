@@ -1326,6 +1326,10 @@ function shouldQueueManagedJobSession(
     return false;
   }
 
+  if (sourceSession?.stage === "collect-results") {
+    return false;
+  }
+
   if (
     sourceSession?.runId === item.runId &&
     isManagedJobSession(sourceSession)
