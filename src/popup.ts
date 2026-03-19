@@ -161,9 +161,13 @@ async function startAutomation(): Promise<void> {
     );
 
     try {
-      const response = await chrome.runtime.sendMessage({
+      const response = await sendRuntimeMessageWithRetry<{
+        ok?: boolean;
+        error?: string;
+        opened?: number;
+        regionLabel?: string;
+      }>({
         type: "start-startup-automation",
-        tabId: activeTabId ?? undefined,
       });
 
       if (!response?.ok) {
@@ -212,9 +216,13 @@ async function startAutomation(): Promise<void> {
     );
 
     try {
-      const response = await chrome.runtime.sendMessage({
+      const response = await sendRuntimeMessageWithRetry<{
+        ok?: boolean;
+        error?: string;
+        opened?: number;
+        regionLabel?: string;
+      }>({
         type: "start-other-sites-automation",
-        tabId: activeTabId ?? undefined,
       });
 
       if (!response?.ok) {
@@ -283,7 +291,10 @@ async function startAutomation(): Promise<void> {
   );
 
   try {
-    const response = await chrome.runtime.sendMessage({
+    const response = await sendRuntimeMessageWithRetry<{
+      ok?: boolean;
+      error?: string;
+    }>({
       type: "start-automation",
       tabId: activeTabId,
     });
@@ -342,7 +353,10 @@ async function refreshStatus(): Promise<void> {
     // Check if there's an active session on this tab
     let bgSession: AutomationStatus | undefined;
     try {
-      const backgroundResponse = await chrome.runtime.sendMessage({
+      const backgroundResponse = await sendRuntimeMessageWithRetry<{
+        ok?: boolean;
+        session?: AutomationStatus;
+      }>({
         type: "get-tab-session",
         tabId: activeTabId,
       });
@@ -351,7 +365,11 @@ async function refreshStatus(): Promise<void> {
       // Extension context may be invalidated
     }
 
-    if (bgSession && bgSession.phase !== "idle") {
+    if (
+      bgSession &&
+      bgSession.site === "startup" &&
+      bgSession.phase !== "idle"
+    ) {
       applyStatus(bgSession);
       startButton.disabled = isBusy(bgSession.phase);
       return;
@@ -383,7 +401,10 @@ async function refreshStatus(): Promise<void> {
 
     let bgSession: AutomationStatus | undefined;
     try {
-      const backgroundResponse = await chrome.runtime.sendMessage({
+      const backgroundResponse = await sendRuntimeMessageWithRetry<{
+        ok?: boolean;
+        session?: AutomationStatus;
+      }>({
         type: "get-tab-session",
         tabId: activeTabId,
       });
@@ -392,7 +413,11 @@ async function refreshStatus(): Promise<void> {
       // Extension context may be invalidated
     }
 
-    if (bgSession && bgSession.phase !== "idle") {
+    if (
+      bgSession &&
+      bgSession.site === "other_sites" &&
+      bgSession.phase !== "idle"
+    ) {
       applyStatus(bgSession);
       startButton.disabled = isBusy(bgSession.phase);
       return;
@@ -421,7 +446,10 @@ async function refreshStatus(): Promise<void> {
   // 1. Check background session
   let bgSession: AutomationStatus | undefined;
   try {
-    const backgroundResponse = await chrome.runtime.sendMessage({
+    const backgroundResponse = await sendRuntimeMessageWithRetry<{
+      ok?: boolean;
+      session?: AutomationStatus;
+    }>({
       type: "get-tab-session",
       tabId: activeTabId,
     });
@@ -430,7 +458,11 @@ async function refreshStatus(): Promise<void> {
     // Extension context may be invalidated
   }
 
-  if (bgSession && bgSession.phase !== "idle") {
+  if (
+    bgSession &&
+    bgSession.site === activeJobBoardSite &&
+    bgSession.phase !== "idle"
+  ) {
     applyStatus(bgSession);
     startButton.disabled =
       !activeJobBoardSite || isBusy(bgSession.phase);
@@ -443,7 +475,7 @@ async function refreshStatus(): Promise<void> {
   if (
     contentStatus &&
     contentStatus.phase !== "idle" &&
-    contentStatus.site !== "unsupported"
+    contentStatus.site === activeJobBoardSite
   ) {
     applyStatus(contentStatus);
     startButton.disabled =
@@ -485,6 +517,34 @@ async function getContentStatus(
   } catch {
     return null;
   }
+}
+
+async function sendRuntimeMessageWithRetry<T>(
+  message: Record<string, unknown>,
+  retries = 1
+): Promise<T | null> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      const response = await chrome.runtime.sendMessage(message);
+      if (response !== undefined && response !== null) {
+        return response as T;
+      }
+    } catch (error: unknown) {
+      lastError = error;
+    }
+
+    if (attempt < retries) {
+      await delay(150);
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  return null;
 }
 
 function updateSiteNameDisplay(): void {
@@ -982,4 +1042,10 @@ function getTabUrl(tab: ActiveContextTab | null | undefined): string {
 function isWebPageTab(tab: ActiveContextTab): boolean {
   const url = getTabUrl(tab);
   return url.startsWith("https://") || url.startsWith("http://");
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }

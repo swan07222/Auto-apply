@@ -5,6 +5,7 @@ import {
   AutomationSession,
   AutomationStage,
   AutomationStatus,
+  JobContextSnapshot,
   SEARCH_OPEN_DELAY_MS,
   SiteKey,
   SpawnTabRequest,
@@ -31,6 +32,8 @@ type BackgroundRequest =
       candidates: { url: string; key: string }[];
     }
   | { type: "get-tab-session"; tabId: number }
+  | { type: "remember-job-context"; context: JobContextSnapshot }
+  | { type: "get-job-context" }
   | { type: "content-ready" }
   | {
       type: "status-update";
@@ -60,6 +63,7 @@ type AutomationRunState = {
 
 const AUTOMATION_RUN_STORAGE_PREFIX = "remote-job-search-run:";
 const SESSION_STORAGE_PREFIX = "remote-job-search-session:";
+const JOB_CONTEXT_STORAGE_PREFIX = "remote-job-search-job-context:";
 const ACTIVE_RUNS_STORAGE_KEY = "remote-job-search-active-runs";
 
 const runLocks = new Map<string, Promise<void>>();
@@ -159,6 +163,28 @@ async function handleMessage(
         ok: true,
         session: await getSession(message.tabId),
       };
+
+    case "remember-job-context": {
+      const tabId = sender.tab?.id;
+      if (tabId === undefined) {
+        return { ok: false };
+      }
+
+      await setJobContext(tabId, message.context);
+      return { ok: true };
+    }
+
+    case "get-job-context": {
+      const tabId = sender.tab?.id;
+      if (tabId === undefined) {
+        return { ok: false, context: null };
+      }
+
+      return {
+        ok: true,
+        context: await getJobContext(tabId),
+      };
+    }
 
     case "content-ready": {
       const tabId = sender.tab?.id;
@@ -367,6 +393,10 @@ async function attachSessionToSiteOpenedChildTab(
   childSession.jobSlots = openerSession.jobSlots;
 
   await setSession(childSession);
+  const rememberedJobContext = await getJobContext(openerTabId);
+  if (rememberedJobContext) {
+    await setJobContext(childTabId, rememberedJobContext);
+  }
 
   try {
     await chrome.tabs.sendMessage(openerTabId, {
@@ -384,9 +414,9 @@ async function startAutomationForTab(
   error?: string;
   session?: AutomationSession;
 }> {
-  const tab = await resolvePreferredTab(tabId);
+  const tab = await resolvePreferredTab(tabId, "job_board");
 
-  if (!tab) {
+  if (!tab || tab.id === undefined) {
     return {
       ok: false,
       error:
@@ -394,6 +424,7 @@ async function startAutomationForTab(
     };
   }
 
+  const resolvedTabId = tab.id;
   const site = detectSiteFromUrl(getTabUrl(tab));
   const settings = await readAutomationSettings();
   const runId = createRunId();
@@ -416,7 +447,7 @@ async function startAutomationForTab(
   await addActiveRunId(runId);
 
   const session = createSession(
-    tabId,
+    resolvedTabId,
     site,
     "running",
     `Preparing ${getReadableSiteName(site)} automation...`,
@@ -428,9 +459,9 @@ async function startAutomationForTab(
   await setSession(session);
 
   try {
-    await reloadTabAndWait(tabId);
+    await reloadTabAndWait(resolvedTabId);
   } catch {
-    await removeSession(tabId);
+    await removeSession(resolvedTabId);
     await removeRunState(runId);
     await removeActiveRunId(runId);
     return {
@@ -453,7 +484,7 @@ async function startStartupAutomation(
   opened?: number;
   regionLabel?: string;
 }> {
-  const sourceTab = await resolvePreferredTab(tabId);
+  const sourceTab = await resolvePreferredTab(tabId, "web_page");
   const settings = await readAutomationSettings();
   const runId = createRunId();
   const targets = buildStartupSearchTargets(settings);
@@ -500,21 +531,8 @@ async function startStartupAutomation(
 
   await addActiveRunId(runId);
 
-  if (sourceTab?.id !== undefined) {
-    const session = createSession(
-      sourceTab.id,
-      "startup",
-      "running",
-      "Opening startup career pages...",
-      false,
-      "bootstrap",
-      runId
-    );
-
-    await setSession(session);
-  }
-
   let openedCount = 0;
+  let firstCreateError: string | undefined;
 
   for (const [offset, item] of dedupedItems.entries()) {
     const createProperties: chrome.tabs.CreateProperties = {
@@ -534,7 +552,10 @@ async function startStartupAutomation(
     try {
       createdTab = await chrome.tabs.create(createProperties);
       openedCount += 1;
-    } catch {
+    } catch (error: unknown) {
+      if (!firstCreateError && error instanceof Error && error.message) {
+        firstCreateError = error.message;
+      }
       continue;
     }
 
@@ -563,18 +584,15 @@ async function startStartupAutomation(
     settings.candidate.country
   );
 
-  if (sourceTab?.id !== undefined) {
-    await setSession(
-      createSession(
-        sourceTab.id,
-        "startup",
-        "completed",
-        `Opened ${openedCount} startup career pages for ${region.toUpperCase()} companies.`,
-        false,
-        "bootstrap",
-        runId
-      )
-    );
+  if (openedCount === 0) {
+    await removeRunState(runId);
+    await removeActiveRunId(runId);
+    return {
+      ok: false,
+      error:
+        firstCreateError ??
+        "The browser blocked opening the startup career tabs.",
+    };
   }
 
   return {
@@ -592,7 +610,7 @@ async function startOtherSitesAutomation(
   opened?: number;
   regionLabel?: string;
 }> {
-  const sourceTab = await resolvePreferredTab(tabId);
+  const sourceTab = await resolvePreferredTab(tabId, "web_page");
   const settings = await readAutomationSettings();
   const runId = createRunId();
   const targets = buildOtherJobSiteTargets(settings);
@@ -639,21 +657,8 @@ async function startOtherSitesAutomation(
 
   await addActiveRunId(runId);
 
-  if (sourceTab?.id !== undefined) {
-    const session = createSession(
-      sourceTab.id,
-      "other_sites",
-      "running",
-      "Opening other job site searches...",
-      false,
-      "bootstrap",
-      runId
-    );
-
-    await setSession(session);
-  }
-
   let openedCount = 0;
+  let firstCreateError: string | undefined;
 
   for (const [offset, item] of dedupedItems.entries()) {
     const createProperties: chrome.tabs.CreateProperties = {
@@ -673,7 +678,10 @@ async function startOtherSitesAutomation(
     try {
       createdTab = await chrome.tabs.create(createProperties);
       openedCount += 1;
-    } catch {
+    } catch (error: unknown) {
+      if (!firstCreateError && error instanceof Error && error.message) {
+        firstCreateError = error.message;
+      }
       continue;
     }
 
@@ -702,18 +710,15 @@ async function startOtherSitesAutomation(
     settings.candidate.country
   );
 
-  if (sourceTab?.id !== undefined) {
-    await setSession(
-      createSession(
-        sourceTab.id,
-        "other_sites",
-        "completed",
-        `Opened ${openedCount} other job site searches for ${region.toUpperCase()}.`,
-        false,
-        "bootstrap",
-        runId
-      )
-    );
+  if (openedCount === 0) {
+    await removeRunState(runId);
+    await removeActiveRunId(runId);
+    return {
+      ok: false,
+      error:
+        firstCreateError ??
+        "The browser blocked opening the other job site tabs.",
+    };
   }
 
   return {
@@ -933,10 +938,34 @@ async function setSession(session: AutomationSession): Promise<void> {
 async function removeSession(tabId: number): Promise<void> {
   const existingSession = await getSession(tabId);
   await chrome.storage.local.remove(getSessionStorageKey(tabId));
+  await removeJobContext(tabId);
 
   if (existingSession?.runId) {
     await removeRunStateIfUnused(existingSession.runId);
   }
+}
+
+async function getJobContext(
+  tabId: number
+): Promise<JobContextSnapshot | null> {
+  const key = getJobContextStorageKey(tabId);
+  const stored = await chrome.storage.local.get(key);
+  return (stored[key] as JobContextSnapshot | undefined) ?? null;
+}
+
+async function setJobContext(
+  tabId: number,
+  context: JobContextSnapshot
+): Promise<void> {
+  const key = getJobContextStorageKey(tabId);
+  const existing = await getJobContext(tabId);
+  await chrome.storage.local.set({
+    [key]: mergeJobContexts(existing, context),
+  });
+}
+
+async function removeJobContext(tabId: number): Promise<void> {
+  await chrome.storage.local.remove(getJobContextStorageKey(tabId));
 }
 
 async function getRunState(runId: string): Promise<AutomationRunState | null> {
@@ -957,6 +986,41 @@ async function removeRunState(runId: string): Promise<void> {
 
 function getAutomationRunStorageKey(runId: string): string {
   return `${AUTOMATION_RUN_STORAGE_PREFIX}${runId}`;
+}
+
+function getJobContextStorageKey(tabId: number): string {
+  return `${JOB_CONTEXT_STORAGE_PREFIX}${tabId}`;
+}
+
+function mergeJobContexts(
+  existing: JobContextSnapshot | null,
+  incoming: JobContextSnapshot
+): JobContextSnapshot {
+  if (!existing) {
+    return incoming;
+  }
+
+  return {
+    title: pickPreferredText(existing.title, incoming.title),
+    company: pickPreferredText(existing.company, incoming.company),
+    description: pickPreferredText(
+      existing.description,
+      incoming.description
+    ),
+    question: incoming.question || existing.question,
+    pageUrl: incoming.pageUrl || existing.pageUrl,
+  };
+}
+
+function pickPreferredText(current: string, next: string): string {
+  if (!current) {
+    return next;
+  }
+  if (!next) {
+    return current;
+  }
+
+  return next.length >= current.length ? next : current;
 }
 
 function createRunId(): string {
@@ -1095,7 +1159,8 @@ async function getTabSafely(tabId: number): Promise<BackgroundSourceTab | null> 
 }
 
 async function resolvePreferredTab(
-  preferredTabId?: number
+  preferredTabId?: number,
+  preferredKind: "job_board" | "web_page" = "web_page"
 ): Promise<BackgroundSourceTab | null> {
   const candidates: BackgroundSourceTab[] = [];
   const seenTabIds = new Set<number>();
@@ -1116,6 +1181,9 @@ async function resolvePreferredTab(
     chrome.tabs.query({
       active: true,
       lastFocusedWindow: true,
+    }),
+    chrome.tabs.query({
+      active: true,
     }),
   ]);
 
@@ -1138,11 +1206,50 @@ async function resolvePreferredTab(
     return null;
   }
 
+  const preferredTab =
+    typeof preferredTabId === "number"
+      ? candidates.find(
+          (tab) =>
+            tab.id === preferredTabId &&
+            isTabUsableForPreference(tab, preferredKind)
+        ) ?? null
+      : null;
+  if (preferredTab) {
+    return preferredTab;
+  }
+
+  if (preferredKind === "job_board") {
+    const jobBoardTab = candidates.find((tab) =>
+      isJobBoardTab(tab)
+    );
+    if (jobBoardTab) {
+      return jobBoardTab;
+    }
+  }
+
   return candidates.find((tab) => isWebPageTab(tab)) ?? candidates[0] ?? null;
 }
 
 function getTabUrl(tab: BackgroundSourceTab | null | undefined): string {
   return tab?.url ?? tab?.pendingUrl ?? "";
+}
+
+function isJobBoardTab(tab: BackgroundSourceTab): boolean {
+  return (
+    isWebPageTab(tab) &&
+    isJobBoardSite(detectSiteFromUrl(getTabUrl(tab)))
+  );
+}
+
+function isTabUsableForPreference(
+  tab: BackgroundSourceTab,
+  preferredKind: "job_board" | "web_page"
+): boolean {
+  if (preferredKind === "job_board") {
+    return isJobBoardTab(tab);
+  }
+
+  return isWebPageTab(tab);
 }
 
 function isWebPageTab(tab: BackgroundSourceTab): boolean {

@@ -550,12 +550,10 @@ export function hasZipRecruiterApplyModal(): boolean {
   return false;
 }
 
-export function findProgressionAction(): ProgressionAction | null {
-  const candidates = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      "button, input[type='submit'], input[type='button'], a[href], a[role='button'], [role='button']"
-    )
-  );
+export function findProgressionAction(
+  site?: SiteKey | null
+): ProgressionAction | null {
+  const candidates = collectProgressionCandidates(site);
 
   let best:
     | {
@@ -642,6 +640,16 @@ export function findProgressionAction(): ProgressionAction | null {
       lower.includes("review my application")
     ) {
       score = 75;
+    } else if (
+      lower === "review" ||
+      lower === "review and continue"
+    ) {
+      score = 74;
+    } else if (
+      lower.includes("continue application") ||
+      lower.includes("continue applying")
+    ) {
+      score = 73;
     } else if (lower.includes("next") && !lower.includes("submit")) {
       score = 70;
     } else if (lower.includes("continue") && !lower.includes("submit")) {
@@ -661,13 +669,41 @@ export function findProgressionAction(): ProgressionAction | null {
       attrs.includes("next") ||
       attrs.includes("continue") ||
       attrs.includes("proceed") ||
-      attrs.includes("company")
+      attrs.includes("company") ||
+      attrs.includes("review")
     ) {
       score += 15;
     }
 
     if (element.closest("form")) {
       score += 10;
+    }
+
+    if (
+      element instanceof HTMLButtonElement &&
+      element.type.toLowerCase() === "submit"
+    ) {
+      score += 8;
+    }
+
+    if (site === "indeed") {
+      if (
+        attrs.includes("indeed") ||
+        attrs.includes("ia-") ||
+        attrs.includes("smartapply")
+      ) {
+        score += 8;
+      }
+    }
+
+    if (site === "ziprecruiter") {
+      if (
+        attrs.includes("zip") ||
+        attrs.includes("zipapply") ||
+        attrs.includes("jobapply")
+      ) {
+        score += 8;
+      }
     }
 
     if (score < 50) {
@@ -678,7 +714,7 @@ export function findProgressionAction(): ProgressionAction | null {
       best = {
         element,
         score,
-        url: getNavigationUrl(element),
+        url: getMeaningfulProgressionUrl(element),
         text,
       };
     }
@@ -701,6 +737,103 @@ export function findProgressionAction(): ProgressionAction | null {
         description: best.text,
         text: best.text,
       };
+}
+
+function collectProgressionCandidates(
+  site?: SiteKey | null
+): HTMLElement[] {
+  const selectors = getProgressionCandidateSelectors(site);
+  const seen = new Set<HTMLElement>();
+  const candidates: HTMLElement[] = [];
+
+  for (const selector of selectors) {
+    let elements: HTMLElement[];
+    try {
+      elements = Array.from(
+        document.querySelectorAll<HTMLElement>(selector)
+      );
+    } catch {
+      continue;
+    }
+
+    for (const element of elements) {
+      if (seen.has(element)) {
+        continue;
+      }
+      seen.add(element);
+      candidates.push(element);
+    }
+  }
+
+  return candidates;
+}
+
+function getProgressionCandidateSelectors(
+  site?: SiteKey | null
+): string[] {
+  const generic = [
+    "button",
+    "input[type='submit']",
+    "input[type='button']",
+    "a[href]",
+    "a[role='button']",
+    "[role='button']",
+  ];
+
+  switch (site) {
+    case "indeed":
+      return [
+        "button[data-testid*='continue']",
+        "button[data-testid*='next']",
+        "button[data-testid*='review']",
+        "[aria-label*='continue' i]",
+        "[aria-label*='next' i]",
+        "[aria-label*='review' i]",
+        "[id*='continue']",
+        "[id*='next']",
+        "[id*='review']",
+        "[class*='continue']",
+        "[class*='next']",
+        "[class*='review']",
+        ...generic,
+      ];
+    case "ziprecruiter":
+      return [
+        "button[data-testid*='continue']",
+        "button[data-testid*='next']",
+        "button[data-testid*='review']",
+        "[data-testid*='continue']",
+        "[data-testid*='next']",
+        "[data-testid*='review']",
+        "[aria-label*='continue' i]",
+        "[aria-label*='next' i]",
+        "[aria-label*='review' i]",
+        "[id*='continue']",
+        "[id*='next']",
+        "[class*='continue']",
+        "[class*='next']",
+        "[class*='review']",
+        ...generic,
+      ];
+    default:
+      return generic;
+  }
+}
+
+function getMeaningfulProgressionUrl(
+  element: HTMLElement
+): string | null {
+  const url = getNavigationUrl(element);
+  if (!url) {
+    return null;
+  }
+
+  const currentUrl = normalizeUrl(window.location.href);
+  if (currentUrl && url === currentUrl) {
+    return null;
+  }
+
+  return url;
 }
 
 export function findApplyAction(

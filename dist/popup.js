@@ -14854,9 +14854,9 @@
               return;
             }
             if (reason instanceof RenderingCancelledException) {
-              let delay = RENDERING_CANCELLED_TIMEOUT;
+              let delay2 = RENDERING_CANCELLED_TIMEOUT;
               if (reason.extraDelay > 0 && reason.extraDelay < 1e3) {
-                delay += reason.extraDelay;
+                delay2 += reason.extraDelay;
               }
               intentState.streamReaderCancelTimeout = setTimeout(() => {
                 intentState.streamReaderCancelTimeout = null;
@@ -14865,7 +14865,7 @@
                   reason,
                   force: true
                 });
-              }, delay);
+              }, delay2);
               return;
             }
           }
@@ -32269,9 +32269,9 @@
           clearTimeout(this.handle);
         };
         var afterValue = function(value) {
-          return delay(+this).thenReturn(value);
+          return delay2(+this).thenReturn(value);
         };
-        var delay = Promise2.delay = function(ms, value) {
+        var delay2 = Promise2.delay = function(ms, value) {
           var ret2;
           var handle;
           if (value !== void 0) {
@@ -32293,7 +32293,7 @@
           return ret2;
         };
         Promise2.prototype.delay = function(ms) {
-          return delay(ms, this);
+          return delay2(ms, this);
         };
         var afterTimeout = function(promise, message, parent) {
           var err;
@@ -49653,9 +49653,8 @@
         )
       );
       try {
-        const response = await chrome.runtime.sendMessage({
-          type: "start-startup-automation",
-          tabId: activeTabId ?? void 0
+        const response = await sendRuntimeMessageWithRetry({
+          type: "start-startup-automation"
         });
         if (!response?.ok) {
           applyStatus(
@@ -49696,9 +49695,8 @@
         )
       );
       try {
-        const response = await chrome.runtime.sendMessage({
-          type: "start-other-sites-automation",
-          tabId: activeTabId ?? void 0
+        const response = await sendRuntimeMessageWithRetry({
+          type: "start-other-sites-automation"
         });
         if (!response?.ok) {
           applyStatus(
@@ -49756,7 +49754,7 @@
       )
     );
     try {
-      const response = await chrome.runtime.sendMessage({
+      const response = await sendRuntimeMessageWithRetry({
         type: "start-automation",
         tabId: activeTabId
       });
@@ -49803,14 +49801,14 @@
       }
       let bgSession2;
       try {
-        const backgroundResponse = await chrome.runtime.sendMessage({
+        const backgroundResponse = await sendRuntimeMessageWithRetry({
           type: "get-tab-session",
           tabId: activeTabId
         });
         bgSession2 = backgroundResponse?.session;
       } catch {
       }
-      if (bgSession2 && bgSession2.phase !== "idle") {
+      if (bgSession2 && bgSession2.site === "startup" && bgSession2.phase !== "idle") {
         applyStatus(bgSession2);
         startButton.disabled = isBusy(bgSession2.phase);
         return;
@@ -49839,14 +49837,14 @@
       }
       let bgSession2;
       try {
-        const backgroundResponse = await chrome.runtime.sendMessage({
+        const backgroundResponse = await sendRuntimeMessageWithRetry({
           type: "get-tab-session",
           tabId: activeTabId
         });
         bgSession2 = backgroundResponse?.session;
       } catch {
       }
-      if (bgSession2 && bgSession2.phase !== "idle") {
+      if (bgSession2 && bgSession2.site === "other_sites" && bgSession2.phase !== "idle") {
         applyStatus(bgSession2);
         startButton.disabled = isBusy(bgSession2.phase);
         return;
@@ -49870,20 +49868,20 @@
     }
     let bgSession;
     try {
-      const backgroundResponse = await chrome.runtime.sendMessage({
+      const backgroundResponse = await sendRuntimeMessageWithRetry({
         type: "get-tab-session",
         tabId: activeTabId
       });
       bgSession = backgroundResponse?.session;
     } catch {
     }
-    if (bgSession && bgSession.phase !== "idle") {
+    if (bgSession && bgSession.site === activeJobBoardSite && bgSession.phase !== "idle") {
       applyStatus(bgSession);
       startButton.disabled = !activeJobBoardSite || isBusy(bgSession.phase);
       return;
     }
     const contentStatus = await getContentStatus(activeTabId);
-    if (contentStatus && contentStatus.phase !== "idle" && contentStatus.site !== "unsupported") {
+    if (contentStatus && contentStatus.phase !== "idle" && contentStatus.site === activeJobBoardSite) {
       applyStatus(contentStatus);
       startButton.disabled = !activeJobBoardSite || isBusy(contentStatus.phase);
       return;
@@ -49917,6 +49915,26 @@
     } catch {
       return null;
     }
+  }
+  async function sendRuntimeMessageWithRetry(message, retries = 1) {
+    let lastError;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        const response = await chrome.runtime.sendMessage(message);
+        if (response !== void 0 && response !== null) {
+          return response;
+        }
+      } catch (error) {
+        lastError = error;
+      }
+      if (attempt < retries) {
+        await delay(150);
+      }
+    }
+    if (lastError) {
+      throw lastError;
+    }
+    return null;
   }
   function updateSiteNameDisplay() {
     const searchMode = getSelectedSearchMode();
@@ -50336,6 +50354,11 @@
   function isWebPageTab(tab) {
     const url = getTabUrl(tab);
     return url.startsWith("https://") || url.startsWith("http://");
+  }
+  function delay(ms) {
+    return new Promise((resolve) => {
+      window.setTimeout(resolve, ms);
+    });
   }
 })();
 /*! Bundled license information:

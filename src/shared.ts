@@ -196,13 +196,13 @@ export const SEARCH_DEFINITIONS: SearchDefinition[] = [
 
 export const STARTUP_COMPANIES: StartupCompany[] = [
   { name: "Ramp", careersUrl: "https://jobs.ashbyhq.com/ramp", regions: ["us"] },
-  { name: "Vercel", careersUrl: "https://vercel.com/careers", regions: ["us"] },
-  { name: "Plaid", careersUrl: "https://plaid.com/careers/", regions: ["us"] },
-  { name: "Figma", careersUrl: "https://www.figma.com/careers/", regions: ["us"] },
+  { name: "Vercel", careersUrl: "https://job-boards.greenhouse.io/vercel", regions: ["us"] },
+  { name: "Plaid", careersUrl: "https://jobs.lever.co/plaid", regions: ["us"] },
+  { name: "Figma", careersUrl: "https://job-boards.greenhouse.io/figma", regions: ["us"] },
   { name: "Notion", careersUrl: "https://www.notion.so/careers", regions: ["us"] },
   {
     name: "Monzo",
-    careersUrl: "https://boards.greenhouse.io/embed/job_board?for=monzo",
+    careersUrl: "https://job-boards.greenhouse.io/monzo",
     regions: ["uk"],
   },
   { name: "Wise", careersUrl: "https://wise.jobs/", regions: ["uk"] },
@@ -225,13 +225,13 @@ export const OTHER_JOB_SITE_TARGETS: CuratedJobSiteTarget[] = [
   },
   {
     label: "Built In Back End",
-    url: "https://builtin.com/jobs/remote/dev-engineering/search/back-end-engineer",
+    url: "https://builtin.com/jobs/remote/dev-engineering/back-end",
     resumeKind: "back_end",
     regions: ["us"],
   },
   {
     label: "Built In Full Stack",
-    url: "https://builtin.com/jobs/remote/dev-engineering/search/full-stack-engineer",
+    url: "https://builtin.com/jobs/remote/dev-engineering/full-stack",
     resumeKind: "full_stack",
     regions: ["us"],
   },
@@ -713,7 +713,7 @@ function buildSingleSearchUrl(
     }
     case "monster": {
       const slug = slugifyMonsterQuery(query);
-      return new URL(`/jobs/q-${slug}-jobs`, baseOrigin).toString();
+      return new URL(`/jobs/q-${slug}-jobs-l-remote`, baseOrigin).toString();
     }
   }
 }

@@ -32,6 +32,7 @@ export interface AutofillResult {
 export interface EssayFieldCandidate {
   field: HTMLInputElement | HTMLTextAreaElement;
   question: string;
+  descriptor: string;
 }
 
 // FIX: Add type for form field descriptor

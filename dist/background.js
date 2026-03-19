@@ -8,13 +8,13 @@
   };
   var STARTUP_COMPANIES = [
     { name: "Ramp", careersUrl: "https://jobs.ashbyhq.com/ramp", regions: ["us"] },
-    { name: "Vercel", careersUrl: "https://vercel.com/careers", regions: ["us"] },
-    { name: "Plaid", careersUrl: "https://plaid.com/careers/", regions: ["us"] },
-    { name: "Figma", careersUrl: "https://www.figma.com/careers/", regions: ["us"] },
+    { name: "Vercel", careersUrl: "https://job-boards.greenhouse.io/vercel", regions: ["us"] },
+    { name: "Plaid", careersUrl: "https://jobs.lever.co/plaid", regions: ["us"] },
+    { name: "Figma", careersUrl: "https://job-boards.greenhouse.io/figma", regions: ["us"] },
     { name: "Notion", careersUrl: "https://www.notion.so/careers", regions: ["us"] },
     {
       name: "Monzo",
-      careersUrl: "https://boards.greenhouse.io/embed/job_board?for=monzo",
+      careersUrl: "https://job-boards.greenhouse.io/monzo",
       regions: ["uk"]
     },
     { name: "Wise", careersUrl: "https://wise.jobs/", regions: ["uk"] },
@@ -36,13 +36,13 @@
     },
     {
       label: "Built In Back End",
-      url: "https://builtin.com/jobs/remote/dev-engineering/search/back-end-engineer",
+      url: "https://builtin.com/jobs/remote/dev-engineering/back-end",
       resumeKind: "back_end",
       regions: ["us"]
     },
     {
       label: "Built In Full Stack",
-      url: "https://builtin.com/jobs/remote/dev-engineering/search/full-stack-engineer",
+      url: "https://builtin.com/jobs/remote/dev-engineering/full-stack",
       resumeKind: "full_stack",
       regions: ["us"]
     },
@@ -485,6 +485,7 @@
   // src/background.ts
   var AUTOMATION_RUN_STORAGE_PREFIX = "remote-job-search-run:";
   var SESSION_STORAGE_PREFIX = "remote-job-search-session:";
+  var JOB_CONTEXT_STORAGE_PREFIX = "remote-job-search-job-context:";
   var ACTIVE_RUNS_STORAGE_KEY = "remote-job-search-active-runs";
   var runLocks = /* @__PURE__ */ new Map();
   var pendingExtensionTabSpawns = /* @__PURE__ */ new Map();
@@ -561,6 +562,24 @@
           ok: true,
           session: await getSession(message.tabId)
         };
+      case "remember-job-context": {
+        const tabId = sender.tab?.id;
+        if (tabId === void 0) {
+          return { ok: false };
+        }
+        await setJobContext(tabId, message.context);
+        return { ok: true };
+      }
+      case "get-job-context": {
+        const tabId = sender.tab?.id;
+        if (tabId === void 0) {
+          return { ok: false, context: null };
+        }
+        return {
+          ok: true,
+          context: await getJobContext(tabId)
+        };
+      }
       case "content-ready": {
         const tabId = sender.tab?.id;
         if (tabId === void 0) {
@@ -705,6 +724,10 @@
     );
     childSession.jobSlots = openerSession.jobSlots;
     await setSession(childSession);
+    const rememberedJobContext = await getJobContext(openerTabId);
+    if (rememberedJobContext) {
+      await setJobContext(childTabId, rememberedJobContext);
+    }
     try {
       await chrome.tabs.sendMessage(openerTabId, {
         type: "automation-child-tab-opened"
@@ -713,13 +736,14 @@
     }
   }
   async function startAutomationForTab(tabId) {
-    const tab = await resolvePreferredTab(tabId);
-    if (!tab) {
+    const tab = await resolvePreferredTab(tabId, "job_board");
+    if (!tab || tab.id === void 0) {
       return {
         ok: false,
         error: "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, or Monster page and try again."
       };
     }
+    const resolvedTabId = tab.id;
     const site = detectSiteFromUrl(getTabUrl(tab));
     const settings = await readAutomationSettings();
     const runId = createRunId();
@@ -738,7 +762,7 @@
     });
     await addActiveRunId(runId);
     const session = createSession(
-      tabId,
+      resolvedTabId,
       site,
       "running",
       `Preparing ${getReadableSiteName(site)} automation...`,
@@ -748,9 +772,9 @@
     );
     await setSession(session);
     try {
-      await reloadTabAndWait(tabId);
+      await reloadTabAndWait(resolvedTabId);
     } catch {
-      await removeSession(tabId);
+      await removeSession(resolvedTabId);
       await removeRunState(runId);
       await removeActiveRunId(runId);
       return {
@@ -764,7 +788,7 @@
     };
   }
   async function startStartupAutomation(tabId) {
-    const sourceTab = await resolvePreferredTab(tabId);
+    const sourceTab = await resolvePreferredTab(tabId, "web_page");
     const settings = await readAutomationSettings();
     const runId = createRunId();
     const targets = buildStartupSearchTargets(settings);
@@ -800,19 +824,8 @@
       updatedAt: Date.now()
     });
     await addActiveRunId(runId);
-    if (sourceTab?.id !== void 0) {
-      const session = createSession(
-        sourceTab.id,
-        "startup",
-        "running",
-        "Opening startup career pages...",
-        false,
-        "bootstrap",
-        runId
-      );
-      await setSession(session);
-    }
     let openedCount = 0;
+    let firstCreateError;
     for (const [offset, item] of dedupedItems.entries()) {
       const createProperties = {
         url: item.url,
@@ -828,7 +841,10 @@
       try {
         createdTab = await chrome.tabs.create(createProperties);
         openedCount += 1;
-      } catch {
+      } catch (error) {
+        if (!firstCreateError && error instanceof Error && error.message) {
+          firstCreateError = error.message;
+        }
         continue;
       }
       if (item.stage && createdTab.id !== void 0) {
@@ -852,18 +868,13 @@
       settings.startupRegion,
       settings.candidate.country
     );
-    if (sourceTab?.id !== void 0) {
-      await setSession(
-        createSession(
-          sourceTab.id,
-          "startup",
-          "completed",
-          `Opened ${openedCount} startup career pages for ${region.toUpperCase()} companies.`,
-          false,
-          "bootstrap",
-          runId
-        )
-      );
+    if (openedCount === 0) {
+      await removeRunState(runId);
+      await removeActiveRunId(runId);
+      return {
+        ok: false,
+        error: firstCreateError ?? "The browser blocked opening the startup career tabs."
+      };
     }
     return {
       ok: true,
@@ -872,7 +883,7 @@
     };
   }
   async function startOtherSitesAutomation(tabId) {
-    const sourceTab = await resolvePreferredTab(tabId);
+    const sourceTab = await resolvePreferredTab(tabId, "web_page");
     const settings = await readAutomationSettings();
     const runId = createRunId();
     const targets = buildOtherJobSiteTargets(settings);
@@ -908,19 +919,8 @@
       updatedAt: Date.now()
     });
     await addActiveRunId(runId);
-    if (sourceTab?.id !== void 0) {
-      const session = createSession(
-        sourceTab.id,
-        "other_sites",
-        "running",
-        "Opening other job site searches...",
-        false,
-        "bootstrap",
-        runId
-      );
-      await setSession(session);
-    }
     let openedCount = 0;
+    let firstCreateError;
     for (const [offset, item] of dedupedItems.entries()) {
       const createProperties = {
         url: item.url,
@@ -936,7 +936,10 @@
       try {
         createdTab = await chrome.tabs.create(createProperties);
         openedCount += 1;
-      } catch {
+      } catch (error) {
+        if (!firstCreateError && error instanceof Error && error.message) {
+          firstCreateError = error.message;
+        }
         continue;
       }
       if (item.stage && createdTab.id !== void 0) {
@@ -960,18 +963,13 @@
       settings.startupRegion,
       settings.candidate.country
     );
-    if (sourceTab?.id !== void 0) {
-      await setSession(
-        createSession(
-          sourceTab.id,
-          "other_sites",
-          "completed",
-          `Opened ${openedCount} other job site searches for ${region.toUpperCase()}.`,
-          false,
-          "bootstrap",
-          runId
-        )
-      );
+    if (openedCount === 0) {
+      await removeRunState(runId);
+      await removeActiveRunId(runId);
+      return {
+        ok: false,
+        error: firstCreateError ?? "The browser blocked opening the other job site tabs."
+      };
     }
     return {
       ok: true,
@@ -1129,9 +1127,25 @@
   async function removeSession(tabId) {
     const existingSession = await getSession(tabId);
     await chrome.storage.local.remove(getSessionStorageKey(tabId));
+    await removeJobContext(tabId);
     if (existingSession?.runId) {
       await removeRunStateIfUnused(existingSession.runId);
     }
+  }
+  async function getJobContext(tabId) {
+    const key = getJobContextStorageKey(tabId);
+    const stored = await chrome.storage.local.get(key);
+    return stored[key] ?? null;
+  }
+  async function setJobContext(tabId, context) {
+    const key = getJobContextStorageKey(tabId);
+    const existing = await getJobContext(tabId);
+    await chrome.storage.local.set({
+      [key]: mergeJobContexts(existing, context)
+    });
+  }
+  async function removeJobContext(tabId) {
+    await chrome.storage.local.remove(getJobContextStorageKey(tabId));
   }
   async function getRunState(runId) {
     const key = getAutomationRunStorageKey(runId);
@@ -1148,6 +1162,33 @@
   }
   function getAutomationRunStorageKey(runId) {
     return `${AUTOMATION_RUN_STORAGE_PREFIX}${runId}`;
+  }
+  function getJobContextStorageKey(tabId) {
+    return `${JOB_CONTEXT_STORAGE_PREFIX}${tabId}`;
+  }
+  function mergeJobContexts(existing, incoming) {
+    if (!existing) {
+      return incoming;
+    }
+    return {
+      title: pickPreferredText(existing.title, incoming.title),
+      company: pickPreferredText(existing.company, incoming.company),
+      description: pickPreferredText(
+        existing.description,
+        incoming.description
+      ),
+      question: incoming.question || existing.question,
+      pageUrl: incoming.pageUrl || existing.pageUrl
+    };
+  }
+  function pickPreferredText(current, next) {
+    if (!current) {
+      return next;
+    }
+    if (!next) {
+      return current;
+    }
+    return next.length >= current.length ? next : current;
   }
   function createRunId() {
     return typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -1245,14 +1286,14 @@
       return null;
     }
   }
-  async function resolvePreferredTab(preferredTabId) {
+  async function resolvePreferredTab(preferredTabId, preferredKind = "web_page") {
     const candidates = [];
     const seenTabIds = /* @__PURE__ */ new Set();
     if (typeof preferredTabId === "number") {
-      const preferredTab = await getTabSafely(preferredTabId);
-      if (preferredTab?.id !== void 0) {
-        seenTabIds.add(preferredTab.id);
-        candidates.push(preferredTab);
+      const preferredTab2 = await getTabSafely(preferredTabId);
+      if (preferredTab2?.id !== void 0) {
+        seenTabIds.add(preferredTab2.id);
+        candidates.push(preferredTab2);
       }
     }
     const queryResults = await Promise.allSettled([
@@ -1263,6 +1304,9 @@
       chrome.tabs.query({
         active: true,
         lastFocusedWindow: true
+      }),
+      chrome.tabs.query({
+        active: true
       })
     ]);
     for (const result of queryResults) {
@@ -1280,10 +1324,33 @@
     if (candidates.length === 0) {
       return null;
     }
+    const preferredTab = typeof preferredTabId === "number" ? candidates.find(
+      (tab) => tab.id === preferredTabId && isTabUsableForPreference(tab, preferredKind)
+    ) ?? null : null;
+    if (preferredTab) {
+      return preferredTab;
+    }
+    if (preferredKind === "job_board") {
+      const jobBoardTab = candidates.find(
+        (tab) => isJobBoardTab(tab)
+      );
+      if (jobBoardTab) {
+        return jobBoardTab;
+      }
+    }
     return candidates.find((tab) => isWebPageTab(tab)) ?? candidates[0] ?? null;
   }
   function getTabUrl(tab) {
     return tab?.url ?? tab?.pendingUrl ?? "";
+  }
+  function isJobBoardTab(tab) {
+    return isWebPageTab(tab) && isJobBoardSite(detectSiteFromUrl(getTabUrl(tab)));
+  }
+  function isTabUsableForPreference(tab, preferredKind) {
+    if (preferredKind === "job_board") {
+      return isJobBoardTab(tab);
+    }
+    return isWebPageTab(tab);
   }
   function isWebPageTab(tab) {
     const url = getTabUrl(tab);
