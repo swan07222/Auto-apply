@@ -102,6 +102,22 @@ describe("application progression actions", () => {
     }
   });
 
+  it("ignores broken apply.monster URLs and uses the real Monster apply target", () => {
+    const component = document.createElement("apply-button-wc");
+    component.setAttribute("data-apply-url", "https://apply.monster.com/job-apply/abc");
+    const shadow = component.attachShadow({ mode: "open" });
+    shadow.innerHTML = `<a href="https://company.example.com/careers/apply/123">Apply now</a>`;
+    document.body.appendChild(component);
+
+    const action = findMonsterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe("https://company.example.com/careers/apply/123");
+    }
+  });
+
   it("finds ZipRecruiter apply links that navigate directly to zipapply", () => {
     document.body.innerHTML = `
       <a href="https://www.ziprecruiter.com/job/apply/abc?zipapply=true">1-Click Apply</a>
@@ -136,6 +152,47 @@ describe("application progression actions", () => {
     }
   });
 
+  it("finds ZipRecruiter apply actions rendered inside shadow DOM", () => {
+    const host = document.createElement("zip-apply-button");
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = `
+      <button data-testid="apply-button">Apply Now</button>
+    `;
+    document.body.appendChild(host);
+
+    const action = findZipRecruiterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply Now");
+  });
+
+  it("detects ZipRecruiter apply modals rendered inside shadow DOM", () => {
+    const host = document.createElement("zip-modal-host");
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = `
+      <section role="dialog">
+        <div>Upload your resume and continue your application</div>
+        <input type="text" />
+      </section>
+    `;
+    document.body.appendChild(host);
+
+    expect(hasZipRecruiterApplyModal()).toBe(true);
+  });
+
+  it("finds Dice apply buttons exposed through data-testid selectors", () => {
+    document.body.innerHTML = `
+      <button data-testid="apply-button">Apply Now</button>
+    `;
+
+    const action = findApplyAction("dice", "job-page");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply Now");
+  });
+
   it("prefers external apply links on generic career sites", () => {
     document.body.innerHTML = `
       <section>
@@ -151,6 +208,21 @@ describe("application progression actions", () => {
     if (action?.type === "navigate") {
       expect(action.url).toBe("https://boards.greenhouse.io/embed/job_app?for=example&token=abc123");
     }
+  });
+
+  it("finds same-page Greenhouse apply anchors on generic career sites", () => {
+    document.body.innerHTML = `
+      <section>
+        <a href="#application">Apply for this job</a>
+        <div id="application"></div>
+      </section>
+    `;
+
+    const action = findApplyAction("other_sites", "job-page");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply for this job");
   });
 
   it("detects embedded Indeed and ZipRecruiter application surfaces", () => {
@@ -177,6 +249,12 @@ describe("application progression actions", () => {
         "other_sites"
       )
     ).toBe(true);
+    expect(
+      isLikelyApplyUrl(
+        "https://job-boards.greenhouse.io/example/jobs/1234567?gh_jid=1234567",
+        "other_sites"
+      )
+    ).toBe(true);
     expect(isLikelyApplyUrl("https://example.com/jobs/123", "other_sites")).toBe(false);
     expect(isAlreadyOnApplyPage("startup", "https://jobs.example.com/apply/123")).toBe(true);
     expect(
@@ -186,6 +264,13 @@ describe("application progression actions", () => {
         "monster"
       )
     ).toBe(true);
+    expect(
+      shouldPreferApplyNavigation(
+        "https://apply.monster.com/job-apply/abc",
+        "Apply now",
+        "monster"
+      )
+    ).toBe(false);
     expect(shouldPreferApplyNavigation("https://example.com/jobs/123", "Apply", "other_sites")).toBe(
       false
     );

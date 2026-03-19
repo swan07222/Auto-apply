@@ -8,9 +8,11 @@ import {
   detectSiteFromUrl,
   getJobDedupKey,
   inferResumeKindFromTitle,
+  isStartupCompaniesCacheFresh,
   isProbablyHumanVerificationPage,
   normalizeQuestionKey,
   resolveStartupRegion,
+  sanitizeStartupCompaniesPayload,
   sanitizeAutomationSettings,
 } from "../src/shared";
 
@@ -67,6 +69,34 @@ describe("shared automation target logic", () => {
     expect(urls).toContain("https://jobs.lever.co/plaid");
     expect(urls).toContain("https://job-boards.greenhouse.io/figma");
     expect(urls).not.toContain("https://job-boards.greenhouse.io/monzo");
+  });
+
+  it("builds startup targets from refreshed company lists when provided", () => {
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      startupRegion: "us" as const,
+      candidate: {
+        ...DEFAULT_SETTINGS.candidate,
+        country: "United States",
+      },
+    };
+
+    const targets = buildStartupSearchTargets(settings, [
+      {
+        name: "Updated US Startup",
+        careersUrl: "https://jobs.ashbyhq.com/updated-us-startup",
+        regions: ["us"],
+      },
+      {
+        name: "Updated EU Startup",
+        careersUrl: "https://job-boards.greenhouse.io/updated-eu-startup",
+        regions: ["eu"],
+      },
+    ]);
+
+    expect(targets.map((target) => target.url)).toEqual([
+      "https://jobs.ashbyhq.com/updated-us-startup",
+    ]);
   });
 
   it("builds US curated other-site targets with the updated Built In routes", () => {
@@ -168,5 +198,51 @@ describe("shared automation target logic", () => {
     expect(settings.answers[normalizeQuestionKey("Why do you want this role?")]?.value).toBe(
       "Impact and scope."
     );
+  });
+
+  it("sanitizes startup company feeds and cache freshness", () => {
+    const companies = sanitizeStartupCompaniesPayload({
+      companies: [
+        {
+          name: " Example Co ",
+          careersUrl: "https://jobs.example.com/company#openings",
+          regions: ["us", "invalid", "uk"],
+        },
+        {
+          name: "Duplicate Example",
+          careersUrl: "https://jobs.example.com/company",
+          regions: ["us"],
+        },
+        {
+          name: "",
+          careersUrl: "not-a-url",
+          regions: ["eu"],
+        },
+      ],
+    });
+
+    expect(companies).toEqual([
+      {
+        name: "Duplicate Example",
+        careersUrl: "https://jobs.example.com/company",
+        regions: ["us"],
+      },
+    ]);
+
+    expect(
+      isStartupCompaniesCacheFresh({
+        companies,
+        updatedAt: Date.now(),
+        sourceUrl: "https://example.com/startup-companies.json",
+      })
+    ).toBe(true);
+
+    expect(
+      isStartupCompaniesCacheFresh({
+        companies,
+        updatedAt: Date.now() - 25 * 60 * 60 * 1000,
+        sourceUrl: "https://example.com/startup-companies.json",
+      })
+    ).toBe(false);
   });
 });

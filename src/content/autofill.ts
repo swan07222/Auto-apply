@@ -209,6 +209,41 @@ export function isConsentField(field: HTMLInputElement): boolean {
   );
 }
 
+export function isFieldRequired(field: AutofillField): boolean {
+  if (field.hasAttribute("required") || field.getAttribute("aria-required") === "true") {
+    return true;
+  }
+
+  if (/\*/.test(getQuestionText(field))) {
+    return true;
+  }
+
+  const container = field.closest(
+    "label, fieldset, [role='group'], [role='radiogroup'], [role='dialog'], .field, .form-field, .question, .application-question, [class*='field'], [class*='question'], [class*='required'], [data-required]"
+  );
+
+  if (!(container instanceof HTMLElement)) {
+    return false;
+  }
+
+  const attrs = [
+    container.className,
+    container.getAttribute("data-required"),
+    container.getAttribute("aria-required"),
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  if (attrs.includes("required")) {
+    return true;
+  }
+
+  const labelText = cleanText(
+    container.querySelector("label, legend, .label, .question, .prompt, .title")?.textContent
+  );
+  return /\*/.test(labelText);
+}
+
 export function shouldRememberField(field: AutofillField): boolean {
   const descriptor = getFieldDescriptor(field, getQuestionText(field));
   if (

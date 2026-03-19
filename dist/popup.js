@@ -49371,6 +49371,7 @@
     full_stack: "Full Stack"
   };
   var AUTOMATION_SETTINGS_STORAGE_KEY = "remote-job-search-settings";
+  var STARTUP_COMPANIES_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1e3;
   var MIN_JOB_PAGE_LIMIT = 1;
   var MAX_JOB_PAGE_LIMIT = 25;
   var DEFAULT_SETTINGS = {

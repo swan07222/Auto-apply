@@ -6,7 +6,8 @@
   "permissions": [
     "storage",
     "tabs",
-    "clipboardWrite"
+    "clipboardWrite",
+    "alarms"
   ],
   "host_permissions": [
     "http://*/*",

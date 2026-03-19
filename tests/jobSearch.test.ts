@@ -5,8 +5,10 @@ import {
   isCurrentPageAppliedJob,
   isAppliedJobText,
   isLikelyJobDetailUrl,
+  isStrongAppliedJobText,
   looksLikeTechnicalRoleTitle,
   pickRelevantJobUrls,
+  shouldFinishJobResultScan,
 } from "../src/content/jobSearch";
 import type { JobCandidate } from "../src/content/types";
 
@@ -180,7 +182,7 @@ describe("job search candidate filtering", () => {
 
     expect(looksLikeTechnicalRoleTitle("Senior React Engineer")).toBe(true);
     expect(looksLikeTechnicalRoleTitle("Head of People Operations")).toBe(false);
-    expect(isCurrentPageAppliedJob()).toBe(true);
+    expect(isCurrentPageAppliedJob("other_sites")).toBe(true);
   });
 
   it("detects applied-job text without false positives for applied scientist roles", () => {
@@ -190,5 +192,28 @@ describe("job search candidate filtering", () => {
     expect(isAppliedJobText("Applied")).toBe(true);
     expect(isAppliedJobText("Previously applied")).toBe(true);
     expect(isAppliedJobText("Applied Scientist, Search Ranking")).toBe(false);
+  });
+
+  it("does not treat ZipRecruiter sidebar applied badges as the current job being applied", () => {
+    document.body.innerHTML = `
+      <aside>
+        <article>Applied</article>
+        <article>Applied 2 days ago</article>
+      </aside>
+      <main>
+        <h1>Front End Engineer</h1>
+        <p>Remote. 1-click apply available.</p>
+      </main>
+    `;
+
+    expect(isCurrentPageAppliedJob("ziprecruiter")).toBe(false);
+    expect(isStrongAppliedJobText("Applied")).toBe(true);
+  });
+
+  it("waits for enough job results unless ZipRecruiter or Dice has clearly stabilized", () => {
+    expect(shouldFinishJobResultScan(1, 5, 0, 2, "dice")).toBe(false);
+    expect(shouldFinishJobResultScan(5, 5, 0, 2, "dice")).toBe(true);
+    expect(shouldFinishJobResultScan(3, 5, 5, 8, "ziprecruiter")).toBe(false);
+    expect(shouldFinishJobResultScan(3, 5, 6, 8, "ziprecruiter")).toBe(true);
   });
 });

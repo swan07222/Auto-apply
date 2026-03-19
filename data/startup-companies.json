@@ -1,0 +1,19 @@
+{
+  "companies": [
+    { "name": "Ramp", "careersUrl": "https://jobs.ashbyhq.com/ramp", "regions": ["us"] },
+    { "name": "Vercel", "careersUrl": "https://job-boards.greenhouse.io/vercel", "regions": ["us"] },
+    { "name": "Plaid", "careersUrl": "https://jobs.lever.co/plaid", "regions": ["us"] },
+    { "name": "Figma", "careersUrl": "https://job-boards.greenhouse.io/figma", "regions": ["us"] },
+    { "name": "Notion", "careersUrl": "https://www.notion.so/careers", "regions": ["us"] },
+    { "name": "Monzo", "careersUrl": "https://job-boards.greenhouse.io/monzo", "regions": ["uk"] },
+    { "name": "Wise", "careersUrl": "https://wise.jobs/", "regions": ["uk"] },
+    { "name": "Synthesia", "careersUrl": "https://synthesia.io/careers", "regions": ["uk"] },
+    { "name": "Snyk", "careersUrl": "https://snyk.io/careers/", "regions": ["uk"] },
+    { "name": "Checkout.com", "careersUrl": "https://www.checkout.com/careers", "regions": ["uk"] },
+    { "name": "N26", "careersUrl": "https://n26.com/en-eu/careers", "regions": ["eu"] },
+    { "name": "Bolt", "careersUrl": "https://bolt.eu/en/careers/", "regions": ["eu"] },
+    { "name": "Adyen", "careersUrl": "https://careers.adyen.com/", "regions": ["eu"] },
+    { "name": "GetYourGuide", "careersUrl": "https://www.getyourguide.careers/", "regions": ["eu"] },
+    { "name": "Klarna", "careersUrl": "https://www.klarna.com/careers/", "regions": ["eu"] }
+  ]
+}

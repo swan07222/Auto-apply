@@ -857,12 +857,82 @@ export function isAppliedJobText(text: string): boolean {
   ].some((pattern) => pattern.test(normalized));
 }
 
-export function isCurrentPageAppliedJob(): boolean {
-  return isAppliedJobText(
-    cleanText(document.body?.innerText || "")
-      .toLowerCase()
-      .slice(0, 12000)
-  );
+export function isStrongAppliedJobText(text: string): boolean {
+  if (!text) {
+    return false;
+  }
+
+  const normalized = cleanText(text).toLowerCase();
+  if (
+    /\b(not applied|apply now|ready to apply|applied scientist|applied research)\b/.test(
+      normalized
+    )
+  ) {
+    return false;
+  }
+
+  return [
+    /^\s*applied\s*$/i,
+    /\balready applied\b/,
+    /\bpreviously applied\b/,
+    /\byou already applied\b/,
+    /\byou applied\b/,
+    /\byou(?:'ve| have)? applied\b/,
+    /\bapplication submitted\b/,
+    /\bapplication sent\b/,
+    /\balready submitted\b/,
+    /\bapplication status:\s*applied\b/,
+    /\bjob status:\s*applied\b/,
+    /\bjob activity:\s*applied\b/,
+    /\bcandidate status:\s*applied\b/,
+    /\bapplied on \d/,
+    /\bapplied\s+\d+\s+(minute|hour|day|week|month)s?\s+ago\b/,
+    /\bstatus:\s*applied\b/,
+    /\bapplication\s+complete\b/i,
+    /\byour application was sent\b/i,
+    /\bapplication received\b/i,
+    /\bapplied\s+to this job\b/i,
+    /\bapplied\s+for this\b/i,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+export function isCurrentPageAppliedJob(site: SiteKey | null = null): boolean {
+  const currentSurfaceTexts = collectCurrentJobSurfaceTexts(site);
+
+  for (const text of currentSurfaceTexts) {
+    if (isStrongAppliedJobText(text)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function shouldFinishJobResultScan(
+  observedCount: number,
+  targetCount: number,
+  stablePasses: number,
+  attempt: number,
+  site: SiteKey
+): boolean {
+  const desiredCount = Math.max(1, Math.floor(targetCount));
+  if (observedCount >= desiredCount) {
+    return true;
+  }
+
+  if (observedCount <= 0) {
+    return false;
+  }
+
+  const needsDeeperWait =
+    site === "ziprecruiter" ||
+    site === "dice" ||
+    site === "startup" ||
+    site === "other_sites";
+  const minAttemptsBeforeEarlyStop = needsDeeperWait ? 8 : 5;
+  const stableThreshold = needsDeeperWait ? 6 : 4;
+
+  return attempt >= minAttemptsBeforeEarlyStop && stablePasses >= stableThreshold;
 }
 
 // ─── CANDIDATE COLLECTORS ────────────────────────────────────────────────────
@@ -1381,6 +1451,123 @@ function dedupeJobCandidates(candidates: JobCandidate[]): JobCandidate[] {
   }
 
   return Array.from(unique.values());
+}
+
+function collectCurrentJobSurfaceTexts(site: SiteKey | null): string[] {
+  const primaryTexts = collectCurrentJobSurfaceTextsForSelectors(
+    getPrimaryCurrentJobSurfaceSelectors(site)
+  );
+  if (primaryTexts.length > 0) {
+    return primaryTexts;
+  }
+
+  const fallbackTexts = collectCurrentJobSurfaceTextsForSelectors(
+    getFallbackCurrentJobSurfaceSelectors()
+  );
+  if (fallbackTexts.length > 0) {
+    return fallbackTexts;
+  }
+
+  const bodyText = cleanText(document.body?.innerText || "")
+    .toLowerCase()
+    .slice(0, 12000);
+  if (bodyText) {
+    return [bodyText];
+  }
+
+  return [];
+}
+
+function isReadableSurfaceElement(element: HTMLElement): boolean {
+  if (!element.isConnected) {
+    return false;
+  }
+
+  const styles = window.getComputedStyle(element);
+  return (
+    styles.visibility !== "hidden" &&
+    styles.display !== "none" &&
+    styles.opacity !== "0"
+  );
+}
+
+function getPrimaryCurrentJobSurfaceSelectors(site: SiteKey | null): string[] {
+  switch (site) {
+    case "ziprecruiter":
+      return [
+        "[data-testid*='job-details' i]",
+        "[data-testid*='jobDetail' i]",
+        "[data-testid*='job-description' i]",
+        "[class*='jobDetails']",
+        "[class*='job-details']",
+        "[class*='jobDescription']",
+        "[class*='job_description']",
+      ];
+    case "dice":
+      return [
+        "[data-testid*='job-details' i]",
+        "[data-testid*='jobDetail' i]",
+        "[class*='job-details']",
+        "[class*='jobDetail']",
+        "[class*='job-description']",
+        "[class*='jobDescription']",
+      ];
+    default:
+      return [
+        "[data-testid*='job-detail' i]",
+        "[data-testid*='jobDetail' i]",
+        "[data-testid*='job-description' i]",
+        "[data-testid*='jobDescription' i]",
+        "[class*='job-detail']",
+        "[class*='jobDetail']",
+        "[class*='job_description']",
+        "[class*='jobDescription']",
+        "[class*='description']",
+      ];
+  }
+}
+
+function getFallbackCurrentJobSurfaceSelectors(): string[] {
+  return [
+    "[role='main']",
+    "main",
+    "article",
+  ];
+}
+
+function collectCurrentJobSurfaceTextsForSelectors(selectors: string[]): string[] {
+  const texts: string[] = [];
+  const seen = new Set<string>();
+
+  for (const selector of selectors) {
+    let elements: HTMLElement[];
+    try {
+      elements = Array.from(document.querySelectorAll<HTMLElement>(selector));
+    } catch {
+      continue;
+    }
+
+    for (const element of elements) {
+      if (!isReadableSurfaceElement(element)) {
+        continue;
+      }
+      if (element.closest("aside, nav, header, footer")) {
+        continue;
+      }
+
+      const text = cleanText(element.innerText || element.textContent || "")
+        .toLowerCase()
+        .slice(0, 12000);
+      if (!text || text.length < 40 || seen.has(text)) {
+        continue;
+      }
+
+      seen.add(text);
+      texts.push(text);
+    }
+  }
+
+  return texts.sort((a, b) => b.length - a.length).slice(0, 4);
 }
 
 function isListingOrCategoryUrl(lowerUrl: string): boolean {

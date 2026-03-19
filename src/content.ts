@@ -9,7 +9,6 @@ import {
   AutomationSettings,
   AutomationStage,
   AutomationStatus,
-  DATE_POSTED_WINDOW_LABELS,
   DatePostedWindow,
   JobBoardSite,
   JobContextSnapshot,
@@ -48,6 +47,7 @@ import {
 } from "./content/types";
 import {
   getFieldDescriptor,
+  isFieldRequired,
   getOptionLabelText,
   getQuestionText,
   isConsentField,
@@ -90,6 +90,7 @@ import {
 import {
   findApplyAction,
   findCompanySiteAction,
+  findDiceApplyAction,
   findMonsterApplyAction,
   findProgressionAction,
   findZipRecruiterApplyAction,
@@ -99,6 +100,24 @@ import {
   isLikelyApplyUrl,
   shouldPreferApplyNavigation,
 } from "./content/apply";
+import {
+  findStandaloneApplicationFrameUrl as detectStandaloneApplicationFrameUrl,
+  hasLikelyApplicationForm as detectLikelyApplicationForm,
+  hasLikelyApplicationFrame as detectLikelyApplicationFrame,
+  hasLikelyApplicationPageContent as detectLikelyApplicationPageContent,
+  hasLikelyApplicationSurface as detectLikelyApplicationSurface,
+  isLikelyApplicationField as detectLikelyApplicationField,
+  waitForLikelyApplicationSurface as waitForApplicationSurface,
+} from "./content/applicationSurface";
+import {
+  handleProgressionAction as handleProgressionActionStep,
+  waitForReadyProgressionAction as waitForReadyProgressionStep,
+} from "./content/progression";
+import {
+  getPostedWindowDescription as describePostedWindow,
+  scrollPageForLazyContent as scrollSearchResultsPage,
+  waitForJobDetailUrls as collectJobDetailUrls,
+} from "./content/searchResults";
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -171,6 +190,123 @@ const overlay: {
   text: null,
 };
 
+const applicationSurfaceCollectors = {
+  collectAutofillFields: () => collectAutofillFields(),
+  collectResumeFileInputs: () => collectResumeFileInputs(),
+};
+
+function getPostedWindowDescription(datePostedWindow: DatePostedWindow): string {
+  return describePostedWindow(datePostedWindow);
+}
+
+async function scrollPageForLazyContent(): Promise<void> {
+  await scrollSearchResultsPage();
+}
+
+async function waitForJobDetailUrls(
+  site: SiteKey,
+  datePostedWindow: DatePostedWindow,
+  targetCount = 1
+): Promise<string[]> {
+  return collectJobDetailUrls({
+    site,
+    datePostedWindow,
+    targetCount,
+    detectedSite: status.site === "unsupported" ? null : status.site,
+    resumeKind: currentResumeKind,
+    label: currentLabel,
+    onOpenListingsSurface: (message) => {
+      updateStatus("running", message, true, "collect-results");
+    },
+  });
+}
+
+async function waitForReadyProgressionAction(
+  site: SiteKey,
+  timeoutMs: number
+): Promise<ProgressionAction | null> {
+  return waitForReadyProgressionStep(site, timeoutMs);
+}
+
+async function handleProgressionAction(
+  site: SiteKey,
+  progression: ProgressionAction
+): Promise<boolean> {
+  return handleProgressionActionStep({
+    site,
+    progression,
+    updateStatus: (message) => {
+      updateStatus("running", message, true, "autofill-form");
+    },
+    navigateCurrentTab,
+    waitForHumanVerificationToClear,
+    hasLikelyApplicationSurface,
+    waitForLikelyApplicationSurface,
+    reopenApplyStage: async (nextSite) => {
+      currentStage = "open-apply";
+      await runOpenApplyStage(nextSite);
+    },
+    collectAutofillFields,
+  });
+}
+
+function hasLikelyApplicationForm(): boolean {
+  return detectLikelyApplicationForm(applicationSurfaceCollectors);
+}
+
+function hasLikelyApplicationFrame(): boolean {
+  return detectLikelyApplicationFrame();
+}
+
+function findStandaloneApplicationFrameUrl(): string | null {
+  return detectStandaloneApplicationFrameUrl(applicationSurfaceCollectors);
+}
+
+function hasLikelyApplicationPageContent(): boolean {
+  return detectLikelyApplicationPageContent();
+}
+
+function hasLikelyApplicationSurface(site: SiteKey): boolean {
+  return detectLikelyApplicationSurface(site, applicationSurfaceCollectors);
+}
+
+function isLikelyApplicationField(field: AutofillField): boolean {
+  return detectLikelyApplicationField(field);
+}
+
+async function waitForLikelyApplicationSurface(site: SiteKey): Promise<void> {
+  await waitForApplicationSurface(site, applicationSurfaceCollectors);
+}
+
+function shouldKeepJobPageOpen(site: SiteKey | "unsupported"): boolean {
+  return site === "ziprecruiter" || site === "dice";
+}
+
+async function openApplicationTargetInNewTab(
+  url: string,
+  site: SiteKey,
+  description: string
+): Promise<void> {
+  await spawnTabs([
+    {
+      url,
+      site,
+      stage: "open-apply" as const,
+      runId: currentRunId,
+      label: currentLabel,
+      resumeKind: currentResumeKind,
+      message: `Continuing application from ${description}...`,
+    },
+  ]);
+
+  updateStatus(
+    "completed",
+    `Opened ${description} in a new tab. Keeping this job page open.`,
+    false,
+    "autofill-form"
+  );
+}
+
 // ─── MESSAGE LISTENER ────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener(
@@ -188,11 +324,15 @@ chrome.runtime.onMessage.addListener(
       childApplicationTabOpened = true;
       updateStatus(
         "completed",
-        "Application opened in a new tab. Continuing there...",
+        shouldKeepJobPageOpen(status.site)
+          ? "Application opened in a new tab. Keeping this job page open."
+          : "Application opened in a new tab. Continuing there...",
         false,
         "autofill-form"
       );
-      void closeCurrentTab();
+      if (!shouldKeepJobPageOpen(status.site)) {
+        void closeCurrentTab();
+      }
       sendResponse({ ok: true });
       return false;
     }
@@ -392,6 +532,10 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   const postedWindowDescription = getPostedWindowDescription(
     settings.datePostedWindow
   );
+  const effectiveLimit =
+    typeof currentJobSlots === "number"
+      ? Math.max(0, Math.floor(currentJobSlots))
+      : Math.max(1, Math.floor(settings.jobPageLimit));
 
   updateStatus(
     "running",
@@ -400,30 +544,10 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     "collect-results"
   );
 
-  await waitForHumanVerificationToClear();
-
-  // FIX: Dice needs longer render wait — its custom web components load slowly
-  const renderWaitMs =
-    site === "startup" || site === "other_sites"
-      ? 5000
-      : site === "dice"
-        ? 5000
-        : site === "monster"
-          ? 5000
-          : 2500;
-  await sleep(renderWaitMs);
-
-  // FIX: Scroll for Dice too — its cards may lazy-load
-  if (site === "startup" || site === "other_sites" || site === "dice") {
-    await scrollPageForLazyContent();
-  }
-
-  const jobUrls = await waitForJobDetailUrls(site, settings.datePostedWindow);
-
-  if (jobUrls.length === 0) {
+  if (effectiveLimit <= 0) {
     updateStatus(
       "completed",
-      `No job pages found on this ${labelPrefix}${getSiteLabel(site)} results page${postedWindowDescription}.`,
+      `Skipped ${labelPrefix}${getSiteLabel(site)} search - no slots allocated.`,
       false,
       "collect-results"
     );
@@ -431,15 +555,39 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     return;
   }
 
-  const effectiveLimit =
-    typeof currentJobSlots === "number"
-      ? Math.max(0, Math.floor(currentJobSlots))
-      : Math.max(1, Math.floor(settings.jobPageLimit));
+  await waitForHumanVerificationToClear();
 
-  if (effectiveLimit <= 0) {
+  // FIX: Dice needs longer render wait – its custom web components load slowly
+  const renderWaitMs =
+    site === "startup" || site === "other_sites"
+      ? 5000
+      : site === "dice" || site === "ziprecruiter"
+        ? 5000
+        : site === "monster"
+          ? 5000
+          : 2500;
+  await sleep(renderWaitMs);
+
+  // FIX: Scroll for Dice too – its cards may lazy-load
+  if (
+    site === "startup" ||
+    site === "other_sites" ||
+    site === "dice" ||
+    site === "ziprecruiter"
+  ) {
+    await scrollPageForLazyContent();
+  }
+
+  const jobUrls = await waitForJobDetailUrls(
+    site,
+    settings.datePostedWindow,
+    effectiveLimit
+  );
+
+  if (jobUrls.length === 0) {
     updateStatus(
       "completed",
-      `Skipped ${labelPrefix}${getSiteLabel(site)} search - no slots allocated.`,
+      `No job pages found on this ${labelPrefix}${getSiteLabel(site)} results page${postedWindowDescription}.`,
       false,
       "collect-results"
     );
@@ -543,20 +691,6 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   await closeCurrentTab();
 }
 
-async function scrollPageForLazyContent(): Promise<void> {
-  const totalHeight = document.body.scrollHeight;
-  const viewportHeight = window.innerHeight;
-  const steps = Math.min(10, Math.ceil(totalHeight / viewportHeight));
-
-  for (let i = 1; i <= steps; i++) {
-    const target = Math.min(totalHeight, (totalHeight / steps) * i);
-    window.scrollTo({ top: target, behavior: "smooth" });
-    await sleep(800);
-  }
-
-  window.scrollTo({ top: 0, behavior: "smooth" });
-  await sleep(500);
-}
 
 // ─── OPEN APPLY ──────────────────────────────────────────────────────────────
 
@@ -577,7 +711,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
   const urlAtStart = window.location.href;
 
-  if (isCurrentPageAppliedJob()) {
+  if (isCurrentPageAppliedJob(site)) {
     updateStatus(
       "completed",
       "Skipped - already applied.",
@@ -585,6 +719,35 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       "open-apply"
     );
     await closeCurrentTab();
+    return;
+  }
+
+  const standaloneFrameUrl = findStandaloneApplicationFrameUrl();
+  if (standaloneFrameUrl) {
+    currentStage = "open-apply";
+
+    if (shouldKeepJobPageOpen(site)) {
+      updateStatus(
+        "running",
+        "Opening the embedded application in a new tab...",
+        true,
+        "open-apply"
+      );
+      await openApplicationTargetInNewTab(
+        standaloneFrameUrl,
+        site,
+        "the embedded application"
+      );
+      return;
+    }
+
+    updateStatus(
+      "running",
+      "Opening the embedded application...",
+      true,
+      "open-apply"
+    );
+    navigateCurrentTab(standaloneFrameUrl);
     return;
   }
 
@@ -737,6 +900,17 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   currentStage = "autofill-form";
 
   if (action.type === "navigate") {
+    if (shouldKeepJobPageOpen(site)) {
+      updateStatus(
+        "running",
+        `Opening ${action.description} in a new tab...`,
+        true,
+        "open-apply"
+      );
+      await openApplicationTargetInNewTab(action.url, site, action.description);
+      return;
+    }
+
     updateStatus(
       "running",
       `Navigating to ${action.description}...`,
@@ -785,15 +959,20 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
           true,
           "autofill-form"
         );
+        if (shouldKeepJobPageOpen(site)) {
+          await openApplicationTargetInNewTab(href, site, action.description);
+          return;
+        }
+
         await spawnTabs([
           {
             url: href,
             site,
-            stage: "autofill-form",
+            stage: "open-apply" as const,
             runId: currentRunId,
             label: currentLabel,
             resumeKind: currentResumeKind,
-            message: `Autofilling application from ${action.description}...`,
+            message: `Continuing application from ${action.description}...`,
           },
         ]);
         updateStatus(
@@ -803,6 +982,17 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
           "autofill-form"
         );
         await closeCurrentTab();
+        return;
+      }
+
+      if (shouldKeepJobPageOpen(site)) {
+        updateStatus(
+          "running",
+          `Opening ${action.description} in a new tab...`,
+          true,
+          "open-apply"
+        );
+        await openApplicationTargetInNewTab(href, site, action.description);
         return;
       }
 
@@ -864,6 +1054,35 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       );
       await sleep(1500);
       await runAutofillStage(site);
+      return;
+    }
+
+    const embeddedFrameUrl = findStandaloneApplicationFrameUrl();
+    if (embeddedFrameUrl) {
+      currentStage = "open-apply";
+
+      if (shouldKeepJobPageOpen(site)) {
+        updateStatus(
+          "running",
+          "Opening the embedded application in a new tab...",
+          true,
+          "open-apply"
+        );
+        await openApplicationTargetInNewTab(
+          embeddedFrameUrl,
+          site,
+          "the embedded application"
+        );
+        return;
+      }
+
+      updateStatus(
+        "running",
+        "Opening the embedded application...",
+        true,
+        "open-apply"
+      );
+      navigateCurrentTab(embeddedFrameUrl);
       return;
     }
 
@@ -975,96 +1194,8 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   );
 }
 
-// FIX: Dice-specific apply button finder — handles shadow DOM web components
-function findDiceApplyAction(): ApplyAction | null {
-  // Try custom web components
-  const applyComponents = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      "apply-button-wc, [data-cy='apply-button'], [data-cy*='apply'], [class*='apply-button'], [class*='ApplyButton']"
-    )
-  );
-
-  for (const component of applyComponents) {
-    const root = component.shadowRoot ?? component;
-
-    const btn = root.querySelector<HTMLElement>(
-      "a[href], button, input[type='submit'], [role='button']"
-    );
-
-    if (btn && isElementVisible(btn)) {
-      const url = getNavigationUrl(btn);
-      if (url) {
-        return {
-          type: "navigate",
-          url,
-          description: cleanText(getActionText(btn)) || "Dice apply button",
-        };
-      }
-      return {
-        type: "click",
-        element: btn,
-        description: cleanText(getActionText(btn)) || "Dice apply button",
-      };
-    }
-
-    if (isElementVisible(component)) {
-      const url = getNavigationUrl(component);
-      if (url) {
-        return {
-          type: "navigate",
-          url,
-          description: cleanText(getActionText(component)) || "Dice apply button",
-        };
-      }
-      return {
-        type: "click",
-        element: component,
-        description: cleanText(getActionText(component)) || "Dice apply button",
-      };
-    }
-  }
-
-  // Scan all shadow roots for apply buttons
-  const allHosts = Array.from(document.querySelectorAll<HTMLElement>("*")).filter(
-    (el) => el.shadowRoot
-  );
-
-  for (const host of allHosts) {
-    if (!host.shadowRoot) continue;
-    const applyBtn = host.shadowRoot.querySelector<HTMLElement>(
-      "a[href*='apply'], button[class*='apply'], [data-cy*='apply'], [aria-label*='apply' i]"
-    );
-
-    if (applyBtn && isElementVisible(applyBtn)) {
-      const text = cleanText(getActionText(applyBtn)).toLowerCase();
-      if (
-        text.includes("save") ||
-        text.includes("share") ||
-        text.includes("alert")
-      ) {
-        continue;
-      }
-
-      const url = getNavigationUrl(applyBtn);
-      if (url) {
-        return {
-          type: "navigate",
-          url,
-          description: text || "Dice apply button",
-        };
-      }
-      return {
-        type: "click",
-        element: applyBtn,
-        description: text || "Dice apply button",
-      };
-    }
-  }
-
-  return null;
-}
 // src/content.ts
-// Part 2 of 3 — continues from Part 1
+// Part 2 of 3 – continues from Part 1
 
 // ─── AUTOFILL ────────────────────────────────────────────────────────────────
 
@@ -1082,7 +1213,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     return;
   }
 
-  if (isCurrentPageAppliedJob()) {
+  if (isCurrentPageAppliedJob(site)) {
     updateStatus(
       "completed",
       "Skipped - already applied.",
@@ -1102,6 +1233,35 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
   await waitForHumanVerificationToClear();
   await waitForLikelyApplicationSurface(site);
   await rememberCurrentJobContextIfUseful();
+
+  const standaloneFrameUrl = findStandaloneApplicationFrameUrl();
+  if (standaloneFrameUrl) {
+    currentStage = "open-apply";
+
+    if (shouldKeepJobPageOpen(site)) {
+      updateStatus(
+        "running",
+        "Opening the embedded application in a new tab...",
+        true,
+        "open-apply"
+      );
+      await openApplicationTargetInNewTab(
+        standaloneFrameUrl,
+        site,
+        "the embedded application"
+      );
+      return;
+    }
+
+    updateStatus(
+      "running",
+      "Opening the embedded application...",
+      true,
+      "open-apply"
+    );
+    navigateCurrentTab(standaloneFrameUrl);
+    return;
+  }
 
   const combinedResult = createEmptyAutofillResult();
   let previousUrl = window.location.href;
@@ -1176,6 +1336,14 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       previousUrl = window.location.href;
 
       if (companySiteAction.type === "navigate") {
+        if (shouldKeepJobPageOpen(site)) {
+          await openApplicationTargetInNewTab(
+            companySiteAction.url,
+            site,
+            companySiteAction.description
+          );
+          return;
+        }
         navigateCurrentTab(companySiteAction.url);
         return;
       }
@@ -1212,6 +1380,14 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       previousUrl = window.location.href;
 
       if (followUp.type === "navigate") {
+        if (shouldKeepJobPageOpen(site)) {
+          await openApplicationTargetInNewTab(
+            followUp.url,
+            site,
+            followUp.description
+          );
+          return;
+        }
         navigateCurrentTab(followUp.url);
         return;
       }
@@ -1282,96 +1458,6 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
 
 // ─── FORM CONTENT CHANGE HELPER ─────────────────────────────────────────────
 
-async function waitForReadyProgressionAction(
-  site: SiteKey,
-  timeoutMs: number
-): Promise<ProgressionAction | null> {
-  const start = Date.now();
-
-  while (Date.now() - start < timeoutMs) {
-    const progression = findProgressionAction(site);
-    if (progression) {
-      return progression;
-    }
-
-    await sleep(250);
-  }
-
-  return null;
-}
-
-async function handleProgressionAction(
-  site: SiteKey,
-  progression: ProgressionAction
-): Promise<boolean> {
-  updateStatus(
-    "running",
-    `Clicking "${progression.text}"...`,
-    true,
-    "autofill-form"
-  );
-
-  const previousUrl = window.location.href;
-
-  if (progression.type === "navigate") {
-    navigateCurrentTab(progression.url);
-    return false;
-  }
-
-  progression.element.scrollIntoView({
-    behavior: "smooth",
-    block: "center",
-  });
-  await sleep(400);
-  performClickAction(progression.element);
-  await sleep(
-    site === "indeed" || site === "ziprecruiter" ? 3_400 : 2_800
-  );
-
-  if (window.location.href !== previousUrl) {
-    await waitForHumanVerificationToClear();
-    if (hasLikelyApplicationSurface(site)) {
-      await waitForLikelyApplicationSurface(site);
-      return true;
-    }
-
-    currentStage = "open-apply";
-    await runOpenApplyStage(site);
-    return false;
-  }
-
-  await waitForFormContentChange(site);
-  await waitForLikelyApplicationSurface(site);
-  return true;
-}
-
-async function waitForFormContentChange(
-  _site: SiteKey
-): Promise<void> {
-  const initial = collectAutofillFields().length;
-  for (let i = 0; i < 12; i++) {
-    await sleep(500);
-    const current = collectAutofillFields().length;
-    if (current !== initial) return;
-
-    const blanks = collectAutofillFields().filter(
-      (f) => shouldAutofillField(f) && isFieldBlank(f)
-    );
-    if (blanks.length > 0) return;
-  }
-}
-
-function isFieldBlank(field: AutofillField): boolean {
-  if (field instanceof HTMLInputElement) {
-    if (field.type === "radio" || field.type === "checkbox")
-      return false;
-    if (field.type === "file") return !field.files?.length;
-    return !field.value.trim();
-  }
-  if (field instanceof HTMLSelectElement)
-    return isSelectBlank(field);
-  return !field.value.trim();
-}
 
 // ─── WAITING HELPERS ─────────────────────────────────────────────────────────
 
@@ -1406,379 +1492,13 @@ async function waitForHumanVerificationToClear(): Promise<void> {
   await sleep(1500);
 }
 
-async function waitForJobDetailUrls(
-  site: SiteKey,
-  datePostedWindow: DatePostedWindow
-): Promise<string[]> {
-  const isCareerSite =
-    site === "startup" || site === "other_sites";
-  // FIX: Dice also gets aggressive scanning like career sites
-  const needsAggressiveScan = isCareerSite || site === "dice";
-  let careerSurfaceAttempts = 0;
 
-  const maxAttempts = needsAggressiveScan ? 50 : 35;
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const candidates = collectJobDetailCandidates(site);
-    const urls = pickRelevantJobUrls(
-      candidates,
-      status.site === "unsupported" ? null : status.site,
-      currentResumeKind,
-      datePostedWindow
-    );
-    if (urls.length > 0) return urls;
 
-    if (isCareerSite) {
-      if (
-        careerSurfaceAttempts < 2 &&
-        (attempt === 8 || attempt === 18)
-      ) {
-        careerSurfaceAttempts += 1;
-        const openedCareerSurface = await tryOpenCareerListingsSurface(
-          site,
-          datePostedWindow
-        );
-        if (openedCareerSurface) {
-          await sleep(2200);
-        }
-      }
 
-      if (attempt % 5 === 0) {
-        window.scrollTo({
-          top: document.body.scrollHeight,
-          behavior: "smooth",
-        });
-      } else if (attempt % 5 === 1) {
-        window.scrollTo({
-          top: document.body.scrollHeight / 2,
-          behavior: "smooth",
-        });
-      } else if (attempt % 5 === 2) {
-        window.scrollTo({ top: 0, behavior: "smooth" });
-      } else if (attempt % 5 === 3) {
-        window.scrollTo({
-          top: document.body.scrollHeight / 3,
-          behavior: "smooth",
-        });
-      } else {
-        window.scrollTo({
-          top: (document.body.scrollHeight * 2) / 3,
-          behavior: "smooth",
-        });
-      }
 
-      if (attempt === 10 || attempt === 20 || attempt === 30) {
-        tryClickLoadMoreButton();
-      }
-    } else if (site === "dice") {
-      // FIX: Dice-specific scrolling to trigger lazy card rendering
-      if (attempt % 4 === 0) {
-        window.scrollTo({
-          top: document.body.scrollHeight,
-          behavior: "smooth",
-        });
-      } else if (attempt % 4 === 1) {
-        window.scrollTo({ top: 0, behavior: "smooth" });
-      } else if (attempt % 4 === 2) {
-        window.scrollTo({
-          top: document.body.scrollHeight / 2,
-          behavior: "smooth",
-        });
-      } else {
-        window.scrollTo({
-          top: document.body.scrollHeight / 3,
-          behavior: "smooth",
-        });
-      }
 
-      // FIX: Try clicking "Show more" on Dice
-      if (attempt === 8 || attempt === 16 || attempt === 24) {
-        tryClickLoadMoreButton();
-      }
-    } else {
-      if (
-        attempt === 5 ||
-        attempt === 10 ||
-        attempt === 15 ||
-        attempt === 20 ||
-        attempt === 25
-      ) {
-        window.scrollTo({
-          top: document.body.scrollHeight,
-          behavior: "smooth",
-        });
-      }
-    }
-    await sleep(800);
-  }
-  return [];
-}
 
-const CAREER_LISTING_TEXT_PATTERNS = [
-  "open jobs",
-  "open positions",
-  "open roles",
-  "current openings",
-  "current positions",
-  "see open jobs",
-  "see open positions",
-  "view all jobs",
-  "view jobs",
-  "search jobs",
-  "search roles",
-  "job board",
-  "browse jobs",
-  "browse roles",
-];
-
-const CAREER_LISTING_URL_PATTERNS = [
-  "/jobs",
-  "/job-board",
-  "/openings",
-  "/positions",
-  "/roles",
-  "boards.greenhouse.io",
-  "job-boards.greenhouse.io",
-  "jobs.lever.co",
-  "ashbyhq.com",
-  "workdayjobs.com",
-  "myworkdayjobs.com",
-  "workable.com",
-  "jobvite.com",
-  "smartrecruiters.com",
-  "recruitee.com",
-  "bamboohr.com",
-];
-
-async function tryOpenCareerListingsSurface(
-  site: SiteKey,
-  datePostedWindow: DatePostedWindow
-): Promise<boolean> {
-  const iframeUrl = findCareerListingsIframeUrl();
-  const currentUrl = normalizeUrl(window.location.href);
-  const labelPrefix = currentLabel ? `${currentLabel} ` : "";
-
-  if (iframeUrl && iframeUrl !== currentUrl) {
-    updateStatus(
-      "running",
-      `Opening ${labelPrefix}${getSiteLabel(site)} jobs list...`,
-      true,
-      "collect-results"
-    );
-    window.location.assign(iframeUrl);
-    return true;
-  }
-
-  const actions = collectCareerListingActions();
-  for (const action of actions) {
-    const beforeUrl = normalizeUrl(window.location.href);
-
-    updateStatus(
-      "running",
-      `Opening ${labelPrefix}${getSiteLabel(site)} jobs list...`,
-      true,
-      "collect-results"
-    );
-
-    if (action.navUrl && action.navUrl !== beforeUrl) {
-      window.location.assign(action.navUrl);
-      return true;
-    }
-
-    if (!isElementInteractive(action.element)) {
-      continue;
-    }
-
-    performClickAction(action.element);
-    await sleep(1500);
-
-    if (normalizeUrl(window.location.href) !== beforeUrl) {
-      return true;
-    }
-
-    const updatedCandidates = collectJobDetailCandidates(site);
-    const updatedUrls = pickRelevantJobUrls(
-      updatedCandidates,
-      status.site === "unsupported" ? null : status.site,
-      currentResumeKind,
-      datePostedWindow
-    );
-    if (updatedUrls.length > 0) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function getPostedWindowDescription(datePostedWindow: DatePostedWindow): string {
-  if (datePostedWindow === "any") {
-    return "";
-  }
-
-  const label = DATE_POSTED_WINDOW_LABELS[datePostedWindow].toLowerCase();
-  return ` posted within ${label.replace(/^past /, "the last ")}`;
-}
-
-function findCareerListingsIframeUrl(): string | null {
-  for (const frame of Array.from(document.querySelectorAll<HTMLIFrameElement>("iframe[src]"))) {
-    if (!isElementVisible(frame)) {
-      continue;
-    }
-
-    const src = normalizeUrl(frame.src || frame.getAttribute("src") || "");
-    if (!src) {
-      continue;
-    }
-
-    const lowerSrc = src.toLowerCase();
-    const title = cleanText(
-      frame.getAttribute("title") || frame.getAttribute("aria-label") || ""
-    ).toLowerCase();
-
-    if (
-      CAREER_LISTING_URL_PATTERNS.some((token) => lowerSrc.includes(token)) ||
-      title.includes("job") ||
-      title.includes("career")
-    ) {
-      return src;
-    }
-  }
-
-  return null;
-}
-
-function collectCareerListingActions(): Array<{
-  element: HTMLElement;
-  navUrl: string | null;
-  score: number;
-}> {
-  const actions: Array<{
-    element: HTMLElement;
-    navUrl: string | null;
-    score: number;
-  }> = [];
-  const seen = new Set<string>();
-
-  for (const element of Array.from(
-    document.querySelectorAll<HTMLElement>(
-      "a[href], button, [role='button'], [data-href], [data-url], [data-link]"
-    )
-  )) {
-    if (!isElementVisible(element)) {
-      continue;
-    }
-
-    const text = cleanText(getActionText(element)).toLowerCase();
-    const navUrl = getNavigationUrl(element);
-    const lowerNavUrl = navUrl?.toLowerCase() ?? "";
-    const hasTextSignal = CAREER_LISTING_TEXT_PATTERNS.some((token) => text.includes(token));
-    const hasUrlSignal = CAREER_LISTING_URL_PATTERNS.some((token) => lowerNavUrl.includes(token));
-
-    if (!hasTextSignal && !hasUrlSignal) {
-      continue;
-    }
-
-    if (
-      ["sign in", "job alert", "talent network", "saved jobs"].some(
-        (token) => text.includes(token) || lowerNavUrl.includes(token)
-      )
-    ) {
-      continue;
-    }
-
-    const dedupKey = `${navUrl ?? ""}::${text}`;
-    if (seen.has(dedupKey)) {
-      continue;
-    }
-    seen.add(dedupKey);
-
-    let score = 0;
-    if (hasTextSignal) score += 4;
-    if (hasUrlSignal) score += 3;
-    if (
-      ["open jobs", "open positions", "open roles", "current openings"].some((token) =>
-        text.includes(token)
-      )
-    ) {
-      score += 3;
-    }
-    if (
-      [
-        "boards.greenhouse.io",
-        "job-boards.greenhouse.io",
-        "jobs.lever.co",
-        "ashbyhq.com",
-        "workdayjobs.com",
-        "myworkdayjobs.com",
-      ].some((token) => lowerNavUrl.includes(token))
-    ) {
-      score += 5;
-    }
-
-    actions.push({
-      element,
-      navUrl,
-      score,
-    });
-  }
-
-  return actions.sort((a, b) => b.score - a.score);
-}
-
-function tryClickLoadMoreButton(): void {
-  const loadMoreSelectors = [
-    "button",
-    "a[role='button']",
-    "[role='button']",
-  ];
-
-  for (const selector of loadMoreSelectors) {
-    try {
-      const elements = Array.from(document.querySelectorAll<HTMLElement>(selector));
-      for (const el of elements) {
-        if (!isElementVisible(el)) continue;
-        const text = cleanText(el.textContent || "").toLowerCase();
-        if (
-          text.includes("load more") ||
-          text.includes("show more") ||
-          text.includes("view more") ||
-          text.includes("see more") ||
-          text.includes("more jobs") ||
-          text.includes("more positions") ||
-          text.includes("more openings") ||
-          text.includes("view all") ||
-          text.includes("see all") ||
-          text.includes("show all") ||
-          // FIX: Dice-specific load more patterns
-          text.includes("next page") ||
-          text.includes("load next")
-        ) {
-          performClickAction(el);
-          return;
-        }
-      }
-    } catch {
-      // Skip
-    }
-  }
-}
-
-async function waitForLikelyApplicationSurface(
-  site: SiteKey
-): Promise<void> {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    if (hasLikelyApplicationSurface(site)) return;
-
-    if (attempt === 5 || attempt === 10 || attempt === 15 || attempt === 20) {
-      window.scrollTo({
-        top: document.body.scrollHeight / 2,
-        behavior: "smooth",
-      });
-    }
-    await sleep(700);
-  }
-}
 
 // ─── CHATGPT AI ANSWER ──────────────────────────────────────────────────────
 
@@ -2585,7 +2305,9 @@ async function autofillVisibleApplication(
     if (uploaded) result.uploadedResume = uploaded;
   }
 
-  const essayFields = collectEssayFieldsNeedingAi(settings);
+  const essayFields = collectEssayFieldsNeedingAi(settings).sort(
+    (left, right) => Number(isFieldRequired(right.field)) - Number(isFieldRequired(left.field))
+  );
   for (const candidate of essayFields) {
     const generated = await generateAiAnswerForField(
       candidate,
@@ -2607,7 +2329,11 @@ async function autofillVisibleApplication(
   }
 
   const processedGroups = new Set<string>();
-  for (const field of collectAutofillFields()) {
+  const autofillFields = collectAutofillFields().sort(
+    (left, right) => Number(isFieldRequired(right)) - Number(isFieldRequired(left))
+  );
+
+  for (const field of autofillFields) {
     if (!shouldAutofillField(field)) continue;
     if (field instanceof HTMLInputElement && field.type === "file")
       continue;
@@ -3794,272 +3520,6 @@ function getGroupedInputs(
   } catch {
     return [field];
   }
-}
-
-function hasLikelyApplicationForm(): boolean {
-  const relevantFields = collectAutofillFields().filter(
-    (f) =>
-      shouldAutofillField(f, true) &&
-      isLikelyApplicationField(f)
-  );
-
-  if (relevantFields.length >= 2) return true;
-
-  return collectResumeFileInputs().some(
-    (input) =>
-      shouldAutofillField(input, true) &&
-      isLikelyApplicationField(input)
-  );
-}
-
-function hasLikelyApplicationFrame(): boolean {
-  return Boolean(
-    document.querySelector(
-      "iframe[src*='apply'], iframe[src*='application'], iframe[id*='apply'], iframe[class*='apply'], iframe[src*='greenhouse'], iframe[src*='lever'], iframe[src*='workday']"
-    )
-  );
-}
-
-function hasLikelyApplicationPageContent(): boolean {
-  const bodyText = cleanText(document.body?.innerText || "")
-    .toLowerCase()
-    .slice(0, 5000);
-  if (!bodyText) return false;
-
-  const strongSignals = [
-    "upload resume",
-    "upload your resume",
-    "upload cv",
-    "attach resume",
-    "attach your resume",
-    "submit application",
-    "apply for this",
-    "application form",
-    "submit your application",
-  ];
-
-  if (strongSignals.some((token) => bodyText.includes(token))) {
-    return true;
-  }
-
-  const weakSignals = [
-    "application",
-    "resume",
-    "cover letter",
-    "work authorization",
-    "years of experience",
-    "phone number",
-    "email address",
-    "linkedin",
-    "portfolio",
-    "salary",
-    "start date",
-    "notice period",
-  ];
-
-  const matchCount = weakSignals.filter((token) => bodyText.includes(token)).length;
-  return matchCount >= 3;
-}
-
-function hasLikelyApplicationSurface(site: SiteKey): boolean {
-  const onApplyLikeUrl = isAlreadyOnApplyPage(
-    site,
-    window.location.href
-  );
-  const hasPageContent = hasLikelyApplicationPageContent();
-  const hasProgression = Boolean(findProgressionAction(site));
-  const hasCompanySiteStep = Boolean(findCompanySiteAction());
-  const stillLooksLikeJobPage = Boolean(
-    findApplyAction(site, "job-page")
-  );
-
-  return (
-    hasLikelyApplicationForm() ||
-    hasLikelyApplicationFrame() ||
-    (onApplyLikeUrl &&
-      (hasPageContent ||
-        hasProgression ||
-        hasCompanySiteStep)) ||
-    (hasPageContent &&
-      (hasProgression || hasCompanySiteStep) &&
-      !stillLooksLikeJobPage) ||
-    (onApplyLikeUrl && hasPageContent)
-  );
-}
-
-function isLikelyApplicationField(
-  field: AutofillField
-): boolean {
-  const question = getQuestionText(field);
-  const descriptor = getFieldDescriptor(field, question);
-  if (!descriptor) return false;
-
-  if (
-    matchesDescriptor(descriptor, [
-      "job title",
-      "keywords",
-      "search jobs",
-      "search for jobs",
-      "find jobs",
-      "job search",
-      "search by keyword",
-      "enter location",
-      "search location",
-      "filter",
-      "sort by",
-    ])
-  )
-    return false;
-
-  if (
-    descriptor === "what" ||
-    descriptor === "where" ||
-    descriptor === "search" ||
-    descriptor === "q"
-  )
-    return false;
-
-  if (field instanceof HTMLInputElement) {
-    const type = field.type.toLowerCase();
-    if (type === "search") return false;
-    if (type === "file") {
-      return matchesDescriptor(descriptor, [
-        "resume",
-        "cv",
-        "cover letter",
-        "attachment",
-        "upload",
-        "document",
-      ]);
-    }
-  }
-
-  const fieldAutocomplete = (
-    field.getAttribute("autocomplete") || ""
-  )
-    .toLowerCase()
-    .trim();
-  if (
-    [
-      "name",
-      "given-name",
-      "additional-name",
-      "family-name",
-      "email",
-      "tel",
-      "street-address",
-      "address-line1",
-      "address-line2",
-      "address-level1",
-      "address-level2",
-      "postal-code",
-      "country",
-      "organization",
-      "organization-title",
-      "url",
-    ].includes(fieldAutocomplete)
-  ) {
-    return true;
-  }
-
-  if (
-    matchesDescriptor(descriptor, [
-      "full name",
-      "first name",
-      "last name",
-      "given name",
-      "family name",
-      "surname",
-      "your name",
-      "email",
-      "phone",
-      "mobile",
-      "telephone",
-      "linkedin",
-      "portfolio",
-      "website",
-      "personal site",
-      "github",
-      "city",
-      "town",
-      "state",
-      "province",
-      "region",
-      "country",
-      "address",
-      "postal code",
-      "zip code",
-      "current company",
-      "current employer",
-      "employer",
-      "years of experience",
-      "year of experience",
-      "total experience",
-      "overall experience",
-      "work authorization",
-      "authorized to work",
-      "eligible to work",
-      "legally authorized",
-      "sponsorship",
-      "visa",
-      "relocate",
-      "relocation",
-      "salary",
-      "compensation",
-      "resume",
-      "cv",
-      "cover letter",
-      "education",
-      "school",
-      "degree",
-      "notice period",
-      "start date",
-      "available to start",
-    ])
-  ) {
-    return true;
-  }
-
-  const container = field.closest(
-    "form, fieldset, [role='dialog'], article, section, main, aside, div"
-  );
-  const containerText = normalizeChoiceText(
-    cleanText(container?.textContent).slice(0, 600)
-  );
-  if (!containerText) return false;
-
-  if (
-    [
-      "job title",
-      "keywords",
-      "search jobs",
-      "find jobs",
-      "company reviews",
-      "find salaries",
-      "post a job",
-    ].some((term) =>
-      containerText.includes(normalizeChoiceText(term))
-    )
-  ) {
-    return false;
-  }
-
-  return [
-    "application",
-    "apply",
-    "candidate",
-    "resume",
-    "cv",
-    "cover letter",
-    "work authorization",
-    "experience",
-    "employment",
-    "education",
-    "equal opportunity",
-    "demographic",
-  ].some((term) =>
-    containerText.includes(normalizeChoiceText(term))
-  );
 }
 
 async function spawnTabs(

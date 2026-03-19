@@ -6,6 +6,7 @@ import {
   getOptionLabelText,
   getQuestionText,
   isConsentField,
+  isFieldRequired,
   isSelectBlank,
   isTextLikeInput,
   matchesDescriptor,
@@ -184,6 +185,27 @@ describe("autofill helpers", () => {
     expect(isConsentField(consent)).toBe(true);
     expect(shouldRememberField(fullName)).toBe(false);
     expect(shouldRememberField(essay)).toBe(true);
+  });
+
+  it("detects required fields from attributes and greenhouse-style markers", () => {
+    document.body.innerHTML = `
+      <form>
+        <div class="field required">
+          <label for="first-name">First Name <span class="asterisk">*</span></label>
+          <input id="first-name" name="job_application[first_name]" type="text" />
+        </div>
+
+        <label for="email">Email</label>
+        <input id="email" type="email" aria-required="true" />
+
+        <label for="city">City</label>
+        <input id="city" type="text" />
+      </form>
+    `;
+
+    expect(isFieldRequired(document.querySelector("#first-name") as HTMLInputElement)).toBe(true);
+    expect(isFieldRequired(document.querySelector("#email") as HTMLInputElement)).toBe(true);
+    expect(isFieldRequired(document.querySelector("#city") as HTMLInputElement)).toBe(false);
   });
 
   it("reads saved answers from text, select, radio, checkbox, and textarea fields", () => {

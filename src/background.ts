@@ -8,6 +8,8 @@ import {
   JobContextSnapshot,
   SEARCH_OPEN_DELAY_MS,
   SiteKey,
+  STARTUP_COMPANIES_REFRESH_ALARM,
+  STARTUP_COMPANIES_REFRESH_INTERVAL_MS,
   SpawnTabRequest,
   buildOtherJobSiteTargets,
   buildStartupSearchTargets,
@@ -18,6 +20,7 @@ import {
   getSessionStorageKey,
   isJobBoardSite,
   readAutomationSettings,
+  refreshStartupCompanies,
   resolveStartupRegion,
 } from "./shared";
 
@@ -95,10 +98,20 @@ chrome.tabs.onCreated.addListener((tab) => {
 
 chrome.runtime.onStartup.addListener(() => {
   void restorePendingSpawnsFromStorage();
+  void scheduleStartupCompanyRefresh();
+  void refreshStartupCompanies();
 });
 
 chrome.runtime.onInstalled.addListener(() => {
   void restorePendingSpawnsFromStorage();
+  void scheduleStartupCompanyRefresh();
+  void refreshStartupCompanies(true);
+});
+
+chrome.alarms?.onAlarm.addListener((alarm) => {
+  if (alarm.name === STARTUP_COMPANIES_REFRESH_ALARM) {
+    void refreshStartupCompanies(true);
+  }
 });
 
 async function restorePendingSpawnsFromStorage(): Promise<void> {
@@ -116,6 +129,17 @@ async function restorePendingSpawnsFromStorage(): Promise<void> {
     }
   } catch {
     // Ignore restore errors.
+  }
+}
+
+async function scheduleStartupCompanyRefresh(): Promise<void> {
+  try {
+    await chrome.alarms.create(STARTUP_COMPANIES_REFRESH_ALARM, {
+      delayInMinutes: 1,
+      periodInMinutes: STARTUP_COMPANIES_REFRESH_INTERVAL_MS / 60_000,
+    });
+  } catch {
+    // Ignore alarm scheduling errors.
   }
 }
 
@@ -384,7 +408,7 @@ async function attachSessionToSiteOpenedChildTab(
     "running",
     `Continuing ${getReadableSiteName(openerSession.site)} application in a new tab...`,
     true,
-    "autofill-form",
+    "open-apply",
     openerSession.runId,
     openerSession.label,
     openerSession.resumeKind
@@ -487,7 +511,8 @@ async function startStartupAutomation(
   const sourceTab = await resolvePreferredTab(tabId, "web_page");
   const settings = await readAutomationSettings();
   const runId = createRunId();
-  const targets = buildStartupSearchTargets(settings);
+  const startupCompanies = await refreshStartupCompanies();
+  const targets = buildStartupSearchTargets(settings, startupCompanies);
 
   if (targets.length === 0) {
     return {

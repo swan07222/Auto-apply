@@ -6,7 +6,7 @@
     back_end: "Back End",
     full_stack: "Full Stack"
   };
-  var STARTUP_COMPANIES = [
+  var DEFAULT_STARTUP_COMPANIES = [
     { name: "Ramp", careersUrl: "https://jobs.ashbyhq.com/ramp", regions: ["us"] },
     { name: "Vercel", careersUrl: "https://job-boards.greenhouse.io/vercel", regions: ["us"] },
     { name: "Plaid", careersUrl: "https://jobs.lever.co/plaid", regions: ["us"] },
@@ -27,6 +27,8 @@
     { name: "GetYourGuide", careersUrl: "https://www.getyourguide.careers/", regions: ["eu"] },
     { name: "Klarna", careersUrl: "https://www.klarna.com/careers/", regions: ["eu"] }
   ];
+  var STARTUP_COMPANIES = DEFAULT_STARTUP_COMPANIES;
+  var STARTUP_COMPANIES_FEED_URL = "https://raw.githubusercontent.com/swan07222/Auto-apply/main/data/startup-companies.json";
   var OTHER_JOB_SITE_TARGETS = [
     {
       label: "Built In Front End",
@@ -175,6 +177,9 @@
   ];
   var SEARCH_OPEN_DELAY_MS = 900;
   var AUTOMATION_SETTINGS_STORAGE_KEY = "remote-job-search-settings";
+  var STARTUP_COMPANIES_CACHE_STORAGE_KEY = "remote-job-search-startup-companies-cache";
+  var STARTUP_COMPANIES_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1e3;
+  var STARTUP_COMPANIES_REFRESH_ALARM = "remote-job-search-refresh-startup-companies";
   var MIN_JOB_PAGE_LIMIT = 1;
   var MAX_JOB_PAGE_LIMIT = 25;
   var DEFAULT_SETTINGS = {
@@ -257,15 +262,15 @@
   function isJobBoardSite(site) {
     return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster";
   }
-  function buildStartupSearchTargets(settings) {
+  function buildStartupSearchTargets(settings, companies = STARTUP_COMPANIES) {
     const region = resolveStartupRegion(
       settings.startupRegion,
       settings.candidate.country
     );
-    const companies = STARTUP_COMPANIES.filter(
+    const matchingCompanies = companies.filter(
       (company) => company.regions.includes(region)
     );
-    return companies.map((company) => ({
+    return matchingCompanies.map((company) => ({
       label: company.name,
       resumeKind: "full_stack",
       url: company.careersUrl
@@ -419,6 +424,71 @@
   function normalizeQuestionKey(question) {
     return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
   }
+  function sanitizeStartupCompaniesPayload(raw) {
+    const entries = Array.isArray(raw) ? raw : isRecord(raw) && Array.isArray(raw.companies) ? raw.companies : [];
+    const deduped = /* @__PURE__ */ new Map();
+    for (const entry of entries) {
+      if (!isRecord(entry)) {
+        continue;
+      }
+      const name = readString(entry.name);
+      const careersUrl = sanitizeHttpUrl(entry.careersUrl);
+      const regions = Array.isArray(entry.regions) ? entry.regions.filter(isStartupCompanyRegion) : [];
+      if (!name || !careersUrl || regions.length === 0) {
+        continue;
+      }
+      deduped.set(careersUrl.toLowerCase(), {
+        name,
+        careersUrl,
+        regions
+      });
+    }
+    return Array.from(deduped.values());
+  }
+  function isStartupCompaniesCacheFresh(cache, now = Date.now()) {
+    return Boolean(
+      cache && cache.companies.length > 0 && now - cache.updatedAt < STARTUP_COMPANIES_REFRESH_INTERVAL_MS
+    );
+  }
+  async function readStartupCompanyCache() {
+    if (typeof chrome === "undefined" || !chrome.storage?.local) {
+      return null;
+    }
+    const stored = await chrome.storage.local.get(STARTUP_COMPANIES_CACHE_STORAGE_KEY);
+    return sanitizeStartupCompanyCache(stored[STARTUP_COMPANIES_CACHE_STORAGE_KEY]);
+  }
+  async function refreshStartupCompanies(forceRefresh = false) {
+    const cached = await readStartupCompanyCache();
+    if (!forceRefresh && isStartupCompaniesCacheFresh(cached)) {
+      return cached.companies;
+    }
+    try {
+      const response = await fetch(STARTUP_COMPANIES_FEED_URL, {
+        cache: "no-store"
+      });
+      if (response.ok) {
+        const payload = sanitizeStartupCompaniesPayload(await response.json());
+        if (payload.length > 0) {
+          const nextCache = {
+            companies: payload,
+            updatedAt: Date.now(),
+            sourceUrl: STARTUP_COMPANIES_FEED_URL
+          };
+          if (typeof chrome !== "undefined" && chrome.storage?.local) {
+            await chrome.storage.local.set({
+              [STARTUP_COMPANIES_CACHE_STORAGE_KEY]: nextCache
+            });
+          }
+          return payload;
+        }
+      }
+    } catch {
+    }
+    if (cached?.companies.length) {
+      return cached.companies;
+    }
+    return STARTUP_COMPANIES;
+  }
   async function readAutomationSettings() {
     const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
     return sanitizeAutomationSettings(stored[AUTOMATION_SETTINGS_STORAGE_KEY]);
@@ -495,6 +565,39 @@
   function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
+  function sanitizeHttpUrl(value) {
+    const raw = readString(value);
+    if (!raw) {
+      return "";
+    }
+    try {
+      const normalized = new URL(raw);
+      if (normalized.protocol !== "http:" && normalized.protocol !== "https:") {
+        return "";
+      }
+      normalized.hash = "";
+      return normalized.toString();
+    } catch {
+      return "";
+    }
+  }
+  function isStartupCompanyRegion(value) {
+    return value === "us" || value === "uk" || value === "eu";
+  }
+  function sanitizeStartupCompanyCache(raw) {
+    if (!isRecord(raw)) {
+      return null;
+    }
+    const companies = sanitizeStartupCompaniesPayload(raw.companies);
+    if (companies.length === 0) {
+      return null;
+    }
+    return {
+      companies,
+      updatedAt: Number.isFinite(raw.updatedAt) ? Number(raw.updatedAt) : 0,
+      sourceUrl: sanitizeHttpUrl(raw.sourceUrl) || STARTUP_COMPANIES_FEED_URL
+    };
+  }
   function sanitizeSearchMode(value) {
     return value === "startup_careers" || value === "other_job_sites" ? value : DEFAULT_SETTINGS.searchMode;
   }
@@ -531,9 +634,18 @@
   });
   chrome.runtime.onStartup.addListener(() => {
     void restorePendingSpawnsFromStorage();
+    void scheduleStartupCompanyRefresh();
+    void refreshStartupCompanies();
   });
   chrome.runtime.onInstalled.addListener(() => {
     void restorePendingSpawnsFromStorage();
+    void scheduleStartupCompanyRefresh();
+    void refreshStartupCompanies(true);
+  });
+  chrome.alarms?.onAlarm.addListener((alarm) => {
+    if (alarm.name === STARTUP_COMPANIES_REFRESH_ALARM) {
+      void refreshStartupCompanies(true);
+    }
   });
   async function restorePendingSpawnsFromStorage() {
     try {
@@ -548,6 +660,15 @@
           }
         }
       }
+    } catch {
+    }
+  }
+  async function scheduleStartupCompanyRefresh() {
+    try {
+      await chrome.alarms.create(STARTUP_COMPANIES_REFRESH_ALARM, {
+        delayInMinutes: 1,
+        periodInMinutes: STARTUP_COMPANIES_REFRESH_INTERVAL_MS / 6e4
+      });
     } catch {
     }
   }
@@ -740,7 +861,7 @@
       "running",
       `Continuing ${getReadableSiteName(openerSession.site)} application in a new tab...`,
       true,
-      "autofill-form",
+      "open-apply",
       openerSession.runId,
       openerSession.label,
       openerSession.resumeKind
@@ -814,7 +935,8 @@
     const sourceTab = await resolvePreferredTab(tabId, "web_page");
     const settings = await readAutomationSettings();
     const runId = createRunId();
-    const targets = buildStartupSearchTargets(settings);
+    const startupCompanies = await refreshStartupCompanies();
+    const targets = buildStartupSearchTargets(settings, startupCompanies);
     if (targets.length === 0) {
       return {
         ok: false,

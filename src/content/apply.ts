@@ -60,16 +60,86 @@ const COMPANY_SITE_GATE_TOKENS = [
   "apply through",
 ];
 
+const KNOWN_BROKEN_APPLY_HOSTS = ["apply.monster.com"];
+
+function collectDeepMatches<T extends HTMLElement>(
+  selector: string
+): T[] {
+  const results: T[] = [];
+  const seen = new Set<Element>();
+  const roots: Array<Document | ShadowRoot> = [document];
+
+  while (roots.length > 0) {
+    const root = roots.shift()!;
+
+    try {
+      for (const element of Array.from(root.querySelectorAll<T>(selector))) {
+        if (seen.has(element)) {
+          continue;
+        }
+
+        seen.add(element);
+        results.push(element);
+      }
+    } catch {
+      continue;
+    }
+
+    for (const host of Array.from(root.querySelectorAll<HTMLElement>("*"))) {
+      if (host.shadowRoot) {
+        roots.push(host.shadowRoot);
+      }
+    }
+  }
+
+  return results;
+}
+
+function collectDeepMatchesFromSelectors(
+  selectors: string[]
+): HTMLElement[] {
+  const results: HTMLElement[] = [];
+  const seen = new Set<HTMLElement>();
+
+  for (const selector of selectors) {
+    for (const element of collectDeepMatches<HTMLElement>(selector)) {
+      if (seen.has(element)) {
+        continue;
+      }
+
+      seen.add(element);
+      results.push(element);
+    }
+  }
+
+  return results;
+}
+
+function isKnownBrokenApplyUrl(url: string | null | undefined): boolean {
+  if (!url) {
+    return false;
+  }
+
+  try {
+    const hostname = new URL(url, window.location.href).hostname.toLowerCase();
+    return KNOWN_BROKEN_APPLY_HOSTS.includes(hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function findCompanySiteAction(): ApplyAction | null {
   const pageText = cleanText(document.body?.innerText || "")
     .toLowerCase()
     .slice(0, 6000);
   const hasGateText = COMPANY_SITE_GATE_TOKENS.some((token) => pageText.includes(token));
-  const candidates = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      "a[href], button, input[type='submit'], input[type='button'], [role='button']"
-    )
-  );
+  const candidates = collectDeepMatchesFromSelectors([
+    "a[href]",
+    "button",
+    "input[type='submit']",
+    "input[type='button']",
+    "[role='button']",
+  ]);
 
   let best:
     | {
@@ -208,6 +278,7 @@ export function findCompanySiteAction(): ApplyAction | null {
 
   if (
     best.url &&
+    !isKnownBrokenApplyUrl(best.url) &&
     (isExternalUrl(best.url) || shouldPreferApplyNavigation(best.url, best.text, null))
   ) {
     return {
@@ -499,77 +570,72 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
       }
     | undefined;
 
-  for (const selector of selectors) {
-    let elements: HTMLElement[];
-    try {
-      elements = Array.from(document.querySelectorAll<HTMLElement>(selector));
-    } catch {
+  for (const element of collectDeepMatchesFromSelectors(selectors)) {
+    const actionElement = getClickableApplyElement(element);
+    if (!isElementVisible(actionElement)) {
       continue;
     }
 
-    for (const element of elements) {
-      const actionElement = getClickableApplyElement(element);
-      if (!isElementVisible(actionElement)) {
-        continue;
-      }
+    const text = (getActionText(actionElement) || getActionText(element)).trim();
+    const lower = text.toLowerCase();
+    if (
+      !lower ||
+      lower.includes("save") ||
+      lower.includes("share") ||
+      lower.includes("alert") ||
+      lower.includes("sign in") ||
+      lower.includes("job alert")
+    ) {
+      continue;
+    }
 
-      const text = (getActionText(actionElement) || getActionText(element)).trim();
-      const lower = text.toLowerCase();
-      if (
-        !lower ||
-        lower.includes("save") ||
-        lower.includes("share") ||
-        lower.includes("alert") ||
-        lower.includes("sign in") ||
-        lower.includes("job alert")
-      ) {
-        continue;
-      }
+    const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
+    const attrs = [
+      actionElement.getAttribute("data-testid"),
+      actionElement.getAttribute("data-qa"),
+      actionElement.getAttribute("aria-label"),
+      actionElement.getAttribute("title"),
+      actionElement.className,
+      actionElement.id,
+      element.getAttribute("data-testid"),
+      element.getAttribute("data-qa"),
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.className,
+      element.id,
+    ]
+      .join(" ")
+      .toLowerCase();
 
-      const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
-      const attrs = [
-        actionElement.getAttribute("data-testid"),
-        actionElement.getAttribute("data-qa"),
-        actionElement.getAttribute("aria-label"),
-        actionElement.getAttribute("title"),
-        actionElement.className,
-        actionElement.id,
-        element.getAttribute("data-testid"),
-        element.getAttribute("data-qa"),
-        element.getAttribute("aria-label"),
-        element.getAttribute("title"),
-        element.className,
-        element.id,
-      ]
-        .join(" ")
-        .toLowerCase();
+    let score = 0;
+    if (lower === "apply now" || lower === "apply") score += 95;
+    if (lower.includes("1-click apply") || lower.includes("1 click apply")) score += 92;
+    if (lower.includes("quick apply") || lower.includes("easy apply")) score += 90;
+    if (lower.includes("apply on company") || lower.includes("apply on employer")) score += 88;
+    if (lower.includes("continue to company") || lower.includes("company site")) score += 86;
+    if (lower.includes("apply")) score += 70;
+    if (lower.includes("continue")) score += 40;
+    if (attrs.includes("apply")) score += 25;
+    if (attrs.includes("quick")) score += 15;
+    if (attrs.includes("company")) score += 15;
+    if (url && shouldPreferApplyNavigation(url, text, "ziprecruiter")) score += 35;
+    if (url && /zipapply|jobapply|\/apply\/|candidate/i.test(url)) score += 35;
 
-      let score = 0;
-      if (lower === "apply now" || lower === "apply") score += 95;
-      if (lower.includes("1-click apply") || lower.includes("1 click apply")) score += 92;
-      if (lower.includes("quick apply") || lower.includes("easy apply")) score += 90;
-      if (lower.includes("apply on company") || lower.includes("apply on employer")) score += 88;
-      if (lower.includes("continue to company") || lower.includes("company site")) score += 86;
-      if (lower.includes("apply")) score += 70;
-      if (lower.includes("continue")) score += 40;
-      if (attrs.includes("apply")) score += 25;
-      if (attrs.includes("quick")) score += 15;
-      if (attrs.includes("company")) score += 15;
-      if (url && shouldPreferApplyNavigation(url, text, "ziprecruiter")) score += 35;
-      if (url && /zipapply|jobapply|\/apply\/|candidate/i.test(url)) score += 35;
+    if (score < 45) {
+      continue;
+    }
 
-      if (score < 45) {
-        continue;
-      }
-
-      if (!best || score > best.score) {
-        best = { element: actionElement, score, text, url };
-      }
+    if (!best || score > best.score) {
+      best = { element: actionElement, score, text, url };
     }
   }
 
   if (!best) {
-    for (const element of Array.from(document.querySelectorAll<HTMLElement>("a[href], button, [role='button']"))) {
+    for (const element of collectDeepMatchesFromSelectors([
+      "a[href]",
+      "button",
+      "[role='button']",
+    ])) {
       const actionElement = getClickableApplyElement(element);
       if (!isElementVisible(actionElement)) {
         continue;
@@ -622,6 +688,98 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
   };
 }
 
+export function findDiceApplyAction(): ApplyAction | null {
+  const applyComponents = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "apply-button-wc, [data-cy='apply-button'], [data-cy*='apply'], [class*='apply-button'], [class*='ApplyButton']"
+    )
+  );
+
+  for (const component of applyComponents) {
+    const root = component.shadowRoot ?? component;
+
+    const button = root.querySelector<HTMLElement>(
+      "a[href], button, input[type='submit'], [role='button']"
+    );
+
+    if (button && isElementVisible(button)) {
+      const url = getNavigationUrl(button);
+      if (url) {
+        return {
+          type: "navigate",
+          url,
+          description: cleanText(getActionText(button)) || "Dice apply button",
+        };
+      }
+
+      return {
+        type: "click",
+        element: button,
+        description: cleanText(getActionText(button)) || "Dice apply button",
+      };
+    }
+
+    if (isElementVisible(component)) {
+      const url = getNavigationUrl(component);
+      if (url) {
+        return {
+          type: "navigate",
+          url,
+          description: cleanText(getActionText(component)) || "Dice apply button",
+        };
+      }
+
+      return {
+        type: "click",
+        element: component,
+        description: cleanText(getActionText(component)) || "Dice apply button",
+      };
+    }
+  }
+
+  const allHosts = Array.from(document.querySelectorAll<HTMLElement>("*")).filter(
+    (element) => element.shadowRoot
+  );
+
+  for (const host of allHosts) {
+    if (!host.shadowRoot) {
+      continue;
+    }
+
+    const applyButton = host.shadowRoot.querySelector<HTMLElement>(
+      "a[href*='apply'], button[class*='apply'], [data-cy*='apply'], [aria-label*='apply' i]"
+    );
+
+    if (applyButton && isElementVisible(applyButton)) {
+      const text = cleanText(getActionText(applyButton)).toLowerCase();
+      if (
+        text.includes("save") ||
+        text.includes("share") ||
+        text.includes("alert")
+      ) {
+        continue;
+      }
+
+      const url = getNavigationUrl(applyButton);
+      if (url) {
+        return {
+          type: "navigate",
+          url,
+          description: text || "Dice apply button",
+        };
+      }
+
+      return {
+        type: "click",
+        element: applyButton,
+        description: text || "Dice apply button",
+      };
+    }
+  }
+
+  return null;
+}
+
 export function hasIndeedApplyIframe(): boolean {
   return Boolean(
     document.querySelector(
@@ -636,7 +794,7 @@ export function hasIndeedApplyIframe(): boolean {
 }
 
 export function hasZipRecruiterApplyModal(): boolean {
-  const modals = document.querySelectorAll<HTMLElement>(
+  const modals = collectDeepMatches<HTMLElement>(
     "[role='dialog'], [aria-modal='true'], [class*='modal'], [class*='overlay'], [class*='popup'], [data-testid*='modal'], [data-testid*='apply']"
   );
 
@@ -856,29 +1014,7 @@ function collectProgressionCandidates(
   site?: SiteKey | null
 ): HTMLElement[] {
   const selectors = getProgressionCandidateSelectors(site);
-  const seen = new Set<HTMLElement>();
-  const candidates: HTMLElement[] = [];
-
-  for (const selector of selectors) {
-    let elements: HTMLElement[];
-    try {
-      elements = Array.from(
-        document.querySelectorAll<HTMLElement>(selector)
-      );
-    } catch {
-      continue;
-    }
-
-    for (const element of elements) {
-      if (seen.has(element)) {
-        continue;
-      }
-      seen.add(element);
-      candidates.push(element);
-    }
-  }
-
-  return candidates;
+  return collectDeepMatchesFromSelectors(selectors);
 }
 
 function getProgressionCandidateSelectors(
@@ -954,17 +1090,7 @@ export function findApplyAction(
   context: "job-page" | "follow-up"
 ): ApplyAction | null {
   const selectors = getApplyCandidateSelectors(site);
-  const elements = new Set<HTMLElement>();
-
-  for (const selector of selectors) {
-    try {
-      for (const element of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
-        elements.add(element);
-      }
-    } catch {
-      // FIX: Skip invalid selectors
-    }
-  }
+  const elements = collectDeepMatchesFromSelectors(selectors);
 
   let best:
     | {
@@ -1010,7 +1136,33 @@ export function findApplyAction(
 }
 
 export function isLikelyApplyUrl(url: string, site: SiteKey): boolean {
+  if (isKnownBrokenApplyUrl(url)) {
+    return false;
+  }
+
   const lower = url.toLowerCase();
+  let parsed: URL | null = null;
+
+  try {
+    parsed = new URL(url, window.location.href);
+  } catch {
+    parsed = null;
+  }
+
+  const hostname = parsed?.hostname.toLowerCase() ?? "";
+  const pathAndQuery = `${parsed?.pathname.toLowerCase() ?? ""}${parsed?.search.toLowerCase() ?? ""}`;
+
+  if (
+    hostname.includes("greenhouse.io") &&
+    (
+      pathAndQuery.includes("/embed/job_app") ||
+      pathAndQuery.includes("/jobs/") ||
+      pathAndQuery.includes("gh_jid=")
+    )
+  ) {
+    return true;
+  }
+
   if (
     lower.includes("smartapply.indeed.com") ||
     lower.includes("indeedapply") ||
@@ -1062,7 +1214,11 @@ function extractLikelyApplyUrl(element: HTMLElement): string | null {
 
     if (/^https?:\/\//i.test(value) || value.startsWith("/")) {
       const normalized = normalizeUrl(value);
-      if (normalized && /apply|application|candidate|jobapply|company|career/i.test(normalized)) {
+      if (
+        normalized &&
+        !isKnownBrokenApplyUrl(normalized) &&
+        /apply|application|candidate|jobapply|company|career/i.test(normalized)
+      ) {
         return normalized;
       }
     }
@@ -1090,7 +1246,7 @@ function findExternalApplyUrlInDocument(): string | null {
     const urls = source.match(/https?:\/\/[^"'\\<>\s]+/gi) || [];
     for (const rawUrl of urls) {
       const url = normalizeUrl(rawUrl);
-      if (!url || !isExternalUrl(url)) {
+      if (!url || isKnownBrokenApplyUrl(url) || !isExternalUrl(url)) {
         continue;
       }
 
@@ -1199,6 +1355,10 @@ function scoreApplyElement(
   element: HTMLElement,
   context: "job-page" | "follow-up"
 ): number {
+  if (isKnownBrokenApplyUrl(url)) {
+    return -1;
+  }
+
   if (!isElementVisible(element) || (element as HTMLButtonElement).disabled) {
     return -1;
   }
@@ -1319,6 +1479,7 @@ function getApplyCandidateSelectors(site: SiteKey | null): string[] {
   const generic = [
     "a[href*='apply']",
     "a[href*='application']",
+    "a[href]",
     "a[role='button']",
     "button",
     "input[type='submit']",
@@ -1453,6 +1614,10 @@ export function shouldPreferApplyNavigation(
   text: string,
   site: SiteKey | null
 ): boolean {
+  if (isKnownBrokenApplyUrl(url)) {
+    return false;
+  }
+
   const lowerText = text.toLowerCase();
   if (
     lowerText.includes("company site") ||
