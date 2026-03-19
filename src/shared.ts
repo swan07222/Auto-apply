@@ -614,7 +614,7 @@ const CANONICAL_JOB_BOARD_ORIGINS: Record<JobBoardSite, string> = {
 
 const IDENTIFYING_PARAMS = [
   "jk", "vjk", "jobid", "job_id", "jid", "gh_jid", "ashby_jid",
-  "requisitionid", "requisition_id", "reqid", "id", "posting_id", "req_id",
+  "requisitionid", "requisition_id", "reqid", "id", "posting_id", "req_id", "lk",
 ];
 
 export function getJobDedupKey(url: string): string {

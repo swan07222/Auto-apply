@@ -133,6 +133,7 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
           "a[data-testid*='job-title']",
           "a[data-testid='job-title']",
         ]),
+        ...collectZipRecruiterCardCandidates(),
       ]);
 
     case "dice":
@@ -265,6 +266,8 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "a[href*='/career/']",
             "a[href*='/openings/']",
             "a[href*='/opening/']",
+            "a[href*='/vacancies/']",
+            "a[href*='/vacancy/']",
             "a[href*='/job-posting/']",
             "a[href*='/job-postings/']",
             "a[href*='/requisition/']",
@@ -304,6 +307,8 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
           "a[href*='/career/']",
           "a[href*='/openings/']",
           "a[href*='/opening/']",
+          "a[href*='/vacancies/']",
+          "a[href*='/vacancy/']",
           "a[href*='/job-posting/']",
           "a[href*='/job-postings/']",
           "a[href*='/requisition/']",
@@ -369,9 +374,16 @@ export function pickRelevantJobUrls(
     )
     .map((entry) => entry.candidate.url);
 
-  return preferred.length > 0
-    ? preferred
-    : sortCandidatesByRecency(eligible, datePostedWindow).map((candidate) => candidate.url);
+  if (preferred.length === 0) {
+    return sortCandidatesByRecency(eligible, datePostedWindow).map((candidate) => candidate.url);
+  }
+
+  const preferredSet = new Set(preferred);
+  const fallback = sortCandidatesByRecency(eligible, datePostedWindow)
+    .map((candidate) => candidate.url)
+    .filter((url) => !preferredSet.has(url));
+
+  return [...preferred, ...fallback];
 }
 
 export function isLikelyJobDetailUrl(
@@ -418,6 +430,7 @@ export function isLikelyJobDetailUrl(
 
     case "ziprecruiter":
       return (
+        /[?&]lk=/i.test(lowerUrl) ||
         lowerUrl.includes("?jid=") ||
         lowerUrl.includes("/job-details/") ||
         lowerUrl.includes("/k/") ||
@@ -517,13 +530,16 @@ export function isLikelyJobDetailUrl(
         "breezy.hr",
         "bamboohr.com",
       ];
-      if (atsSignals.some((token) => lowerUrl.includes(token))) {
-        return true;
-      }
 
       try {
         const parsed = new URL(lowerUrl);
         if (hasJobIdentifyingSearchParam(parsed)) {
+          return true;
+        }
+        if (isKnownAtsListingUrl(parsed)) {
+          return false;
+        }
+        if (atsSignals.some((token) => lowerUrl.includes(token))) {
           return true;
         }
       } catch {
@@ -545,6 +561,8 @@ export function isLikelyJobDetailUrl(
         "/opportunities/",
         "/openings/",
         "/opening/",
+        "/vacancies/",
+        "/vacancy/",
         "/job-posting/",
         "/job-postings/",
         "/requisition/",
@@ -599,6 +617,28 @@ export function isLikelyJobDetailUrl(
         }
 
         return looksLikeTechnicalRoleTitle(text);
+      }
+
+      try {
+        const parsed = new URL(lowerUrl);
+        const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+        const segments = path.split("/").filter(Boolean);
+        const lastSegment = segments[segments.length - 1] ?? "";
+        const looksLikeDetailSlug =
+          lastSegment.includes("-") ||
+          /\d/.test(lastSegment) ||
+          segments.length >= 3;
+
+        if (
+          segments.length >= 2 &&
+          looksLikeDetailSlug &&
+          !isGenericListingSegment(lastSegment) &&
+          looksLikeTechnicalRoleTitle(text)
+        ) {
+          return true;
+        }
+      } catch {
+        // Ignore parse errors and fall through.
       }
 
       return false;
@@ -687,11 +727,15 @@ export function isAppliedJobText(text: string): boolean {
   }
 
   return [
+    /^\s*applied\s*$/i,
     /\balready applied\b/,
+    /\bpreviously applied\b/,
+    /\byou already applied\b/,
     /\byou applied\b/,
     /\byou(?:'ve| have)? applied\b/,
     /\bapplication submitted\b/,
     /\bapplication sent\b/,
+    /\balready submitted\b/,
     /\bapplication status:\s*applied\b/,
     /\bjob status:\s*applied\b/,
     /\bjob activity:\s*applied\b/,
@@ -699,6 +743,7 @@ export function isAppliedJobText(text: string): boolean {
     /\bapplied on \d/,
     /\bapplied\s+\d+\s+(minute|hour|day|week|month)s?\s+ago\b/,
     /\bstatus:\s*applied\b/,
+    /\bapplied\b(?=\s*(?:[|,.:;)\]]|$))/,
   ].some((pattern) => pattern.test(normalized));
 }
 
@@ -904,6 +949,39 @@ function collectMonsterFallbackCandidates(): JobCandidate[] {
   return candidates;
 }
 
+function collectZipRecruiterCardCandidates(): JobCandidate[] {
+  const candidates: JobCandidate[] = [];
+
+  for (const card of Array.from(document.querySelectorAll<HTMLElement>("[id^='job-card-']"))) {
+    const rawId = card.id || "";
+    const lk = rawId.startsWith("job-card-") ? rawId.slice("job-card-".length) : "";
+    if (!lk) {
+      continue;
+    }
+
+    const titleButton = card.querySelector<HTMLElement>("button[aria-label^='View ']");
+    const title =
+      cleanText(
+        card.querySelector<HTMLElement>(
+          "h1, h2, h3, [data-testid*='job-title'], [class*='job_title'], [class*='jobTitle']"
+        )?.textContent
+      ) ||
+      cleanText(titleButton?.getAttribute("aria-label")?.replace(/^View\s+/i, "") || "");
+    const contextText = cleanText(card.innerText || card.textContent || "");
+
+    if (!title) {
+      continue;
+    }
+
+    const detailUrl = new URL(window.location.href);
+    detailUrl.searchParams.set("lk", lk);
+
+    addJobCandidate(candidates, detailUrl.toString(), title, contextText);
+  }
+
+  return candidates;
+}
+
 function collectFallbackJobCandidates(): JobCandidate[] {
   const candidates: JobCandidate[] = [];
   const currentHost = window.location.hostname.toLowerCase();
@@ -986,6 +1064,8 @@ function collectFallbackJobCandidates(): JobCandidate[] {
       "/positions/",
       "/opening/",
       "/openings/",
+      "/vacancy/",
+      "/vacancies/",
       "/career/",
       "/careers/",
       "/opportunity/",
@@ -1120,6 +1200,58 @@ function hasJobIdentifyingSearchParam(parsed: URL): boolean {
     const value = parsed.searchParams.get(name);
     return Boolean(value && value.trim().length > 0);
   });
+}
+
+function isKnownAtsListingUrl(parsed: URL): boolean {
+  const host = parsed.hostname.toLowerCase();
+  const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+  const segments = path.split("/").filter(Boolean);
+  const lastSegment = segments[segments.length - 1] ?? "";
+  const isKnownAtsHost = [
+    "lever.co",
+    "greenhouse.io",
+    "ashbyhq.com",
+    "workable.com",
+    "jobvite.com",
+    "workdayjobs.com",
+    "myworkdayjobs.com",
+    "icims.com",
+    "smartrecruiters.com",
+    "applytojob.com",
+    "recruitee.com",
+    "breezy.hr",
+    "bamboohr.com",
+  ].some((token) => host.includes(token));
+
+  if (!isKnownAtsHost || hasJobIdentifyingSearchParam(parsed)) {
+    return false;
+  }
+
+  if (
+    path.includes("/embed/job_app") ||
+    path.includes("/candidate/") ||
+    path.includes("/apply/")
+  ) {
+    return false;
+  }
+
+  if (host.includes("lever.co")) {
+    return segments.length <= 1;
+  }
+
+  if (host.includes("greenhouse.io")) {
+    return segments.length <= 1 || (segments.length === 2 && lastSegment === "jobs");
+  }
+
+  if (host.includes("ashbyhq.com")) {
+    return segments.length <= 1 || (segments.length === 2 && !path.includes("/job/"));
+  }
+
+  if (segments.length <= 1) {
+    return true;
+  }
+
+  return isGenericListingSegment(lastSegment) && !/\d/.test(lastSegment);
 }
 
 function isGenericRoleCtaText(text: string): boolean {

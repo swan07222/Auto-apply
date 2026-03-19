@@ -359,7 +359,8 @@
     "reqid",
     "id",
     "posting_id",
-    "req_id"
+    "req_id",
+    "lk"
   ];
   function getJobDedupKey(url) {
     const raw = url.trim().toLowerCase();

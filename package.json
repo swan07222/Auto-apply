@@ -7,12 +7,16 @@
     "build": "node ./scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --reporter=verbose",
-    "test:watch": "vitest"
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "test:live": "playwright test",
+    "test:full": "npm run test:coverage && npm run test:live && npm run typecheck && npm run build"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
     "@types/chrome": "^0.1.19",
     "@types/node": "^25.5.0",
+    "@vitest/coverage-v8": "^4.1.0",
     "esbuild": "^0.25.10",
     "jsdom": "^29.0.0",
     "typescript": "^5.9.2",

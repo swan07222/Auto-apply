@@ -1,6 +1,16 @@
 import { afterEach, beforeAll, vi } from "vitest";
 
 beforeAll(() => {
+  Object.defineProperty(HTMLElement.prototype, "innerText", {
+    configurable: true,
+    get() {
+      return this.textContent ?? "";
+    },
+    set(value: string) {
+      this.textContent = value;
+    },
+  });
+
   Object.defineProperty(window, "scrollTo", {
     configurable: true,
     writable: true,
@@ -31,10 +41,19 @@ beforeAll(() => {
       };
     },
   });
+
+  if (typeof PointerEvent === "undefined") {
+    Object.defineProperty(globalThis, "PointerEvent", {
+      configurable: true,
+      writable: true,
+      value: MouseEvent,
+    });
+  }
 });
 
 afterEach(() => {
   document.head.innerHTML = "";
   document.body.innerHTML = "";
   window.history.replaceState({}, "", "/");
+  vi.restoreAllMocks();
 });

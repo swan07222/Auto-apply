@@ -49490,7 +49490,8 @@
     "reqid",
     "id",
     "posting_id",
-    "req_id"
+    "req_id",
+    "lk"
   ];
   function getJobDedupKey(url) {
     const raw = url.trim().toLowerCase();
@@ -49757,68 +49758,6 @@
     return value === "front_end" || value === "back_end" || value === "full_stack" ? value : void 0;
   }
 
-  // src/content/text.ts
-  function cleanText(value) {
-    if (!value) {
-      return "";
-    }
-    return value.replace(/\s+/g, " ").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
-  }
-  function truncateText(value, max2) {
-    if (!value) {
-      return "";
-    }
-    if (value.length <= max2) {
-      return value;
-    }
-    const truncated = value.slice(0, max2 - 3);
-    const lastSpace = truncated.lastIndexOf(" ");
-    if (lastSpace > max2 * 0.7) {
-      return `${truncated.slice(0, lastSpace).trim()}...`;
-    }
-    return `${truncated.trim()}...`;
-  }
-  function normalizeChoiceText(value) {
-    if (!value) {
-      return "";
-    }
-    return value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-  }
-  function cssEscape(value) {
-    if (!value) {
-      return "";
-    }
-    if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
-      return CSS.escape(value);
-    }
-    return value.replace(/["'\\#.:[\]()>+~=^$*|]/g, "\\$&");
-  }
-  function textSimilarity(a, b) {
-    if (!a || !b) {
-      return 0;
-    }
-    const normalA = normalizeChoiceText(a);
-    const normalB = normalizeChoiceText(b);
-    if (normalA === normalB) {
-      return 1;
-    }
-    if (normalA.includes(normalB) || normalB.includes(normalA)) {
-      return 0.8;
-    }
-    const wordsA = new Set(normalA.split(" ").filter(Boolean));
-    const wordsB = new Set(normalB.split(" ").filter(Boolean));
-    if (wordsA.size === 0 || wordsB.size === 0) {
-      return 0;
-    }
-    let overlap = 0;
-    for (const word of wordsA) {
-      if (wordsB.has(word)) {
-        overlap++;
-      }
-    }
-    return overlap / Math.max(wordsA.size, wordsB.size);
-  }
-
   // src/content/dom.ts
   function getActionText(el) {
     return [
@@ -50077,6 +50016,304 @@
     return true;
   }
 
+  // src/content/text.ts
+  function cleanText(value) {
+    if (!value) {
+      return "";
+    }
+    return value.replace(/\s+/g, " ").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+  }
+  function truncateText(value, max2) {
+    if (!value) {
+      return "";
+    }
+    if (value.length <= max2) {
+      return value;
+    }
+    const truncated = value.slice(0, max2 - 3);
+    const lastSpace = truncated.lastIndexOf(" ");
+    if (lastSpace > max2 * 0.7) {
+      return `${truncated.slice(0, lastSpace).trim()}...`;
+    }
+    return `${truncated.trim()}...`;
+  }
+  function normalizeChoiceText(value) {
+    if (!value) {
+      return "";
+    }
+    return value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  }
+  function cssEscape(value) {
+    if (!value) {
+      return "";
+    }
+    if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+      return CSS.escape(value);
+    }
+    return value.replace(/["'\\#.:[\]()>+~=^$*|]/g, "\\$&");
+  }
+  function textSimilarity(a, b) {
+    if (!a || !b) {
+      return 0;
+    }
+    const normalA = normalizeChoiceText(a);
+    const normalB = normalizeChoiceText(b);
+    if (normalA === normalB) {
+      return 1;
+    }
+    if (normalA.includes(normalB) || normalB.includes(normalA)) {
+      return 0.8;
+    }
+    const wordsA = new Set(normalA.split(" ").filter(Boolean));
+    const wordsB = new Set(normalB.split(" ").filter(Boolean));
+    if (wordsA.size === 0 || wordsB.size === 0) {
+      return 0;
+    }
+    let overlap = 0;
+    for (const word of wordsA) {
+      if (wordsB.has(word)) {
+        overlap++;
+      }
+    }
+    return overlap / Math.max(wordsA.size, wordsB.size);
+  }
+
+  // src/content/autofill.ts
+  function shouldAutofillField(field, ignoreBlankCheck = false) {
+    if (field.disabled) return false;
+    if (field instanceof HTMLInputElement) {
+      const inputType = field.type.toLowerCase();
+      if (["hidden", "submit", "button", "reset", "image"].includes(inputType)) {
+        return false;
+      }
+      if (inputType === "file") return true;
+      if (!isFieldContextVisible(field)) return false;
+      if (!ignoreBlankCheck && (inputType === "radio" || inputType === "checkbox")) {
+        return true;
+      }
+    } else if (!isFieldContextVisible(field)) {
+      return false;
+    }
+    const descriptor = getFieldDescriptor(field, getQuestionText(field));
+    if (matchesDescriptor(descriptor, [
+      "job title",
+      "keywords",
+      "search jobs",
+      "find jobs",
+      "job search",
+      "search by keyword"
+    ])) {
+      return false;
+    }
+    if (descriptor === "what" || descriptor === "where" || descriptor === "search" || descriptor === "q") {
+      return false;
+    }
+    if (descriptor.includes("captcha") || descriptor.includes("social security") || descriptor.includes("ssn") || descriptor.includes("password") || descriptor.includes("credit card") || descriptor.includes("card number")) {
+      return false;
+    }
+    if (!ignoreBlankCheck && field instanceof HTMLSelectElement) {
+      return isSelectBlank(field);
+    }
+    return true;
+  }
+  function isTextLikeInput(field) {
+    return ["text", "email", "tel", "url", "number", "search", "date", "month", "week"].includes(
+      field.type.toLowerCase()
+    );
+  }
+  function isSelectBlank(field) {
+    return !field.value || field.selectedIndex <= 0 || /^select\b|^choose\b|please select|^--/i.test(field.selectedOptions[0]?.textContent || "");
+  }
+  function setFieldValue(field, value) {
+    const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), "value");
+    if (descriptor?.set) descriptor.set.call(field, value);
+    else field.value = value;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+    field.dispatchEvent(new Event("blur", { bubbles: true }));
+  }
+  function getQuestionText(field) {
+    const legend = cleanText(field.closest("fieldset")?.querySelector("legend")?.textContent);
+    if (legend) return legend;
+    const labelledBy = field.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const text = cleanText(
+        labelledBy.split(/\s+/).map((id) => findByIdNearField(field, id)?.textContent ?? "").join(" ")
+      );
+      if (text) return text;
+    }
+    const label = getAssociatedLabelText(field);
+    if (label) return label;
+    const wrapper = cleanText(
+      field.closest(
+        "label, [role='group'], .field, .form-field, .question, .application-question, [class*='form-group'], [class*='field-wrapper']"
+      )?.querySelector("label, .label, .question, .prompt, .title, span")?.textContent
+    );
+    if (wrapper) return wrapper;
+    return cleanText(field.getAttribute("aria-label")) || cleanText(field.getAttribute("placeholder")) || cleanText(field.getAttribute("name")) || cleanText(field.getAttribute("id")) || "";
+  }
+  function getAssociatedLabelText(field) {
+    const id = field.getAttribute("id");
+    if (id) {
+      try {
+        const root2 = getFieldLookupRoot(field);
+        const label = cleanText(
+          root2.querySelector(`label[for='${cssEscape(id)}']`)?.textContent || document.querySelector(`label[for='${cssEscape(id)}']`)?.textContent
+        );
+        if (label) return label;
+      } catch {
+      }
+    }
+    return cleanText(field.closest("label")?.textContent);
+  }
+  function getOptionLabelText(field) {
+    return getAssociatedLabelText(field) || cleanText(field.parentElement?.textContent) || "";
+  }
+  function getFieldDescriptor(field, question) {
+    return normalizeChoiceText(
+      [
+        question,
+        field.getAttribute("name"),
+        field.getAttribute("id"),
+        field.getAttribute("placeholder"),
+        field.getAttribute("aria-label"),
+        field.getAttribute("autocomplete"),
+        field instanceof HTMLInputElement ? field.type : ""
+      ].filter(Boolean).join(" ")
+    );
+  }
+  function matchesDescriptor(descriptor, phrases) {
+    return phrases.some((phrase) => descriptor.includes(normalizeChoiceText(phrase)));
+  }
+  function scoreChoiceMatch(answer, candidate) {
+    if (!answer || !candidate) return -1;
+    const normalizedAnswer = normalizeChoiceText(answer);
+    const normalizedCandidate = normalizeChoiceText(candidate);
+    if (!normalizedAnswer || !normalizedCandidate) return -1;
+    if (normalizedAnswer === normalizedCandidate) return 100;
+    const normalizedBoolean = normalizeBooleanAnswer(normalizedAnswer);
+    if (normalizedBoolean !== null) {
+      if (normalizedBoolean && ["yes", "true", "authorized", "eligible", "i am", "i do", "i have", "i will"].some(
+        (word) => normalizedCandidate.includes(word)
+      )) {
+        return 80;
+      }
+      if (!normalizedBoolean && ["no", "false", "not authorized", "i am not", "i do not", "i don t"].some(
+        (word) => normalizedCandidate.includes(word)
+      )) {
+        return 80;
+      }
+    }
+    if (normalizedCandidate.includes(normalizedAnswer) || normalizedAnswer.includes(normalizedCandidate)) {
+      return 70;
+    }
+    return 0;
+  }
+  function normalizeBooleanAnswer(answer) {
+    const normalized = normalizeChoiceText(answer);
+    if (["yes", "y", "true", "authorized", "eligible", "1"].includes(normalized)) return true;
+    if (["no", "n", "false", "not authorized", "0"].includes(normalized)) return false;
+    return null;
+  }
+  function isConsentField(field) {
+    const descriptor = getFieldDescriptor(field, getQuestionText(field));
+    return ["privacy", "terms", "agree", "consent", "policy", "acknowledge", "accept", "gdpr"].some(
+      (token) => descriptor.includes(token)
+    );
+  }
+  function shouldRememberField(field) {
+    const descriptor = getFieldDescriptor(field, getQuestionText(field));
+    if (descriptor.includes("password") || descriptor.includes("social security") || descriptor.includes("ssn") || descriptor.includes("date of birth") || descriptor.includes("dob") || descriptor.includes("resume") || descriptor.includes("credit card") || descriptor.includes("card number") || descriptor.includes("cvv") || descriptor.includes("expiry")) {
+      return false;
+    }
+    if (matchesDescriptor(descriptor, [
+      "full name",
+      "first name",
+      "last name",
+      "given name",
+      "family name",
+      "surname",
+      "email",
+      "phone",
+      "mobile",
+      "telephone",
+      "linkedin",
+      "portfolio",
+      "website",
+      "personal site",
+      "github",
+      "city",
+      "state",
+      "province",
+      "region",
+      "country",
+      "current company",
+      "current employer",
+      "years of experience",
+      "year of experience",
+      "total experience",
+      "overall experience",
+      "authorized to work",
+      "work authorization",
+      "eligible to work",
+      "legally authorized",
+      "sponsorship",
+      "visa",
+      "relocate",
+      "relocation"
+    ])) {
+      return false;
+    }
+    if (field instanceof HTMLInputElement && field.type === "file") {
+      return false;
+    }
+    return true;
+  }
+  function readFieldAnswerForMemory(field) {
+    if (field instanceof HTMLSelectElement) {
+      return cleanText(field.selectedOptions[0]?.textContent || field.value);
+    }
+    if (field instanceof HTMLTextAreaElement) {
+      return field.value.trim();
+    }
+    if (field.type === "radio") {
+      return field.checked ? getOptionLabelText(field) || field.value : "";
+    }
+    if (field.type === "checkbox") {
+      return field.checked ? "Yes" : "No";
+    }
+    return field.value.trim();
+  }
+  function getFieldLookupRoot(field) {
+    const root2 = field.getRootNode();
+    return root2 instanceof ShadowRoot ? root2 : document;
+  }
+  function findByIdNearField(field, id) {
+    try {
+      const selector = `#${cssEscape(id)}`;
+      const root2 = getFieldLookupRoot(field);
+      return root2.querySelector(selector) ?? document.querySelector(selector);
+    } catch {
+      return null;
+    }
+  }
+  function isFieldContextVisible(field) {
+    if (isElementVisible(field)) return true;
+    for (const label of Array.from(field.labels ?? [])) {
+      if (label instanceof HTMLElement && isElementVisible(label)) {
+        return true;
+      }
+    }
+    const container = field.closest(
+      "label, fieldset, form, [role='group'], [role='radiogroup'], [role='dialog'], .field, .form-field, .question, .application-question, [class*='field'], [class*='question']"
+    );
+    if (container instanceof HTMLElement && isElementVisible(container)) {
+      return true;
+    }
+    const root2 = field.getRootNode();
+    return root2 instanceof ShadowRoot && root2.host instanceof HTMLElement && isElementVisible(root2.host);
+  }
+
   // src/content/jobSearch.ts
   var JOB_DETAIL_QUERY_PARAMS = [
     "gh_jid",
@@ -50200,7 +50437,8 @@
             "a[href*='/c/' i][href*='/job/' i]",
             "a[data-testid*='job-title']",
             "a[data-testid='job-title']"
-          ])
+          ]),
+          ...collectZipRecruiterCardCandidates()
         ]);
       case "dice":
         return dedupeJobCandidates(
@@ -50330,6 +50568,8 @@
               "a[href*='/career/']",
               "a[href*='/openings/']",
               "a[href*='/opening/']",
+              "a[href*='/vacancies/']",
+              "a[href*='/vacancy/']",
               "a[href*='/job-posting/']",
               "a[href*='/job-postings/']",
               "a[href*='/requisition/']",
@@ -50369,6 +50609,8 @@
             "a[href*='/career/']",
             "a[href*='/openings/']",
             "a[href*='/opening/']",
+            "a[href*='/vacancies/']",
+            "a[href*='/vacancy/']",
             "a[href*='/job-posting/']",
             "a[href*='/job-postings/']",
             "a[href*='/requisition/']",
@@ -50446,7 +50688,7 @@
       case "indeed":
         return lowerUrl.includes("/viewjob") || lowerUrl.includes("/rc/clk") || lowerUrl.includes("/pagead/clk");
       case "ziprecruiter":
-        return lowerUrl.includes("?jid=") || lowerUrl.includes("/job-details/") || lowerUrl.includes("/k/") || lowerUrl.includes("/c/") && lowerUrl.includes("/job/");
+        return /[?&]lk=/i.test(lowerUrl) || lowerUrl.includes("?jid=") || lowerUrl.includes("/job-details/") || lowerUrl.includes("/k/") || lowerUrl.includes("/c/") && lowerUrl.includes("/job/");
       case "dice":
         return lowerUrl.includes("/job-detail/") || lowerUrl.includes("/jobs/detail/");
       case "monster": {
@@ -50500,12 +50742,15 @@
           "breezy.hr",
           "bamboohr.com"
         ];
-        if (atsSignals.some((token) => lowerUrl.includes(token))) {
-          return true;
-        }
         try {
           const parsed = new URL(lowerUrl);
           if (hasJobIdentifyingSearchParam(parsed)) {
+            return true;
+          }
+          if (isKnownAtsListingUrl(parsed)) {
+            return false;
+          }
+          if (atsSignals.some((token) => lowerUrl.includes(token))) {
             return true;
           }
         } catch {
@@ -50524,6 +50769,8 @@
           "/opportunities/",
           "/openings/",
           "/opening/",
+          "/vacancies/",
+          "/vacancy/",
           "/job-posting/",
           "/job-postings/",
           "/requisition/",
@@ -50563,6 +50810,17 @@
           } catch {
           }
           return looksLikeTechnicalRoleTitle(text);
+        }
+        try {
+          const parsed = new URL(lowerUrl);
+          const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+          const segments = path.split("/").filter(Boolean);
+          const lastSegment = segments[segments.length - 1] ?? "";
+          const looksLikeDetailSlug = lastSegment.includes("-") || /\d/.test(lastSegment) || segments.length >= 3;
+          if (segments.length >= 2 && looksLikeDetailSlug && !isGenericListingSegment(lastSegment) && looksLikeTechnicalRoleTitle(text)) {
+            return true;
+          }
+        } catch {
         }
         return false;
       }
@@ -50799,6 +51057,30 @@
     }
     return candidates;
   }
+  function collectZipRecruiterCardCandidates() {
+    const candidates = [];
+    for (const card of Array.from(document.querySelectorAll("[id^='job-card-']"))) {
+      const rawId = card.id || "";
+      const lk = rawId.startsWith("job-card-") ? rawId.slice("job-card-".length) : "";
+      if (!lk) {
+        continue;
+      }
+      const titleButton = card.querySelector("button[aria-label^='View ']");
+      const title = cleanText(
+        card.querySelector(
+          "h1, h2, h3, [data-testid*='job-title'], [class*='job_title'], [class*='jobTitle']"
+        )?.textContent
+      ) || cleanText(titleButton?.getAttribute("aria-label")?.replace(/^View\s+/i, "") || "");
+      const contextText = cleanText(card.innerText || card.textContent || "");
+      if (!title) {
+        continue;
+      }
+      const detailUrl = new URL(window.location.href);
+      detailUrl.searchParams.set("lk", lk);
+      addJobCandidate(candidates, detailUrl.toString(), title, contextText);
+    }
+    return candidates;
+  }
   function collectFallbackJobCandidates() {
     const candidates = [];
     const currentHost = window.location.hostname.toLowerCase();
@@ -50868,6 +51150,8 @@
         "/positions/",
         "/opening/",
         "/openings/",
+        "/vacancy/",
+        "/vacancies/",
         "/career/",
         "/careers/",
         "/opportunity/",
@@ -50966,6 +51250,46 @@
       const value = parsed.searchParams.get(name);
       return Boolean(value && value.trim().length > 0);
     });
+  }
+  function isKnownAtsListingUrl(parsed) {
+    const host = parsed.hostname.toLowerCase();
+    const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+    const segments = path.split("/").filter(Boolean);
+    const lastSegment = segments[segments.length - 1] ?? "";
+    const isKnownAtsHost = [
+      "lever.co",
+      "greenhouse.io",
+      "ashbyhq.com",
+      "workable.com",
+      "jobvite.com",
+      "workdayjobs.com",
+      "myworkdayjobs.com",
+      "icims.com",
+      "smartrecruiters.com",
+      "applytojob.com",
+      "recruitee.com",
+      "breezy.hr",
+      "bamboohr.com"
+    ].some((token) => host.includes(token));
+    if (!isKnownAtsHost || hasJobIdentifyingSearchParam(parsed)) {
+      return false;
+    }
+    if (path.includes("/embed/job_app") || path.includes("/candidate/") || path.includes("/apply/")) {
+      return false;
+    }
+    if (host.includes("lever.co")) {
+      return segments.length <= 1;
+    }
+    if (host.includes("greenhouse.io")) {
+      return segments.length <= 1 || segments.length === 2 && lastSegment === "jobs";
+    }
+    if (host.includes("ashbyhq.com")) {
+      return segments.length <= 1 || segments.length === 2 && !path.includes("/job/");
+    }
+    if (segments.length <= 1) {
+      return true;
+    }
+    return isGenericListingSegment(lastSegment) && !/\d/.test(lastSegment);
   }
   function isGenericRoleCtaText(text) {
     const normalized = normalizeChoiceText(text);
@@ -55028,201 +55352,6 @@
       (term) => containerText.includes(normalizeChoiceText(term))
     );
   }
-  function shouldAutofillField(field, ignoreBlankCheck = false) {
-    if (field.disabled) return false;
-    if (field instanceof HTMLInputElement) {
-      const t = field.type.toLowerCase();
-      if (["hidden", "submit", "button", "reset", "image"].includes(
-        t
-      ))
-        return false;
-      if (t === "file") return true;
-      if (!isFieldContextVisible(field)) return false;
-      if (!ignoreBlankCheck && (t === "radio" || t === "checkbox"))
-        return true;
-    } else if (!isFieldContextVisible(field)) return false;
-    const d = getFieldDescriptor(field, getQuestionText(field));
-    if (matchesDescriptor(d, [
-      "job title",
-      "keywords",
-      "search jobs",
-      "find jobs",
-      "job search",
-      "search by keyword"
-    ]))
-      return false;
-    if (d === "what" || d === "where" || d === "search" || d === "q")
-      return false;
-    if (d.includes("captcha") || d.includes("social security") || d.includes("ssn") || d.includes("password") || d.includes("credit card") || d.includes("card number"))
-      return false;
-    if (!ignoreBlankCheck && field instanceof HTMLSelectElement)
-      return isSelectBlank(field);
-    return true;
-  }
-  function isTextLikeInput(f) {
-    return [
-      "text",
-      "email",
-      "tel",
-      "url",
-      "number",
-      "search",
-      "date",
-      "month",
-      "week"
-    ].includes(f.type.toLowerCase());
-  }
-  function isSelectBlank(s) {
-    return !s.value || s.selectedIndex <= 0 || /^select\b|^choose\b|please select|^--/i.test(
-      s.selectedOptions[0]?.textContent || ""
-    );
-  }
-  function setFieldValue(field, value) {
-    const desc = Object.getOwnPropertyDescriptor(
-      Object.getPrototypeOf(field),
-      "value"
-    );
-    if (desc?.set) desc.set.call(field, value);
-    else field.value = value;
-    field.dispatchEvent(new Event("input", { bubbles: true }));
-    field.dispatchEvent(new Event("change", { bubbles: true }));
-    field.dispatchEvent(new Event("blur", { bubbles: true }));
-  }
-  function getFieldLookupRoot(field) {
-    const root2 = field.getRootNode();
-    return root2 instanceof ShadowRoot ? root2 : document;
-  }
-  function findByIdNearField(field, id) {
-    try {
-      const selector = `#${cssEscape(id)}`;
-      const root2 = getFieldLookupRoot(field);
-      return root2.querySelector(selector) ?? document.querySelector(selector);
-    } catch {
-      return null;
-    }
-  }
-  function isFieldContextVisible(field) {
-    if (isElementVisible(field)) return true;
-    for (const label of Array.from(field.labels ?? [])) {
-      if (label instanceof HTMLElement && isElementVisible(label)) {
-        return true;
-      }
-    }
-    const container = field.closest(
-      "label, fieldset, form, [role='group'], [role='radiogroup'], [role='dialog'], .field, .form-field, .question, .application-question, [class*='field'], [class*='question']"
-    );
-    if (container instanceof HTMLElement && isElementVisible(container)) {
-      return true;
-    }
-    const root2 = field.getRootNode();
-    return root2 instanceof ShadowRoot && root2.host instanceof HTMLElement && isElementVisible(root2.host);
-  }
-  function getQuestionText(field) {
-    const legend = cleanText(
-      field.closest("fieldset")?.querySelector("legend")?.textContent
-    );
-    if (legend) return legend;
-    const ariaBy = field.getAttribute("aria-labelledby");
-    if (ariaBy) {
-      const t = cleanText(
-        ariaBy.split(/\s+/).map(
-          (id) => findByIdNearField(field, id)?.textContent ?? ""
-        ).join(" ")
-      );
-      if (t) return t;
-    }
-    const label = getAssociatedLabelText(field);
-    if (label) return label;
-    const wrapper = cleanText(
-      field.closest(
-        "label, [role='group'], .field, .form-field, .question, .application-question, [class*='form-group'], [class*='field-wrapper']"
-      )?.querySelector(
-        "label, .label, .question, .prompt, .title, span"
-      )?.textContent
-    );
-    if (wrapper) return wrapper;
-    return cleanText(field.getAttribute("aria-label")) || cleanText(field.getAttribute("placeholder")) || cleanText(field.getAttribute("name")) || cleanText(field.getAttribute("id")) || "";
-  }
-  function getAssociatedLabelText(field) {
-    const id = field.getAttribute("id");
-    if (id) {
-      try {
-        const root2 = getFieldLookupRoot(field);
-        const l2 = cleanText(
-          root2.querySelector(
-            `label[for='${cssEscape(id)}']`
-          )?.textContent || document.querySelector(
-            `label[for='${cssEscape(id)}']`
-          )?.textContent
-        );
-        if (l2) return l2;
-      } catch {
-      }
-    }
-    return cleanText(field.closest("label")?.textContent);
-  }
-  function getOptionLabelText(field) {
-    return getAssociatedLabelText(field) || cleanText(field.parentElement?.textContent) || "";
-  }
-  function getFieldDescriptor(field, question) {
-    return normalizeChoiceText(
-      [
-        question,
-        field.getAttribute("name"),
-        field.getAttribute("id"),
-        field.getAttribute("placeholder"),
-        field.getAttribute("aria-label"),
-        field.getAttribute("autocomplete"),
-        field instanceof HTMLInputElement ? field.type : ""
-      ].filter(Boolean).join(" ")
-    );
-  }
-  function matchesDescriptor(d, phrases) {
-    return phrases.some(
-      (p) => d.includes(normalizeChoiceText(p))
-    );
-  }
-  function scoreChoiceMatch(answer, candidate) {
-    if (!answer || !candidate) return -1;
-    if (answer === candidate) return 100;
-    if (candidate.includes(answer) || answer.includes(candidate))
-      return 70;
-    const bool = normalizeBooleanAnswer(answer);
-    if (bool !== null) {
-      if (bool && ["yes", "true", "authorized", "eligible", "i am", "i do", "i have", "i will"].some(
-        (w) => candidate.includes(w)
-      ))
-        return 80;
-      if (!bool && ["no", "false", "not authorized", "i am not", "i do not", "i don t"].some(
-        (w) => candidate.includes(w)
-      ))
-        return 80;
-    }
-    return 0;
-  }
-  function normalizeBooleanAnswer(a) {
-    const n = normalizeChoiceText(a);
-    if (["yes", "y", "true", "authorized", "eligible", "1"].includes(
-      n
-    ))
-      return true;
-    if (["no", "n", "false", "not authorized", "0"].includes(n))
-      return false;
-    return null;
-  }
-  function isConsentField(f) {
-    const d = getFieldDescriptor(f, getQuestionText(f));
-    return [
-      "privacy",
-      "terms",
-      "agree",
-      "consent",
-      "policy",
-      "acknowledge",
-      "accept",
-      "gdpr"
-    ].some((e) => d.includes(e));
-  }
   async function spawnTabs(items, maxJobPages) {
     const response = await chrome.runtime.sendMessage({
       type: "spawn-tabs",
@@ -55382,69 +55511,6 @@
       () => void flushPendingAnswers(),
       500
     );
-  }
-  function shouldRememberField(field) {
-    const d = getFieldDescriptor(
-      field,
-      getQuestionText(field)
-    );
-    if (d.includes("password") || d.includes("social security") || d.includes("ssn") || d.includes("date of birth") || d.includes("dob") || d.includes("resume") || d.includes("credit card") || d.includes("card number") || d.includes("cvv") || d.includes("expiry"))
-      return false;
-    if (matchesDescriptor(d, [
-      "full name",
-      "first name",
-      "last name",
-      "given name",
-      "family name",
-      "surname",
-      "email",
-      "phone",
-      "mobile",
-      "telephone",
-      "linkedin",
-      "portfolio",
-      "website",
-      "personal site",
-      "github",
-      "city",
-      "state",
-      "province",
-      "region",
-      "country",
-      "current company",
-      "current employer",
-      "years of experience",
-      "year of experience",
-      "total experience",
-      "overall experience",
-      "authorized to work",
-      "work authorization",
-      "eligible to work",
-      "legally authorized",
-      "sponsorship",
-      "visa",
-      "relocate",
-      "relocation"
-    ]))
-      return false;
-    if (field instanceof HTMLInputElement && field.type === "file")
-      return false;
-    return true;
-  }
-  function readFieldAnswerForMemory(field) {
-    if (field instanceof HTMLSelectElement)
-      return cleanText(
-        field.selectedOptions[0]?.textContent || field.value
-      );
-    if (field instanceof HTMLTextAreaElement)
-      return field.value.trim();
-    if (field.type === "radio")
-      return field.checked ? getOptionLabelText(
-        field
-      ) || field.value : "";
-    if (field.type === "checkbox")
-      return field.checked ? "Yes" : "No";
-    return field.value.trim();
   }
   async function flushPendingAnswers() {
     answerFlushTimerId = null;
