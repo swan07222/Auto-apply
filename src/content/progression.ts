@@ -11,7 +11,7 @@ type HandleProgressionActionOptions = {
   navigateCurrentTab: (url: string) => void;
   waitForHumanVerificationToClear: () => Promise<void>;
   hasLikelyApplicationSurface: (site: SiteKey) => boolean;
-  waitForLikelyApplicationSurface: (site: SiteKey) => Promise<void>;
+  waitForLikelyApplicationSurface: (site: SiteKey) => Promise<boolean>;
   reopenApplyStage: (site: SiteKey) => Promise<void>;
   collectAutofillFields: () => AutofillField[];
 };
@@ -64,8 +64,10 @@ export async function handleProgressionAction({
 
   if (window.location.href !== previousUrl) {
     await waitForHumanVerificationToClear();
-    if (hasLikelyApplicationSurface(site)) {
-      await waitForLikelyApplicationSurface(site);
+    if (
+      hasLikelyApplicationSurface(site) ||
+      (await waitForLikelyApplicationSurface(site))
+    ) {
       return true;
     }
 
@@ -74,8 +76,15 @@ export async function handleProgressionAction({
   }
 
   await waitForFormContentChange(collectAutofillFields);
-  await waitForLikelyApplicationSurface(site);
-  return true;
+  if (
+    hasLikelyApplicationSurface(site) ||
+    (await waitForLikelyApplicationSurface(site))
+  ) {
+    return true;
+  }
+
+  await reopenApplyStage(site);
+  return false;
 }
 
 async function waitForFormContentChange(

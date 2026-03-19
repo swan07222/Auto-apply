@@ -12,6 +12,14 @@ import {
   isExternalUrl,
   normalizeUrl,
 } from "./dom";
+import {
+  ATS_APPLICATION_SELECTOR_TOKENS,
+  ATS_APPLICATION_URL_TOKENS,
+  ATS_SCORING_URL_TOKENS,
+  KNOWN_ATS_HOST_TOKENS,
+  buildHrefContainsSelectors,
+  includesAnyToken,
+} from "./sitePatterns";
 
 const COMPANY_SITE_GATE_TOKENS = [
   "company website to apply",
@@ -1108,19 +1116,7 @@ export function isLikelyApplyUrl(url: string, site: SiteKey): boolean {
   }
 
   if (site === "startup" || site === "other_sites") {
-    return [
-      "/apply",
-      "application",
-      "candidate",
-      "job_app",
-      "applytojob",
-      "candidateexperience",
-      "myworkdayjobs.com",
-      "workdayjobs.com",
-      "icims.com/jobs/candidate",
-      "smartrecruiters.com",
-      "/embed/job_app",
-    ].some((token) => lower.includes(token));
+    return includesAnyToken(lower, ATS_APPLICATION_URL_TOKENS);
   }
 
   try {
@@ -1225,49 +1221,11 @@ function scoreExternalApplyUrl(url: string): number {
 
   let score = 0;
 
-  if (
-    [
-      "workdayjobs.com",
-      "myworkdayjobs.com",
-      "greenhouse.io",
-      "boards.greenhouse.io",
-      "job-boards.greenhouse.io",
-      "lever.co",
-      "ashbyhq.com",
-      "workable.com",
-      "jobvite.com",
-      "jobs.jobvite.com",
-      "icims.com",
-      "smartrecruiters.com",
-      "applytojob.com",
-      "recruitee.com",
-      "breezy.hr",
-      "bamboohr.com",
-    ].some((token) => lower.includes(token))
-  ) {
+  if (includesAnyToken(lower, KNOWN_ATS_HOST_TOKENS)) {
     score += 120;
   }
 
-  if (
-    [
-      "/apply",
-      "/job",
-      "/jobs",
-      "/career",
-      "/careers",
-      "/position",
-      "/positions",
-      "/opening",
-      "/openings",
-      "application",
-      "candidate",
-      "requisition",
-      "gh_jid=",
-      "jobid",
-      "job_id",
-      "jid=",
-    ].some((token) => lower.includes(token))
-  ) {
+  if (includesAnyToken(lower, ATS_SCORING_URL_TOKENS)) {
     score += 55;
   }
 
@@ -1377,19 +1335,7 @@ function scoreApplyElement(
 
   if (score === 0 && lowerUrl.includes("/apply")) score += 60;
   if (score === 0 && lowerUrl.includes("application")) score += 50;
-  if (
-    score === 0 &&
-    [
-      "job_app",
-      "applytojob",
-      "candidateexperience",
-      "myworkdayjobs.com",
-      "workdayjobs.com",
-      "icims.com/jobs/candidate",
-      "smartrecruiters.com",
-      "greenhouse.io/embed/job_app",
-    ].some((token) => lowerUrl.includes(token))
-  ) {
+  if (score === 0 && includesAnyToken(lowerUrl, ATS_APPLICATION_URL_TOKENS)) {
     score += 55;
   }
 
@@ -1503,18 +1449,7 @@ function getApplyCandidateSelectors(site: SiteKey | null): string[] {
         "a[data-testid*='apply']",
         "button[data-ui='apply-button']",
         "a[data-ui='apply-button']",
-        "a[href*='/apply/']",
-        "a[href*='job_app']",
-        "a[href*='candidate']",
-        "a[href*='applytojob']",
-        "a[href*='workdayjobs.com']",
-        "a[href*='myworkdayjobs.com']",
-        "a[href*='smartrecruiters.com']",
-        "a[href*='icims.com/jobs/candidate']",
-        "a[href*='workable.com']",
-        "a[href*='greenhouse.io/embed/job_app']",
-        "a[href*='job-boards.greenhouse.io/embed/job_app']",
-        "a[href*='boards.greenhouse.io/embed/job_app']",
+        ...buildHrefContainsSelectors(ATS_APPLICATION_SELECTOR_TOKENS),
         "[class*='application']",
         "[id*='application']",
         "[class*='apply']",

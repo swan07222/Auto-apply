@@ -14,44 +14,13 @@ import {
   collectJobDetailCandidates,
   pickRelevantJobUrls,
 } from "../src/content/jobSearch";
+import {
+  CAREER_LISTING_TEXT_PATTERNS,
+  CAREER_LISTING_URL_PATTERNS,
+} from "../src/content/sitePatterns";
 
+const LIVE_TESTS_ENABLED = process.env.ENABLE_LIVE_TESTS === "1";
 const SETTLE_DELAY_MS = 3_500;
-const CAREER_LISTING_TEXT_PATTERNS = [
-  "open jobs",
-  "open positions",
-  "open roles",
-  "current openings",
-  "current positions",
-  "see open jobs",
-  "see open positions",
-  "view all jobs",
-  "view jobs",
-  "search jobs",
-  "search roles",
-  "job board",
-  "browse jobs",
-  "browse roles",
-];
-
-const CAREER_LISTING_URL_PATTERNS = [
-  "/jobs",
-  "/job-board",
-  "/openings",
-  "/positions",
-  "/roles",
-  "boards.greenhouse.io",
-  "job-boards.greenhouse.io",
-  "jobs.lever.co",
-  "jobs.ashbyhq.com",
-  "ashbyhq.com",
-  "workdayjobs.com",
-  "myworkdayjobs.com",
-  "workable.com",
-  "jobvite.com",
-  "smartrecruiters.com",
-  "recruitee.com",
-  "bamboohr.com",
-];
 
 const US_SETTINGS = {
   ...DEFAULT_SETTINGS,
@@ -119,6 +88,11 @@ type DomSnapshot = {
   html: string;
   bodyText: string;
 };
+
+test.skip(
+  !LIVE_TESTS_ENABLED,
+  "Live smoke tests are opt-in and should run only when you explicitly target real sites."
+);
 
 test.describe.configure({ mode: "serial" });
 

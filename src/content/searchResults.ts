@@ -19,6 +19,13 @@ import {
   pickRelevantJobUrls,
   shouldFinishJobResultScan,
 } from "./jobSearch";
+import {
+  CAREER_LISTING_TEXT_PATTERNS,
+  CAREER_LISTING_URL_PATTERNS,
+  PRIORITY_CAREER_LISTING_TEXT_PATTERNS,
+  PRIORITY_CAREER_LISTING_URL_PATTERNS,
+  includesAnyToken,
+} from "./sitePatterns";
 import { cleanText } from "./text";
 
 type WaitForJobDetailUrlsOptions = {
@@ -30,42 +37,6 @@ type WaitForJobDetailUrlsOptions = {
   label?: string;
   onOpenListingsSurface?: (message: string) => void;
 };
-
-const CAREER_LISTING_TEXT_PATTERNS = [
-  "open jobs",
-  "open positions",
-  "open roles",
-  "current openings",
-  "current positions",
-  "see open jobs",
-  "see open positions",
-  "view all jobs",
-  "view jobs",
-  "search jobs",
-  "search roles",
-  "job board",
-  "browse jobs",
-  "browse roles",
-];
-
-const CAREER_LISTING_URL_PATTERNS = [
-  "/jobs",
-  "/job-board",
-  "/openings",
-  "/positions",
-  "/roles",
-  "boards.greenhouse.io",
-  "job-boards.greenhouse.io",
-  "jobs.lever.co",
-  "ashbyhq.com",
-  "workdayjobs.com",
-  "myworkdayjobs.com",
-  "workable.com",
-  "jobvite.com",
-  "smartrecruiters.com",
-  "recruitee.com",
-  "bamboohr.com",
-];
 
 export async function scrollPageForLazyContent(): Promise<void> {
   const totalHeight = document.body.scrollHeight;
@@ -318,11 +289,7 @@ function findCareerListingsIframeUrl(): string | null {
       frame.getAttribute("title") || frame.getAttribute("aria-label") || ""
     ).toLowerCase();
 
-    if (
-      CAREER_LISTING_URL_PATTERNS.some((token) => lowerSrc.includes(token)) ||
-      title.includes("job") ||
-      title.includes("career")
-    ) {
+    if (includesAnyToken(lowerSrc, CAREER_LISTING_URL_PATTERNS) || title.includes("job") || title.includes("career")) {
       return src;
     }
   }
@@ -354,12 +321,8 @@ function collectCareerListingActions(): Array<{
     const text = cleanText(getActionText(element)).toLowerCase();
     const navUrl = getNavigationUrl(element);
     const lowerNavUrl = navUrl?.toLowerCase() ?? "";
-    const hasTextSignal = CAREER_LISTING_TEXT_PATTERNS.some((token) =>
-      text.includes(token)
-    );
-    const hasUrlSignal = CAREER_LISTING_URL_PATTERNS.some((token) =>
-      lowerNavUrl.includes(token)
-    );
+    const hasTextSignal = includesAnyToken(text, CAREER_LISTING_TEXT_PATTERNS);
+    const hasUrlSignal = includesAnyToken(lowerNavUrl, CAREER_LISTING_URL_PATTERNS);
 
     if (!hasTextSignal && !hasUrlSignal) {
       continue;
@@ -382,23 +345,10 @@ function collectCareerListingActions(): Array<{
     let score = 0;
     if (hasTextSignal) score += 4;
     if (hasUrlSignal) score += 3;
-    if (
-      ["open jobs", "open positions", "open roles", "current openings"].some(
-        (token) => text.includes(token)
-      )
-    ) {
+    if (includesAnyToken(text, PRIORITY_CAREER_LISTING_TEXT_PATTERNS)) {
       score += 3;
     }
-    if (
-      [
-        "boards.greenhouse.io",
-        "job-boards.greenhouse.io",
-        "jobs.lever.co",
-        "ashbyhq.com",
-        "workdayjobs.com",
-        "myworkdayjobs.com",
-      ].some((token) => lowerNavUrl.includes(token))
-    ) {
+    if (includesAnyToken(lowerNavUrl, PRIORITY_CAREER_LISTING_URL_PATTERNS)) {
       score += 5;
     }
 

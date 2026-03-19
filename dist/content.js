@@ -49949,11 +49949,14 @@
     return null;
   }
   function normalizeUrl(url) {
-    if (!url || url.startsWith("javascript:") || url === "#") {
+    const trimmedUrl = url.trim();
+    if (!trimmedUrl || trimmedUrl.startsWith("javascript:") || trimmedUrl.startsWith("#") || /^_(?:blank|self|parent|top)$/i.test(trimmedUrl)) {
       return null;
     }
-    if (url.startsWith("//")) {
-      url = window.location.protocol + url;
+    if (trimmedUrl.startsWith("//")) {
+      url = window.location.protocol + trimmedUrl;
+    } else {
+      url = trimmedUrl;
     }
     try {
       const normalized = new URL(url, window.location.href);
@@ -50653,6 +50656,143 @@
     return chrome.runtime.getURL(`${basePath}${filename}`);
   }
 
+  // src/content/sitePatterns.ts
+  var CAREER_LISTING_TEXT_PATTERNS = [
+    "open jobs",
+    "open positions",
+    "open roles",
+    "current openings",
+    "current positions",
+    "see open jobs",
+    "see open positions",
+    "view all jobs",
+    "view jobs",
+    "search jobs",
+    "search roles",
+    "job board",
+    "browse jobs",
+    "browse roles"
+  ];
+  var PRIORITY_CAREER_LISTING_TEXT_PATTERNS = [
+    "open jobs",
+    "open positions",
+    "open roles",
+    "current openings"
+  ];
+  var CAREER_LISTING_PATH_PATTERNS = [
+    "/jobs",
+    "/job-board",
+    "/openings",
+    "/positions",
+    "/roles"
+  ];
+  var CAREER_LISTING_HOST_TOKENS = [
+    "greenhouse.io",
+    "lever.co",
+    "ashbyhq.com",
+    "workdayjobs.com",
+    "myworkdayjobs.com",
+    "workable.com",
+    "jobvite.com",
+    "smartrecruiters.com",
+    "recruitee.com",
+    "bamboohr.com"
+  ];
+  var CAREER_LISTING_URL_PATTERNS = [
+    ...CAREER_LISTING_PATH_PATTERNS,
+    ...CAREER_LISTING_HOST_TOKENS
+  ];
+  var PRIORITY_CAREER_LISTING_URL_PATTERNS = [
+    "greenhouse.io",
+    "lever.co",
+    "ashbyhq.com",
+    "workdayjobs.com",
+    "myworkdayjobs.com"
+  ];
+  var KNOWN_ATS_HOST_TOKENS = [
+    "greenhouse.io",
+    "lever.co",
+    "ashbyhq.com",
+    "workable.com",
+    "jobvite.com",
+    "workdayjobs.com",
+    "myworkdayjobs.com",
+    "icims.com",
+    "smartrecruiters.com",
+    "applytojob.com",
+    "recruitee.com",
+    "breezy.hr",
+    "bamboohr.com"
+  ];
+  var JOB_DETAIL_ATS_URL_TOKENS = [
+    "gh_jid=",
+    "greenhouse.io",
+    "lever.co",
+    "ashbyhq.com",
+    "workable.com",
+    "jobvite.com",
+    "myworkdayjobs.com",
+    "workdayjobs.com",
+    "icims.com/jobs/",
+    "smartrecruiters.com",
+    "applytojob.com",
+    "recruitee.com",
+    "breezy.hr",
+    "bamboohr.com"
+  ];
+  var ATS_APPLICATION_URL_TOKENS = [
+    "job_app",
+    "applytojob",
+    "candidateexperience",
+    "myworkdayjobs.com",
+    "workdayjobs.com",
+    "icims.com/jobs/candidate",
+    "smartrecruiters.com",
+    "greenhouse.io/embed/job_app"
+  ];
+  var ATS_APPLICATION_SELECTOR_TOKENS = [
+    "/apply/",
+    "job_app",
+    "candidate",
+    "applytojob",
+    "workdayjobs.com",
+    "myworkdayjobs.com",
+    "smartrecruiters.com",
+    "icims.com/jobs/candidate",
+    "workable.com",
+    "greenhouse.io/embed/job_app"
+  ];
+  var ATS_SCORING_URL_TOKENS = [
+    "/apply",
+    "/job",
+    "/jobs",
+    "/career",
+    "/careers",
+    "/position",
+    "/positions",
+    "/opening",
+    "/openings",
+    "application",
+    "candidate",
+    "requisition",
+    "gh_jid=",
+    "jobid",
+    "job_id",
+    "jid="
+  ];
+  function includesAnyToken(value, tokens) {
+    return tokens.some((token) => value.includes(token));
+  }
+  function hasKnownAtsHost(value) {
+    return includesAnyToken(value.toLowerCase(), KNOWN_ATS_HOST_TOKENS);
+  }
+  function hasJobDetailAtsUrl(value) {
+    return includesAnyToken(value.toLowerCase(), JOB_DETAIL_ATS_URL_TOKENS);
+  }
+  function buildHrefContainsSelectors(tokens) {
+    return tokens.map((token) => `a[href*='${token}']`);
+  }
+
   // src/content/jobSearch.ts
   var JOB_DETAIL_QUERY_PARAMS = [
     "gh_jid",
@@ -50684,26 +50824,38 @@
     "view opening",
     "see opening"
   ];
-  var CAREER_LISTING_CTA_TEXTS = [
-    "open jobs",
-    "open positions",
-    "open roles",
-    "current openings",
-    "current positions",
-    "search jobs",
-    "search roles",
-    "see open jobs",
-    "see open positions",
-    "see all jobs",
-    "see all openings",
-    "see our jobs",
-    "view jobs",
-    "view all jobs",
-    "view open roles",
-    "browse jobs",
-    "browse roles",
-    "job board"
-  ];
+  var CAREER_LISTING_CTA_TEXTS = Array.from(
+    /* @__PURE__ */ new Set([
+      ...CAREER_LISTING_TEXT_PATTERNS,
+      "see all jobs",
+      "see all openings",
+      "see our jobs",
+      "view open roles"
+    ])
+  );
+  var STARTUP_OTHER_SITE_LINK_SELECTORS = Array.from(
+    /* @__PURE__ */ new Set([
+      "a[href*='/jobs/']",
+      "a[href*='/job/']",
+      "a[href*='/role/']",
+      "a[href*='/roles/']",
+      "a[href*='/positions/']",
+      "a[href*='/position/']",
+      "a[href*='/opportunity/']",
+      "a[href*='/opportunities/']",
+      "a[href*='/careers/']",
+      "a[href*='/career/']",
+      "a[href*='/openings/']",
+      "a[href*='/opening/']",
+      "a[href*='/vacancies/']",
+      "a[href*='/vacancy/']",
+      "a[href*='/job-posting/']",
+      "a[href*='/job-postings/']",
+      "a[href*='/requisition/']",
+      "a[href*='/req/']",
+      ...buildHrefContainsSelectors(JOB_DETAIL_ATS_URL_TOKENS)
+    ])
+  );
   function collectJobDetailCandidates(site) {
     switch (site) {
       case "indeed":
@@ -50943,86 +51095,10 @@
               "section",
               "li"
             ],
-            [
-              "a[href*='/jobs/']",
-              "a[href*='/job/']",
-              "a[href*='/role/']",
-              "a[href*='/roles/']",
-              "a[href*='/positions/']",
-              "a[href*='/position/']",
-              "a[href*='/opportunity/']",
-              "a[href*='/opportunities/']",
-              "a[href*='/careers/']",
-              "a[href*='/career/']",
-              "a[href*='/openings/']",
-              "a[href*='/opening/']",
-              "a[href*='/vacancies/']",
-              "a[href*='/vacancy/']",
-              "a[href*='/job-posting/']",
-              "a[href*='/job-postings/']",
-              "a[href*='/requisition/']",
-              "a[href*='/req/']",
-              "a[href*='gh_jid=']",
-              "a[href*='lever.co']",
-              "a[href*='jobs.lever.co']",
-              "a[href*='greenhouse.io']",
-              "a[href*='job-boards.greenhouse.io']",
-              "a[href*='boards.greenhouse.io']",
-              "a[href*='ashbyhq.com']",
-              "a[href*='jobs.ashbyhq.com']",
-              "a[href*='workable.com']",
-              "a[href*='jobvite.com']",
-              "a[href*='jobs.jobvite.com']",
-              "a[href*='myworkdayjobs.com']",
-              "a[href*='workdayjobs.com']",
-              "a[href*='icims.com/jobs/']",
-              "a[href*='smartrecruiters.com']",
-              "a[href*='applytojob.com']",
-              "a[href*='recruitee.com']",
-              "a[href*='breezy.hr']",
-              "a[href*='bamboohr.com']"
-            ],
+            STARTUP_OTHER_SITE_LINK_SELECTORS,
             ["h1", "h2", "h3", "h4", "[data-testid*='title']", "[class*='title']"]
           ),
-          ...collectCandidatesFromAnchors([
-            "a[href*='/jobs/']",
-            "a[href*='/job/']",
-            "a[href*='/role/']",
-            "a[href*='/roles/']",
-            "a[href*='/positions/']",
-            "a[href*='/position/']",
-            "a[href*='/opportunity/']",
-            "a[href*='/opportunities/']",
-            "a[href*='/careers/']",
-            "a[href*='/career/']",
-            "a[href*='/openings/']",
-            "a[href*='/opening/']",
-            "a[href*='/vacancies/']",
-            "a[href*='/vacancy/']",
-            "a[href*='/job-posting/']",
-            "a[href*='/job-postings/']",
-            "a[href*='/requisition/']",
-            "a[href*='/req/']",
-            "a[href*='gh_jid=']",
-            "a[href*='lever.co']",
-            "a[href*='jobs.lever.co']",
-            "a[href*='greenhouse.io']",
-            "a[href*='job-boards.greenhouse.io']",
-            "a[href*='boards.greenhouse.io']",
-            "a[href*='ashbyhq.com']",
-            "a[href*='jobs.ashbyhq.com']",
-            "a[href*='workable.com']",
-            "a[href*='jobvite.com']",
-            "a[href*='jobs.jobvite.com']",
-            "a[href*='myworkdayjobs.com']",
-            "a[href*='workdayjobs.com']",
-            "a[href*='icims.com/jobs/']",
-            "a[href*='smartrecruiters.com']",
-            "a[href*='applytojob.com']",
-            "a[href*='recruitee.com']",
-            "a[href*='breezy.hr']",
-            "a[href*='bamboohr.com']"
-          ]),
+          ...collectCandidatesFromAnchors(STARTUP_OTHER_SITE_LINK_SELECTORS),
           ...collectFallbackJobCandidates()
         ]);
       case "chatgpt":
@@ -51146,27 +51222,6 @@
       }
       case "startup":
       case "other_sites": {
-        const atsSignals = [
-          "gh_jid=",
-          "lever.co",
-          "jobs.lever.co",
-          "greenhouse.io",
-          "job-boards.greenhouse.io",
-          "boards.greenhouse.io",
-          "ashbyhq.com",
-          "jobs.ashbyhq.com",
-          "workable.com",
-          "jobvite.com",
-          "jobs.jobvite.com",
-          "myworkdayjobs.com",
-          "workdayjobs.com",
-          "icims.com/jobs/",
-          "smartrecruiters.com",
-          "applytojob.com",
-          "recruitee.com",
-          "breezy.hr",
-          "bamboohr.com"
-        ];
         try {
           const parsed = new URL(lowerUrl);
           if (hasJobIdentifyingSearchParam(parsed)) {
@@ -51175,7 +51230,7 @@
           if (isKnownAtsListingUrl(parsed)) {
             return false;
           }
-          if (atsSignals.some((token) => lowerUrl.includes(token))) {
+          if (hasJobDetailAtsUrl(lowerUrl)) {
             return true;
           }
         } catch {
@@ -51594,6 +51649,7 @@
       const contextText = cleanText(el.innerText || el.textContent || "");
       if (title) {
         const detailUrl = new URL(window.location.href);
+        detailUrl.searchParams.delete("lk");
         detailUrl.searchParams.set("jid", jobId);
         addJobCandidate(candidates, detailUrl.toString(), title, contextText);
       }
@@ -51668,6 +51724,7 @@
         continue;
       }
       const detailUrl = new URL(window.location.href);
+      detailUrl.searchParams.delete("jid");
       detailUrl.searchParams.set("lk", lk);
       addJobCandidate(candidates, detailUrl.toString(), title, contextText);
     }
@@ -51709,21 +51766,7 @@
       try {
         const linkHost = new URL(anchor.href).hostname.toLowerCase();
         isSameDomain = linkHost === currentHost || linkHost.endsWith(`.${currentHost}`) || currentHost.endsWith(`.${linkHost}`);
-        isKnownAts = [
-          "lever.co",
-          "greenhouse.io",
-          "ashbyhq.com",
-          "workable.com",
-          "jobvite.com",
-          "myworkdayjobs.com",
-          "workdayjobs.com",
-          "icims.com",
-          "smartrecruiters.com",
-          "applytojob.com",
-          "recruitee.com",
-          "breezy.hr",
-          "bamboohr.com"
-        ].some((ats) => linkHost.includes(ats));
+        isKnownAts = hasKnownAtsHost(linkHost);
       } catch {
         continue;
       }
@@ -51943,21 +51986,7 @@
     const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
     const segments = path.split("/").filter(Boolean);
     const lastSegment = segments[segments.length - 1] ?? "";
-    const isKnownAtsHost = [
-      "lever.co",
-      "greenhouse.io",
-      "ashbyhq.com",
-      "workable.com",
-      "jobvite.com",
-      "workdayjobs.com",
-      "myworkdayjobs.com",
-      "icims.com",
-      "smartrecruiters.com",
-      "applytojob.com",
-      "recruitee.com",
-      "breezy.hr",
-      "bamboohr.com"
-    ].some((token) => host.includes(token));
+    const isKnownAtsHost = hasKnownAtsHost(host);
     if (!isKnownAtsHost || hasJobIdentifyingSearchParam(parsed)) {
       return false;
     }
@@ -52983,19 +53012,7 @@
       return true;
     }
     if (site === "startup" || site === "other_sites") {
-      return [
-        "/apply",
-        "application",
-        "candidate",
-        "job_app",
-        "applytojob",
-        "candidateexperience",
-        "myworkdayjobs.com",
-        "workdayjobs.com",
-        "icims.com/jobs/candidate",
-        "smartrecruiters.com",
-        "/embed/job_app"
-      ].some((token) => lower.includes(token));
+      return includesAnyToken(lower, ATS_APPLICATION_URL_TOKENS);
     }
     try {
       return !new URL(url).hostname.toLowerCase().endsWith(getSiteRoot(site));
@@ -53071,44 +53088,10 @@
       return -1;
     }
     let score = 0;
-    if ([
-      "workdayjobs.com",
-      "myworkdayjobs.com",
-      "greenhouse.io",
-      "boards.greenhouse.io",
-      "job-boards.greenhouse.io",
-      "lever.co",
-      "ashbyhq.com",
-      "workable.com",
-      "jobvite.com",
-      "jobs.jobvite.com",
-      "icims.com",
-      "smartrecruiters.com",
-      "applytojob.com",
-      "recruitee.com",
-      "breezy.hr",
-      "bamboohr.com"
-    ].some((token) => lower.includes(token))) {
+    if (includesAnyToken(lower, KNOWN_ATS_HOST_TOKENS)) {
       score += 120;
     }
-    if ([
-      "/apply",
-      "/job",
-      "/jobs",
-      "/career",
-      "/careers",
-      "/position",
-      "/positions",
-      "/opening",
-      "/openings",
-      "application",
-      "candidate",
-      "requisition",
-      "gh_jid=",
-      "jobid",
-      "job_id",
-      "jid="
-    ].some((token) => lower.includes(token))) {
+    if (includesAnyToken(lower, ATS_SCORING_URL_TOKENS)) {
       score += 55;
     }
     if (lower.includes("indeed.com")) {
@@ -53192,16 +53175,7 @@
     }
     if (score === 0 && lowerUrl.includes("/apply")) score += 60;
     if (score === 0 && lowerUrl.includes("application")) score += 50;
-    if (score === 0 && [
-      "job_app",
-      "applytojob",
-      "candidateexperience",
-      "myworkdayjobs.com",
-      "workdayjobs.com",
-      "icims.com/jobs/candidate",
-      "smartrecruiters.com",
-      "greenhouse.io/embed/job_app"
-    ].some((token) => lowerUrl.includes(token))) {
+    if (score === 0 && includesAnyToken(lowerUrl, ATS_APPLICATION_URL_TOKENS)) {
       score += 55;
     }
     if (url && isExternalUrl(url)) score += 20;
@@ -53307,18 +53281,7 @@
           "a[data-testid*='apply']",
           "button[data-ui='apply-button']",
           "a[data-ui='apply-button']",
-          "a[href*='/apply/']",
-          "a[href*='job_app']",
-          "a[href*='candidate']",
-          "a[href*='applytojob']",
-          "a[href*='workdayjobs.com']",
-          "a[href*='myworkdayjobs.com']",
-          "a[href*='smartrecruiters.com']",
-          "a[href*='icims.com/jobs/candidate']",
-          "a[href*='workable.com']",
-          "a[href*='greenhouse.io/embed/job_app']",
-          "a[href*='job-boards.greenhouse.io/embed/job_app']",
-          "a[href*='boards.greenhouse.io/embed/job_app']",
+          ...buildHrefContainsSelectors(ATS_APPLICATION_SELECTOR_TOKENS),
           "[class*='application']",
           "[id*='application']",
           "[class*='apply']",
@@ -53376,7 +53339,7 @@
   async function waitForLikelyApplicationSurface(site, collectors) {
     for (let attempt = 0; attempt < 30; attempt += 1) {
       if (hasLikelyApplicationSurface(site, collectors)) {
-        return;
+        return true;
       }
       if (attempt === 5 || attempt === 10 || attempt === 15 || attempt === 20) {
         window.scrollTo({
@@ -53386,6 +53349,7 @@
       }
       await sleep(700);
     }
+    return false;
   }
   function hasLikelyApplicationForm(collectors) {
     const relevantFields = collectors.collectAutofillFields().filter(
@@ -53399,7 +53363,7 @@
     );
   }
   function hasLikelyApplicationFrame() {
-    return Boolean(document.querySelector(APPLICATION_FRAME_SELECTOR));
+    return collectLikelyApplicationFrames().length > 0;
   }
   function findStandaloneApplicationFrameUrl(collectors) {
     const localRelevantFields = collectors.collectAutofillFields().filter(
@@ -53415,28 +53379,58 @@
       return null;
     }
     let best;
-    for (const frame of Array.from(document.querySelectorAll(APPLICATION_FRAME_SELECTOR))) {
+    for (const frame of collectLikelyApplicationFrames()) {
+      if (!best || frame.score > best.score) {
+        best = {
+          score: frame.score,
+          url: frame.url
+        };
+      }
+    }
+    return best?.url ?? null;
+  }
+  function collectLikelyApplicationFrames() {
+    const frames = [];
+    for (const frame of Array.from(
+      document.querySelectorAll(APPLICATION_FRAME_SELECTOR)
+    )) {
+      if (!isElementVisible(frame)) {
+        continue;
+      }
       const rawUrl = frame.getAttribute("src") || frame.getAttribute("data-src") || "";
       const url = normalizeUrl(rawUrl);
       if (!url) {
         continue;
       }
       const lower = url.toLowerCase();
+      const frameSignals = [
+        frame.id,
+        frame.className,
+        frame.getAttribute("title"),
+        frame.getAttribute("aria-label")
+      ].join(" ").toLowerCase();
       let score = 0;
       if (lower.includes("greenhouse.io")) score += 120;
       if (lower.includes("lever.co")) score += 110;
-      if (lower.includes("workdayjobs.com") || lower.includes("myworkdayjobs.com")) score += 110;
+      if (lower.includes("workdayjobs.com") || lower.includes("myworkdayjobs.com")) {
+        score += 110;
+      }
       if (lower.includes("apply")) score += 40;
       if (lower.includes("application")) score += 35;
       if (lower.includes("candidate")) score += 30;
+      if (frameSignals.includes("apply")) score += 20;
+      if (frameSignals.includes("application")) score += 18;
+      if (frameSignals.includes("resume")) score += 12;
       if (score <= 0) {
         continue;
       }
-      if (!best || score > best.score) {
-        best = { score, url };
-      }
+      frames.push({
+        frame,
+        score,
+        url
+      });
     }
-    return best?.url ?? null;
+    return frames;
   }
   function hasLikelyApplicationSurface(site, collectors) {
     if (site === "indeed" && hasIndeedApplyIframe()) {
@@ -53680,16 +53674,18 @@
     await sleep(site === "indeed" || site === "ziprecruiter" ? 3400 : 2800);
     if (window.location.href !== previousUrl) {
       await waitForHumanVerificationToClear2();
-      if (hasLikelyApplicationSurface3(site)) {
-        await waitForLikelyApplicationSurface3(site);
+      if (hasLikelyApplicationSurface3(site) || await waitForLikelyApplicationSurface3(site)) {
         return true;
       }
       await reopenApplyStage(site);
       return false;
     }
     await waitForFormContentChange(collectAutofillFields2);
-    await waitForLikelyApplicationSurface3(site);
-    return true;
+    if (hasLikelyApplicationSurface3(site) || await waitForLikelyApplicationSurface3(site)) {
+      return true;
+    }
+    await reopenApplyStage(site);
+    return false;
   }
   async function waitForFormContentChange(collectAutofillFields2) {
     const initial2 = collectAutofillFields2().length;
@@ -53724,40 +53720,6 @@
   }
 
   // src/content/searchResults.ts
-  var CAREER_LISTING_TEXT_PATTERNS = [
-    "open jobs",
-    "open positions",
-    "open roles",
-    "current openings",
-    "current positions",
-    "see open jobs",
-    "see open positions",
-    "view all jobs",
-    "view jobs",
-    "search jobs",
-    "search roles",
-    "job board",
-    "browse jobs",
-    "browse roles"
-  ];
-  var CAREER_LISTING_URL_PATTERNS = [
-    "/jobs",
-    "/job-board",
-    "/openings",
-    "/positions",
-    "/roles",
-    "boards.greenhouse.io",
-    "job-boards.greenhouse.io",
-    "jobs.lever.co",
-    "ashbyhq.com",
-    "workdayjobs.com",
-    "myworkdayjobs.com",
-    "workable.com",
-    "jobvite.com",
-    "smartrecruiters.com",
-    "recruitee.com",
-    "bamboohr.com"
-  ];
   async function scrollPageForLazyContent() {
     const totalHeight = document.body.scrollHeight;
     const viewportHeight = window.innerHeight;
@@ -53962,7 +53924,7 @@
       const title = cleanText(
         frame.getAttribute("title") || frame.getAttribute("aria-label") || ""
       ).toLowerCase();
-      if (CAREER_LISTING_URL_PATTERNS.some((token) => lowerSrc.includes(token)) || title.includes("job") || title.includes("career")) {
+      if (includesAnyToken(lowerSrc, CAREER_LISTING_URL_PATTERNS) || title.includes("job") || title.includes("career")) {
         return src;
       }
     }
@@ -53982,12 +53944,8 @@
       const text = cleanText(getActionText(element)).toLowerCase();
       const navUrl = getNavigationUrl(element);
       const lowerNavUrl = navUrl?.toLowerCase() ?? "";
-      const hasTextSignal = CAREER_LISTING_TEXT_PATTERNS.some(
-        (token) => text.includes(token)
-      );
-      const hasUrlSignal = CAREER_LISTING_URL_PATTERNS.some(
-        (token) => lowerNavUrl.includes(token)
-      );
+      const hasTextSignal = includesAnyToken(text, CAREER_LISTING_TEXT_PATTERNS);
+      const hasUrlSignal = includesAnyToken(lowerNavUrl, CAREER_LISTING_URL_PATTERNS);
       if (!hasTextSignal && !hasUrlSignal) {
         continue;
       }
@@ -54004,19 +53962,10 @@
       let score = 0;
       if (hasTextSignal) score += 4;
       if (hasUrlSignal) score += 3;
-      if (["open jobs", "open positions", "open roles", "current openings"].some(
-        (token) => text.includes(token)
-      )) {
+      if (includesAnyToken(text, PRIORITY_CAREER_LISTING_TEXT_PATTERNS)) {
         score += 3;
       }
-      if ([
-        "boards.greenhouse.io",
-        "job-boards.greenhouse.io",
-        "jobs.lever.co",
-        "ashbyhq.com",
-        "workdayjobs.com",
-        "myworkdayjobs.com"
-      ].some((token) => lowerNavUrl.includes(token))) {
+      if (includesAnyToken(lowerNavUrl, PRIORITY_CAREER_LISTING_URL_PATTERNS)) {
         score += 5;
       }
       actions.push({
@@ -54161,7 +54110,7 @@
     return hasLikelyApplicationSurface(site, applicationSurfaceCollectors);
   }
   async function waitForLikelyApplicationSurface2(site) {
-    await waitForLikelyApplicationSurface(site, applicationSurfaceCollectors);
+    return waitForLikelyApplicationSurface(site, applicationSurfaceCollectors);
   }
   function shouldKeepJobPageOpen(site) {
     return site === "ziprecruiter" || site === "dice";

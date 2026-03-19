@@ -5,6 +5,13 @@ import { DatePostedWindow, ResumeKind, SiteKey, getJobDedupKey } from "../shared
 import { JobCandidate } from "./types";
 import { cleanText, normalizeChoiceText } from "./text";
 import { normalizeUrl } from "./dom";
+import {
+  CAREER_LISTING_TEXT_PATTERNS,
+  JOB_DETAIL_ATS_URL_TOKENS,
+  buildHrefContainsSelectors,
+  hasJobDetailAtsUrl,
+  hasKnownAtsHost,
+} from "./sitePatterns";
 
 const JOB_DETAIL_QUERY_PARAMS = [
   "gh_jid",
@@ -38,26 +45,39 @@ const GENERIC_ROLE_CTA_TEXTS = [
   "see opening",
 ];
 
-const CAREER_LISTING_CTA_TEXTS = [
-  "open jobs",
-  "open positions",
-  "open roles",
-  "current openings",
-  "current positions",
-  "search jobs",
-  "search roles",
-  "see open jobs",
-  "see open positions",
-  "see all jobs",
-  "see all openings",
-  "see our jobs",
-  "view jobs",
-  "view all jobs",
-  "view open roles",
-  "browse jobs",
-  "browse roles",
-  "job board",
-];
+const CAREER_LISTING_CTA_TEXTS = Array.from(
+  new Set([
+    ...CAREER_LISTING_TEXT_PATTERNS,
+    "see all jobs",
+    "see all openings",
+    "see our jobs",
+    "view open roles",
+  ])
+);
+
+const STARTUP_OTHER_SITE_LINK_SELECTORS = Array.from(
+  new Set([
+    "a[href*='/jobs/']",
+    "a[href*='/job/']",
+    "a[href*='/role/']",
+    "a[href*='/roles/']",
+    "a[href*='/positions/']",
+    "a[href*='/position/']",
+    "a[href*='/opportunity/']",
+    "a[href*='/opportunities/']",
+    "a[href*='/careers/']",
+    "a[href*='/career/']",
+    "a[href*='/openings/']",
+    "a[href*='/opening/']",
+    "a[href*='/vacancies/']",
+    "a[href*='/vacancy/']",
+    "a[href*='/job-posting/']",
+    "a[href*='/job-postings/']",
+    "a[href*='/requisition/']",
+    "a[href*='/req/']",
+    ...buildHrefContainsSelectors(JOB_DETAIL_ATS_URL_TOKENS),
+  ])
+);
 
 export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
   switch (site) {
@@ -302,86 +322,10 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "section",
             "li",
           ],
-          [
-            "a[href*='/jobs/']",
-            "a[href*='/job/']",
-            "a[href*='/role/']",
-            "a[href*='/roles/']",
-            "a[href*='/positions/']",
-            "a[href*='/position/']",
-            "a[href*='/opportunity/']",
-            "a[href*='/opportunities/']",
-            "a[href*='/careers/']",
-            "a[href*='/career/']",
-            "a[href*='/openings/']",
-            "a[href*='/opening/']",
-            "a[href*='/vacancies/']",
-            "a[href*='/vacancy/']",
-            "a[href*='/job-posting/']",
-            "a[href*='/job-postings/']",
-            "a[href*='/requisition/']",
-            "a[href*='/req/']",
-            "a[href*='gh_jid=']",
-            "a[href*='lever.co']",
-            "a[href*='jobs.lever.co']",
-            "a[href*='greenhouse.io']",
-            "a[href*='job-boards.greenhouse.io']",
-            "a[href*='boards.greenhouse.io']",
-            "a[href*='ashbyhq.com']",
-            "a[href*='jobs.ashbyhq.com']",
-            "a[href*='workable.com']",
-            "a[href*='jobvite.com']",
-            "a[href*='jobs.jobvite.com']",
-            "a[href*='myworkdayjobs.com']",
-            "a[href*='workdayjobs.com']",
-            "a[href*='icims.com/jobs/']",
-            "a[href*='smartrecruiters.com']",
-            "a[href*='applytojob.com']",
-            "a[href*='recruitee.com']",
-            "a[href*='breezy.hr']",
-            "a[href*='bamboohr.com']",
-          ],
+          STARTUP_OTHER_SITE_LINK_SELECTORS,
           ["h1", "h2", "h3", "h4", "[data-testid*='title']", "[class*='title']"]
         ),
-        ...collectCandidatesFromAnchors([
-          "a[href*='/jobs/']",
-          "a[href*='/job/']",
-          "a[href*='/role/']",
-          "a[href*='/roles/']",
-          "a[href*='/positions/']",
-          "a[href*='/position/']",
-          "a[href*='/opportunity/']",
-          "a[href*='/opportunities/']",
-          "a[href*='/careers/']",
-          "a[href*='/career/']",
-          "a[href*='/openings/']",
-          "a[href*='/opening/']",
-          "a[href*='/vacancies/']",
-          "a[href*='/vacancy/']",
-          "a[href*='/job-posting/']",
-          "a[href*='/job-postings/']",
-          "a[href*='/requisition/']",
-          "a[href*='/req/']",
-          "a[href*='gh_jid=']",
-          "a[href*='lever.co']",
-          "a[href*='jobs.lever.co']",
-          "a[href*='greenhouse.io']",
-          "a[href*='job-boards.greenhouse.io']",
-          "a[href*='boards.greenhouse.io']",
-          "a[href*='ashbyhq.com']",
-          "a[href*='jobs.ashbyhq.com']",
-          "a[href*='workable.com']",
-          "a[href*='jobvite.com']",
-          "a[href*='jobs.jobvite.com']",
-          "a[href*='myworkdayjobs.com']",
-          "a[href*='workdayjobs.com']",
-          "a[href*='icims.com/jobs/']",
-          "a[href*='smartrecruiters.com']",
-          "a[href*='applytojob.com']",
-          "a[href*='recruitee.com']",
-          "a[href*='breezy.hr']",
-          "a[href*='bamboohr.com']",
-        ]),
+        ...collectCandidatesFromAnchors(STARTUP_OTHER_SITE_LINK_SELECTORS),
         ...collectFallbackJobCandidates(),
       ]);
 
@@ -613,28 +557,6 @@ export function isLikelyJobDetailUrl(
 
     case "startup":
     case "other_sites": {
-      const atsSignals = [
-        "gh_jid=",
-        "lever.co",
-        "jobs.lever.co",
-        "greenhouse.io",
-        "job-boards.greenhouse.io",
-        "boards.greenhouse.io",
-        "ashbyhq.com",
-        "jobs.ashbyhq.com",
-        "workable.com",
-        "jobvite.com",
-        "jobs.jobvite.com",
-        "myworkdayjobs.com",
-        "workdayjobs.com",
-        "icims.com/jobs/",
-        "smartrecruiters.com",
-        "applytojob.com",
-        "recruitee.com",
-        "breezy.hr",
-        "bamboohr.com",
-      ];
-
       try {
         const parsed = new URL(lowerUrl);
         if (hasJobIdentifyingSearchParam(parsed)) {
@@ -643,7 +565,7 @@ export function isLikelyJobDetailUrl(
         if (isKnownAtsListingUrl(parsed)) {
           return false;
         }
-        if (atsSignals.some((token) => lowerUrl.includes(token))) {
+        if (hasJobDetailAtsUrl(lowerUrl)) {
           return true;
         }
       } catch {
@@ -1191,6 +1113,7 @@ function collectZipRecruiterDataAttributeCandidates(): JobCandidate[] {
 
     if (title) {
       const detailUrl = new URL(window.location.href);
+      detailUrl.searchParams.delete("lk");
       detailUrl.searchParams.set("jid", jobId);
       addJobCandidate(candidates, detailUrl.toString(), title, contextText);
     }
@@ -1300,6 +1223,7 @@ function collectZipRecruiterCardCandidates(): JobCandidate[] {
     }
 
     const detailUrl = new URL(window.location.href);
+    detailUrl.searchParams.delete("jid");
     detailUrl.searchParams.set("lk", lk);
 
     addJobCandidate(candidates, detailUrl.toString(), title, contextText);
@@ -1354,21 +1278,7 @@ function collectFallbackJobCandidates(): JobCandidate[] {
         linkHost === currentHost ||
         linkHost.endsWith(`.${currentHost}`) ||
         currentHost.endsWith(`.${linkHost}`);
-      isKnownAts = [
-        "lever.co",
-        "greenhouse.io",
-        "ashbyhq.com",
-        "workable.com",
-        "jobvite.com",
-        "myworkdayjobs.com",
-        "workdayjobs.com",
-        "icims.com",
-        "smartrecruiters.com",
-        "applytojob.com",
-        "recruitee.com",
-        "breezy.hr",
-        "bamboohr.com",
-      ].some((ats) => linkHost.includes(ats));
+      isKnownAts = hasKnownAtsHost(linkHost);
     } catch {
       continue;
     }
@@ -1652,21 +1562,7 @@ function isKnownAtsListingUrl(parsed: URL): boolean {
   const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
   const segments = path.split("/").filter(Boolean);
   const lastSegment = segments[segments.length - 1] ?? "";
-  const isKnownAtsHost = [
-    "lever.co",
-    "greenhouse.io",
-    "ashbyhq.com",
-    "workable.com",
-    "jobvite.com",
-    "workdayjobs.com",
-    "myworkdayjobs.com",
-    "icims.com",
-    "smartrecruiters.com",
-    "applytojob.com",
-    "recruitee.com",
-    "breezy.hr",
-    "bamboohr.com",
-  ].some((token) => host.includes(token));
+  const isKnownAtsHost = hasKnownAtsHost(host);
 
   if (!isKnownAtsHost || hasJobIdentifyingSearchParam(parsed)) {
     return false;

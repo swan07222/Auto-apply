@@ -133,6 +133,52 @@ describe("job search candidate filtering", () => {
     );
   });
 
+  it("rebuilds ZipRecruiter candidate URLs without stale pinned-job parameters", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/jobs-search?search=front-end-developer&location=Remote&jid=stale-job"
+    );
+
+    document.body.innerHTML = `
+      <article id="job-card-card123">
+        <h2>Front End Engineer</h2>
+      </article>
+    `;
+
+    const cardUrls = pickRelevantJobUrls(
+      collectJobDetailCandidates("ziprecruiter"),
+      "ziprecruiter"
+    );
+
+    expect(cardUrls).toContain(
+      "https://example.com/jobs-search?search=front-end-developer&location=Remote&lk=card123"
+    );
+    expect(cardUrls.some((url) => url.includes("jid=stale-job"))).toBe(false);
+
+    window.history.replaceState(
+      {},
+      "",
+      "/jobs-search?search=front-end-developer&location=Remote&lk=stale-card"
+    );
+
+    document.body.innerHTML = `
+      <article data-jid="job456">
+        <h2>Back End Engineer</h2>
+      </article>
+    `;
+
+    const dataAttributeUrls = pickRelevantJobUrls(
+      collectJobDetailCandidates("ziprecruiter"),
+      "ziprecruiter"
+    );
+
+    expect(dataAttributeUrls).toContain(
+      "https://example.com/jobs-search?search=front-end-developer&location=Remote&jid=job456"
+    );
+    expect(dataAttributeUrls.some((url) => url.includes("lk=stale-card"))).toBe(false);
+  });
+
   it("accepts Monster detail URLs and rejects listing URLs", () => {
     expect(
       isLikelyJobDetailUrl(

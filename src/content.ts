@@ -282,8 +282,8 @@ function isLikelyApplicationField(field: AutofillField): boolean {
   return detectLikelyApplicationField(field);
 }
 
-async function waitForLikelyApplicationSurface(site: SiteKey): Promise<void> {
-  await waitForApplicationSurface(site, applicationSurfaceCollectors);
+async function waitForLikelyApplicationSurface(site: SiteKey): Promise<boolean> {
+  return waitForApplicationSurface(site, applicationSurfaceCollectors);
 }
 
 function shouldKeepJobPageOpen(site: SiteKey | "unsupported"): boolean {

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { findStandaloneApplicationFrameUrl } from "../src/content/applicationSurface";
+import {
+  findStandaloneApplicationFrameUrl,
+  hasLikelyApplicationFrame,
+} from "../src/content/applicationSurface";
 import { AutofillField } from "../src/content/types";
 
 const collectors = {
@@ -37,5 +40,41 @@ describe("application surface helpers", () => {
     `;
 
     expect(findStandaloneApplicationFrameUrl(collectors)).toBeNull();
+  });
+
+  it("ignores hidden placeholder iframes when detecting an application frame", () => {
+    document.body.innerHTML = `
+      <section>
+        <iframe
+          class="apply-frame"
+          src="https://boards.greenhouse.io/embed/job_app?for=hidden&token=abc123"
+          style="display:none"
+        ></iframe>
+      </section>
+    `;
+
+    expect(hasLikelyApplicationFrame()).toBe(false);
+    expect(findStandaloneApplicationFrameUrl(collectors)).toBeNull();
+  });
+
+  it("prefers the visible standalone application frame when both hidden and visible frames exist", () => {
+    document.body.innerHTML = `
+      <section>
+        <iframe
+          class="apply-frame"
+          src="https://boards.greenhouse.io/embed/job_app?for=hidden&token=abc123"
+          style="display:none"
+        ></iframe>
+        <iframe
+          src="https://jobs.lever.co/example/abcd1234/apply"
+          title="Application form"
+        ></iframe>
+      </section>
+    `;
+
+    expect(hasLikelyApplicationFrame()).toBe(true);
+    expect(findStandaloneApplicationFrameUrl(collectors)).toBe(
+      "https://jobs.lever.co/example/abcd1234/apply"
+    );
   });
 });

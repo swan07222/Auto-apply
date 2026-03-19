@@ -159,13 +159,22 @@ export function getNavigationUrl(el: HTMLElement): string | null {
 }
 
 export function normalizeUrl(url: string): string | null {
-  if (!url || url.startsWith("javascript:") || url === "#") {
+  const trimmedUrl = url.trim();
+
+  if (
+    !trimmedUrl ||
+    trimmedUrl.startsWith("javascript:") ||
+    trimmedUrl.startsWith("#") ||
+    /^_(?:blank|self|parent|top)$/i.test(trimmedUrl)
+  ) {
     return null;
   }
 
   // FIX: Handle protocol-relative URLs
-  if (url.startsWith("//")) {
-    url = window.location.protocol + url;
+  if (trimmedUrl.startsWith("//")) {
+    url = window.location.protocol + trimmedUrl;
+  } else {
+    url = trimmedUrl;
   }
 
   try {

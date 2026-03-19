@@ -69,6 +69,19 @@ npm install
 npm run build
 ```
 
+## Testing
+
+```powershell
+npm run test:unit
+npm run test:coverage
+npm run test:check
+```
+
+- `npm run test:unit` runs the fast Vitest suite, including popup workflow coverage.
+- `npm run test:coverage` writes HTML, JSON summary, and `lcov` coverage reports.
+- `npm run test:check` runs coverage, typechecking, and a production build in one pass.
+- `npm run test:live` runs the Playwright smoke suite against real job sites. It is intentionally opt-in because it depends on live pages, network conditions, and anti-bot challenges.
+
 ## Load In Chrome
 
 1. Open `chrome://extensions`.
@@ -132,3 +145,4 @@ The extension stores its working data locally in Chrome extension storage, inclu
 - The project is built with TypeScript and bundled into `dist`
 - `npm run typecheck` runs the TypeScript checker without emitting files
 - `npm run build` rebuilds the extension assets used by Chrome
+- `npm run test:full` runs the local quality gate plus the opt-in Playwright smoke suite

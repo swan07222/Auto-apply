@@ -5,7 +5,7 @@ import {
   matchesDescriptor,
   shouldAutofillField,
 } from "./autofill";
-import { normalizeUrl } from "./dom";
+import { isElementVisible, normalizeUrl } from "./dom";
 import {
   findApplyAction,
   findCompanySiteAction,
@@ -28,10 +28,10 @@ const APPLICATION_FRAME_SELECTOR =
 export async function waitForLikelyApplicationSurface(
   site: SiteKey,
   collectors: ApplicationSurfaceCollectors
-): Promise<void> {
+): Promise<boolean> {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     if (hasLikelyApplicationSurface(site, collectors)) {
-      return;
+      return true;
     }
 
     if (attempt === 5 || attempt === 10 || attempt === 15 || attempt === 20) {
@@ -43,6 +43,8 @@ export async function waitForLikelyApplicationSurface(
 
     await sleep(700);
   }
+
+  return false;
 }
 
 export function hasLikelyApplicationForm(
@@ -62,7 +64,7 @@ export function hasLikelyApplicationForm(
 }
 
 export function hasLikelyApplicationFrame(): boolean {
-  return Boolean(document.querySelector(APPLICATION_FRAME_SELECTOR));
+  return collectLikelyApplicationFrames().length > 0;
 }
 
 export function findStandaloneApplicationFrameUrl(
@@ -91,11 +93,37 @@ export function findStandaloneApplicationFrameUrl(
       }
     | undefined;
 
-  for (const frame of Array.from(document.querySelectorAll<HTMLIFrameElement>(APPLICATION_FRAME_SELECTOR))) {
-    const rawUrl =
-      frame.getAttribute("src") ||
-      frame.getAttribute("data-src") ||
-      "";
+  for (const frame of collectLikelyApplicationFrames()) {
+    if (!best || frame.score > best.score) {
+      best = {
+        score: frame.score,
+        url: frame.url,
+      };
+    }
+  }
+
+  return best?.url ?? null;
+}
+
+function collectLikelyApplicationFrames(): Array<{
+  frame: HTMLIFrameElement;
+  score: number;
+  url: string;
+}> {
+  const frames: Array<{
+    frame: HTMLIFrameElement;
+    score: number;
+    url: string;
+  }> = [];
+
+  for (const frame of Array.from(
+    document.querySelectorAll<HTMLIFrameElement>(APPLICATION_FRAME_SELECTOR)
+  )) {
+    if (!isElementVisible(frame)) {
+      continue;
+    }
+
+    const rawUrl = frame.getAttribute("src") || frame.getAttribute("data-src") || "";
     const url = normalizeUrl(rawUrl);
 
     if (!url) {
@@ -103,25 +131,41 @@ export function findStandaloneApplicationFrameUrl(
     }
 
     const lower = url.toLowerCase();
+    const frameSignals = [
+      frame.id,
+      frame.className,
+      frame.getAttribute("title"),
+      frame.getAttribute("aria-label"),
+    ]
+      .join(" ")
+      .toLowerCase();
+
     let score = 0;
 
     if (lower.includes("greenhouse.io")) score += 120;
     if (lower.includes("lever.co")) score += 110;
-    if (lower.includes("workdayjobs.com") || lower.includes("myworkdayjobs.com")) score += 110;
+    if (lower.includes("workdayjobs.com") || lower.includes("myworkdayjobs.com")) {
+      score += 110;
+    }
     if (lower.includes("apply")) score += 40;
     if (lower.includes("application")) score += 35;
     if (lower.includes("candidate")) score += 30;
+    if (frameSignals.includes("apply")) score += 20;
+    if (frameSignals.includes("application")) score += 18;
+    if (frameSignals.includes("resume")) score += 12;
 
     if (score <= 0) {
       continue;
     }
 
-    if (!best || score > best.score) {
-      best = { score, url };
-    }
+    frames.push({
+      frame,
+      score,
+      url,
+    });
   }
 
-  return best?.url ?? null;
+  return frames;
 }
 
 export function hasLikelyApplicationSurface(

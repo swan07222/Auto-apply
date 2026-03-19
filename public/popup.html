@@ -10,53 +10,27 @@
     <main class="popup-shell">
       <section class="dashboard">
         <header class="hero">
-          <p class="eyebrow">AI-assisted Chrome extension</p>
-          <h1>Remote Job Search Starter</h1>
+          <h1>Remote Job Search</h1>
           <p class="intro">
-            Launch structured job searches, open matching application flows, and keep your
-            resumes, profile details, remembered answers, and AI drafting tools ready in one
-            place.
+            Keep your search settings, profile, resumes, and saved answers ready for faster
+            applications.
           </p>
-          <div class="hero-metrics" aria-label="Extension highlights">
-            <article class="hero-metric">
-              <p class="hero-metric-value">3</p>
-              <p class="hero-metric-label">Search modes</p>
-            </article>
-            <article class="hero-metric">
-              <p class="hero-metric-value">3</p>
-              <p class="hero-metric-label">Resume tracks</p>
-            </article>
-            <article class="hero-metric">
-              <p class="hero-metric-value">0</p>
-              <p class="hero-metric-label">Auto-submit steps</p>
-            </article>
-          </div>
         </header>
 
-        <section class="overview-grid" aria-label="Quick overview">
+        <section class="overview-grid" aria-label="Current run summary">
           <article class="overview-card">
-            <p class="overview-label">Detected site</p>
+            <p class="overview-label">Active site</p>
             <p id="site-name" class="overview-value pill">Checking...</p>
           </article>
 
           <article class="overview-card">
-            <p class="overview-label">Search mode</p>
+            <p class="overview-label">Search flow</p>
             <p id="mode-preview" class="overview-value">Job boards</p>
           </article>
 
           <article class="overview-card">
-            <p class="overview-label">Search region</p>
+            <p class="overview-label">Target region</p>
             <p id="region-preview" class="overview-value">Auto</p>
-          </article>
-
-          <article class="overview-card">
-            <p class="overview-label">Date posted</p>
-            <p id="date-preview" class="overview-value">Any time</p>
-          </article>
-
-          <article class="overview-card">
-            <p class="overview-label">Auto upload</p>
-            <p id="auto-upload-preview" class="overview-value">On</p>
           </article>
         </section>
 
@@ -67,6 +41,12 @@
           </div>
           <p id="status-text" class="status-text">Choose a search mode to begin.</p>
         </section>
+
+        <p class="hint">
+          If a site asks you to verify that you are human, finish it manually and the extension
+          will resume. The extension fills fields and uploads files, but it does not auto-submit
+          applications.
+        </p>
 
         <p id="settings-status" class="settings-status">
           Settings are stored locally in the extension.
@@ -127,12 +107,12 @@
           <summary class="group-summary">
             <div class="group-heading">
               <h2>Candidate Profile</h2>
-              <p>Used for blank application fields and for region matching when Search region is set to Auto.</p>
+              <p>Use essentials for every application, then add optional details only when a form asks for them.</p>
             </div>
           </summary>
 
           <div class="subsection">
-            <p class="subsection-title">Contact details</p>
+            <p class="subsection-title">Essentials</p>
             <div class="field-grid">
               <label class="field">
                 <span>Full name</span>
@@ -166,62 +146,71 @@
             </div>
           </div>
 
-          <div class="subsection">
-            <p class="subsection-title">Links and experience</p>
-            <div class="field-grid">
-              <label class="field">
-                <span>LinkedIn URL</span>
-                <input id="linkedin-url" type="url" />
-              </label>
+          <details class="nested-settings">
+            <summary class="nested-summary">
+              <div class="group-heading">
+                <h3>Optional profile details</h3>
+                <p>Add links, experience, and work preferences for applications that ask for them.</p>
+              </div>
+            </summary>
 
-              <label class="field">
-                <span>Portfolio / Website URL</span>
-                <input id="portfolio-url" type="url" />
-              </label>
+            <div class="subsection">
+              <p class="subsection-title">Links and experience</p>
+              <div class="field-grid">
+                <label class="field">
+                  <span>LinkedIn URL</span>
+                  <input id="linkedin-url" type="url" />
+                </label>
 
-              <label class="field">
-                <span>Current company</span>
-                <input id="current-company" type="text" />
-              </label>
+                <label class="field">
+                  <span>Portfolio / Website URL</span>
+                  <input id="portfolio-url" type="url" />
+                </label>
 
-              <label class="field">
-                <span>Years of experience</span>
-                <input id="years-experience" type="text" inputmode="numeric" />
-              </label>
+                <label class="field">
+                  <span>Current company</span>
+                  <input id="current-company" type="text" />
+                </label>
+
+                <label class="field">
+                  <span>Years of experience</span>
+                  <input id="years-experience" type="text" inputmode="numeric" />
+                </label>
+              </div>
             </div>
-          </div>
 
-          <div class="subsection">
-            <p class="subsection-title">Work preferences</p>
-            <div class="field-grid">
-              <label class="field">
-                <span>Authorized to work in the U.S.</span>
-                <select id="work-authorization">
-                  <option value="">Leave blank</option>
-                  <option value="Yes">Yes</option>
-                  <option value="No">No</option>
-                </select>
-              </label>
+            <div class="subsection">
+              <p class="subsection-title">Work preferences</p>
+              <div class="field-grid">
+                <label class="field">
+                  <span>Authorized to work in target region</span>
+                  <select id="work-authorization">
+                    <option value="">Leave blank</option>
+                    <option value="Yes">Yes</option>
+                    <option value="No">No</option>
+                  </select>
+                </label>
 
-              <label class="field">
-                <span>Need sponsorship now or later</span>
-                <select id="needs-sponsorship">
-                  <option value="">Leave blank</option>
-                  <option value="Yes">Yes</option>
-                  <option value="No">No</option>
-                </select>
-              </label>
+                <label class="field">
+                  <span>Need visa or employer sponsorship</span>
+                  <select id="needs-sponsorship">
+                    <option value="">Leave blank</option>
+                    <option value="Yes">Yes</option>
+                    <option value="No">No</option>
+                  </select>
+                </label>
 
-              <label class="field">
-                <span>Willing to relocate</span>
-                <select id="willing-to-relocate">
-                  <option value="">Leave blank</option>
-                  <option value="Yes">Yes</option>
-                  <option value="No">No</option>
-                </select>
-              </label>
+                <label class="field">
+                  <span>Open to relocation if needed</span>
+                  <select id="willing-to-relocate">
+                    <option value="">Leave blank</option>
+                    <option value="Yes">Yes</option>
+                    <option value="No">No</option>
+                  </select>
+                </label>
+              </div>
             </div>
-          </div>
+          </details>
         </details>
 
         <details class="settings-group" open>
@@ -271,6 +260,12 @@
             <span id="answer-count" class="pill subtle">0</span>
           </div>
 
+          <p id="answer-empty-state" class="settings-copy answer-empty-state">
+            No remembered answers yet.
+          </p>
+
+          <div id="answer-list" class="answer-list" aria-live="polite"></div>
+
           <button id="clear-answers-button" class="secondary-button utility-button" type="button">
             Clear Remembered Answers
           </button>
@@ -291,12 +286,6 @@
             </button>
           </div>
         </footer>
-
-        <p class="hint">
-          If a site asks you to verify that you are human, finish it manually and the extension
-          will resume. The extension fills fields and uploads files, but it does not auto-submit
-          applications.
-        </p>
       </section>
     </main>
 

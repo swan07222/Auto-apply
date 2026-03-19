@@ -6,11 +6,14 @@
   "scripts": {
     "build": "node ./scripts/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --reporter=verbose",
+    "test": "npm run test:unit",
+    "test:unit": "vitest run --reporter=verbose",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
-    "test:live": "playwright test",
-    "test:full": "npm run test:coverage && npm run test:live && npm run typecheck && npm run build"
+    "test:smoke": "node ./scripts/run-live-tests.mjs",
+    "test:live": "npm run test:smoke --",
+    "test:check": "npm run test:coverage && npm run typecheck && npm run build",
+    "test:full": "npm run test:check && npm run test:smoke"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

@@ -61,6 +61,18 @@ describe("dom helpers", () => {
     );
   });
 
+  it("ignores fragment-only and browser target values when extracting navigation URLs", () => {
+    document.body.innerHTML = `
+      <button id="modal" data-target="#apply-modal">Open apply modal</button>
+      <button id="blank" target="_blank">Open in new tab</button>
+    `;
+
+    expect(getNavigationUrl(document.querySelector("#modal") as HTMLButtonElement)).toBeNull();
+    expect(getNavigationUrl(document.querySelector("#blank") as HTMLButtonElement)).toBeNull();
+    expect(normalizeUrl("#review")).toBeNull();
+    expect(normalizeUrl("_blank")).toBeNull();
+  });
+
   it("normalizes URLs and distinguishes internal hosts from external ones", () => {
     expect(normalizeUrl("//jobs.example.com/apply#section")).toBe("https://jobs.example.com/apply");
     expect(normalizeUrl("javascript:void(0)")).toBeNull();

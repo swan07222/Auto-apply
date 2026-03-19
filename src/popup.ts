@@ -4,10 +4,10 @@
 import {
   AutomationSettings,
   AutomationStatus,
-  DATE_POSTED_WINDOW_LABELS,
   DatePostedWindow,
   ResumeAsset,
   ResumeKind,
+  SavedAnswer,
   SearchMode,
   StartupRegion,
   createStatus,
@@ -30,10 +30,10 @@ const statusPanel = requireElement<HTMLElement>("#status-panel");
 const statusText = requireElement<HTMLElement>("#status-text");
 const settingsStatus = requireElement<HTMLElement>("#settings-status");
 const answerCount = requireElement<HTMLElement>("#answer-count");
+const answerList = requireElement<HTMLElement>("#answer-list");
+const answerEmptyState = requireElement<HTMLElement>("#answer-empty-state");
 const modePreview = requireElement<HTMLElement>("#mode-preview");
 const regionPreview = requireElement<HTMLElement>("#region-preview");
-const datePreview = requireElement<HTMLElement>("#date-preview");
-const autoUploadPreview = requireElement<HTMLElement>("#auto-upload-preview");
 const searchModeInput = requireElement<HTMLSelectElement>("#search-mode");
 const startupRegionInput = requireElement<HTMLSelectElement>("#startup-region");
 const datePostedWindowInput =
@@ -90,6 +90,21 @@ clearAnswersButton.addEventListener("click", () => {
   void clearRememberedAnswers();
 });
 
+answerList.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) {
+    return;
+  }
+
+  const button = target.closest<HTMLButtonElement>("[data-answer-key]");
+  const key = button?.dataset.answerKey?.trim();
+  if (!button || !key) {
+    return;
+  }
+
+  void removeRememberedAnswer(key);
+});
+
 searchModeInput.addEventListener("change", () => {
   updateModeUi();
   updateOverviewPreview();
@@ -130,6 +145,11 @@ async function initialize(): Promise<void> {
   await refreshActiveTabContext();
   settings = await readAutomationSettings();
   populateSettingsForm(settings);
+  setSettingsStatus(
+    "Settings are stored locally in the extension.",
+    "muted",
+    false
+  );
 
   // FIX: Respect the saved searchMode — don't override it
   updateModeUi();
@@ -565,9 +585,19 @@ function applyStatus(status: AutomationStatus): void {
   statusText.textContent = status.message;
 }
 
+function setSettingsStatus(
+  message: string,
+  tone: "muted" | "success" | "error" = "muted",
+  visible = true
+): void {
+  settingsStatus.textContent = message;
+  settingsStatus.dataset.tone = tone;
+  settingsStatus.dataset.visible = visible ? "true" : "false";
+}
+
 async function saveCurrentSettings(showFeedback: boolean): Promise<void> {
   saveButton.disabled = true;
-  settingsStatus.textContent = "Saving settings...";
+  setSettingsStatus("Saving settings...", "muted", true);
 
   try {
     settings = await writeAutomationSettings({
@@ -595,14 +625,22 @@ async function saveCurrentSettings(showFeedback: boolean): Promise<void> {
     });
 
     populateSettingsForm(settings);
-    settingsStatus.textContent = showFeedback
-      ? "Settings saved."
-      : "Settings are stored locally in the extension.";
+    setSettingsStatus(
+      showFeedback
+        ? "Settings saved."
+        : "Settings are stored locally in the extension.",
+      "success",
+      showFeedback
+    );
     updateOverviewPreview();
   } catch (error: unknown) {
-    settingsStatus.textContent = error instanceof Error
-      ? `Error: ${error.message}`
-      : "Failed to save settings.";
+    setSettingsStatus(
+      error instanceof Error
+        ? `Error: ${error.message}`
+        : "Failed to save settings.",
+      "error",
+      true
+    );
   } finally {
     saveButton.disabled = false;
   }
@@ -610,7 +648,7 @@ async function saveCurrentSettings(showFeedback: boolean): Promise<void> {
 
 async function clearRememberedAnswers(): Promise<void> {
   clearAnswersButton.disabled = true;
-  settingsStatus.textContent = "Clearing remembered answers...";
+  setSettingsStatus("Clearing remembered answers...", "muted", true);
 
   try {
     settings = await writeAutomationSettings({
@@ -619,13 +657,51 @@ async function clearRememberedAnswers(): Promise<void> {
     });
 
     populateSettingsForm(settings);
-    settingsStatus.textContent = "Remembered answers cleared.";
+    setSettingsStatus("Remembered answers cleared.", "success", true);
   } catch (error: unknown) {
-    settingsStatus.textContent = error instanceof Error
-      ? `Error: ${error.message}`
-      : "Failed to clear answers.";
+    setSettingsStatus(
+      error instanceof Error
+        ? `Error: ${error.message}`
+        : "Failed to clear answers.",
+      "error",
+      true
+    );
   } finally {
-    clearAnswersButton.disabled = false;
+    clearAnswersButton.disabled = Object.keys(settings.answers).length === 0;
+  }
+}
+
+async function removeRememberedAnswer(key: string): Promise<void> {
+  const existing = settings.answers[key];
+  if (!existing) {
+    return;
+  }
+
+  setSettingsStatus("Removing remembered answer...", "muted", true);
+
+  try {
+    const nextAnswers = { ...settings.answers };
+    delete nextAnswers[key];
+
+    settings = await writeAutomationSettings({
+      ...settings,
+      answers: nextAnswers,
+    });
+
+    populateSettingsForm(settings);
+    setSettingsStatus(
+      `Removed remembered answer for "${truncateText(existing.question, 40)}".`,
+      "success",
+      true
+    );
+  } catch (error: unknown) {
+    setSettingsStatus(
+      error instanceof Error
+        ? `Error: ${error.message}`
+        : "Failed to remove remembered answer.",
+      "error",
+      true
+    );
   }
 }
 
@@ -637,7 +713,11 @@ async function storeResumeFile(resumeKind: ResumeKind): Promise<void> {
     return;
   }
 
-  settingsStatus.textContent = `Saving ${getResumeKindLabel(resumeKind)} resume...`;
+  setSettingsStatus(
+    `Saving ${getResumeKindLabel(resumeKind)} resume...`,
+    "muted",
+    true
+  );
 
   try {
     const asset = await readFileAsResumeAsset(file);
@@ -650,11 +730,19 @@ async function storeResumeFile(resumeKind: ResumeKind): Promise<void> {
     });
 
     populateSettingsForm(settings);
-    settingsStatus.textContent = `${getResumeKindLabel(resumeKind)} resume saved: ${asset.name}`;
+    setSettingsStatus(
+      `${getResumeKindLabel(resumeKind)} resume saved: ${asset.name}`,
+      "success",
+      true
+    );
   } catch (error: unknown) {
-    settingsStatus.textContent = error instanceof Error
-      ? `Error: ${error.message}`
-      : "Failed to save resume.";
+    setSettingsStatus(
+      error instanceof Error
+        ? `Error: ${error.message}`
+        : "Failed to save resume.",
+      "error",
+      true
+    );
   } finally {
     input.value = "";
   }
@@ -679,9 +767,7 @@ function populateSettingsForm(nextSettings: AutomationSettings): void {
   workAuthorizationInput.value = nextSettings.candidate.workAuthorization;
   needsSponsorshipInput.value = nextSettings.candidate.needsSponsorship;
   willingToRelocateInput.value = nextSettings.candidate.willingToRelocate;
-  answerCount.textContent = String(
-    Object.keys(nextSettings.answers).length
-  );
+  renderRememberedAnswers(nextSettings.answers);
 
   for (const resumeKind of Object.keys(resumeNameLabels) as ResumeKind[]) {
     const asset = nextSettings.resumes[resumeKind];
@@ -691,6 +777,47 @@ function populateSettingsForm(nextSettings: AutomationSettings): void {
   }
 
   updateOverviewPreview();
+}
+
+function renderRememberedAnswers(answers: Record<string, SavedAnswer>): void {
+  const entries = Object.entries(answers).sort(
+    (left, right) => right[1].updatedAt - left[1].updatedAt
+  );
+
+  answerCount.textContent = String(entries.length);
+  answerEmptyState.hidden = entries.length > 0;
+  answerList.replaceChildren();
+  clearAnswersButton.disabled = entries.length === 0;
+
+  for (const [key, answer] of entries) {
+    const row = document.createElement("article");
+    row.className = "answer-item";
+
+    const copy = document.createElement("div");
+    copy.className = "answer-item-copy";
+
+    const question = document.createElement("p");
+    question.className = "answer-question";
+    question.textContent = answer.question || "Untitled question";
+
+    const value = document.createElement("p");
+    value.className = "answer-value";
+    value.textContent = truncateText(answer.value || "No saved answer", 120);
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "answer-delete-button";
+    button.dataset.answerKey = key;
+    button.textContent = "Delete";
+    button.setAttribute(
+      "aria-label",
+      `Delete remembered answer for ${truncateText(answer.question || "this question", 80)}`
+    );
+
+    copy.append(question, value);
+    row.append(copy, button);
+    answerList.append(row);
+  }
 }
 
 function formatFileSize(size: number): string {
@@ -888,10 +1015,6 @@ function updateModeUi(): void {
 function updateOverviewPreview(): void {
   modePreview.textContent = getModePreviewLabel();
   regionPreview.textContent = getRegionPreviewLabel();
-  datePreview.textContent = DATE_POSTED_WINDOW_LABELS[getSelectedDatePostedWindow()];
-  autoUploadPreview.textContent = autoUploadInput.checked
-    ? "Enabled"
-    : "Off";
 }
 
 // FIX: Map HTML select values to SearchMode correctly
@@ -1048,4 +1171,13 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
   });
+}
+
+function truncateText(value: string, maxLength: number): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+
+  return `${trimmed.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }

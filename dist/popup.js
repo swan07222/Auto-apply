@@ -49359,12 +49359,6 @@
     other_sites: "Other Job Sites",
     chatgpt: "ChatGPT"
   };
-  var DATE_POSTED_WINDOW_LABELS = {
-    any: "Any time",
-    "24h": "Past 24 hours",
-    "3d": "Past 3 days",
-    "1w": "Past week"
-  };
   var RESUME_KIND_LABELS = {
     front_end: "Front End",
     back_end: "Back End",
@@ -49553,10 +49547,10 @@
   var statusText = requireElement("#status-text");
   var settingsStatus = requireElement("#settings-status");
   var answerCount = requireElement("#answer-count");
+  var answerList = requireElement("#answer-list");
+  var answerEmptyState = requireElement("#answer-empty-state");
   var modePreview = requireElement("#mode-preview");
   var regionPreview = requireElement("#region-preview");
-  var datePreview = requireElement("#date-preview");
-  var autoUploadPreview = requireElement("#auto-upload-preview");
   var searchModeInput = requireElement("#search-mode");
   var startupRegionInput = requireElement("#startup-region");
   var datePostedWindowInput = requireElement("#date-posted-window");
@@ -49599,6 +49593,18 @@
   clearAnswersButton.addEventListener("click", () => {
     void clearRememberedAnswers();
   });
+  answerList.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    const button = target.closest("[data-answer-key]");
+    const key = button?.dataset.answerKey?.trim();
+    if (!button || !key) {
+      return;
+    }
+    void removeRememberedAnswer(key);
+  });
   searchModeInput.addEventListener("change", () => {
     updateModeUi();
     updateOverviewPreview();
@@ -49632,6 +49638,11 @@
     await refreshActiveTabContext();
     settings = await readAutomationSettings();
     populateSettingsForm(settings);
+    setSettingsStatus(
+      "Settings are stored locally in the extension.",
+      "muted",
+      false
+    );
     updateModeUi();
     updateOverviewPreview();
     updateSiteNameDisplay();
@@ -49951,9 +49962,14 @@
     statusPanel.dataset.phase = status.phase;
     statusText.textContent = status.message;
   }
+  function setSettingsStatus(message, tone = "muted", visible = true) {
+    settingsStatus.textContent = message;
+    settingsStatus.dataset.tone = tone;
+    settingsStatus.dataset.visible = visible ? "true" : "false";
+  }
   async function saveCurrentSettings(showFeedback) {
     saveButton.disabled = true;
-    settingsStatus.textContent = "Saving settings...";
+    setSettingsStatus("Saving settings...", "muted", true);
     try {
       settings = await writeAutomationSettings({
         ...settings,
@@ -49979,28 +49995,67 @@
         }
       });
       populateSettingsForm(settings);
-      settingsStatus.textContent = showFeedback ? "Settings saved." : "Settings are stored locally in the extension.";
+      setSettingsStatus(
+        showFeedback ? "Settings saved." : "Settings are stored locally in the extension.",
+        "success",
+        showFeedback
+      );
       updateOverviewPreview();
     } catch (error) {
-      settingsStatus.textContent = error instanceof Error ? `Error: ${error.message}` : "Failed to save settings.";
+      setSettingsStatus(
+        error instanceof Error ? `Error: ${error.message}` : "Failed to save settings.",
+        "error",
+        true
+      );
     } finally {
       saveButton.disabled = false;
     }
   }
   async function clearRememberedAnswers() {
     clearAnswersButton.disabled = true;
-    settingsStatus.textContent = "Clearing remembered answers...";
+    setSettingsStatus("Clearing remembered answers...", "muted", true);
     try {
       settings = await writeAutomationSettings({
         ...settings,
         answers: {}
       });
       populateSettingsForm(settings);
-      settingsStatus.textContent = "Remembered answers cleared.";
+      setSettingsStatus("Remembered answers cleared.", "success", true);
     } catch (error) {
-      settingsStatus.textContent = error instanceof Error ? `Error: ${error.message}` : "Failed to clear answers.";
+      setSettingsStatus(
+        error instanceof Error ? `Error: ${error.message}` : "Failed to clear answers.",
+        "error",
+        true
+      );
     } finally {
-      clearAnswersButton.disabled = false;
+      clearAnswersButton.disabled = Object.keys(settings.answers).length === 0;
+    }
+  }
+  async function removeRememberedAnswer(key) {
+    const existing = settings.answers[key];
+    if (!existing) {
+      return;
+    }
+    setSettingsStatus("Removing remembered answer...", "muted", true);
+    try {
+      const nextAnswers = { ...settings.answers };
+      delete nextAnswers[key];
+      settings = await writeAutomationSettings({
+        ...settings,
+        answers: nextAnswers
+      });
+      populateSettingsForm(settings);
+      setSettingsStatus(
+        `Removed remembered answer for "${truncateText(existing.question, 40)}".`,
+        "success",
+        true
+      );
+    } catch (error) {
+      setSettingsStatus(
+        error instanceof Error ? `Error: ${error.message}` : "Failed to remove remembered answer.",
+        "error",
+        true
+      );
     }
   }
   async function storeResumeFile(resumeKind) {
@@ -50009,7 +50064,11 @@
     if (!file) {
       return;
     }
-    settingsStatus.textContent = `Saving ${getResumeKindLabel(resumeKind)} resume...`;
+    setSettingsStatus(
+      `Saving ${getResumeKindLabel(resumeKind)} resume...`,
+      "muted",
+      true
+    );
     try {
       const asset = await readFileAsResumeAsset(file);
       settings = await writeAutomationSettings({
@@ -50020,9 +50079,17 @@
         }
       });
       populateSettingsForm(settings);
-      settingsStatus.textContent = `${getResumeKindLabel(resumeKind)} resume saved: ${asset.name}`;
+      setSettingsStatus(
+        `${getResumeKindLabel(resumeKind)} resume saved: ${asset.name}`,
+        "success",
+        true
+      );
     } catch (error) {
-      settingsStatus.textContent = error instanceof Error ? `Error: ${error.message}` : "Failed to save resume.";
+      setSettingsStatus(
+        error instanceof Error ? `Error: ${error.message}` : "Failed to save resume.",
+        "error",
+        true
+      );
     } finally {
       input.value = "";
     }
@@ -50046,14 +50113,45 @@
     workAuthorizationInput.value = nextSettings.candidate.workAuthorization;
     needsSponsorshipInput.value = nextSettings.candidate.needsSponsorship;
     willingToRelocateInput.value = nextSettings.candidate.willingToRelocate;
-    answerCount.textContent = String(
-      Object.keys(nextSettings.answers).length
-    );
+    renderRememberedAnswers(nextSettings.answers);
     for (const resumeKind of Object.keys(resumeNameLabels)) {
       const asset = nextSettings.resumes[resumeKind];
       resumeNameLabels[resumeKind].textContent = asset ? `${asset.name} (${formatFileSize(asset.size)})` : "No file saved";
     }
     updateOverviewPreview();
+  }
+  function renderRememberedAnswers(answers) {
+    const entries = Object.entries(answers).sort(
+      (left, right) => right[1].updatedAt - left[1].updatedAt
+    );
+    answerCount.textContent = String(entries.length);
+    answerEmptyState.hidden = entries.length > 0;
+    answerList.replaceChildren();
+    clearAnswersButton.disabled = entries.length === 0;
+    for (const [key, answer] of entries) {
+      const row = document.createElement("article");
+      row.className = "answer-item";
+      const copy = document.createElement("div");
+      copy.className = "answer-item-copy";
+      const question = document.createElement("p");
+      question.className = "answer-question";
+      question.textContent = answer.question || "Untitled question";
+      const value = document.createElement("p");
+      value.className = "answer-value";
+      value.textContent = truncateText(answer.value || "No saved answer", 120);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "answer-delete-button";
+      button.dataset.answerKey = key;
+      button.textContent = "Delete";
+      button.setAttribute(
+        "aria-label",
+        `Delete remembered answer for ${truncateText(answer.question || "this question", 80)}`
+      );
+      copy.append(question, value);
+      row.append(copy, button);
+      answerList.append(row);
+    }
   }
   function formatFileSize(size2) {
     if (!Number.isFinite(size2) || size2 <= 0) {
@@ -50206,8 +50304,6 @@
   function updateOverviewPreview() {
     modePreview.textContent = getModePreviewLabel();
     regionPreview.textContent = getRegionPreviewLabel();
-    datePreview.textContent = DATE_POSTED_WINDOW_LABELS[getSelectedDatePostedWindow()];
-    autoUploadPreview.textContent = autoUploadInput.checked ? "Enabled" : "Off";
   }
   function getSelectedSearchMode() {
     const value = searchModeInput.value;
@@ -50360,6 +50456,13 @@
     return new Promise((resolve) => {
       window.setTimeout(resolve, ms);
     });
+  }
+  function truncateText(value, maxLength) {
+    const trimmed = value.trim();
+    if (trimmed.length <= maxLength) {
+      return trimmed;
+    }
+    return `${trimmed.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
   }
 })();
 /*! Bundled license information:
