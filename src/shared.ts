@@ -6,6 +6,7 @@ export type SiteKey =
   | "ziprecruiter"
   | "dice"
   | "monster"
+  | "glassdoor"
   | "startup"
   | "other_sites"
   | "chatgpt";
@@ -159,6 +160,7 @@ export const SUPPORTED_SITE_LABELS: Record<SiteKey, string> = {
   ziprecruiter: "ZipRecruiter",
   dice: "Dice",
   monster: "Monster",
+  glassdoor: "Glassdoor",
   startup: "Startup Careers",
   other_sites: "Other Job Sites",
   chatgpt: "ChatGPT",
@@ -450,6 +452,14 @@ export function detectSiteFromUrl(url: string): SiteKey | null {
     }
   }
 
+  for (let i = 0; i < hostParts.length; i++) {
+    if (hostParts[i] === "glassdoor") {
+      if (i < hostParts.length - 1) {
+        return "glassdoor";
+      }
+    }
+  }
+
   if (bare === "chatgpt.com" || bare.endsWith(".chatgpt.com")) {
     return "chatgpt";
   }
@@ -518,7 +528,8 @@ export function isJobBoardSite(
     site === "indeed" ||
     site === "ziprecruiter" ||
     site === "dice" ||
-    site === "monster"
+    site === "monster" ||
+    site === "glassdoor"
   );
 }
 
@@ -623,6 +634,7 @@ const CANONICAL_JOB_BOARD_ORIGINS: Record<JobBoardSite, string> = {
   ziprecruiter: "https://www.ziprecruiter.com",
   dice: "https://www.dice.com",
   monster: "https://www.monster.com",
+  glassdoor: "https://www.glassdoor.com",
 };
 
 // FIX: Removed "lk" from general identifying params — handled site-specifically
@@ -698,6 +710,23 @@ export function getJobDedupKey(url: string): string {
       if (jobId) return `${hostname}${path}?jobid=${jobId.toLowerCase()}`;
     }
 
+    if (hostname.includes("glassdoor")) {
+      const jobListingId =
+        parsed.searchParams.get("jl") ??
+        parsed.searchParams.get("jobListingId") ??
+        parsed.searchParams.get("joblistingid");
+      if (jobListingId) {
+        return `glassdoor:jl:${jobListingId.toLowerCase()}`;
+      }
+
+      if (
+        path.includes("/job-listing/") ||
+        path.includes("/partner/joblisting.htm")
+      ) {
+        return `${hostname}${path}`;
+      }
+    }
+
     // ── Generic identifying-param check ──
     for (const param of IDENTIFYING_PARAMS) {
       const value = parsed.searchParams.get(param);
@@ -750,6 +779,14 @@ function buildMonsterSearchUrl(query: string, baseOrigin: string): string {
   return url.toString();
 }
 
+function buildGlassdoorSearchUrl(query: string, baseOrigin: string): string {
+  const url = new URL("/Job/jobs.htm", baseOrigin);
+  url.searchParams.set("sc.keyword", `remote ${query}`);
+  url.searchParams.set("locT", "N");
+  url.searchParams.set("locId", "1");
+  return url.toString();
+}
+
 function buildSingleSearchUrl(
   site: JobBoardSite,
   _origin: string,
@@ -779,6 +816,9 @@ function buildSingleSearchUrl(
     case "monster": {
       return buildMonsterSearchUrl(query, baseOrigin);
     }
+    case "glassdoor": {
+      return buildGlassdoorSearchUrl(query, baseOrigin);
+    }
   }
 }
 
@@ -797,6 +837,7 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
     "verify you are human", "verification required", "complete the security check",
     "press and hold", "human verification", "security challenge",
     "i am human", "i'm not a robot", "verify that you are human",
+    "help us protect glassdoor",
   ];
 
   if (strongPhrases.some((phrase) => title.includes(phrase) || bodyText.includes(phrase))) {

@@ -254,6 +254,48 @@ describe("job search candidate filtering", () => {
     ]);
   });
 
+  it("accepts Glassdoor detail URLs and rejects search listings", () => {
+    expect(
+      isLikelyJobDetailUrl(
+        "glassdoor",
+        "https://www.glassdoor.com/job-listing/software-engineer-frontend-ivo-ai-inc-JV_IC1147401_KO0,26_KE27,37.htm?jl=1010069347428",
+        "Software Engineer, Frontend"
+      )
+    ).toBe(true);
+
+    expect(
+      isLikelyJobDetailUrl(
+        "glassdoor",
+        "https://www.glassdoor.com/Job/jobs.htm?sc.keyword=remote%20front%20end%20developer&locT=N&locId=1",
+        "Front End Developer Jobs"
+      )
+    ).toBe(false);
+  });
+
+  it("collects Glassdoor job cards while skipping listing links", () => {
+    document.body.innerHTML = `
+      <article data-test="jobListing">
+        <h2>Software Engineer, Frontend</h2>
+        <a
+          data-test="job-link"
+          href="https://www.glassdoor.com/job-listing/software-engineer-frontend-ivo-ai-inc-JV_IC1147401_KO0,26_KE27,37.htm?jl=1010069347428"
+        >
+          Easy Apply
+        </a>
+      </article>
+      <article>
+        <h2>Browse all jobs</h2>
+        <a href="https://www.glassdoor.com/Job/jobs.htm?sc.keyword=frontend">View jobs</a>
+      </article>
+    `;
+
+    const urls = pickRelevantJobUrls(collectJobDetailCandidates("glassdoor"), "glassdoor");
+
+    expect(urls).toEqual([
+      "https://www.glassdoor.com/job-listing/software-engineer-frontend-ivo-ai-inc-JV_IC1147401_KO0,26_KE27,37.htm?jl=1010069347428",
+    ]);
+  });
+
   it("collects ATS-backed startup roles and ignores listing CTAs", () => {
     document.body.innerHTML = `
       <section class="careers">

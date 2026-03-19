@@ -30,12 +30,16 @@ const JOB_DETAIL_QUERY_PARAMS = [
 const GENERIC_ROLE_CTA_TEXTS = [
   "apply",
   "apply now",
+  "easy apply",
   "apply here",
+  "apply on employer site",
+  "apply on company site",
   "learn more",
   "read more",
   "details",
   "job details",
   "more details",
+  "view job",
   "view details",
   "view role",
   "see role",
@@ -296,6 +300,55 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
           "a[href*='job_id=']",
         ]),
         ...collectMonsterFallbackCandidates(),
+      ]);
+
+    case "glassdoor":
+      return dedupeJobCandidates([
+        ...collectCandidatesFromContainers(
+          [
+            "[data-test='jobListing']",
+            "[data-test*='job-listing' i]",
+            "[data-test*='job-card' i]",
+            "[data-test*='job-link-row' i]",
+            "[class*='job-card']",
+            "[class*='JobCard']",
+            "[class*='jobCard']",
+            "[class*='job-listing']",
+            "[class*='JobListItem']",
+            "[class*='jobListItem']",
+            "[class*='JobsList_jobListItem']",
+            "article",
+            "li",
+          ],
+          [
+            "a[href*='/job-listing/' i]",
+            "a[href*='/partner/joblisting.htm' i]",
+            "a[href*='jl=' i]",
+            "a[href*='joblistingid=' i]",
+            "a[data-test='job-link']",
+            "a[data-test*='job-link' i]",
+            "a[data-test*='job-title' i]",
+          ],
+          [
+            "h1",
+            "h2",
+            "h3",
+            "[data-test='job-link']",
+            "[data-test*='job-title' i]",
+            "[class*='jobTitle']",
+            "[class*='JobTitle']",
+            "[class*='title']",
+          ]
+        ),
+        ...collectCandidatesFromAnchors([
+          "a[href*='/job-listing/' i]",
+          "a[href*='/partner/joblisting.htm' i]",
+          "a[href*='jl=' i]",
+          "a[href*='joblistingid=' i]",
+          "a[data-test='job-link']",
+          "a[data-test*='job-link' i]",
+          "a[data-test*='job-title' i]",
+        ]),
       ]);
 
     case "startup":
@@ -620,6 +673,35 @@ export function isLikelyJobDetailUrl(
       return false;
     }
 
+    case "glassdoor": {
+      if (/[?&](?:jl|joblistingid)=/i.test(lowerUrl)) {
+        return true;
+      }
+
+      if (
+        lowerUrl.includes("/job-listing/") ||
+        lowerUrl.includes("/partner/joblisting.htm")
+      ) {
+        return true;
+      }
+
+      if (
+        lowerUrl.includes("/job/jobs.htm") ||
+        /\/job\/?$/i.test(lowerUrl) ||
+        lowerUrl.includes("/salaries/") ||
+        lowerUrl.includes("/reviews/") ||
+        lowerUrl.includes("/benefits/") ||
+        lowerUrl.includes("/interviews/") ||
+        lowerUrl.includes("/community/") ||
+        lowerUrl.includes("/employers/") ||
+        lowerUrl.includes("/companies/")
+      ) {
+        return false;
+      }
+
+      return false;
+    }
+
     case "startup":
     case "other_sites": {
       try {
@@ -917,6 +999,7 @@ export function shouldFinishJobResultScan(
   const needsDeeperWait =
     site === "ziprecruiter" ||
     site === "dice" ||
+    site === "glassdoor" ||
     site === "startup" ||
     site === "other_sites";
   const minAttemptsBeforeEarlyStop = needsDeeperWait ? 8 : 5;
@@ -1487,6 +1570,17 @@ function getPrimaryCurrentJobSurfaceSelectors(site: SiteKey | null): string[] {
         "[data-testid*='jobDetail' i]",
         "[class*='job-details']",
         "[class*='jobDetail']",
+        "[class*='job-description']",
+        "[class*='jobDescription']",
+      ];
+    case "glassdoor":
+      return [
+        "[data-test*='job-details' i]",
+        "[data-test*='jobdetail' i]",
+        "[data-test*='job-description' i]",
+        "[data-test*='jobdescription' i]",
+        "[class*='jobDetails']",
+        "[class*='JobDetails']",
         "[class*='job-description']",
         "[class*='jobDescription']",
       ];

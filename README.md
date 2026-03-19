@@ -22,6 +22,7 @@ For each run, the extension tracks progress across tabs, limits how many job pag
 - ZipRecruiter
 - Dice
 - Monster
+- Glassdoor
 
 ### Curated startup mode
 
@@ -95,7 +96,7 @@ If you load the project root, Chrome will use `manifest.json`. If you load `dist
 
 ### Job Boards mode
 
-1. Open Indeed, ZipRecruiter, Dice, or Monster in the active tab.
+1. Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab.
 2. Open the extension popup.
 3. Confirm your resumes, profile details, and job page limit.
 4. Leave `Search Mode` set to `Job Boards`.

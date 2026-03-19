@@ -172,6 +172,7 @@ export function findCompanySiteAction(): ApplyAction | null {
     const lower = text.toLowerCase();
     const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
     const attrs = [
+      actionElement.getAttribute("data-test"),
       actionElement.getAttribute("data-testid"),
       actionElement.getAttribute("data-tn-element"),
       actionElement.getAttribute("aria-label"),
@@ -184,6 +185,7 @@ export function findCompanySiteAction(): ApplyAction | null {
       element.getAttribute("title"),
       element.className,
       element.id,
+      element.getAttribute("data-test"),
     ]
       .join(" ")
       .toLowerCase();
@@ -622,6 +624,115 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
     type: "click",
     element: best.element,
     description: best.text || "ZipRecruiter apply",
+  };
+}
+
+export function findGlassdoorApplyAction(): ApplyAction | null {
+  const selectors = [
+    "a[data-test*='apply' i]",
+    "button[data-test*='apply' i]",
+    "[data-test*='easy-apply' i]",
+    "[data-test*='employer-site' i]",
+    "[data-test*='apply-button' i]",
+    "[data-test*='job-apply' i]",
+    "[class*='easyApply']",
+    "[class*='easy-apply']",
+    "[class*='applyButton']",
+    "[class*='apply-button']",
+    "[aria-label*='apply' i]",
+    "[title*='apply' i]",
+    "a[href*='easyapply' i]",
+    "a[href*='easy-apply' i]",
+    "a[href*='apply' i]",
+  ];
+
+  let best:
+    | {
+        element: HTMLElement;
+        score: number;
+        text: string;
+        url: string | null;
+      }
+    | undefined;
+
+  for (const element of collectDeepMatchesFromSelectors(selectors)) {
+    const actionElement = getClickableApplyElement(element);
+    if (!isElementVisible(actionElement)) {
+      continue;
+    }
+
+    const text = (getActionText(actionElement) || getActionText(element)).trim();
+    const lower = text.toLowerCase();
+    if (
+      !lower ||
+      lower.includes("save") ||
+      lower.includes("share") ||
+      lower.includes("salary") ||
+      lower.includes("sign in") ||
+      lower.includes("job alert")
+    ) {
+      continue;
+    }
+
+    const url =
+      getNavigationUrl(actionElement) ??
+      getNavigationUrl(element) ??
+      extractLikelyApplyUrl(actionElement) ??
+      extractLikelyApplyUrl(element);
+    const attrs = [
+      actionElement.getAttribute("data-test"),
+      actionElement.getAttribute("data-testid"),
+      actionElement.getAttribute("aria-label"),
+      actionElement.getAttribute("title"),
+      actionElement.className,
+      actionElement.id,
+      element.getAttribute("data-test"),
+      element.getAttribute("data-testid"),
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.className,
+      element.id,
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    let score = scoreApplyElement(text, url, actionElement, "job-page");
+
+    if (lower === "easy apply") score += 24;
+    if (lower === "apply now") score += 18;
+    if (lower.includes("employer site") || lower.includes("company site")) score += 18;
+    if (attrs.includes("easy-apply") || attrs.includes("easyapply")) score += 20;
+    if (attrs.includes("apply-button")) score += 12;
+    if (attrs.includes("employer-site") || attrs.includes("company-site")) score += 12;
+    if (url && shouldPreferApplyNavigation(url, text, "glassdoor")) score += 22;
+    if (actionElement.closest("header, footer, nav")) score -= 30;
+    if (actionElement.closest("main, article, [role='main'], section")) score += 10;
+
+    if (score < 40) {
+      continue;
+    }
+
+    if (!best || score > best.score) {
+      best = { element: actionElement, score, text, url };
+    }
+  }
+
+  if (!best) {
+    return null;
+  }
+
+  if (best.url && shouldPreferApplyNavigation(best.url, best.text, "glassdoor")) {
+    return {
+      type: "navigate",
+      url: best.url,
+      description: describeApplyTarget(best.url, best.text || "Glassdoor apply"),
+    };
+  }
+
+  return {
+    type: "click",
+    element: best.element,
+    description: best.text || "Glassdoor apply",
   };
 }
 
@@ -1104,6 +1215,8 @@ export function isLikelyApplyUrl(url: string, site: SiteKey): boolean {
     lower.includes("smartapply.indeed.com") ||
     lower.includes("indeedapply") ||
     lower.includes("zipapply") ||
+    lower.includes("easyapply") ||
+    lower.includes("easy-apply") ||
     lower.includes("/apply") ||
     lower.includes("application") ||
     lower.includes("candidate") ||
@@ -1253,6 +1366,7 @@ function scoreApplyElement(
   const lower = text.toLowerCase().trim();
   const lowerUrl = url?.toLowerCase() ?? "";
   const attrs = [
+    element.getAttribute("data-test"),
     element.getAttribute("data-testid"),
     element.getAttribute("data-cy"),
     element.getAttribute("data-qa"),
@@ -1361,6 +1475,8 @@ function getApplyCandidateSelectors(site: SiteKey | null): string[] {
     "input[type='button']",
     "[aria-label*='apply' i]",
     "[title*='apply' i]",
+    "[data-test*='apply' i]",
+    "[data-test*='application' i]",
     "[data-testid*='apply']",
     "[data-automation*='apply']",
     "[class*='apply']",
@@ -1434,6 +1550,22 @@ function getApplyCandidateSelectors(site: SiteKey | null): string[] {
         "a[href*='/apply']",
         "a[href*='apply.monster']",
         "a[href*='job-openings'][href*='apply']",
+        ...generic,
+      ];
+
+    case "glassdoor":
+      return [
+        "a[data-test*='apply' i]",
+        "button[data-test*='apply' i]",
+        "[data-test*='easy-apply' i]",
+        "[data-test*='employer-site' i]",
+        "[data-test*='apply-button' i]",
+        "[class*='easyApply']",
+        "[class*='easy-apply']",
+        "[class*='applyButton']",
+        "[class*='apply-button']",
+        "a[href*='easyapply' i]",
+        "a[href*='easy-apply' i]",
         ...generic,
       ];
 
@@ -1515,6 +1647,8 @@ function getSiteRoot(site: SiteKey): string {
       return "dice.com";
     case "monster":
       return "monster.com";
+    case "glassdoor":
+      return "glassdoor.com";
     case "startup":
     case "other_sites":
       return window.location.hostname.toLowerCase();

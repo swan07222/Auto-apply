@@ -49355,6 +49355,7 @@
     ziprecruiter: "ZipRecruiter",
     dice: "Dice",
     monster: "Monster",
+    glassdoor: "Glassdoor",
     startup: "Startup Careers",
     other_sites: "Other Job Sites",
     chatgpt: "ChatGPT"
@@ -49437,6 +49438,13 @@
         }
       }
     }
+    for (let i = 0; i < hostParts.length; i++) {
+      if (hostParts[i] === "glassdoor") {
+        if (i < hostParts.length - 1) {
+          return "glassdoor";
+        }
+      }
+    }
     if (bare === "chatgpt.com" || bare.endsWith(".chatgpt.com")) {
       return "chatgpt";
     }
@@ -49476,7 +49484,8 @@
     indeed: "https://www.indeed.com",
     ziprecruiter: "https://www.ziprecruiter.com",
     dice: "https://www.dice.com",
-    monster: "https://www.monster.com"
+    monster: "https://www.monster.com",
+    glassdoor: "https://www.glassdoor.com"
   };
   var IDENTIFYING_PARAMS = [
     "jk",
@@ -49524,6 +49533,15 @@
         const jobId = parsed.searchParams.get("jobid") ?? parsed.searchParams.get("job_id");
         if (jobId) return `${hostname}${path}?jobid=${jobId.toLowerCase()}`;
       }
+      if (hostname.includes("glassdoor")) {
+        const jobListingId = parsed.searchParams.get("jl") ?? parsed.searchParams.get("jobListingId") ?? parsed.searchParams.get("joblistingid");
+        if (jobListingId) {
+          return `glassdoor:jl:${jobListingId.toLowerCase()}`;
+        }
+        if (path.includes("/job-listing/") || path.includes("/partner/joblisting.htm")) {
+          return `${hostname}${path}`;
+        }
+      }
       for (const param of IDENTIFYING_PARAMS) {
         const value = parsed.searchParams.get(param);
         if (value) {
@@ -49552,6 +49570,13 @@
     url.searchParams.set("so", "m.h.s");
     return url.toString();
   }
+  function buildGlassdoorSearchUrl(query, baseOrigin) {
+    const url = new URL("/Job/jobs.htm", baseOrigin);
+    url.searchParams.set("sc.keyword", `remote ${query}`);
+    url.searchParams.set("locT", "N");
+    url.searchParams.set("locId", "1");
+    return url.toString();
+  }
   function buildSingleSearchUrl(site, _origin, query) {
     const baseOrigin = CANONICAL_JOB_BOARD_ORIGINS[site];
     switch (site) {
@@ -49576,6 +49601,9 @@
       case "monster": {
         return buildMonsterSearchUrl(query, baseOrigin);
       }
+      case "glassdoor": {
+        return buildGlassdoorSearchUrl(query, baseOrigin);
+      }
     }
   }
   function sleep(ms) {
@@ -49596,7 +49624,8 @@
       "security challenge",
       "i am human",
       "i'm not a robot",
-      "verify that you are human"
+      "verify that you are human",
+      "help us protect glassdoor"
     ];
     if (strongPhrases.some((phrase) => title.includes(phrase) || bodyText.includes(phrase))) {
       return true;
@@ -50810,12 +50839,16 @@
   var GENERIC_ROLE_CTA_TEXTS = [
     "apply",
     "apply now",
+    "easy apply",
     "apply here",
+    "apply on employer site",
+    "apply on company site",
     "learn more",
     "read more",
     "details",
     "job details",
     "more details",
+    "view job",
     "view details",
     "view role",
     "see role",
@@ -51071,6 +51104,54 @@
           ]),
           ...collectMonsterFallbackCandidates()
         ]);
+      case "glassdoor":
+        return dedupeJobCandidates([
+          ...collectCandidatesFromContainers(
+            [
+              "[data-test='jobListing']",
+              "[data-test*='job-listing' i]",
+              "[data-test*='job-card' i]",
+              "[data-test*='job-link-row' i]",
+              "[class*='job-card']",
+              "[class*='JobCard']",
+              "[class*='jobCard']",
+              "[class*='job-listing']",
+              "[class*='JobListItem']",
+              "[class*='jobListItem']",
+              "[class*='JobsList_jobListItem']",
+              "article",
+              "li"
+            ],
+            [
+              "a[href*='/job-listing/' i]",
+              "a[href*='/partner/joblisting.htm' i]",
+              "a[href*='jl=' i]",
+              "a[href*='joblistingid=' i]",
+              "a[data-test='job-link']",
+              "a[data-test*='job-link' i]",
+              "a[data-test*='job-title' i]"
+            ],
+            [
+              "h1",
+              "h2",
+              "h3",
+              "[data-test='job-link']",
+              "[data-test*='job-title' i]",
+              "[class*='jobTitle']",
+              "[class*='JobTitle']",
+              "[class*='title']"
+            ]
+          ),
+          ...collectCandidatesFromAnchors([
+            "a[href*='/job-listing/' i]",
+            "a[href*='/partner/joblisting.htm' i]",
+            "a[href*='jl=' i]",
+            "a[href*='joblistingid=' i]",
+            "a[data-test='job-link']",
+            "a[data-test*='job-link' i]",
+            "a[data-test*='job-title' i]"
+          ])
+        ]);
       case "startup":
       case "other_sites":
         return dedupeJobCandidates([
@@ -51239,6 +51320,18 @@
         }
         if (/monster\.[a-z.]+\/.*\/[a-f0-9-]{8,}/i.test(lowerUrl)) {
           return true;
+        }
+        return false;
+      }
+      case "glassdoor": {
+        if (/[?&](?:jl|joblistingid)=/i.test(lowerUrl)) {
+          return true;
+        }
+        if (lowerUrl.includes("/job-listing/") || lowerUrl.includes("/partner/joblisting.htm")) {
+          return true;
+        }
+        if (lowerUrl.includes("/job/jobs.htm") || /\/job\/?$/i.test(lowerUrl) || lowerUrl.includes("/salaries/") || lowerUrl.includes("/reviews/") || lowerUrl.includes("/benefits/") || lowerUrl.includes("/interviews/") || lowerUrl.includes("/community/") || lowerUrl.includes("/employers/") || lowerUrl.includes("/companies/")) {
+          return false;
         }
         return false;
       }
@@ -51479,7 +51572,7 @@
     if (observedCount <= 0) {
       return false;
     }
-    const needsDeeperWait = site === "ziprecruiter" || site === "dice" || site === "startup" || site === "other_sites";
+    const needsDeeperWait = site === "ziprecruiter" || site === "dice" || site === "glassdoor" || site === "startup" || site === "other_sites";
     const minAttemptsBeforeEarlyStop = needsDeeperWait ? 8 : 5;
     const stableThreshold = needsDeeperWait ? 6 : 4;
     return attempt >= minAttemptsBeforeEarlyStop && stablePasses >= stableThreshold;
@@ -51898,6 +51991,17 @@
           "[data-testid*='jobDetail' i]",
           "[class*='job-details']",
           "[class*='jobDetail']",
+          "[class*='job-description']",
+          "[class*='jobDescription']"
+        ];
+      case "glassdoor":
+        return [
+          "[data-test*='job-details' i]",
+          "[data-test*='jobdetail' i]",
+          "[data-test*='job-description' i]",
+          "[data-test*='jobdescription' i]",
+          "[class*='jobDetails']",
+          "[class*='JobDetails']",
           "[class*='job-description']",
           "[class*='jobDescription']"
         ];
@@ -52398,6 +52502,7 @@
       const lower = text.toLowerCase();
       const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
       const attrs = [
+        actionElement.getAttribute("data-test"),
         actionElement.getAttribute("data-testid"),
         actionElement.getAttribute("data-tn-element"),
         actionElement.getAttribute("aria-label"),
@@ -52409,7 +52514,8 @@
         element.getAttribute("aria-label"),
         element.getAttribute("title"),
         element.className,
-        element.id
+        element.id,
+        element.getAttribute("data-test")
       ].join(" ").toLowerCase();
       if ([
         "save",
@@ -52716,6 +52822,83 @@
       type: "click",
       element: best.element,
       description: best.text || "ZipRecruiter apply"
+    };
+  }
+  function findGlassdoorApplyAction() {
+    const selectors = [
+      "a[data-test*='apply' i]",
+      "button[data-test*='apply' i]",
+      "[data-test*='easy-apply' i]",
+      "[data-test*='employer-site' i]",
+      "[data-test*='apply-button' i]",
+      "[data-test*='job-apply' i]",
+      "[class*='easyApply']",
+      "[class*='easy-apply']",
+      "[class*='applyButton']",
+      "[class*='apply-button']",
+      "[aria-label*='apply' i]",
+      "[title*='apply' i]",
+      "a[href*='easyapply' i]",
+      "a[href*='easy-apply' i]",
+      "a[href*='apply' i]"
+    ];
+    let best;
+    for (const element of collectDeepMatchesFromSelectors(selectors)) {
+      const actionElement = getClickableApplyElement(element);
+      if (!isElementVisible(actionElement)) {
+        continue;
+      }
+      const text = (getActionText(actionElement) || getActionText(element)).trim();
+      const lower = text.toLowerCase();
+      if (!lower || lower.includes("save") || lower.includes("share") || lower.includes("salary") || lower.includes("sign in") || lower.includes("job alert")) {
+        continue;
+      }
+      const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element) ?? extractLikelyApplyUrl(actionElement) ?? extractLikelyApplyUrl(element);
+      const attrs = [
+        actionElement.getAttribute("data-test"),
+        actionElement.getAttribute("data-testid"),
+        actionElement.getAttribute("aria-label"),
+        actionElement.getAttribute("title"),
+        actionElement.className,
+        actionElement.id,
+        element.getAttribute("data-test"),
+        element.getAttribute("data-testid"),
+        element.getAttribute("aria-label"),
+        element.getAttribute("title"),
+        element.className,
+        element.id
+      ].join(" ").toLowerCase();
+      let score = scoreApplyElement(text, url, actionElement, "job-page");
+      if (lower === "easy apply") score += 24;
+      if (lower === "apply now") score += 18;
+      if (lower.includes("employer site") || lower.includes("company site")) score += 18;
+      if (attrs.includes("easy-apply") || attrs.includes("easyapply")) score += 20;
+      if (attrs.includes("apply-button")) score += 12;
+      if (attrs.includes("employer-site") || attrs.includes("company-site")) score += 12;
+      if (url && shouldPreferApplyNavigation(url, text, "glassdoor")) score += 22;
+      if (actionElement.closest("header, footer, nav")) score -= 30;
+      if (actionElement.closest("main, article, [role='main'], section")) score += 10;
+      if (score < 40) {
+        continue;
+      }
+      if (!best || score > best.score) {
+        best = { element: actionElement, score, text, url };
+      }
+    }
+    if (!best) {
+      return null;
+    }
+    if (best.url && shouldPreferApplyNavigation(best.url, best.text, "glassdoor")) {
+      return {
+        type: "navigate",
+        url: best.url,
+        description: describeApplyTarget(best.url, best.text || "Glassdoor apply")
+      };
+    }
+    return {
+      type: "click",
+      element: best.element,
+      description: best.text || "Glassdoor apply"
     };
   }
   function findDiceApplyAction() {
@@ -53039,7 +53222,7 @@
     if (hostname.includes("greenhouse.io") && (pathAndQuery.includes("/embed/job_app") || pathAndQuery.includes("/jobs/") || pathAndQuery.includes("gh_jid="))) {
       return true;
     }
-    if (lower.includes("smartapply.indeed.com") || lower.includes("indeedapply") || lower.includes("zipapply") || lower.includes("/apply") || lower.includes("application") || lower.includes("candidate") || lower.includes("jobapply") || lower.includes("job_app") || lower.includes("applytojob") || lower.includes("candidateexperience")) {
+    if (lower.includes("smartapply.indeed.com") || lower.includes("indeedapply") || lower.includes("zipapply") || lower.includes("easyapply") || lower.includes("easy-apply") || lower.includes("/apply") || lower.includes("application") || lower.includes("candidate") || lower.includes("jobapply") || lower.includes("job_app") || lower.includes("applytojob") || lower.includes("candidateexperience")) {
       return true;
     }
     if (site === "startup" || site === "other_sites") {
@@ -53140,6 +53323,7 @@
     const lower = text.toLowerCase().trim();
     const lowerUrl = url?.toLowerCase() ?? "";
     const attrs = [
+      element.getAttribute("data-test"),
       element.getAttribute("data-testid"),
       element.getAttribute("data-cy"),
       element.getAttribute("data-qa"),
@@ -53229,6 +53413,8 @@
       "input[type='button']",
       "[aria-label*='apply' i]",
       "[title*='apply' i]",
+      "[data-test*='apply' i]",
+      "[data-test*='application' i]",
       "[data-testid*='apply']",
       "[data-automation*='apply']",
       "[class*='apply']",
@@ -53300,6 +53486,21 @@
           "a[href*='job-openings'][href*='apply']",
           ...generic
         ];
+      case "glassdoor":
+        return [
+          "a[data-test*='apply' i]",
+          "button[data-test*='apply' i]",
+          "[data-test*='easy-apply' i]",
+          "[data-test*='employer-site' i]",
+          "[data-test*='apply-button' i]",
+          "[class*='easyApply']",
+          "[class*='easy-apply']",
+          "[class*='applyButton']",
+          "[class*='apply-button']",
+          "a[href*='easyapply' i]",
+          "a[href*='easy-apply' i]",
+          ...generic
+        ];
       case "startup":
       case "other_sites":
         return [
@@ -53357,6 +53558,8 @@
         return "dice.com";
       case "monster":
         return "monster.com";
+      case "glassdoor":
+        return "glassdoor.com";
       case "startup":
       case "other_sites":
         return window.location.hostname.toLowerCase();
@@ -53773,7 +53976,7 @@
     onOpenListingsSurface
   }) {
     const isCareerSite = site === "startup" || site === "other_sites";
-    const needsAggressiveScan = isCareerSite || site === "dice" || site === "ziprecruiter";
+    const needsAggressiveScan = isCareerSite || site === "dice" || site === "ziprecruiter" || site === "glassdoor";
     let careerSurfaceAttempts = 0;
     const desiredCount = Math.max(1, Math.floor(targetCount));
     let bestUrls = [];
@@ -53864,7 +54067,7 @@
         if (attempt === 10 || attempt === 20 || attempt === 30) {
           tryClickLoadMoreButton();
         }
-      } else if (site === "dice" || site === "ziprecruiter") {
+      } else if (site === "dice" || site === "ziprecruiter" || site === "glassdoor") {
         if (attempt % 4 === 0) {
           window.scrollTo({
             top: document.body.scrollHeight,
@@ -54391,9 +54594,9 @@
       return;
     }
     await waitForHumanVerificationToClear();
-    const renderWaitMs = site === "startup" || site === "other_sites" ? 5e3 : site === "dice" || site === "ziprecruiter" ? 5e3 : site === "monster" ? 5e3 : 2500;
+    const renderWaitMs = site === "startup" || site === "other_sites" ? 5e3 : site === "dice" || site === "ziprecruiter" || site === "glassdoor" ? 5e3 : site === "monster" ? 5e3 : 2500;
     await sleep(renderWaitMs);
-    if (site === "startup" || site === "other_sites" || site === "dice" || site === "ziprecruiter" || site === "monster") {
+    if (site === "startup" || site === "other_sites" || site === "dice" || site === "ziprecruiter" || site === "monster" || site === "glassdoor") {
       await scrollPageForLazyContent2();
     }
     const jobUrls = await waitForJobDetailUrls2(
@@ -54558,7 +54761,9 @@
       "open-apply"
     );
     await waitForHumanVerificationToClear();
-    await sleep(site === "dice" || site === "monster" ? 4e3 : 2500);
+    await sleep(
+      site === "dice" || site === "monster" || site === "glassdoor" ? 4e3 : 2500
+    );
     let action = null;
     const scrollPositions = [0, 300, 600, -1, -2, 0, -3, 200];
     for (let attempt = 0; attempt < 35; attempt += 1) {
@@ -54592,6 +54797,10 @@
       }
       if (site === "ziprecruiter") {
         action = findZipRecruiterApplyAction();
+        if (action) break;
+      }
+      if (site === "glassdoor") {
+        action = findGlassdoorApplyAction();
         if (action) break;
       }
       if (site === "dice") {

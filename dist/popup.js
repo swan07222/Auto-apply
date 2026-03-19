@@ -49355,6 +49355,7 @@
     ziprecruiter: "ZipRecruiter",
     dice: "Dice",
     monster: "Monster",
+    glassdoor: "Glassdoor",
     startup: "Startup Careers",
     other_sites: "Other Job Sites",
     chatgpt: "ChatGPT"
@@ -49424,6 +49425,13 @@
         }
       }
     }
+    for (let i = 0; i < hostParts.length; i++) {
+      if (hostParts[i] === "glassdoor") {
+        if (i < hostParts.length - 1) {
+          return "glassdoor";
+        }
+      }
+    }
     if (bare === "chatgpt.com" || bare.endsWith(".chatgpt.com")) {
       return "chatgpt";
     }
@@ -49444,7 +49452,7 @@
     return SUPPORTED_SITE_LABELS[site];
   }
   function isJobBoardSite(site) {
-    return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster";
+    return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor";
   }
   function getResumeKindLabel(resumeKind) {
     return RESUME_KIND_LABELS[resumeKind];
@@ -49846,7 +49854,7 @@
         createStatus(
           "unsupported",
           "error",
-          "Open Indeed, ZipRecruiter, Dice, or Monster in the active tab to use Job Board mode."
+          "Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab to use Job Board mode."
         )
       );
       startButton.disabled = false;
@@ -49997,7 +50005,7 @@
         createStatus(
           "unsupported",
           "error",
-          "Open Indeed, ZipRecruiter, Dice, or Monster in the active tab to start."
+          "Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab to start."
         )
       );
       startButton.disabled = true;

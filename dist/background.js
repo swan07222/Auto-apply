@@ -237,6 +237,13 @@
         }
       }
     }
+    for (let i = 0; i < hostParts.length; i++) {
+      if (hostParts[i] === "glassdoor") {
+        if (i < hostParts.length - 1) {
+          return "glassdoor";
+        }
+      }
+    }
     if (bare === "chatgpt.com" || bare.endsWith(".chatgpt.com")) {
       return "chatgpt";
     }
@@ -265,7 +272,7 @@
     return `remote-job-search-session:${tabId}`;
   }
   function isJobBoardSite(site) {
-    return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster";
+    return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor";
   }
   function buildStartupSearchTargets(settings, companies = STARTUP_COMPANIES) {
     const region = resolveStartupRegion(
@@ -401,6 +408,15 @@
         path = path.replace(/\/job-opening\//, "/job-openings/");
         const jobId = parsed.searchParams.get("jobid") ?? parsed.searchParams.get("job_id");
         if (jobId) return `${hostname}${path}?jobid=${jobId.toLowerCase()}`;
+      }
+      if (hostname.includes("glassdoor")) {
+        const jobListingId = parsed.searchParams.get("jl") ?? parsed.searchParams.get("jobListingId") ?? parsed.searchParams.get("joblistingid");
+        if (jobListingId) {
+          return `glassdoor:jl:${jobListingId.toLowerCase()}`;
+        }
+        if (path.includes("/job-listing/") || path.includes("/partner/joblisting.htm")) {
+          return `${hostname}${path}`;
+        }
       }
       for (const param of IDENTIFYING_PARAMS) {
         const value = parsed.searchParams.get(param);
@@ -921,7 +937,7 @@
     if (!tab || tab.id === void 0) {
       return {
         ok: false,
-        error: "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, or Monster page and try again."
+        error: "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, Monster, or Glassdoor page and try again."
       };
     }
     const resolvedTabId = tab.id;
@@ -931,7 +947,7 @@
     if (!isJobBoardSite(site)) {
       return {
         ok: false,
-        error: "Open an Indeed, ZipRecruiter, Dice, or Monster page first."
+        error: "Open an Indeed, ZipRecruiter, Dice, Monster, or Glassdoor page first."
       };
     }
     await setRunState({
@@ -1627,6 +1643,8 @@
         return "Dice";
       case "monster":
         return "Monster";
+      case "glassdoor":
+        return "Glassdoor";
       case "startup":
         return "Startup Careers";
       case "other_sites":

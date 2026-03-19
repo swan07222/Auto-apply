@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   findApplyAction,
   findCompanySiteAction,
+  findGlassdoorApplyAction,
   findMonsterApplyAction,
   findProgressionAction,
   findZipRecruiterApplyAction,
@@ -197,6 +198,41 @@ describe("application progression actions", () => {
     expect(action).not.toBeNull();
     expect(action?.type).toBe("click");
     expect(action?.description).toBe("Apply Now");
+  });
+
+  it("finds Glassdoor employer-site apply links", () => {
+    document.body.innerHTML = `
+      <main>
+        <a
+          data-test="apply-button"
+          href="https://company.example.com/careers/apply/123"
+        >
+          Apply on employer site
+        </a>
+      </main>
+    `;
+
+    const action = findGlassdoorApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe("https://company.example.com/careers/apply/123");
+    }
+  });
+
+  it("finds Glassdoor easy-apply buttons that stay on the page", () => {
+    document.body.innerHTML = `
+      <main>
+        <button data-test="easy-apply-button">Easy Apply</button>
+      </main>
+    `;
+
+    const action = findGlassdoorApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Easy Apply");
   });
 
   it("detects ZipRecruiter apply modals rendered inside shadow DOM", () => {

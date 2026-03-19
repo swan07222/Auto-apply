@@ -2,7 +2,7 @@
   "name": "remote-job-search-extension",
   "version": "1.0.0",
   "private": true,
-  "description": "Chrome extension that opens remote frontend, backend, and full stack job searches on Indeed, ZipRecruiter, and Dice.",
+  "description": "Chrome extension that opens remote frontend, backend, and full stack job searches on Indeed, ZipRecruiter, Dice, Monster, and Glassdoor.",
   "scripts": {
     "build": "node ./scripts/build.mjs",
     "typecheck": "tsc --noEmit",

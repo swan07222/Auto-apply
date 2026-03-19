@@ -326,7 +326,7 @@ async function startAutomation(): Promise<void> {
       createStatus(
         "unsupported",
         "error",
-        "Open Indeed, ZipRecruiter, Dice, or Monster in the active tab to use Job Board mode."
+        "Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab to use Job Board mode."
       )
     );
     startButton.disabled = false;
@@ -540,7 +540,7 @@ async function refreshStatus(): Promise<void> {
       createStatus(
         "unsupported",
         "error",
-        "Open Indeed, ZipRecruiter, Dice, or Monster in the active tab to start."
+        "Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab to start."
       )
     );
     startButton.disabled = true;

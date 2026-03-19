@@ -65,7 +65,10 @@ export async function waitForJobDetailUrls({
 }: WaitForJobDetailUrlsOptions): Promise<string[]> {
   const isCareerSite = site === "startup" || site === "other_sites";
   const needsAggressiveScan =
-    isCareerSite || site === "dice" || site === "ziprecruiter";
+    isCareerSite ||
+    site === "dice" ||
+    site === "ziprecruiter" ||
+    site === "glassdoor";
   let careerSurfaceAttempts = 0;
   const desiredCount = Math.max(1, Math.floor(targetCount));
   let bestUrls: string[] = [];
@@ -173,7 +176,11 @@ export async function waitForJobDetailUrls({
       if (attempt === 10 || attempt === 20 || attempt === 30) {
         tryClickLoadMoreButton();
       }
-    } else if (site === "dice" || site === "ziprecruiter") {
+    } else if (
+      site === "dice" ||
+      site === "ziprecruiter" ||
+      site === "glassdoor"
+    ) {
       if (attempt % 4 === 0) {
         window.scrollTo({
           top: document.body.scrollHeight,

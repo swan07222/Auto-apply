@@ -262,7 +262,7 @@ describe("popup workflow", () => {
 
     expect(popup.siteName.textContent).toBe("No supported site");
     expect(popup.statusText.textContent).toBe(
-      "Open Indeed, ZipRecruiter, Dice, or Monster in the active tab to start."
+      "Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab to start."
     );
     expect(popup.startButton.disabled).toBe(true);
   });

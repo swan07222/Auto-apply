@@ -646,6 +646,21 @@ for (const target of buildSearchTargets("dice", "https://www.dice.com")) {
   });
 }
 
+for (const target of buildSearchTargets("glassdoor", "https://www.glassdoor.com")) {
+  test(`live Glassdoor search works: ${target.label}`, async ({ page }) => {
+    const probe = await navigateAndCollect(page, "glassdoor", target);
+
+    test.skip(
+      probe.verificationDetected,
+      `Glassdoor blocked automated browsing with a verification page.\n${describeProbeFailure(target, probe)}`
+    );
+    expect(
+      probe.candidateUrls.length,
+      `Glassdoor search produced no job-detail candidates.\n${describeProbeFailure(target, probe)}`
+    ).toBeGreaterThan(0);
+  });
+}
+
 for (const target of STARTUP_TARGETS) {
   test(`live startup search surface works: ${target.label}`, async ({ page }) => {
     const probe = await navigateAndCollect(page, "startup", target, true);

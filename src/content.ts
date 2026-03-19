@@ -99,6 +99,7 @@ import {
   findApplyAction,
   findCompanySiteAction,
   findDiceApplyAction,
+  findGlassdoorApplyAction,
   findMonsterApplyAction,
   findProgressionAction,
   findZipRecruiterApplyAction,
@@ -569,7 +570,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   const renderWaitMs =
     site === "startup" || site === "other_sites"
       ? 5000
-      : site === "dice" || site === "ziprecruiter"
+      : site === "dice" || site === "ziprecruiter" || site === "glassdoor"
         ? 5000
         : site === "monster"
           ? 5000
@@ -582,7 +583,8 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     site === "other_sites" ||
     site === "dice" ||
     site === "ziprecruiter" ||
-    site === "monster"
+    site === "monster" ||
+    site === "glassdoor"
   ) {
     await scrollPageForLazyContent();
   }
@@ -783,7 +785,11 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   await waitForHumanVerificationToClear();
 
   // FIX: Dice needs extra render time for its web components
-  await sleep(site === "dice" || site === "monster" ? 4000 : 2500);
+  await sleep(
+    site === "dice" || site === "monster" || site === "glassdoor"
+      ? 4000
+      : 2500
+  );
 
   let action: ApplyAction | null = null;
   const scrollPositions = [0, 300, 600, -1, -2, 0, -3, 200];
@@ -824,6 +830,11 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
     if (site === "ziprecruiter") {
       action = findZipRecruiterApplyAction();
+      if (action) break;
+    }
+
+    if (site === "glassdoor") {
+      action = findGlassdoorApplyAction();
       if (action) break;
     }
 

@@ -17,13 +17,16 @@ import {
 } from "../src/shared";
 
 describe("shared automation target logic", () => {
-  it("detects Monster domains across host variants", () => {
+  it("detects supported job-board domains across host variants", () => {
     expect(
       detectSiteFromUrl("https://www.monster.com/jobs/q-developer-jobs")
     ).toBe("monster");
     expect(
       detectSiteFromUrl("https://jobview.monster.co.uk/job/example")
     ).toBe("monster");
+    expect(
+      detectSiteFromUrl("https://www.glassdoor.co.uk/job-listing/example-role-JV.htm?jl=123")
+    ).toBe("glassdoor");
     expect(
       detectSiteFromUrl("https://boards.greenhouse.io/example")
     ).toBeNull();
@@ -47,6 +50,23 @@ describe("shared automation target logic", () => {
     expect(secondUrl.pathname).toBe("/jobs/search");
     expect(secondUrl.searchParams.get("q")).toBe("back end developer");
     expect(secondUrl.searchParams.get("where")).toBe("remote");
+  });
+
+  it("builds remote Glassdoor search targets using the jobs route", () => {
+    const targets = buildSearchTargets(
+      "glassdoor",
+      "https://www.glassdoor.com"
+    );
+
+    expect(targets).toHaveLength(3);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(firstUrl.pathname).toBe("/Job/jobs.htm");
+    expect(firstUrl.searchParams.get("sc.keyword")).toBe(
+      "remote front end developer"
+    );
+    expect(firstUrl.searchParams.get("locT")).toBe("N");
+    expect(firstUrl.searchParams.get("locId")).toBe("1");
   });
 
   it("resolves startup region from candidate country", () => {
@@ -158,10 +178,15 @@ describe("shared automation target logic", () => {
     );
   });
 
-  it("normalizes dedup keys for Monster and ATS job URLs", () => {
+  it("normalizes dedup keys for Monster, Glassdoor, and ATS job URLs", () => {
     expect(
       getJobDedupKey("https://www.monster.com/job-opening/frontend-engineer?jobid=ABC123")
     ).toBe("monster.com/job-openings/frontend-engineer?jobid=abc123");
+    expect(
+      getJobDedupKey(
+        "https://www.glassdoor.com/job-listing/frontend-engineer-example-co-JV_IC1147401_KO0,17_KE18,28.htm?jl=1010069347428"
+      )
+    ).toBe("glassdoor:jl:1010069347428");
     expect(
       getJobDedupKey("https://boards.greenhouse.io/example/jobs/1234567?gh_jid=1234567#apply")
     ).toBe("boards.greenhouse.io/example/jobs/1234567?gh_jid=1234567");
@@ -194,6 +219,18 @@ describe("shared automation target logic", () => {
         src="https://geo.captcha-delivery.com/captcha/?initialCid=test"
         title="DataDome CAPTCHA"
       ></iframe>
+    `;
+
+    expect(isProbablyHumanVerificationPage(document)).toBe(true);
+  });
+
+  it("detects Glassdoor verification pages from their blocking copy", () => {
+    document.title = "Just a moment...";
+    document.body.innerHTML = `
+      <main>
+        <h1>Help Us Protect Glassdoor</h1>
+        <p>Please help us protect Glassdoor by verifying that you're a real person.</p>
+      </main>
     `;
 
     expect(isProbablyHumanVerificationPage(document)).toBe(true);
