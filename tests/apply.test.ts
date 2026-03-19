@@ -118,6 +118,38 @@ describe("application progression actions", () => {
     }
   });
 
+  it("ignores Monster filter controls and prefers the real apply action", () => {
+    document.body.innerHTML = `
+      <header>
+        <button aria-label="Apply filters">Apply filters</button>
+      </header>
+      <main>
+        <button data-testid="svx_applyButton">Apply Now</button>
+      </main>
+    `;
+
+    const action = findMonsterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply Now");
+  });
+
+  it("falls back to clicking a Monster component when only a broken apply URL is exposed", () => {
+    document.body.innerHTML = `
+      <apply-button-wc
+        data-apply-url="https://apply.monster.com/job-apply/abc"
+        aria-label="Apply now"
+      ></apply-button-wc>
+    `;
+
+    const action = findMonsterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply now");
+  });
+
   it("finds ZipRecruiter apply links that navigate directly to zipapply", () => {
     document.body.innerHTML = `
       <a href="https://www.ziprecruiter.com/job/apply/abc?zipapply=true">1-Click Apply</a>

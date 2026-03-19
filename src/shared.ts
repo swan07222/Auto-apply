@@ -742,12 +742,12 @@ export function inferResumeKindFromTitle(title: string): ResumeKind {
   return "full_stack";
 }
 
-function slugifyMonsterQuery(query: string): string {
-  return query
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/-+/g, "-");
+function buildMonsterSearchUrl(query: string, baseOrigin: string): string {
+  const url = new URL("/jobs/search", baseOrigin);
+  url.searchParams.set("q", query);
+  url.searchParams.set("where", "remote");
+  url.searchParams.set("so", "m.h.s");
+  return url.toString();
 }
 
 function buildSingleSearchUrl(
@@ -777,8 +777,7 @@ function buildSingleSearchUrl(
       return url.toString();
     }
     case "monster": {
-      const slug = slugifyMonsterQuery(query);
-      return new URL(`/jobs/q-${slug}-jobs-l-remote`, baseOrigin).toString();
+      return buildMonsterSearchUrl(query, baseOrigin);
     }
   }
 }

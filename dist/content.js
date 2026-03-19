@@ -49545,8 +49545,12 @@
     }
     return "full_stack";
   }
-  function slugifyMonsterQuery(query) {
-    return query.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/-+/g, "-");
+  function buildMonsterSearchUrl(query, baseOrigin) {
+    const url = new URL("/jobs/search", baseOrigin);
+    url.searchParams.set("q", query);
+    url.searchParams.set("where", "remote");
+    url.searchParams.set("so", "m.h.s");
+    return url.toString();
   }
   function buildSingleSearchUrl(site, _origin, query) {
     const baseOrigin = CANONICAL_JOB_BOARD_ORIGINS[site];
@@ -49570,8 +49574,7 @@
         return url.toString();
       }
       case "monster": {
-        const slug = slugifyMonsterQuery(query);
-        return new URL(`/jobs/q-${slug}-jobs-l-remote`, baseOrigin).toString();
+        return buildMonsterSearchUrl(query, baseOrigin);
       }
     }
   }
@@ -52438,167 +52441,34 @@
     };
   }
   function findMonsterApplyAction() {
-    const customComponents = Array.from(
-      document.querySelectorAll(
-        "apply-button-wc, monster-apply-button, [data-testid*='applyButton'], [data-testid*='apply-button'], [data-testid='svx_applyButton']"
-      )
-    );
-    for (const component of customComponents) {
-      const attributeUrl = extractLikelyApplyUrl(component);
-      if (attributeUrl) {
-        return {
-          type: "navigate",
-          url: attributeUrl,
-          description: "Monster apply button"
-        };
-      }
-      const shadowTarget = component.shadowRoot?.querySelector(
-        "a[href], button, input[type='submit'], input[type='button'], [role='button']"
-      );
-      if (shadowTarget && isElementVisible(shadowTarget)) {
-        const url = getNavigationUrl(shadowTarget);
-        if (url && shouldPreferApplyNavigation(url, getActionText(shadowTarget), "monster")) {
-          return {
-            type: "navigate",
-            url,
-            description: describeApplyTarget(url, getActionText(shadowTarget))
-          };
-        }
-        return {
-          type: "click",
-          element: shadowTarget,
-          description: getActionText(shadowTarget) || "Monster apply button"
-        };
-      }
-      const childTarget = getClickableApplyElement(component);
-      if (childTarget !== component && isElementVisible(childTarget)) {
-        const url = getNavigationUrl(childTarget);
-        if (url && shouldPreferApplyNavigation(url, getActionText(childTarget), "monster")) {
-          return {
-            type: "navigate",
-            url,
-            description: describeApplyTarget(url, getActionText(childTarget))
-          };
-        }
-        return {
-          type: "click",
-          element: childTarget,
-          description: getActionText(childTarget) || "Monster apply button"
-        };
-      }
-      if (isElementVisible(component)) {
-        return {
-          type: "click",
-          element: component,
-          description: getActionText(component) || "Monster apply button"
-        };
-      }
-    }
-    const monsterSelectors = [
-      "a[data-testid*='apply' i]",
-      "button[data-testid*='apply' i]",
-      "button[data-testid='svx_applyButton']",
-      "[data-action*='apply' i]",
-      "[data-track*='apply' i]",
-      "[data-evt*='apply' i]",
-      "[data-link*='apply' i]",
-      "[data-url*='apply' i]",
-      "[aria-label*='apply' i]",
-      "[aria-label*='company site' i]",
-      "button[class*='apply' i]",
-      "a[class*='apply' i]",
-      "button[class*='Apply']",
-      "a[class*='Apply']",
-      "[class*='applyBtn']",
-      "[class*='apply-btn']",
-      "[class*='apply_btn']",
-      "[id*='applyBtn']",
-      "[id*='apply-btn']",
-      "[id*='apply_btn']",
-      "a[href*='apply.monster']",
-      "a[href*='/apply']",
-      // FIX: Additional Monster selectors
-      "[class*='ApplyButton']",
-      "[class*='apply-button']",
-      "[data-testid*='Apply']",
-      "a[href*='job-openings'][href*='apply']"
-    ];
-    for (const selector of monsterSelectors) {
-      let elements;
-      try {
-        elements = Array.from(document.querySelectorAll(selector));
-      } catch {
-        continue;
-      }
-      for (const element of elements) {
-        if (!isElementVisible(element)) {
-          continue;
-        }
-        const text = getActionText(element).toLowerCase().trim();
-        if (!text || text.includes("save") || text.includes("share") || text.includes("alert") || text.includes("sign")) {
-          continue;
-        }
-        const url = getNavigationUrl(element);
-        if (url && shouldPreferApplyNavigation(url, text, "monster")) {
-          return {
-            type: "navigate",
-            url,
-            description: describeApplyTarget(url, text)
-          };
-        }
-        return {
-          type: "click",
-          element,
-          description: text || "Apply"
-        };
-      }
-    }
-    const fallbackCandidates = Array.from(
-      document.querySelectorAll("a[href], button, a[role='button']")
-    );
+    const elements = collectDeepMatchesFromSelectors(getApplyCandidateSelectors("monster"));
     let best;
-    for (const element of fallbackCandidates) {
-      if (!isElementVisible(element)) {
-        continue;
-      }
-      const text = getActionText(element).toLowerCase().trim();
-      if (!text || text.includes("save") || text.includes("share") || text.includes("alert") || text.includes("sign") || text.includes("report") || text.includes("dismiss") || text.includes("close")) {
-        continue;
-      }
-      let score = 0;
-      if (/(apply|continue|company|external|employer|resume)/.test(text)) {
-        score += 50;
-      }
-      if (text.includes("apply now") || text.includes("apply on company")) {
-        score += 25;
-      }
-      if (text === "apply" || text === "apply now") {
-        score += 40;
-      }
-      if (/\bapply\b/.test(text)) {
-        score += 15;
-      }
-      const url = getNavigationUrl(element);
-      if (url && shouldPreferApplyNavigation(url, text, "monster")) {
-        score += 30;
-      }
-      const attrs = [
-        element.getAttribute("data-testid"),
-        element.getAttribute("aria-label"),
-        element.className,
-        element.id
-      ].join(" ").toLowerCase();
-      if (attrs.includes("apply")) {
-        score += 20;
-      }
-      if (score < 50) {
+    for (const element of elements) {
+      const actionElement = getClickableApplyElement(element);
+      const text = (getActionText(actionElement) || getActionText(element)).trim();
+      const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element) ?? extractLikelyApplyUrl(actionElement) ?? extractLikelyApplyUrl(element);
+      const score = scoreMonsterApplyCandidate(element, actionElement, text, url);
+      if (score < 35) {
         continue;
       }
       if (!best || score > best.score) {
-        best = { element, score, url, text };
+        best = {
+          element: actionElement,
+          score,
+          url,
+          text
+        };
       }
     }
     if (!best) {
+      const extractedUrl2 = findExternalApplyUrlInDocument();
+      if (extractedUrl2) {
+        return {
+          type: "navigate",
+          url: extractedUrl2,
+          description: describeApplyTarget(extractedUrl2, "Apply")
+        };
+      }
       return null;
     }
     if (best.url && shouldPreferApplyNavigation(best.url, best.text, "monster")) {
@@ -52608,11 +52478,67 @@
         description: describeApplyTarget(best.url, best.text)
       };
     }
+    const extractedUrl = extractLikelyApplyUrl(best.element) ?? findExternalApplyUrlInDocument();
+    if (extractedUrl && shouldPreferApplyNavigation(extractedUrl, best.text, "monster")) {
+      return {
+        type: "navigate",
+        url: extractedUrl,
+        description: describeApplyTarget(extractedUrl, best.text)
+      };
+    }
     return {
       type: "click",
       element: best.element,
-      description: best.text || "Apply"
+      description: best.text || "Monster apply button"
     };
+  }
+  function scoreMonsterApplyCandidate(sourceElement, actionElement, text, url) {
+    const attrs = [
+      sourceElement.getAttribute("data-testid"),
+      sourceElement.getAttribute("data-track"),
+      sourceElement.getAttribute("data-action"),
+      sourceElement.getAttribute("aria-label"),
+      sourceElement.getAttribute("title"),
+      sourceElement.className,
+      sourceElement.id,
+      sourceElement.tagName,
+      actionElement.getAttribute("data-testid"),
+      actionElement.getAttribute("data-track"),
+      actionElement.getAttribute("data-action"),
+      actionElement.getAttribute("aria-label"),
+      actionElement.getAttribute("title"),
+      actionElement.className,
+      actionElement.id,
+      actionElement.tagName
+    ].join(" ").toLowerCase();
+    const fallbackText = !text.trim() && (url || /apply-button-wc|monster-apply-button|applybutton|svx_applybutton/.test(attrs)) ? "Apply" : text;
+    const lower = fallbackText.toLowerCase().trim();
+    if (!lower || lower.includes("save") || lower.includes("share") || lower.includes("alert") || lower.includes("sign") || lower.includes("report") || lower.includes("dismiss") || lower.includes("close") || lower.includes("filter") || lower.includes("refine") || lower.includes("sort")) {
+      return -1;
+    }
+    const brokenUrl = isKnownBrokenApplyUrl(url);
+    let score = scoreApplyElement(fallbackText, brokenUrl ? null : url, actionElement, "job-page");
+    if (score < 0 && !(brokenUrl && /apply-button-wc|monster-apply-button|applybutton|svx_applybutton/.test(attrs))) {
+      return -1;
+    }
+    score = Math.max(score, 0);
+    if (attrs.includes("svx_applybutton")) score += 30;
+    if (attrs.includes("apply-button-wc") || attrs.includes("monster-apply-button")) score += 28;
+    if (attrs.includes("applybutton")) score += 20;
+    if (lower === "apply" || lower === "apply now") score += 16;
+    if (lower.includes("apply on company") || lower.includes("company site")) score += 14;
+    const lowerUrl = url?.toLowerCase() ?? "";
+    if (lowerUrl.includes("/job-openings/") && lowerUrl.includes("/apply")) score += 35;
+    if (lowerUrl.includes("job-openings.monster.com")) score += 28;
+    if (lowerUrl.includes("candidate") || lowerUrl.includes("application")) score += 18;
+    if (actionElement.closest("header, nav, footer")) score -= 40;
+    if (actionElement.closest("aside")) score -= 12;
+    if (actionElement.closest("main, article, [role='main'], section")) score += 12;
+    if (actionElement.closest("[data-testid*='job'], [class*='job'], [class*='Job']")) score += 10;
+    if (brokenUrl) {
+      score += 24;
+    }
+    return score;
   }
   function findZipRecruiterApplyAction() {
     const selectors = [
@@ -54449,7 +54375,7 @@
     await waitForHumanVerificationToClear();
     const renderWaitMs = site === "startup" || site === "other_sites" ? 5e3 : site === "dice" || site === "ziprecruiter" ? 5e3 : site === "monster" ? 5e3 : 2500;
     await sleep(renderWaitMs);
-    if (site === "startup" || site === "other_sites" || site === "dice" || site === "ziprecruiter") {
+    if (site === "startup" || site === "other_sites" || site === "dice" || site === "ziprecruiter" || site === "monster") {
       await scrollPageForLazyContent2();
     }
     const jobUrls = await waitForJobDetailUrls2(
@@ -54614,7 +54540,7 @@
       "open-apply"
     );
     await waitForHumanVerificationToClear();
-    await sleep(site === "dice" ? 4e3 : 2500);
+    await sleep(site === "dice" || site === "monster" ? 4e3 : 2500);
     let action = null;
     const scrollPositions = [0, 300, 600, -1, -2, 0, -3, 200];
     for (let attempt = 0; attempt < 35; attempt += 1) {

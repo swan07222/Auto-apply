@@ -581,7 +581,8 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     site === "startup" ||
     site === "other_sites" ||
     site === "dice" ||
-    site === "ziprecruiter"
+    site === "ziprecruiter" ||
+    site === "monster"
   ) {
     await scrollPageForLazyContent();
   }
@@ -782,7 +783,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   await waitForHumanVerificationToClear();
 
   // FIX: Dice needs extra render time for its web components
-  await sleep(site === "dice" ? 4000 : 2500);
+  await sleep(site === "dice" || site === "monster" ? 4000 : 2500);
 
   let action: ApplyAction | null = null;
   const scrollPositions = [0, 300, 600, -1, -2, 0, -3, 200];

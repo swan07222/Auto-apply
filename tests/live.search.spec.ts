@@ -80,17 +80,29 @@ const EU_SETTINGS = {
   },
 };
 
-const STARTUP_TARGETS = [
+function dedupeTargets(targets: SearchTarget[]): SearchTarget[] {
+  const seen = new Set<string>();
+  return targets.filter((target) => {
+    const key = `${target.label}::${target.url}::${target.resumeKind}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+const STARTUP_TARGETS = dedupeTargets([
   ...buildStartupSearchTargets(US_SETTINGS),
   ...buildStartupSearchTargets(UK_SETTINGS),
   ...buildStartupSearchTargets(EU_SETTINGS),
-];
+]);
 
-const OTHER_SITE_TARGETS = [
+const OTHER_SITE_TARGETS = dedupeTargets([
   ...buildOtherJobSiteTargets(US_SETTINGS),
   ...buildOtherJobSiteTargets(UK_SETTINGS),
   ...buildOtherJobSiteTargets(EU_SETTINGS),
-];
+]);
 
 type ProbeResult = {
   title: string;

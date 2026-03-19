@@ -145,6 +145,14 @@ describe("job search candidate filtering", () => {
     expect(
       isLikelyJobDetailUrl(
         "monster",
+        "https://www.monster.com/jobs/search?q=front+end+developer&where=remote&so=m.h.s",
+        "Front End Developer jobs"
+      )
+    ).toBe(false);
+
+    expect(
+      isLikelyJobDetailUrl(
+        "monster",
         "https://www.monster.com/jobs/q-front-end-developer-jobs-l-remote",
         "Front End Developer jobs"
       )

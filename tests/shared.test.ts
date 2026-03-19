@@ -29,19 +29,24 @@ describe("shared automation target logic", () => {
     ).toBeNull();
   });
 
-  it("builds remote Monster search targets with the current path format", () => {
+  it("builds remote Monster search targets with the current form-based search URL", () => {
     const targets = buildSearchTargets(
       "monster",
       "https://www.monster.com"
     );
 
     expect(targets).toHaveLength(3);
-    expect(targets[0].url).toContain(
-      "/jobs/q-front-end-developer-jobs-l-remote"
-    );
-    expect(targets[1].url).toContain(
-      "/jobs/q-back-end-developer-jobs-l-remote"
-    );
+    const firstUrl = new URL(targets[0].url);
+    const secondUrl = new URL(targets[1].url);
+
+    expect(firstUrl.pathname).toBe("/jobs/search");
+    expect(firstUrl.searchParams.get("q")).toBe("front end developer");
+    expect(firstUrl.searchParams.get("where")).toBe("remote");
+    expect(firstUrl.searchParams.get("so")).toBe("m.h.s");
+
+    expect(secondUrl.pathname).toBe("/jobs/search");
+    expect(secondUrl.searchParams.get("q")).toBe("back end developer");
+    expect(secondUrl.searchParams.get("where")).toBe("remote");
   });
 
   it("resolves startup region from candidate country", () => {
@@ -180,6 +185,18 @@ describe("shared automation target logic", () => {
     document.title = "Careers";
     document.body.innerHTML = `<main><h1>Open roles</h1><p>Find your next job.</p></main>`;
     expect(isProbablyHumanVerificationPage(document)).toBe(false);
+  });
+
+  it("detects DataDome-style verification pages used by Monster", () => {
+    document.title = "monster.com";
+    document.body.innerHTML = `
+      <iframe
+        src="https://geo.captcha-delivery.com/captcha/?initialCid=test"
+        title="DataDome CAPTCHA"
+      ></iframe>
+    `;
+
+    expect(isProbablyHumanVerificationPage(document)).toBe(true);
   });
 
   it("does not treat application forms with embedded captcha markers as verification pages", () => {
