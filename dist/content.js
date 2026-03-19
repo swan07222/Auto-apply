@@ -51059,34 +51059,6 @@
     }
   }
 
-  // src/content/pdfWorker.ts
-  var sharedPdfWorkerPort = null;
-  function ensurePdfJsWorkerPort(pdfjs) {
-    if (typeof Worker === "undefined" || pdfjs.GlobalWorkerOptions.workerPort) {
-      return;
-    }
-    pdfjs.GlobalWorkerOptions.workerPort = getSharedPdfWorkerPort();
-  }
-  function getSharedPdfWorkerPort() {
-    sharedPdfWorkerPort ||= new Worker(
-      getBundledExtensionAssetUrl("pdf.worker.mjs"),
-      {
-        type: "module",
-        name: "pdfjs-content-worker"
-      }
-    );
-    return sharedPdfWorkerPort;
-  }
-  function getBundledExtensionAssetUrl(filename) {
-    const manifest = chrome.runtime.getManifest();
-    const contentScriptPath = manifest.content_scripts?.[0]?.js?.[0] ?? "";
-    if (!contentScriptPath.includes("/")) {
-      return chrome.runtime.getURL(filename);
-    }
-    const basePath = contentScriptPath.replace(/[^/]+$/, "");
-    return chrome.runtime.getURL(`${basePath}${filename}`);
-  }
-
   // src/content/sitePatterns.ts
   var CAREER_LISTING_TEXT_PATTERNS = [
     "open jobs",
@@ -53696,7 +53668,16 @@
     if (currentUrl && url === currentUrl) {
       return null;
     }
+    if (shouldTreatInternalApplyNavigationAsClick(url, element)) {
+      return null;
+    }
     return url;
+  }
+  function shouldTreatInternalApplyNavigationAsClick(url, element) {
+    if (isExternalUrl(url)) {
+      return false;
+    }
+    return isLikelyApplicationContext(element) || Boolean(element.closest("form, [role='dialog'], [aria-modal='true']"));
   }
   function getElementActionMetadata(element) {
     return cleanText(
@@ -53746,6 +53727,13 @@
       return null;
     }
     if (best.url && shouldPreferApplyNavigation(best.url, best.text, site)) {
+      if (context === "follow-up" && shouldTreatInternalApplyNavigationAsClick(best.url, best.element)) {
+        return {
+          type: "click",
+          element: best.element,
+          description: best.text || "the apply button"
+        };
+      }
       return {
         type: "navigate",
         url: best.url,
@@ -54885,11 +54873,688 @@
     }
   }
 
+  // src/content/chatGpt.ts
+  async function waitForChatGptComposer() {
+    for (let i = 0; i < 50; i += 1) {
+      const composer = findFirstVisibleElement([
+        "#prompt-textarea",
+        "textarea[data-testid*='prompt']",
+        "form textarea",
+        "div[contenteditable='true'][role='textbox']",
+        "[contenteditable='true'][data-placeholder]"
+      ]);
+      if (composer) {
+        return composer;
+      }
+      await sleep(800);
+    }
+    return null;
+  }
+  async function setComposerValue(composer, prompt) {
+    if (composer instanceof HTMLTextAreaElement) {
+      composer.focus();
+      composer.dispatchEvent(
+        new InputEvent("beforeinput", {
+          bubbles: true,
+          cancelable: true,
+          data: prompt,
+          inputType: "insertText"
+        })
+      );
+      setFieldValue(composer, prompt);
+      composer.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          data: prompt,
+          inputType: "insertText"
+        })
+      );
+      return waitForChatGptComposerText(composer, prompt, 1500);
+    }
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      composer.focus();
+      clearChatGptComposer(composer);
+      composer.dispatchEvent(
+        new InputEvent("beforeinput", {
+          bubbles: true,
+          cancelable: true,
+          data: prompt,
+          inputType: "insertText"
+        })
+      );
+      const insertedWithCommand = tryInsertComposerTextWithCommand(
+        composer,
+        prompt
+      );
+      if (!insertedWithCommand) {
+        writeComposerTextFallback(composer, prompt);
+      }
+      composer.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          data: prompt,
+          inputType: "insertFromPaste"
+        })
+      );
+      if (await waitForChatGptComposerText(composer, prompt, 1200)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function buildChatGptPrompt(request, availableAnswers) {
+    const resumeKindNote = request.resumeKind ? `Selected resume track: ${getResumeKindLabel(request.resumeKind)}.` : "Selected resume track: Not specified.";
+    const resumeNote = request.resume?.textContent ? "Resume context below was extracted locally from the selected resume file. Use that text as the primary source of candidate history and skills." : request.resume ? "A resume file was selected locally, but no extracted resume text is available. Use the candidate profile and job description only." : "No resume file is attached.";
+    const rememberedAnswers = getRelevantSavedAnswers(
+      request.job.question,
+      availableAnswers
+    );
+    const resumeTextBlock = request.resume?.textContent ? [
+      "",
+      "Resume text:",
+      truncateText(request.resume.textContent, 12e3)
+    ] : [];
+    const companyLine = request.job.company ? `Company: ${request.job.company}` : "Company: Unknown";
+    const rememberedAnswerBlock = rememberedAnswers.length > 0 ? [
+      "",
+      "Remembered candidate answers:",
+      ...rememberedAnswers.map(
+        (answer) => `- ${truncateText(answer.question, 90)}: ${truncateText(answer.value, 220)}`
+      ),
+      "Reuse any matching remembered answer when it directly fits the question."
+    ] : [];
+    return [
+      "Write a polished, job-application-ready answer.",
+      "Return only final answer text, no preface, no placeholders.",
+      "",
+      `Question: ${request.job.question}`,
+      `Job title: ${request.job.title || "Unknown"}`,
+      companyLine,
+      `Job page: ${request.job.pageUrl}`,
+      "",
+      "Candidate profile:",
+      `Name: ${request.candidate.fullName || "N/A"}`,
+      `Email: ${request.candidate.email || "N/A"}`,
+      `Phone: ${request.candidate.phone || "N/A"}`,
+      `Location: ${[
+        request.candidate.city,
+        request.candidate.state,
+        request.candidate.country
+      ].filter(Boolean).join(", ") || "N/A"}`,
+      `LinkedIn: ${request.candidate.linkedinUrl || "N/A"}`,
+      `Portfolio: ${request.candidate.portfolioUrl || "N/A"}`,
+      `Current company: ${request.candidate.currentCompany || "N/A"}`,
+      `Experience: ${request.candidate.yearsExperience || "N/A"}`,
+      `Work authorization: ${request.candidate.workAuthorization || "N/A"}`,
+      `Sponsorship: ${request.candidate.needsSponsorship || "N/A"}`,
+      `Relocate: ${request.candidate.willingToRelocate || "N/A"}`,
+      "",
+      resumeKindNote,
+      resumeNote,
+      ...resumeTextBlock,
+      ...rememberedAnswerBlock,
+      "",
+      "Job description:",
+      request.job.description || "No description found.",
+      "",
+      "Keep concise, specific to this role, ready to paste."
+    ].join("\n");
+  }
+  async function submitChatGptPrompt(composer, prompt) {
+    const priorUserText = getLatestChatGptUserText();
+    const sendButton = await waitForChatGptReadyToSend(composer);
+    if (sendButton && !sendButton.disabled) {
+      sendButton.click();
+      if (await waitForChatGptPromptAcceptance(prompt, priorUserText, 6e3)) {
+        return;
+      }
+    }
+    const form = composer.closest("form");
+    if (form?.requestSubmit) {
+      form.requestSubmit();
+      if (await waitForChatGptPromptAcceptance(prompt, priorUserText, 5e3)) {
+        return;
+      }
+    }
+    if (form) {
+      form.dispatchEvent(
+        new Event("submit", {
+          bubbles: true,
+          cancelable: true
+        })
+      );
+      if (await waitForChatGptPromptAcceptance(prompt, priorUserText, 5e3)) {
+        return;
+      }
+    }
+    composer.focus();
+    for (const eventType of ["keydown", "keypress", "keyup"]) {
+      composer.dispatchEvent(
+        new KeyboardEvent(eventType, {
+          key: "Enter",
+          code: "Enter",
+          keyCode: 13,
+          which: 13,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    }
+    if (await waitForChatGptPromptAcceptance(prompt, priorUserText, 5e3)) {
+      return;
+    }
+    throw new Error("ChatGPT prompt was not submitted.");
+  }
+  async function waitForChatGptAnswerText() {
+    let lastText = "";
+    let stableCount = 0;
+    for (let i = 0; i < 150; i += 1) {
+      const text = getLatestChatGptAssistantText();
+      const generating = hasActiveChatGptGeneration();
+      if (text && text === lastText) {
+        stableCount += 1;
+      } else if (text) {
+        lastText = text;
+        stableCount = 1;
+      }
+      if (text && !generating && stableCount >= 4) {
+        return text;
+      }
+      await sleep(1200);
+    }
+    return lastText || null;
+  }
+  async function copyTextToClipboard(text) {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch {
+    }
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "true");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      document.body.append(textarea);
+      textarea.select();
+      const copied = document.execCommand("copy");
+      textarea.remove();
+      return copied;
+    } catch {
+      return false;
+    }
+  }
+  async function waitForChatGptSendButton(composer) {
+    for (let i = 0; i < 35; i += 1) {
+      const button = findChatGptSendButton(composer) ?? findFirstVisibleElement([
+        "button[data-testid='send-button']",
+        "button[data-testid*='send']",
+        "button[aria-label*='Send']",
+        "button[aria-label*='Submit']",
+        "button[type='submit']"
+      ]);
+      if (button) {
+        return button;
+      }
+      await sleep(800);
+    }
+    return null;
+  }
+  function clearChatGptComposer(composer) {
+    if (composer instanceof HTMLTextAreaElement) {
+      setFieldValue(composer, "");
+      return;
+    }
+    composer.focus();
+    const selection = window.getSelection();
+    if (selection) {
+      const range2 = document.createRange();
+      range2.selectNodeContents(composer);
+      selection.removeAllRanges();
+      selection.addRange(range2);
+    }
+    try {
+      document.execCommand("selectAll", false);
+      document.execCommand("delete", false);
+    } catch {
+    }
+    composer.replaceChildren();
+    composer.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        data: "",
+        inputType: "deleteContentBackward"
+      })
+    );
+  }
+  function tryInsertComposerTextWithCommand(composer, prompt) {
+    composer.focus();
+    try {
+      return document.execCommand("insertText", false, prompt);
+    } catch {
+      return false;
+    }
+  }
+  function writeComposerTextFallback(composer, prompt) {
+    const fragment = document.createDocumentFragment();
+    const lines = prompt.split("\n");
+    if (lines.length <= 1) {
+      composer.replaceChildren(document.createTextNode(prompt));
+      return;
+    }
+    for (const line of lines) {
+      const paragraph = document.createElement("p");
+      if (line) {
+        paragraph.textContent = line;
+      } else {
+        paragraph.append(document.createElement("br"));
+      }
+      fragment.append(paragraph);
+    }
+    composer.replaceChildren(fragment);
+  }
+  async function waitForChatGptComposerText(composer, prompt, timeoutMs) {
+    const expected = normalizeChoiceText(prompt).slice(0, 120);
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const actual = normalizeChoiceText(
+        composer instanceof HTMLTextAreaElement ? composer.value : cleanText(composer.innerText || composer.textContent || "")
+      );
+      if (actual && (actual.includes(expected) || expected.includes(actual.slice(0, 60)))) {
+        return true;
+      }
+      await sleep(120);
+    }
+    return false;
+  }
+  async function waitForChatGptReadyToSend(composer) {
+    const start = Date.now();
+    while (Date.now() - start < 6e3) {
+      const button = findChatGptSendButton(composer);
+      if (button && !button.disabled) {
+        return button;
+      }
+      await sleep(250);
+    }
+    return waitForChatGptSendButton(composer);
+  }
+  function findChatGptSendButton(composer) {
+    const form = composer?.closest("form") ?? null;
+    const buttons = [
+      ...form ? Array.from(form.querySelectorAll("button")) : [],
+      ...Array.from(document.querySelectorAll("button"))
+    ];
+    const seen = /* @__PURE__ */ new Set();
+    for (const button of buttons) {
+      if (seen.has(button)) {
+        continue;
+      }
+      seen.add(button);
+      if (!isElementVisible(button) || button.disabled || !isProbablyChatGptSendButton(button, form)) {
+        continue;
+      }
+      return button;
+    }
+    return null;
+  }
+  function isProbablyChatGptSendButton(button, form) {
+    const label = cleanText(
+      [
+        button.getAttribute("aria-label"),
+        button.getAttribute("title"),
+        button.getAttribute("data-testid"),
+        button.textContent
+      ].join(" ")
+    ).toLowerCase();
+    if (label.includes("stop") || label.includes("voice") || label.includes("microphone") || label.includes("attach") || label.includes("upload") || label.includes("plus")) {
+      return false;
+    }
+    if (label.includes("send") || label.includes("submit")) {
+      return true;
+    }
+    if (button.type.toLowerCase() === "submit") {
+      return true;
+    }
+    if (form && button.closest("form") === form) {
+      const hasIconOnlyMarkup = Boolean(button.querySelector("svg, path"));
+      return hasIconOnlyMarkup && !label;
+    }
+    return false;
+  }
+  async function waitForChatGptPromptAcceptance(prompt, priorUserText, timeoutMs) {
+    const expected = normalizeChoiceText(prompt);
+    const expectedPrefix = expected.slice(0, 120);
+    const prior = normalizeChoiceText(priorUserText);
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (hasActiveChatGptGeneration()) {
+        return true;
+      }
+      const latestUserText = normalizeChoiceText(getLatestChatGptUserText());
+      if (latestUserText && latestUserText !== prior && (latestUserText.includes(expectedPrefix) || expectedPrefix.includes(latestUserText.slice(0, 60)))) {
+        return true;
+      }
+      await sleep(250);
+    }
+    return false;
+  }
+  function getLatestChatGptUserText() {
+    const messages = Array.from(
+      document.querySelectorAll("[data-message-author-role='user']")
+    );
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const text = readChatGptMsgText(messages[i]);
+      if (text.length > 10) {
+        return text;
+      }
+    }
+    const turns = Array.from(
+      document.querySelectorAll(
+        "article, [data-testid*='conversation-turn']"
+      )
+    );
+    for (let i = turns.length - 1; i >= 0; i -= 1) {
+      const element = turns[i];
+      const author = cleanText(
+        element.getAttribute("data-message-author-role") || element.querySelector("[data-message-author-role]")?.getAttribute("data-message-author-role") || ""
+      ).toLowerCase();
+      const text = readChatGptMsgText(element);
+      if (author === "user" && text.length > 10) {
+        return text;
+      }
+    }
+    return "";
+  }
+  function getLatestChatGptAssistantText() {
+    const messages = Array.from(
+      document.querySelectorAll(
+        "[data-message-author-role='assistant']"
+      )
+    );
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const text = readChatGptMsgText(messages[i]);
+      if (text.length > 20) {
+        return text;
+      }
+    }
+    const turns = Array.from(
+      document.querySelectorAll(
+        "article, [data-testid*='conversation-turn']"
+      )
+    );
+    for (let i = turns.length - 1; i >= 0; i -= 1) {
+      const element = turns[i];
+      const author = cleanText(
+        element.getAttribute("data-message-author-role") || element.querySelector("[data-message-author-role]")?.getAttribute("data-message-author-role") || ""
+      ).toLowerCase();
+      const text = readChatGptMsgText(element);
+      if (author === "assistant" && text.length > 20) {
+        return text;
+      }
+      if (!author && text.length > 80 && element.querySelector(".markdown, p, li, pre")) {
+        return text;
+      }
+    }
+    return "";
+  }
+  function hasActiveChatGptGeneration() {
+    return Array.from(
+      document.querySelectorAll("button, [role='button']")
+    ).some((element) => {
+      const label = cleanText(
+        [
+          element.getAttribute("aria-label"),
+          element.getAttribute("data-testid"),
+          element.textContent
+        ].join(" ")
+      ).toLowerCase();
+      return label.includes("stop generating") || label.includes("stop streaming") || label.includes("stop response") || label.includes("stop");
+    });
+  }
+  function readChatGptMsgText(container) {
+    const node = container.querySelector(".markdown, [class*='markdown']") ?? container;
+    return cleanText(node.innerText || node.textContent || "");
+  }
+
+  // src/content/pdfWorker.ts
+  var sharedPdfWorkerPort = null;
+  function ensurePdfJsWorkerPort(pdfjs) {
+    if (typeof Worker === "undefined" || pdfjs.GlobalWorkerOptions.workerPort) {
+      return;
+    }
+    pdfjs.GlobalWorkerOptions.workerPort = getSharedPdfWorkerPort();
+  }
+  function getSharedPdfWorkerPort() {
+    sharedPdfWorkerPort ||= new Worker(
+      getBundledExtensionAssetUrl("pdf.worker.mjs"),
+      {
+        type: "module",
+        name: "pdfjs-content-worker"
+      }
+    );
+    return sharedPdfWorkerPort;
+  }
+  function getBundledExtensionAssetUrl(filename) {
+    const manifest = chrome.runtime.getManifest();
+    const contentScriptPath = manifest.content_scripts?.[0]?.js?.[0] ?? "";
+    if (!contentScriptPath.includes("/")) {
+      return chrome.runtime.getURL(filename);
+    }
+    const basePath = contentScriptPath.replace(/[^/]+$/, "");
+    return chrome.runtime.getURL(`${basePath}${filename}`);
+  }
+
+  // src/content/jobContext.ts
+  var MAX_RESUME_TEXT_CHARS = 24e3;
+  function extractCurrentJobContextSnapshot(question) {
+    const title = pickFirstText([
+      cleanText(
+        document.querySelector(
+          "h1, [data-testid='jobsearch-JobInfoHeader-title'], [data-testid*='job-title'], [class*='job-title'], [class*='jobTitle']"
+        )?.textContent
+      ),
+      cleanText(
+        document.querySelector("meta[property='og:title']")?.getAttribute("content")
+      ),
+      cleanText(document.title)
+    ]);
+    const company = pickFirstText([
+      cleanText(
+        document.querySelector(
+          "[data-testid='inlineHeader-companyName'], [data-testid*='company'], [class*='company'], .company, [class*='employer']"
+        )?.textContent
+      ),
+      cleanText(
+        document.querySelector("meta[name='author']")?.getAttribute("content")
+      )
+    ]);
+    const description = collectBestJobDescriptionText();
+    return {
+      title,
+      company,
+      question,
+      description: truncateText(description, 12e3),
+      pageUrl: window.location.href
+    };
+  }
+  function collectBestJobDescriptionText() {
+    const selectorCandidates = [
+      "#jobDescriptionText",
+      "[data-testid='jobDescriptionText']",
+      "[data-testid*='jobDescription']",
+      "[data-testid*='JobDescription']",
+      ".jobsearch-JobComponent-description",
+      "[class*='jobsearch-JobComponent-description']",
+      "[class*='job-description']",
+      "[class*='jobDescription']",
+      "[id*='jobDescription']",
+      "[class*='description']",
+      "[role='main']",
+      "main",
+      "article"
+    ];
+    let best = "";
+    let bestScore = -1;
+    for (const selector of selectorCandidates) {
+      let elements;
+      try {
+        elements = Array.from(document.querySelectorAll(selector));
+      } catch {
+        continue;
+      }
+      for (const element of elements) {
+        const text = cleanText(element.innerText || element.textContent || "");
+        if (!text || text.length < 120) {
+          continue;
+        }
+        const lower = text.toLowerCase();
+        let score = text.length;
+        if (lower.includes("responsibilities")) score += 200;
+        if (lower.includes("requirements")) score += 200;
+        if (lower.includes("qualifications")) score += 180;
+        if (lower.includes("about the role")) score += 180;
+        if (lower.includes("about this role")) score += 180;
+        if (lower.includes("job description")) score += 180;
+        if (lower.includes("application")) score -= 120;
+        if (lower.includes("sign in")) score -= 120;
+        if (score > bestScore) {
+          best = text;
+          bestScore = score;
+        }
+      }
+    }
+    return best;
+  }
+  function mergeJobContextSnapshots(remembered, current, question) {
+    return {
+      title: pickBestText([current.title, remembered?.title ?? ""]),
+      company: pickBestText([current.company, remembered?.company ?? ""]),
+      description: pickBestText([
+        current.description,
+        remembered?.description ?? ""
+      ]),
+      question,
+      pageUrl: current.pageUrl || remembered?.pageUrl || window.location.href
+    };
+  }
+  function isUsefulJobContextSnapshot(context) {
+    return Boolean(
+      context.title || context.company || context.description.length >= 120
+    );
+  }
+  async function prepareResumeAssetForAi(asset) {
+    if (!asset) {
+      return null;
+    }
+    if (asset.textContent.trim()) {
+      return asset;
+    }
+    const extractedText = await extractResumeTextFromStoredAsset(asset);
+    if (!extractedText) {
+      return asset;
+    }
+    return {
+      ...asset,
+      textContent: extractedText
+    };
+  }
+  function buildChatGptRequestUrl(requestId) {
+    const url = new URL("https://chatgpt.com/");
+    url.searchParams.set("remoteJobSearchRequest", requestId);
+    return url.toString();
+  }
+  function pickFirstText(values2) {
+    return values2.map((value) => cleanText(value)).find(Boolean) ?? "";
+  }
+  function pickBestText(values2) {
+    return values2.map((value) => cleanText(value)).filter(Boolean).sort((left, right) => right.length - left.length)[0] ?? "";
+  }
+  async function extractResumeTextFromStoredAsset(asset) {
+    try {
+      const extension = getResumeAssetExtension(asset);
+      if (extension === "pdf" || asset.type === "application/pdf") {
+        return clampResumeText(await extractPdfResumeTextFromAsset(asset));
+      }
+      if (extension === "docx") {
+        return clampResumeText(await extractDocxResumeTextFromAsset(asset));
+      }
+      if (extension === "txt" || extension === "md" || extension === "rtf" || asset.type.startsWith("text/")) {
+        const response = await fetch(asset.dataUrl);
+        return clampResumeText(await response.text());
+      }
+      if (extension === "doc") {
+        const response = await fetch(asset.dataUrl);
+        return clampResumeText(
+          extractPrintableTextFromBuffer(await response.arrayBuffer())
+        );
+      }
+    } catch {
+    }
+    return "";
+  }
+  async function extractPdfResumeTextFromAsset(asset) {
+    const pdfjs = await Promise.resolve().then(() => (init_pdf(), pdf_exports));
+    ensurePdfJsWorkerPort(pdfjs);
+    const response = await fetch(asset.dataUrl);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const loadingTask = pdfjs.getDocument({
+      data: bytes,
+      useWorkerFetch: false,
+      isEvalSupported: false,
+      stopAtErrors: false
+    });
+    const pdf = await loadingTask.promise;
+    const pages = [];
+    try {
+      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+        const page = await pdf.getPage(pageNumber);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items.map(
+          (item) => typeof item === "object" && item !== null && "str" in item ? String(item.str || "") : ""
+        ).join(" ");
+        pages.push(pageText);
+      }
+    } finally {
+      await pdf.destroy();
+    }
+    return pages.join("\n");
+  }
+  async function extractDocxResumeTextFromAsset(asset) {
+    const mammothModule = await Promise.resolve().then(() => __toESM(require_lib3()));
+    const mammoth = mammothModule.default ?? mammothModule;
+    const response = await fetch(asset.dataUrl);
+    const result2 = await mammoth.extractRawText({
+      arrayBuffer: await response.arrayBuffer()
+    });
+    return result2.value || "";
+  }
+  function extractPrintableTextFromBuffer(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let text = "";
+    for (const byte of bytes) {
+      if (byte === 9 || byte === 10 || byte === 13 || byte >= 32 && byte <= 126) {
+        text += String.fromCharCode(byte);
+      } else {
+        text += " ";
+      }
+    }
+    return text;
+  }
+  function clampResumeText(text) {
+    return text.replace(/\u0000/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_RESUME_TEXT_CHARS);
+  }
+  function getResumeAssetExtension(asset) {
+    const match = asset.name.toLowerCase().match(/\.([a-z0-9]+)$/);
+    return match?.[1] ?? "";
+  }
+
   // src/content.ts
   var MAX_AUTOFILL_STEPS = 15;
   var OVERLAY_AUTO_HIDE_MS = 1e4;
   var MAX_STAGE_DEPTH = 10;
-  var MAX_RESUME_TEXT_CHARS = 24e3;
   var IS_TOP_FRAME = window.top === window;
   function createEmptyAutofillResult() {
     return {
@@ -56016,7 +56681,10 @@
         throw new Error(
           "ChatGPT composer not found. Are you signed in?"
         );
-      const prompt = buildChatGptPrompt(request, settings);
+      const prompt = buildChatGptPrompt(
+        request,
+        getAvailableAnswers(settings)
+      );
       const promptInserted = await setComposerValue(composer, prompt);
       if (!promptInserted) {
         throw new Error("Could not enter the prompt into ChatGPT.");
@@ -56051,466 +56719,6 @@
         updatedAt: Date.now()
       });
       throw error;
-    }
-  }
-  async function waitForChatGptComposer() {
-    for (let i = 0; i < 50; i++) {
-      const c = findFirstVisibleElement([
-        "#prompt-textarea",
-        "textarea[data-testid*='prompt']",
-        "form textarea",
-        "div[contenteditable='true'][role='textbox']",
-        "[contenteditable='true'][data-placeholder]"
-      ]);
-      if (c) return c;
-      await sleep(800);
-    }
-    return null;
-  }
-  async function waitForChatGptSendButton(composer) {
-    for (let i = 0; i < 35; i++) {
-      const btn = findChatGptSendButton(composer) ?? findFirstVisibleElement([
-        "button[data-testid='send-button']",
-        "button[data-testid*='send']",
-        "button[aria-label*='Send']",
-        "button[aria-label*='Submit']",
-        "button[type='submit']"
-      ]);
-      if (btn) return btn;
-      await sleep(800);
-    }
-    return null;
-  }
-  async function setComposerValue(composer, prompt) {
-    if (composer instanceof HTMLTextAreaElement) {
-      composer.focus();
-      composer.dispatchEvent(
-        new InputEvent("beforeinput", {
-          bubbles: true,
-          cancelable: true,
-          data: prompt,
-          inputType: "insertText"
-        })
-      );
-      setFieldValue(composer, prompt);
-      composer.dispatchEvent(
-        new InputEvent("input", {
-          bubbles: true,
-          data: prompt,
-          inputType: "insertText"
-        })
-      );
-      return waitForChatGptComposerText(composer, prompt, 1500);
-    }
-    for (let attempt = 0; attempt < 3; attempt++) {
-      composer.focus();
-      clearChatGptComposer(composer);
-      composer.dispatchEvent(
-        new InputEvent("beforeinput", {
-          bubbles: true,
-          cancelable: true,
-          data: prompt,
-          inputType: "insertText"
-        })
-      );
-      const insertedWithCommand = tryInsertComposerTextWithCommand(
-        composer,
-        prompt
-      );
-      if (!insertedWithCommand) {
-        writeComposerTextFallback(composer, prompt);
-      }
-      composer.dispatchEvent(
-        new InputEvent("input", {
-          bubbles: true,
-          data: prompt,
-          inputType: "insertFromPaste"
-        })
-      );
-      if (await waitForChatGptComposerText(
-        composer,
-        prompt,
-        1200
-      )) {
-        return true;
-      }
-    }
-    return false;
-  }
-  function clearChatGptComposer(composer) {
-    if (composer instanceof HTMLTextAreaElement) {
-      setFieldValue(composer, "");
-      return;
-    }
-    composer.focus();
-    const selection = window.getSelection();
-    if (selection) {
-      const range2 = document.createRange();
-      range2.selectNodeContents(composer);
-      selection.removeAllRanges();
-      selection.addRange(range2);
-    }
-    try {
-      document.execCommand("selectAll", false);
-      document.execCommand("delete", false);
-    } catch {
-    }
-    composer.replaceChildren();
-    composer.dispatchEvent(
-      new InputEvent("input", {
-        bubbles: true,
-        data: "",
-        inputType: "deleteContentBackward"
-      })
-    );
-  }
-  function tryInsertComposerTextWithCommand(composer, prompt) {
-    composer.focus();
-    try {
-      return document.execCommand("insertText", false, prompt);
-    } catch {
-      return false;
-    }
-  }
-  function writeComposerTextFallback(composer, prompt) {
-    const fragment = document.createDocumentFragment();
-    const lines = prompt.split("\n");
-    if (lines.length <= 1) {
-      composer.replaceChildren(document.createTextNode(prompt));
-      return;
-    }
-    for (const line of lines) {
-      const paragraph = document.createElement("p");
-      if (line) {
-        paragraph.textContent = line;
-      } else {
-        paragraph.append(document.createElement("br"));
-      }
-      fragment.append(paragraph);
-    }
-    composer.replaceChildren(fragment);
-  }
-  async function waitForChatGptComposerText(composer, prompt, timeoutMs) {
-    const expected = normalizeChoiceText(prompt).slice(0, 120);
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      const actual = normalizeChoiceText(
-        composer instanceof HTMLTextAreaElement ? composer.value : cleanText(composer.innerText || composer.textContent || "")
-      );
-      if (actual && (actual.includes(expected) || expected.includes(actual.slice(0, 60)))) {
-        return true;
-      }
-      await sleep(120);
-    }
-    return false;
-  }
-  function buildChatGptPrompt(request, settings) {
-    const resumeKindNote = request.resumeKind ? `Selected resume track: ${getResumeKindLabel(request.resumeKind)}.` : "Selected resume track: Not specified.";
-    const resumeNote = request.resume?.textContent ? "Resume context below was extracted locally from the selected resume file. Use that text as the primary source of candidate history and skills." : request.resume ? "A resume file was selected locally, but no extracted resume text is available. Use the candidate profile and job description only." : "No resume file is attached.";
-    const rememberedAnswers = getRelevantSavedAnswersForPrompt(
-      request.job.question,
-      getAvailableAnswers(settings)
-    );
-    const resumeTextBlock = request.resume?.textContent ? [
-      "",
-      "Resume text:",
-      truncateText(request.resume.textContent, 12e3)
-    ] : [];
-    const co = request.job.company ? `Company: ${request.job.company}` : "Company: Unknown";
-    const rememberedAnswerBlock = rememberedAnswers.length > 0 ? [
-      "",
-      "Remembered candidate answers:",
-      ...rememberedAnswers.map(
-        (answer) => `- ${truncateText(answer.question, 90)}: ${truncateText(answer.value, 220)}`
-      ),
-      "Reuse any matching remembered answer when it directly fits the question."
-    ] : [];
-    return [
-      "Write a polished, job-application-ready answer.",
-      "Return only final answer text, no preface, no placeholders.",
-      "",
-      `Question: ${request.job.question}`,
-      `Job title: ${request.job.title || "Unknown"}`,
-      co,
-      `Job page: ${request.job.pageUrl}`,
-      "",
-      "Candidate profile:",
-      `Name: ${request.candidate.fullName || "N/A"}`,
-      `Email: ${request.candidate.email || "N/A"}`,
-      `Phone: ${request.candidate.phone || "N/A"}`,
-      `Location: ${[request.candidate.city, request.candidate.state, request.candidate.country].filter(Boolean).join(", ") || "N/A"}`,
-      `LinkedIn: ${request.candidate.linkedinUrl || "N/A"}`,
-      `Portfolio: ${request.candidate.portfolioUrl || "N/A"}`,
-      `Current company: ${request.candidate.currentCompany || "N/A"}`,
-      `Experience: ${request.candidate.yearsExperience || "N/A"}`,
-      `Work authorization: ${request.candidate.workAuthorization || "N/A"}`,
-      `Sponsorship: ${request.candidate.needsSponsorship || "N/A"}`,
-      `Relocate: ${request.candidate.willingToRelocate || "N/A"}`,
-      "",
-      resumeKindNote,
-      resumeNote,
-      ...resumeTextBlock,
-      ...rememberedAnswerBlock,
-      "",
-      "Job description:",
-      request.job.description || "No description found.",
-      "",
-      "Keep concise, specific to this role, ready to paste."
-    ].join("\n");
-  }
-  function getRelevantSavedAnswersForPrompt(question, answers) {
-    return getRelevantSavedAnswers(question, answers);
-  }
-  async function submitChatGptPrompt(composer, prompt) {
-    const priorUserText = getLatestChatGptUserText();
-    const sendBtn = await waitForChatGptReadyToSend(composer);
-    if (sendBtn && !sendBtn.disabled) {
-      sendBtn.click();
-      if (await waitForChatGptPromptAcceptance(
-        prompt,
-        priorUserText,
-        6e3
-      )) {
-        return;
-      }
-    }
-    const form = composer.closest("form");
-    if (form?.requestSubmit) {
-      form.requestSubmit();
-      if (await waitForChatGptPromptAcceptance(
-        prompt,
-        priorUserText,
-        5e3
-      )) {
-        return;
-      }
-    }
-    if (form) {
-      form.dispatchEvent(
-        new Event("submit", {
-          bubbles: true,
-          cancelable: true
-        })
-      );
-      if (await waitForChatGptPromptAcceptance(
-        prompt,
-        priorUserText,
-        5e3
-      )) {
-        return;
-      }
-    }
-    composer.focus();
-    for (const eventType of ["keydown", "keypress", "keyup"]) {
-      composer.dispatchEvent(
-        new KeyboardEvent(eventType, {
-          key: "Enter",
-          code: "Enter",
-          keyCode: 13,
-          which: 13,
-          bubbles: true,
-          cancelable: true
-        })
-      );
-    }
-    if (await waitForChatGptPromptAcceptance(
-      prompt,
-      priorUserText,
-      5e3
-    )) {
-      return;
-    }
-    throw new Error("ChatGPT prompt was not submitted.");
-  }
-  async function waitForChatGptReadyToSend(composer) {
-    const start = Date.now();
-    while (Date.now() - start < 6e3) {
-      const button = findChatGptSendButton(composer);
-      if (button && !button.disabled) {
-        return button;
-      }
-      await sleep(250);
-    }
-    return waitForChatGptSendButton(composer);
-  }
-  function findChatGptSendButton(composer) {
-    const form = composer?.closest("form") ?? null;
-    const buttons = [
-      ...form ? Array.from(form.querySelectorAll("button")) : [],
-      ...Array.from(document.querySelectorAll("button"))
-    ];
-    const seen = /* @__PURE__ */ new Set();
-    for (const button of buttons) {
-      if (seen.has(button)) {
-        continue;
-      }
-      seen.add(button);
-      if (!isElementVisible(button) || button.disabled || !isProbablyChatGptSendButton(button, form)) {
-        continue;
-      }
-      return button;
-    }
-    return null;
-  }
-  function isProbablyChatGptSendButton(button, form) {
-    const label = cleanText(
-      [
-        button.getAttribute("aria-label"),
-        button.getAttribute("title"),
-        button.getAttribute("data-testid"),
-        button.textContent
-      ].join(" ")
-    ).toLowerCase();
-    if (label.includes("stop") || label.includes("voice") || label.includes("microphone") || label.includes("attach") || label.includes("upload") || label.includes("plus")) {
-      return false;
-    }
-    if (label.includes("send") || label.includes("submit")) {
-      return true;
-    }
-    if (button.type.toLowerCase() === "submit") {
-      return true;
-    }
-    if (form && button.closest("form") === form) {
-      const hasIconOnlyMarkup = Boolean(
-        button.querySelector("svg, path")
-      );
-      return hasIconOnlyMarkup && !label;
-    }
-    return false;
-  }
-  async function waitForChatGptPromptAcceptance(prompt, priorUserText, timeoutMs) {
-    const expected = normalizeChoiceText(prompt);
-    const expectedPrefix = expected.slice(0, 120);
-    const prior = normalizeChoiceText(priorUserText);
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      if (hasActiveChatGptGeneration()) {
-        return true;
-      }
-      const latestUserText = normalizeChoiceText(
-        getLatestChatGptUserText()
-      );
-      if (latestUserText && latestUserText !== prior && (latestUserText.includes(expectedPrefix) || expectedPrefix.includes(latestUserText.slice(0, 60)))) {
-        return true;
-      }
-      await sleep(250);
-    }
-    return false;
-  }
-  async function waitForChatGptAnswerText() {
-    let lastText = "", stableCount = 0;
-    for (let i = 0; i < 150; i++) {
-      const text = getLatestChatGptAssistantText();
-      const generating = hasActiveChatGptGeneration();
-      if (text && text === lastText) stableCount++;
-      else if (text) {
-        lastText = text;
-        stableCount = 1;
-      }
-      if (text && !generating && stableCount >= 4) return text;
-      await sleep(1200);
-    }
-    return lastText || null;
-  }
-  function getLatestChatGptUserText() {
-    const msgs = Array.from(
-      document.querySelectorAll(
-        "[data-message-author-role='user']"
-      )
-    );
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const t = readChatGptMsgText(msgs[i]);
-      if (t.length > 10) return t;
-    }
-    const turns = Array.from(
-      document.querySelectorAll(
-        "article, [data-testid*='conversation-turn']"
-      )
-    );
-    for (let i = turns.length - 1; i >= 0; i--) {
-      const el = turns[i];
-      const author = cleanText(
-        el.getAttribute("data-message-author-role") || el.querySelector(
-          "[data-message-author-role]"
-        )?.getAttribute("data-message-author-role") || ""
-      ).toLowerCase();
-      const t = readChatGptMsgText(el);
-      if (author === "user" && t.length > 10) return t;
-    }
-    return "";
-  }
-  function getLatestChatGptAssistantText() {
-    const msgs = Array.from(
-      document.querySelectorAll(
-        "[data-message-author-role='assistant']"
-      )
-    );
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const t = readChatGptMsgText(msgs[i]);
-      if (t.length > 20) return t;
-    }
-    const turns = Array.from(
-      document.querySelectorAll(
-        "article, [data-testid*='conversation-turn']"
-      )
-    );
-    for (let i = turns.length - 1; i >= 0; i--) {
-      const el = turns[i];
-      const author = cleanText(
-        el.getAttribute("data-message-author-role") || el.querySelector(
-          "[data-message-author-role]"
-        )?.getAttribute("data-message-author-role") || ""
-      ).toLowerCase();
-      const t = readChatGptMsgText(el);
-      if (author === "assistant" && t.length > 20) return t;
-      if (!author && t.length > 80 && el.querySelector(".markdown, p, li, pre"))
-        return t;
-    }
-    return "";
-  }
-  function hasActiveChatGptGeneration() {
-    return Array.from(
-      document.querySelectorAll(
-        "button, [role='button']"
-      )
-    ).some((el) => {
-      const l2 = cleanText(
-        [
-          el.getAttribute("aria-label"),
-          el.getAttribute("data-testid"),
-          el.textContent
-        ].join(" ")
-      ).toLowerCase();
-      return l2.includes("stop generating") || l2.includes("stop streaming") || l2.includes("stop response") || l2.includes("stop");
-    });
-  }
-  function readChatGptMsgText(container) {
-    const node = container.querySelector(
-      ".markdown, [class*='markdown']"
-    ) ?? container;
-    return cleanText(node.innerText || node.textContent || "");
-  }
-  async function copyTextToClipboard(text) {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        return true;
-      }
-    } catch {
-    }
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.setAttribute("readonly", "true");
-      ta.style.position = "fixed";
-      ta.style.left = "-9999px";
-      document.body.append(ta);
-      ta.select();
-      const ok = document.execCommand("copy");
-      ta.remove();
-      return ok;
-    } catch {
-      return false;
     }
   }
   function collectDeepMatches2(selector) {
@@ -56876,8 +57084,8 @@
     return null;
   }
   async function captureJobContextSnapshot(question) {
-    await rememberCurrentJobContextIfUseful(question);
     const current = extractCurrentJobContextSnapshot(question);
+    await rememberCurrentJobContextIfUseful(question, current);
     const remembered = await readRememberedJobContext();
     return mergeJobContextSnapshots(
       remembered,
@@ -56885,8 +57093,7 @@
       question
     );
   }
-  async function rememberCurrentJobContextIfUseful(question = "") {
-    const context = extractCurrentJobContextSnapshot(question);
+  async function rememberCurrentJobContextIfUseful(question = "", context = extractCurrentJobContextSnapshot(question)) {
     if (!isUsefulJobContextSnapshot(context)) {
       return;
     }
@@ -56907,218 +57114,6 @@
     } catch {
       return null;
     }
-  }
-  function extractCurrentJobContextSnapshot(question) {
-    const title = pickBestText([
-      cleanText(
-        document.querySelector(
-          "h1, [data-testid='jobsearch-JobInfoHeader-title'], [data-testid*='job-title'], [class*='job-title'], [class*='jobTitle']"
-        )?.textContent
-      ),
-      cleanText(
-        document.querySelector("meta[property='og:title']")?.getAttribute("content")
-      ),
-      cleanText(document.title)
-    ]);
-    const company = pickBestText([
-      cleanText(
-        document.querySelector(
-          "[data-testid='inlineHeader-companyName'], [data-testid*='company'], [class*='company'], .company, [class*='employer']"
-        )?.textContent
-      ),
-      cleanText(
-        document.querySelector("meta[name='author']")?.getAttribute("content")
-      )
-    ]);
-    const description = collectBestJobDescriptionText();
-    return {
-      title,
-      company,
-      question,
-      description: truncateText(description, 12e3),
-      pageUrl: window.location.href
-    };
-  }
-  function collectBestJobDescriptionText() {
-    const selectorCandidates = [
-      "#jobDescriptionText",
-      "[data-testid='jobDescriptionText']",
-      "[data-testid*='jobDescription']",
-      "[data-testid*='JobDescription']",
-      ".jobsearch-JobComponent-description",
-      "[class*='jobsearch-JobComponent-description']",
-      "[class*='job-description']",
-      "[class*='jobDescription']",
-      "[id*='jobDescription']",
-      "[class*='description']",
-      "[role='main']",
-      "main",
-      "article"
-    ];
-    let best = "";
-    let bestScore = -1;
-    for (const selector of selectorCandidates) {
-      let elements;
-      try {
-        elements = Array.from(
-          document.querySelectorAll(selector)
-        );
-      } catch {
-        continue;
-      }
-      for (const element of elements) {
-        const text = cleanText(element.innerText || element.textContent || "");
-        if (!text || text.length < 120) {
-          continue;
-        }
-        const lower = text.toLowerCase();
-        let score = text.length;
-        if (lower.includes("responsibilities")) score += 200;
-        if (lower.includes("requirements")) score += 200;
-        if (lower.includes("qualifications")) score += 180;
-        if (lower.includes("about the role")) score += 180;
-        if (lower.includes("about this role")) score += 180;
-        if (lower.includes("job description")) score += 180;
-        if (lower.includes("application")) score -= 120;
-        if (lower.includes("sign in")) score -= 120;
-        if (score > bestScore) {
-          best = text;
-          bestScore = score;
-        }
-      }
-    }
-    return best;
-  }
-  function mergeJobContextSnapshots(remembered, current, question) {
-    return {
-      title: pickBestText([
-        current.title,
-        remembered?.title ?? ""
-      ]),
-      company: pickBestText([
-        current.company,
-        remembered?.company ?? ""
-      ]),
-      description: pickBestText([
-        current.description,
-        remembered?.description ?? ""
-      ]),
-      question,
-      pageUrl: current.pageUrl || remembered?.pageUrl || window.location.href
-    };
-  }
-  function pickBestText(values2) {
-    return values2.map((value) => cleanText(value)).filter(Boolean).sort((left, right) => right.length - left.length)[0] ?? "";
-  }
-  function isUsefulJobContextSnapshot(context) {
-    return Boolean(
-      context.title || context.company || context.description.length >= 120
-    );
-  }
-  async function prepareResumeAssetForAi(asset) {
-    if (!asset) {
-      return null;
-    }
-    if (asset.textContent.trim()) {
-      return asset;
-    }
-    const extractedText = await extractResumeTextFromStoredAsset(asset);
-    if (!extractedText) {
-      return asset;
-    }
-    return {
-      ...asset,
-      textContent: extractedText
-    };
-  }
-  async function extractResumeTextFromStoredAsset(asset) {
-    try {
-      const extension = getResumeAssetExtension(asset);
-      if (extension === "pdf" || asset.type === "application/pdf") {
-        return clampResumeText(
-          await extractPdfResumeTextFromAsset(asset)
-        );
-      }
-      if (extension === "docx") {
-        return clampResumeText(
-          await extractDocxResumeTextFromAsset(asset)
-        );
-      }
-      if (extension === "txt" || extension === "md" || extension === "rtf" || asset.type.startsWith("text/")) {
-        const response = await fetch(asset.dataUrl);
-        return clampResumeText(await response.text());
-      }
-      if (extension === "doc") {
-        const response = await fetch(asset.dataUrl);
-        return clampResumeText(
-          extractPrintableTextFromBuffer(
-            await response.arrayBuffer()
-          )
-        );
-      }
-    } catch {
-    }
-    return "";
-  }
-  async function extractPdfResumeTextFromAsset(asset) {
-    const pdfjs = await Promise.resolve().then(() => (init_pdf(), pdf_exports));
-    ensurePdfJsWorkerPort(pdfjs);
-    const response = await fetch(asset.dataUrl);
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    const loadingTask = pdfjs.getDocument({
-      data: bytes,
-      useWorkerFetch: false,
-      isEvalSupported: false,
-      stopAtErrors: false
-    });
-    const pdf = await loadingTask.promise;
-    const pages = [];
-    try {
-      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-        const page = await pdf.getPage(pageNumber);
-        const textContent = await page.getTextContent();
-        const pageText = textContent.items.map(
-          (item) => typeof item === "object" && item !== null && "str" in item ? String(item.str || "") : ""
-        ).join(" ");
-        pages.push(pageText);
-      }
-    } finally {
-      await pdf.destroy();
-    }
-    return pages.join("\n");
-  }
-  async function extractDocxResumeTextFromAsset(asset) {
-    const mammothModule = await Promise.resolve().then(() => __toESM(require_lib3()));
-    const mammoth = mammothModule.default ?? mammothModule;
-    const response = await fetch(asset.dataUrl);
-    const result2 = await mammoth.extractRawText({
-      arrayBuffer: await response.arrayBuffer()
-    });
-    return result2.value || "";
-  }
-  function extractPrintableTextFromBuffer(buffer) {
-    const bytes = new Uint8Array(buffer);
-    let text = "";
-    for (const byte of bytes) {
-      if (byte === 9 || byte === 10 || byte === 13 || byte >= 32 && byte <= 126) {
-        text += String.fromCharCode(byte);
-      } else {
-        text += " ";
-      }
-    }
-    return text;
-  }
-  function clampResumeText(text) {
-    return text.replace(/\u0000/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_RESUME_TEXT_CHARS);
-  }
-  function getResumeAssetExtension(asset) {
-    const match = asset.name.toLowerCase().match(/\.([a-z0-9]+)$/);
-    return match?.[1] ?? "";
-  }
-  function buildChatGptRequestUrl(requestId) {
-    const url = new URL("https://chatgpt.com/");
-    url.searchParams.set("remoteJobSearchRequest", requestId);
-    return url.toString();
   }
   function getAnswerForField(field, settings) {
     const question = getQuestionText(field);
@@ -57523,10 +57518,50 @@
     } catch {
     }
   }
+  function shouldPreferInFrameProgressionClick(url) {
+    if (IS_TOP_FRAME || currentStage !== "autofill-form") {
+      return false;
+    }
+    if (status.site === "unsupported") {
+      return false;
+    }
+    if (!isLikelyApplyUrl(window.location.href, status.site) || !isLikelyApplyUrl(url, status.site)) {
+      return false;
+    }
+    try {
+      return new URL(url).origin === new URL(window.location.href).origin;
+    } catch {
+      return false;
+    }
+  }
+  function tryContinueEmbeddedApplication(url) {
+    if (!shouldPreferInFrameProgressionClick(url)) {
+      return false;
+    }
+    if (status.site === "unsupported") {
+      return false;
+    }
+    const clickAction = findProgressionAction(status.site) ?? findApplyAction(status.site, "follow-up");
+    if (!clickAction || clickAction.type !== "click") {
+      return false;
+    }
+    try {
+      clickAction.element.scrollIntoView({
+        behavior: "smooth",
+        block: "center"
+      });
+    } catch {
+    }
+    performClickAction(clickAction.element);
+    return true;
+  }
   function navigateCurrentTab(url) {
     const n = normalizeUrl(url);
     if (!n) throw new Error("Invalid URL.");
     lastNavigationUrl = n;
+    if (tryContinueEmbeddedApplication(n)) {
+      return;
+    }
     window.location.assign(n);
   }
   function updateStatus(phase, message, shouldResume, nextStage = currentStage) {

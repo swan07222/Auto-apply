@@ -81,6 +81,7 @@ type ProbeResult = {
   candidateUrls: string[];
   verificationDetected: boolean;
   followedCareerSurface: boolean;
+  navigationError?: string;
 };
 
 type DomSnapshot = {
@@ -507,10 +508,23 @@ async function navigateAndCollect(
   target: SearchTarget,
   allowCareerSurfaceDiscovery = false
 ): Promise<ProbeResult> {
-  await page.goto(target.url, {
-    waitUntil: "domcontentloaded",
-    timeout: 45_000,
-  });
+  try {
+    await page.goto(target.url, {
+      waitUntil: "domcontentloaded",
+      timeout: 45_000,
+    });
+  } catch (error) {
+    return {
+      title: "",
+      finalUrl: target.url,
+      bodySnippet: "",
+      candidateUrls: [],
+      verificationDetected: false,
+      followedCareerSurface: false,
+      navigationError:
+        error instanceof Error ? error.message : String(error),
+    };
+  }
   await settlePage(page);
 
   let followedCareerSurface = false;
@@ -582,6 +596,7 @@ function describeProbeFailure(target: SearchTarget, probe: ProbeResult): string 
     `candidates=${probe.candidateUrls.length}`,
     `verification=${probe.verificationDetected}`,
     `followedCareerSurface=${probe.followedCareerSurface}`,
+    `navigationError=${probe.navigationError || "(none)"}`,
     `body=${probe.bodySnippet.slice(0, 400) || "(empty)"}`,
   ].join("\n");
 }
@@ -590,6 +605,10 @@ for (const target of buildSearchTargets("indeed", "https://www.indeed.com", "sof
   test(`live Indeed search works: ${target.label}`, async ({ page }) => {
     const probe = await navigateAndCollect(page, "indeed", target);
 
+    test.skip(
+      Boolean(probe.navigationError),
+      `Indeed target could not be reached.\n${describeProbeFailure(target, probe)}`
+    );
     test.skip(
       probe.verificationDetected,
       `Indeed blocked automated browsing with a verification page.\n${describeProbeFailure(target, probe)}`
@@ -606,6 +625,10 @@ for (const target of buildSearchTargets("monster", "https://www.monster.com", "s
     const probe = await navigateAndCollect(page, "monster", target);
 
     test.skip(
+      Boolean(probe.navigationError),
+      `Monster target could not be reached.\n${describeProbeFailure(target, probe)}`
+    );
+    test.skip(
       probe.verificationDetected,
       `Monster blocked automated browsing with a verification page.\n${describeProbeFailure(target, probe)}`
     );
@@ -620,6 +643,10 @@ for (const target of buildSearchTargets("ziprecruiter", "https://www.ziprecruite
   test(`live ZipRecruiter search works: ${target.label}`, async ({ page }) => {
     const probe = await navigateAndCollect(page, "ziprecruiter", target);
 
+    test.skip(
+      Boolean(probe.navigationError),
+      `ZipRecruiter target could not be reached.\n${describeProbeFailure(target, probe)}`
+    );
     test.skip(
       probe.verificationDetected,
       `ZipRecruiter challenge page detected.\n${describeProbeFailure(target, probe)}`
@@ -636,6 +663,10 @@ for (const target of buildSearchTargets("dice", "https://www.dice.com", "softwar
     const probe = await navigateAndCollect(page, "dice", target);
 
     test.skip(
+      Boolean(probe.navigationError),
+      `Dice target could not be reached.\n${describeProbeFailure(target, probe)}`
+    );
+    test.skip(
       probe.verificationDetected,
       `Dice challenge page detected.\n${describeProbeFailure(target, probe)}`
     );
@@ -650,6 +681,10 @@ for (const target of buildSearchTargets("glassdoor", "https://www.glassdoor.com"
   test(`live Glassdoor search works: ${target.label}`, async ({ page }) => {
     const probe = await navigateAndCollect(page, "glassdoor", target);
 
+    test.skip(
+      Boolean(probe.navigationError),
+      `Glassdoor target could not be reached.\n${describeProbeFailure(target, probe)}`
+    );
     test.skip(
       probe.verificationDetected,
       `Glassdoor blocked automated browsing with a verification page.\n${describeProbeFailure(target, probe)}`
@@ -666,6 +701,10 @@ for (const target of STARTUP_TARGETS) {
     const probe = await navigateAndCollect(page, "startup", target, true);
 
     test.skip(
+      Boolean(probe.navigationError),
+      `Startup target could not be reached.\n${describeProbeFailure(target, probe)}`
+    );
+    test.skip(
       probe.verificationDetected,
       `Startup target hit a challenge page.\n${describeProbeFailure(target, probe)}`
     );
@@ -680,6 +719,10 @@ for (const target of OTHER_SITE_TARGETS) {
   test(`live other-site search works: ${target.label}`, async ({ page }) => {
     const probe = await navigateAndCollect(page, "other_sites", target, true);
 
+    test.skip(
+      Boolean(probe.navigationError),
+      `Other-site target could not be reached.\n${describeProbeFailure(target, probe)}`
+    );
     test.skip(
       probe.verificationDetected,
       `Other-site target hit a challenge page.\n${describeProbeFailure(target, probe)}`

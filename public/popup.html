@@ -10,11 +10,18 @@
     <main class="popup-shell">
       <section class="dashboard">
         <header class="hero">
-          <h1>Remote Job Search</h1>
-          <p class="intro">
-            Keep your search settings, profile, resumes, and saved answers ready for faster
-            applications.
-          </p>
+          <div class="hero-topline">
+            <span class="hero-badge">Automation Workspace</span>
+            <span class="hero-meta">Profiles, search, resumes</span>
+          </div>
+
+          <div class="hero-copy">
+            <h1>Remote Job Search</h1>
+            <p class="intro">
+              Keep your search settings, profile, resume, and saved answers ready for faster
+              applications.
+            </p>
+          </div>
         </header>
 
         <section class="overview-grid" aria-label="Current run summary">
@@ -42,54 +49,58 @@
         <details class="settings-group" open>
           <summary class="group-summary">
             <div class="group-heading">
+              <p class="group-kicker">Profiles</p>
               <h2>Set Profile</h2>
               <p>Choose an existing profile, create a new one, rename it, or remove it.</p>
             </div>
           </summary>
 
           <div class="subsection">
-            <div class="field-grid compact-grid">
-              <label class="field">
+            <div class="profile-toolbar">
+              <label class="field field-grow">
                 <span>Current profile</span>
                 <select id="profile-select"></select>
               </label>
-            </div>
 
-            <div class="inline-button-row">
-              <button id="create-profile-button" class="secondary-button inline-button" type="button">
+              <div class="profile-actions">
+                <button id="create-profile-button" class="tertiary-button inline-button" type="button">
                 Create Profile
-              </button>
-              <button id="rename-profile-button" class="secondary-button inline-button" type="button">
-                Edit Profile Name
-              </button>
-              <button id="delete-profile-button" class="secondary-button inline-button" type="button">
-                Delete Profile
-              </button>
+                </button>
+                <button id="rename-profile-button" class="tertiary-button inline-button" type="button">
+                  Rename Profile
+                </button>
+                <button id="delete-profile-button" class="secondary-button danger-button inline-button" type="button">
+                  Delete Profile
+                </button>
+              </div>
             </div>
           </div>
         </details>
 
-        <section class="status-panel" id="status-panel" data-phase="idle" aria-live="polite">
-          <div class="status-header">
-            <p class="status-label">Status</p>
-            <span class="status-dot" aria-hidden="true"></span>
-          </div>
-          <p id="status-text" class="status-text">Choose a search mode to begin.</p>
-        </section>
+        <div class="utility-stack">
+          <section class="status-panel" id="status-panel" data-phase="idle" aria-live="polite">
+            <div class="status-header">
+              <p class="status-label">Status</p>
+              <span class="status-dot" aria-hidden="true"></span>
+            </div>
+            <p id="status-text" class="status-text">Choose a search mode to begin.</p>
+          </section>
 
-        <p class="hint">
-          If a site asks you to verify that you are human, finish it manually and the extension
-          will resume. The extension fills fields and uploads files, but it does not auto-submit
-          applications.
-        </p>
+          <p class="hint tip-card">
+            If a site asks you to verify that you are human, finish it manually and the extension
+            will resume. The extension fills fields and uploads files, but it does not auto-submit
+            applications.
+          </p>
 
-        <p id="settings-status" class="settings-status">
-          Settings are stored locally in the extension.
-        </p>
+          <p id="settings-status" class="settings-status">
+            Settings are stored locally in the extension.
+          </p>
+        </div>
 
         <details class="settings-group" open>
           <summary class="group-summary">
             <div class="group-heading">
+              <p class="group-kicker">Automation</p>
               <h2>Automation Setup</h2>
               <p>Choose where to search, how broadly to open roles, and how uploads should behave.</p>
             </div>
@@ -150,6 +161,7 @@
         <details class="settings-group" open>
           <summary class="group-summary">
             <div class="group-heading">
+              <p class="group-kicker">Candidate</p>
               <h2>Candidate Profile</h2>
               <p>Use essentials for every application, then add optional details only when a form asks for them.</p>
             </div>
@@ -193,6 +205,7 @@
           <details class="nested-settings">
             <summary class="nested-summary">
               <div class="group-heading">
+                <p class="group-kicker">Expanded Details</p>
                 <h3>Optional profile details</h3>
                 <p>Add links, experience, and work preferences for applications that ask for them.</p>
               </div>
@@ -278,6 +291,7 @@
         <details class="settings-group" open>
           <summary class="group-summary">
             <div class="group-heading">
+              <p class="group-kicker">Documents</p>
               <h2>Resume Library</h2>
               <p>Upload one resume for the currently selected profile. This resume is used for uploads and AI drafting.</p>
             </div>
@@ -295,6 +309,7 @@
         <details class="settings-group">
           <summary class="group-summary">
             <div class="group-heading">
+              <p class="group-kicker">Memory</p>
               <h2>Remembered Answers</h2>
               <p>Manual answers are stored and reused later on matching application questions.</p>
             </div>
@@ -323,6 +338,7 @@
 
         <footer class="action-bar">
           <div class="action-copy">
+            <p class="group-kicker action-kicker">Launch</p>
             <p class="action-title">Ready when you are</p>
             <p class="action-note">Save updates anytime, then launch the selected search flow.</p>
           </div>

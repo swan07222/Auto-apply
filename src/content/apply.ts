@@ -1194,7 +1194,29 @@ function getMeaningfulProgressionUrl(
     return null;
   }
 
+  // Embedded apply flows often expose internal step URLs through formaction or
+  // data attributes. Clicking the control preserves the site's in-frame state,
+  // while force-navigating the frame can trigger blocked beforeunload prompts
+  // and break the application flow.
+  if (shouldTreatInternalApplyNavigationAsClick(url, element)) {
+    return null;
+  }
+
   return url;
+}
+
+function shouldTreatInternalApplyNavigationAsClick(
+  url: string,
+  element: HTMLElement
+): boolean {
+  if (isExternalUrl(url)) {
+    return false;
+  }
+
+  return (
+    isLikelyApplicationContext(element) ||
+    Boolean(element.closest("form, [role='dialog'], [aria-modal='true']"))
+  );
 }
 
 function getElementActionMetadata(element: HTMLElement): string {
@@ -1271,6 +1293,17 @@ export function findApplyAction(
   }
 
   if (best.url && shouldPreferApplyNavigation(best.url, best.text, site)) {
+    if (
+      context === "follow-up" &&
+      shouldTreatInternalApplyNavigationAsClick(best.url, best.element)
+    ) {
+      return {
+        type: "click",
+        element: best.element,
+        description: best.text || "the apply button",
+      };
+    }
+
     return {
       type: "navigate",
       url: best.url,

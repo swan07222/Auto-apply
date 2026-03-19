@@ -44,6 +44,31 @@ describe("application progression actions", () => {
     expect(action?.text).toBe("Next");
   });
 
+  it("treats internal Indeed continuation form-actions as click progression", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/beta/indeedapply/form/demographic-questions-module/demographic-questions/1"
+    );
+    document.body.innerHTML = `
+      <form>
+        <button
+          type="submit"
+          formaction="/beta/indeedapply/form/review"
+          data-testid="continue-button"
+        >
+          Continue
+        </button>
+      </form>
+    `;
+
+    const action = findProgressionAction("indeed");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.text).toBe("Continue");
+  });
+
   it("prefers application-context progression controls over header navigation", () => {
     document.body.innerHTML = `
       <header>
@@ -320,6 +345,30 @@ describe("application progression actions", () => {
     if (action?.type === "navigate") {
       expect(action.url).toBe("https://boards.greenhouse.io/embed/job_app?for=example&token=abc123");
     }
+  });
+
+  it("keeps internal follow-up apply actions click-based inside application forms", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/beta/indeedapply/form/demographic-questions-module/demographic-questions/1"
+    );
+    document.body.innerHTML = `
+      <form>
+        <button
+          type="submit"
+          formaction="/beta/indeedapply/form/review"
+        >
+          Continue application
+        </button>
+      </form>
+    `;
+
+    const action = findApplyAction("indeed", "follow-up");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Continue application");
   });
 
   it("finds same-page Greenhouse apply anchors on generic career sites", () => {
