@@ -201,7 +201,42 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
     emailInput: requireElement<HTMLInputElement>("#email"),
     resumeInput: requireElement<HTMLInputElement>("#resume-upload"),
     resumeNameLabel: requireElement<HTMLElement>("#resume-upload-name"),
+    dialogRoot: requireElement<HTMLElement>("#popup-dialog"),
+    dialogForm: requireElement<HTMLFormElement>("#popup-dialog-form"),
+    dialogTitle: requireElement<HTMLElement>("#popup-dialog-title"),
+    dialogDescription: requireElement<HTMLElement>("#popup-dialog-description"),
+    dialogPrimaryInput: requireElement<HTMLInputElement>(
+      "#popup-dialog-primary-input"
+    ),
+    dialogSecondaryInput: requireElement<HTMLTextAreaElement>(
+      "#popup-dialog-secondary-input"
+    ),
+    dialogError: requireElement<HTMLElement>("#popup-dialog-error"),
+    dialogCancelButton: requireElement<HTMLButtonElement>(
+      "#popup-dialog-cancel-button"
+    ),
+    dialogSubmitButton: requireElement<HTMLButtonElement>(
+      "#popup-dialog-submit-button"
+    ),
   };
+}
+
+async function submitPopupDialog(
+  popup: Awaited<ReturnType<typeof createPopupHarness>>,
+  values: { primary?: string; secondary?: string } = {}
+): Promise<void> {
+  if (values.primary !== undefined) {
+    popup.dialogPrimaryInput.value = values.primary;
+  }
+
+  if (values.secondary !== undefined) {
+    popup.dialogSecondaryInput.value = values.secondary;
+  }
+
+  popup.dialogForm.dispatchEvent(
+    new Event("submit", { bubbles: true, cancelable: true })
+  );
+  await flushAsyncWork(12);
 }
 
 afterEach(() => {
@@ -453,42 +488,101 @@ describe("popup workflow", () => {
     expect(popup.profilePreview.textContent).toBe("Profile B");
   });
 
-  it("keeps the current profile unchanged when the new profile name is blank", async () => {
-    const popup = await createPopupHarness();
-    vi.spyOn(window, "prompt").mockReturnValue("   ");
+  it("preserves unsaved edits on the current profile before switching away", async () => {
+    const firstProfile = createAutomationProfile("profile-a", "Profile A");
+    firstProfile.candidate.fullName = "Ada Lovelace";
+    firstProfile.candidate.email = "ada@example.com";
+    const secondProfile = createAutomationProfile("profile-b", "Profile B");
+    secondProfile.candidate.fullName = "Grace Hopper";
 
-    popup.createProfileButton.click();
+    const popup = await createPopupHarness({
+      settings: createSettings({
+        searchKeywords: "software engineer",
+        activeProfileId: "profile-a",
+        profiles: {
+          [firstProfile.id]: firstProfile,
+          [secondProfile.id]: secondProfile,
+        },
+      }),
+    });
+
+    popup.fullNameInput.value = "Ada Byron";
+    popup.emailInput.value = "ada.byron@example.com";
+    popup.searchKeywordsInput.value = "platform engineer";
+
+    popup.profileSelect.value = "profile-b";
+    popup.profileSelect.dispatchEvent(new Event("change", { bubbles: true }));
     await flushAsyncWork();
 
-    expect(popup.settingsStatus.textContent).toBe("Profile name cannot be empty.");
-    expect(popup.settingsStatus.dataset.tone).toBe("error");
+    const latestSettings = popup.getLatestSettings();
+    expect(latestSettings.activeProfileId).toBe("profile-b");
+    expect(latestSettings.profiles["profile-a"]?.candidate.fullName).toBe(
+      "Ada Byron"
+    );
+    expect(latestSettings.profiles["profile-a"]?.candidate.email).toBe(
+      "ada.byron@example.com"
+    );
+    expect(latestSettings.searchKeywords).toBe("platform engineer");
+    expect(popup.fullNameInput.value).toBe("Grace Hopper");
+  });
+
+  it("restores focus outside the dialog before hiding it", async () => {
+    const popup = await createPopupHarness();
+
+    popup.createProfileButton.focus();
+    popup.createProfileButton.click();
+    await flushAsyncWork(6);
+
+    popup.dialogCancelButton.focus();
+    popup.dialogCancelButton.click();
+    await flushAsyncWork(6);
+
+    expect(popup.dialogRoot.hidden).toBe(true);
+    expect(popup.dialogRoot.getAttribute("aria-hidden")).toBe("true");
+    expect(popup.dialogRoot.hasAttribute("inert")).toBe(true);
+    expect(document.activeElement).toBe(popup.createProfileButton);
+  });
+
+  it("keeps the current profile unchanged when the new profile name is blank", async () => {
+    const popup = await createPopupHarness();
+
+    popup.createProfileButton.click();
+    await flushAsyncWork(6);
+    await submitPopupDialog(popup, { primary: "   " });
+
+    expect(popup.dialogError.textContent).toBe("Profile name cannot be empty.");
+    expect(popup.dialogRoot.hidden).toBe(false);
     expect(popup.getLatestSettings().activeProfileId).toBe("default-profile");
     expect(Object.keys(popup.getLatestSettings().profiles)).toHaveLength(1);
   });
 
   it("creates, renames, and deletes profiles", async () => {
     const popup = await createPopupHarness();
-    const promptSpy = vi
-      .spyOn(window, "prompt")
-      .mockImplementationOnce(() => "New Profile")
-      .mockImplementationOnce(() => "Renamed Profile");
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
 
     popup.createProfileButton.click();
-    await flushAsyncWork();
+    await flushAsyncWork(6);
+    await submitPopupDialog(popup, { primary: "New Profile" });
 
     let latestSettings = popup.getLatestSettings();
     const createdProfileId = latestSettings.activeProfileId;
-    expect(Object.values(latestSettings.profiles).some((profile) => profile.name === "New Profile")).toBe(true);
+    expect(
+      Object.values(latestSettings.profiles).some(
+        (profile) => profile.name === "New Profile"
+      )
+    ).toBe(true);
 
     popup.renameProfileButton.click();
-    await flushAsyncWork();
+    await flushAsyncWork(6);
+    await submitPopupDialog(popup, { primary: "Renamed Profile" });
 
     latestSettings = popup.getLatestSettings();
-    expect(latestSettings.profiles[createdProfileId]?.name).toBe("Renamed Profile");
+    expect(latestSettings.profiles[createdProfileId]?.name).toBe(
+      "Renamed Profile"
+    );
 
     popup.deleteProfileButton.click();
-    await flushAsyncWork();
+    await flushAsyncWork(6);
+    await submitPopupDialog(popup);
 
     latestSettings = popup.getLatestSettings();
     expect(latestSettings.activeProfileId).toBe("default-profile");
@@ -497,8 +591,6 @@ describe("popup workflow", () => {
         (profile) => profile.name === "Renamed Profile"
       )
     ).toBe(false);
-    expect(promptSpy).toHaveBeenCalledTimes(2);
-    expect(confirmSpy).toHaveBeenCalledTimes(1);
   });
 
   it("clears remembered answers only for the selected profile", async () => {
@@ -557,20 +649,22 @@ describe("popup workflow", () => {
       }),
     });
 
-    vi.spyOn(window, "prompt")
-      .mockImplementationOnce(() => "Why do you want this company?")
-      .mockImplementationOnce(() => "Mission fit.")
-      .mockImplementationOnce(() => "Can you work weekends?")
-      .mockImplementationOnce(() => "Yes, when needed.");
-
     const editButton = popup.answerList.querySelector<HTMLButtonElement>(
       "[data-answer-key='first'][data-answer-action='edit']"
     );
     editButton?.click();
-    await flushAsyncWork();
+    await flushAsyncWork(6);
+    await submitPopupDialog(popup, {
+      primary: "Why do you want this company?",
+      secondary: "Mission fit.",
+    });
 
     popup.addPreferenceButton.click();
-    await flushAsyncWork();
+    await flushAsyncWork(6);
+    await submitPopupDialog(popup, {
+      primary: "Can you work weekends?",
+      secondary: "Yes, when needed.",
+    });
 
     const latestSettings = popup.getLatestSettings();
     expect(latestSettings.answers.first).toBeUndefined();
@@ -603,15 +697,15 @@ describe("popup workflow", () => {
       }),
     });
 
-    vi.spyOn(window, "prompt")
-      .mockImplementationOnce(() => "Preferred working schedule")
-      .mockImplementationOnce(() => "Core collaboration hours");
-
     const editButton = popup.preferenceList.querySelector<HTMLButtonElement>(
       "[data-preference-key='availability'][data-preference-action='edit']"
     );
     editButton?.click();
-    await flushAsyncWork();
+    await flushAsyncWork(6);
+    await submitPopupDialog(popup, {
+      primary: "Preferred working schedule",
+      secondary: "Core collaboration hours",
+    });
 
     let latestSettings = popup.getLatestSettings();
     expect(
@@ -637,28 +731,28 @@ describe("popup workflow", () => {
 
   it("validates custom preference prompts before saving", async () => {
     const popup = await createPopupHarness();
-    const promptSpy = vi
-      .spyOn(window, "prompt")
-      .mockImplementationOnce(() => "   ")
-      .mockImplementationOnce(() => "Preferred working hours?")
-      .mockImplementationOnce(() => "   ");
 
     popup.addPreferenceButton.click();
-    await flushAsyncWork();
+    await flushAsyncWork(6);
+    await submitPopupDialog(popup, {
+      primary: "   ",
+      secondary: "Flexible hours",
+    });
 
-    expect(popup.settingsStatus.textContent).toBe("Question cannot be empty.");
+    expect(popup.dialogError.textContent).toBe("Question cannot be empty.");
     expect(popup.preferenceList.textContent).not.toContain(
       "Preferred working hours?"
     );
 
-    popup.addPreferenceButton.click();
-    await flushAsyncWork();
+    await submitPopupDialog(popup, {
+      primary: "Preferred working hours?",
+      secondary: "   ",
+    });
 
-    expect(popup.settingsStatus.textContent).toBe("Answer cannot be empty.");
+    expect(popup.dialogError.textContent).toBe("Answer cannot be empty.");
     expect(popup.preferenceList.textContent).not.toContain(
       "Preferred working hours?"
     );
-    expect(promptSpy).toHaveBeenCalledTimes(3);
   });
 
   it("truncates long remembered-question labels when confirming deletion", async () => {

@@ -49,6 +49,41 @@ beforeAll(() => {
       value: MouseEvent,
     });
   }
+
+  if (typeof window.matchMedia !== "function") {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+  }
+
+  if (typeof globalThis.requestAnimationFrame !== "function") {
+    Object.defineProperty(globalThis, "requestAnimationFrame", {
+      configurable: true,
+      writable: true,
+      value: vi.fn((callback: FrameRequestCallback) =>
+        globalThis.setTimeout(() => callback(Date.now()), 16)
+      ),
+    });
+  }
+
+  if (typeof globalThis.cancelAnimationFrame !== "function") {
+    Object.defineProperty(globalThis, "cancelAnimationFrame", {
+      configurable: true,
+      writable: true,
+      value: vi.fn((id: number) => globalThis.clearTimeout(id)),
+    });
+  }
 });
 
 afterEach(() => {

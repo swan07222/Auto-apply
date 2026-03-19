@@ -51010,7 +51010,7 @@
     const lastSlashIndex = Math.max(value.lastIndexOf("\\"), value.lastIndexOf("/"));
     return lastSlashIndex >= 0 ? value.slice(lastSlashIndex + 1).trim() : value;
   }
-  function shouldAttemptResumeUpload(input, assetName, lastAttemptAt, now = Date.now(), cooldownMs = 2e4) {
+  function shouldAttemptResumeUpload(input, assetName, lastAttemptAt, now = Date.now(), cooldownMs = 2e4, alreadyUploadedByExtension = false) {
     if (input.disabled) {
       return false;
     }
@@ -51019,10 +51019,17 @@
     }
     const currentFileName = normalizeFileName(getSelectedFileName(input));
     const desiredFileName = normalizeFileName(assetName);
-    if (currentFileName && desiredFileName && currentFileName === desiredFileName) {
+    if (alreadyUploadedByExtension && currentFileName && desiredFileName && currentFileName === desiredFileName) {
       return false;
     }
     return true;
+  }
+  function getResumeAssetUploadKey(asset) {
+    return [
+      normalizeFileName(asset.name),
+      String(Math.max(0, Math.round(asset.size))),
+      String(Math.max(0, Math.round(asset.updatedAt)))
+    ].join(":");
   }
   function normalizeFileName(value) {
     return value.trim().toLowerCase();
@@ -55633,6 +55640,7 @@
   var lastNavigationUrl = "";
   var pendingAnswers = /* @__PURE__ */ new Map();
   var recentResumeUploadAttempts = /* @__PURE__ */ new WeakMap();
+  var extensionManagedResumeUploads = /* @__PURE__ */ new WeakMap();
   var overlay = {
     host: null,
     title: null,
@@ -55718,6 +55726,18 @@
   function hasLikelyApplicationSurface2(site) {
     return hasLikelyApplicationSurface(site, applicationSurfaceCollectors);
   }
+  function looksLikeCurrentFrameApplicationSurface(site) {
+    if (site && site !== "unsupported" && isLikelyApplyUrl(window.location.href, site)) {
+      return true;
+    }
+    if (hasLikelyApplicationForm2() || collectResumeFileInputs().length > 0) {
+      return true;
+    }
+    if (IS_TOP_FRAME) {
+      return hasLikelyApplicationPageContent2() && !hasLikelyApplicationFrame2();
+    }
+    return hasLikelyApplicationPageContent2();
+  }
   async function waitForLikelyApplicationSurface2(site) {
     return waitForLikelyApplicationSurface(site, applicationSurfaceCollectors);
   }
@@ -55741,25 +55761,30 @@
       "completed",
       `Opened ${description} in a new tab. Keeping this job page open.`,
       false,
-      "autofill-form"
+      "autofill-form",
+      "handoff"
     );
   }
   chrome.runtime.onMessage.addListener(
     (message, _sender, sendResponse) => {
-      if (!IS_TOP_FRAME) {
-        return false;
-      }
       if (message.type === "get-status") {
+        if (!IS_TOP_FRAME) {
+          return false;
+        }
         sendResponse({ ok: true, status });
         return false;
       }
       if (message.type === "automation-child-tab-opened") {
+        if (!IS_TOP_FRAME) {
+          return false;
+        }
         childApplicationTabOpened = true;
         updateStatus(
           "completed",
           shouldKeepJobPageOpen(status.site) ? "Application opened in a new tab. Keeping this job page open." : "Application opened in a new tab. Continuing there...",
           false,
-          "autofill-form"
+          "autofill-form",
+          "handoff"
         );
         if (!shouldKeepJobPageOpen(status.site)) {
           void closeCurrentTab();
@@ -55768,6 +55793,14 @@
         return false;
       }
       if (message.type === "start-automation") {
+        const detectedSite = detectSiteFromUrl(window.location.href);
+        if (message.session) {
+          if (!shouldHandleAutomationInCurrentFrame(message.session, detectedSite)) {
+            return false;
+          }
+        } else if (!IS_TOP_FRAME) {
+          return false;
+        }
         childApplicationTabOpened = false;
         stageDepth = 0;
         lastNavigationUrl = window.location.href;
@@ -55812,7 +55845,10 @@
       let response = null;
       try {
         response = await chrome.runtime.sendMessage({
-          type: "content-ready"
+          type: "content-ready",
+          looksLikeApplicationSurface: looksLikeCurrentFrameApplicationSurface(
+            detectedSite
+          )
         });
       } catch {
         return;
@@ -55820,6 +55856,10 @@
       if (response?.session) {
         const s = response.session;
         if (!shouldHandleAutomationInCurrentFrame(s, detectedSite)) {
+          if (s.stage === "autofill-form" && typeof s.controllerFrameId !== "number" && attempt < maxAttempts - 1) {
+            await sleep(400);
+            continue;
+          }
           return;
         }
         status = s;
@@ -55832,6 +55872,11 @@
         renderOverlay();
         if (response.shouldResume) {
           await ensureAutomationRunning();
+          return;
+        }
+        if (s.stage === "autofill-form" && typeof s.controllerFrameId !== "number" && attempt < maxAttempts - 1) {
+          await sleep(400);
+          continue;
         }
         return;
       }
@@ -56074,7 +56119,8 @@
         "completed",
         "Job page opened. Review and apply manually.",
         false,
-        "autofill-form"
+        "autofill-form",
+        "successful"
       );
       return;
     }
@@ -56084,7 +56130,8 @@
         "completed",
         "Skipped - already applied.",
         false,
-        "open-apply"
+        "open-apply",
+        "released"
       );
       await closeCurrentTab();
       return;
@@ -56241,7 +56288,8 @@
         "error",
         `No apply button found on this ${getSiteLabel(site)} page.`,
         false,
-        "open-apply"
+        "open-apply",
+        "released"
       );
       return;
     }
@@ -56311,7 +56359,8 @@
             "completed",
             `Opened apply page in new tab.`,
             false,
-            "autofill-form"
+            "autofill-form",
+            "handoff"
           );
           await closeCurrentTab();
           return;
@@ -56492,7 +56541,8 @@
       "completed",
       "Apply button clicked but no application form detected. Review the page manually.",
       false,
-      "autofill-form"
+      "autofill-form",
+      "successful"
     );
   }
   async function runAutofillStage(site) {
@@ -56503,7 +56553,8 @@
         "completed",
         "Application page opened. Review and complete manually.",
         false,
-        "autofill-form"
+        "autofill-form",
+        "successful"
       );
       return;
     }
@@ -56512,7 +56563,8 @@
         "completed",
         "Skipped - already applied.",
         false,
-        "autofill-form"
+        "autofill-form",
+        "released"
       );
       await closeCurrentTab();
       return;
@@ -56692,7 +56744,8 @@
         "completed",
         buildAutofillSummary(combinedResult),
         false,
-        "autofill-form"
+        "autofill-form",
+        "successful"
       );
       return;
     }
@@ -56701,7 +56754,8 @@
         "completed",
         "Application opened. No fields auto-filled - review manually.",
         false,
-        "autofill-form"
+        "autofill-form",
+        "successful"
       );
       return;
     }
@@ -56709,7 +56763,8 @@
       "completed",
       "Job page opened. No application form detected.",
       false,
-      "autofill-form"
+      "autofill-form",
+      "released"
     );
   }
   async function waitForHumanVerificationToClear() {
@@ -56889,6 +56944,7 @@
   async function uploadResumeIfNeeded(settings) {
     const resume = pickResumeAsset(settings);
     if (!resume) return null;
+    const resumeUploadKey = getResumeAssetUploadKey(resume);
     const fileInputs = collectResumeFileInputs();
     if (fileInputs.length === 0) {
       const hiddenFileInputs = Array.from(
@@ -56902,13 +56958,18 @@
           input,
           resume.name,
           lastAttemptAt > 0 ? lastAttemptAt : null,
-          now
+          now,
+          void 0,
+          extensionManagedResumeUploads.get(input) === resumeUploadKey
         )) {
           continue;
         }
         recentResumeUploadAttempts.set(input, now);
         try {
-          if (await setFileInputValue(input, resume)) return resume;
+          if (await setFileInputValue(input, resume)) {
+            extensionManagedResumeUploads.set(input, resumeUploadKey);
+            return resume;
+          }
         } catch {
         }
       }
@@ -56925,13 +56986,18 @@
         input,
         resume.name,
         lastAttemptAt > 0 ? lastAttemptAt : null,
-        now
+        now,
+        void 0,
+        extensionManagedResumeUploads.get(input) === resumeUploadKey
       )) {
         continue;
       }
       recentResumeUploadAttempts.set(input, now);
       try {
-        if (await setFileInputValue(input, resume)) return resume;
+        if (await setFileInputValue(input, resume)) {
+          extensionManagedResumeUploads.set(input, resumeUploadKey);
+          return resume;
+        }
       } catch {
       }
     }
@@ -57644,7 +57710,7 @@
     }
     window.location.assign(n);
   }
-  function updateStatus(phase, message, shouldResume, nextStage = currentStage) {
+  function updateStatus(phase, message, shouldResume, nextStage = currentStage, completionKind) {
     currentStage = nextStage;
     status = createStatus(status.site, phase, message);
     renderOverlay();
@@ -57655,7 +57721,8 @@
       stage: currentStage,
       label: currentLabel,
       resumeKind: currentResumeKind,
-      profileId: currentProfileId
+      profileId: currentProfileId,
+      completionKind
     }).catch(() => {
     });
   }
@@ -57798,10 +57865,21 @@
     return parts.length === 0 ? "Application opened, nothing auto-filled." : `${parts.join(", ")}. Review before submitting.`;
   }
   function shouldHandleAutomationInCurrentFrame(session, detectedSite) {
-    if (IS_TOP_FRAME) {
-      return true;
+    if (session.stage !== "autofill-form") {
+      return IS_TOP_FRAME;
     }
-    if (session.stage !== "autofill-form" || session.site === "unsupported") {
+    if (typeof session.controllerFrameId === "number") {
+      if (session.controllerFrameId === 0) {
+        return IS_TOP_FRAME;
+      }
+      if (IS_TOP_FRAME) {
+        return false;
+      }
+    }
+    if (IS_TOP_FRAME) {
+      return looksLikeCurrentFrameApplicationSurface(session.site);
+    }
+    if (session.site === "unsupported") {
       return false;
     }
     const looksLikeApplyFrame = isLikelyApplyUrl(window.location.href, session.site) || hasLikelyApplicationForm2() || hasLikelyApplicationFrame2() || hasLikelyApplicationPageContent2() || collectResumeFileInputs().length > 0;

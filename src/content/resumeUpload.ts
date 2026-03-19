@@ -25,7 +25,8 @@ export function shouldAttemptResumeUpload(
   assetName: string,
   lastAttemptAt: number | null,
   now: number = Date.now(),
-  cooldownMs: number = 20_000
+  cooldownMs: number = 20_000,
+  alreadyUploadedByExtension = false
 ): boolean {
   if (input.disabled) {
     return false;
@@ -38,11 +39,26 @@ export function shouldAttemptResumeUpload(
   const currentFileName = normalizeFileName(getSelectedFileName(input));
   const desiredFileName = normalizeFileName(assetName);
 
-  if (currentFileName && desiredFileName && currentFileName === desiredFileName) {
+  if (
+    alreadyUploadedByExtension &&
+    currentFileName &&
+    desiredFileName &&
+    currentFileName === desiredFileName
+  ) {
     return false;
   }
 
   return true;
+}
+
+export function getResumeAssetUploadKey(
+  asset: Pick<ResumeAsset, "name" | "size" | "updatedAt">
+): string {
+  return [
+    normalizeFileName(asset.name),
+    String(Math.max(0, Math.round(asset.size))),
+    String(Math.max(0, Math.round(asset.updatedAt))),
+  ].join(":");
 }
 
 function normalizeFileName(value: string): string {

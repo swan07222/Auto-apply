@@ -383,6 +383,84 @@ describe("background spawn quota handling", () => {
     expect(chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("lets an embedded apply frame claim resume ownership for autofill sessions", async () => {
+    const runId = "run-frame-owner";
+    const sessionKey = "remote-job-search-session:42";
+    const chromeMock = createBackgroundChrome(
+      {
+        [sessionKey]: {
+          tabId: 42,
+          site: "indeed",
+          phase: "running",
+          message: "Application form found. Autofilling...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "autofill-form",
+          runId,
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    const topFrameResponse = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "content-ready",
+        looksLikeApplicationSurface: false,
+      },
+      {
+        tab: {
+          id: 42,
+        },
+        frameId: 0,
+      }
+    );
+
+    expect(topFrameResponse).toEqual({
+      ok: true,
+      shouldResume: false,
+      session: expect.objectContaining({
+        tabId: 42,
+        stage: "autofill-form",
+      }),
+    });
+    expect(chromeMock.local.state[sessionKey]).toEqual(
+      expect.not.objectContaining({
+        controllerFrameId: expect.any(Number),
+      })
+    );
+
+    const childFrameResponse = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "content-ready",
+        looksLikeApplicationSurface: true,
+      },
+      {
+        tab: {
+          id: 42,
+        },
+        frameId: 7,
+      }
+    );
+
+    expect(childFrameResponse).toEqual({
+      ok: true,
+      shouldResume: true,
+      session: expect.objectContaining({
+        tabId: 42,
+        controllerFrameId: 7,
+      }),
+    });
+    expect(chromeMock.local.state[sessionKey]).toEqual(
+      expect.objectContaining({
+        controllerFrameId: 7,
+      })
+    );
+  });
+
   it("counts successful application-ready completions and resumes the next queued job", async () => {
     const runId = "run-success";
     const firstUrl = "https://www.indeed.com/viewjob?jk=alpha123";
@@ -478,6 +556,254 @@ describe("background spawn quota handling", () => {
     );
   });
 
+  it("counts current no-fields autofill summaries as successful completions", async () => {
+    const runId = "run-no-fields-success";
+    const firstUrl = "https://www.indeed.com/viewjob?jk=alpha123";
+    const runStateKey = `remote-job-search-run:${runId}`;
+
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 2,
+          openedJobPages: 1,
+          openedJobKeys: [getJobDedupKey(firstUrl)],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          updatedAt: 1,
+        },
+        "remote-job-search-session:101": {
+          tabId: 101,
+          site: "indeed",
+          phase: "running",
+          message: "Autofilling...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "autofill-form",
+          runId,
+        },
+        "remote-job-search-job-context:101": {
+          title: "Front End Engineer",
+          company: "Example",
+          description: "Description",
+          question: "",
+          pageUrl: firstUrl,
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "finalize-session",
+        status: {
+          site: "indeed",
+          phase: "completed",
+          message: "Application opened, nothing auto-filled.",
+          updatedAt: 10,
+        },
+        stage: "autofill-form",
+      },
+      {
+        tab: {
+          id: 101,
+          url: firstUrl,
+        },
+        frameId: 0,
+      }
+    );
+
+    expect(response).toEqual({ ok: true });
+    expect(chromeMock.local.state[runStateKey]).toEqual(
+      expect.objectContaining({
+        successfulJobPages: 1,
+        successfulJobKeys: [getJobDedupKey(firstUrl)],
+      })
+    );
+  });
+
+  it("releases a claimed job slot when a managed job is skipped after opening", async () => {
+    const runId = "run-release-after-open";
+    const firstUrl = "https://www.indeed.com/viewjob?jk=alpha123";
+    const secondUrl = "https://www.indeed.com/viewjob?jk=beta456";
+    const runStateKey = `remote-job-search-run:${runId}`;
+
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 2,
+          openedJobPages: 2,
+          openedJobKeys: [
+            getJobDedupKey(firstUrl),
+            getJobDedupKey(secondUrl),
+          ],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          updatedAt: 1,
+        },
+        "remote-job-search-session:101": {
+          tabId: 101,
+          site: "indeed",
+          phase: "running",
+          message: "Opening Indeed job page...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "open-apply",
+          runId,
+        },
+        "remote-job-search-session:102": {
+          tabId: 102,
+          site: "indeed",
+          phase: "idle",
+          message:
+            "Queued this Indeed job page. It will start automatically when an application slot is available.",
+          updatedAt: 2,
+          shouldResume: false,
+          stage: "open-apply",
+          runId,
+        },
+        "remote-job-search-job-context:101": {
+          title: "Front End Engineer",
+          company: "Example",
+          description: "Description",
+          question: "",
+          pageUrl: firstUrl,
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "finalize-session",
+        status: {
+          site: "indeed",
+          phase: "completed",
+          message: "Skipped - already applied.",
+          updatedAt: 10,
+        },
+        stage: "open-apply",
+        completionKind: "released",
+      },
+      {
+        tab: {
+          id: 101,
+          url: firstUrl,
+        },
+        frameId: 0,
+      }
+    );
+
+    expect(response).toEqual({ ok: true });
+    expect(chromeMock.local.state[runStateKey]).toEqual(
+      expect.objectContaining({
+        openedJobPages: 1,
+        openedJobKeys: [getJobDedupKey(secondUrl)],
+        successfulJobPages: 0,
+      })
+    );
+    expect(chromeMock.local.state["remote-job-search-session:102"]).toEqual(
+      expect.objectContaining({
+        shouldResume: true,
+        phase: "running",
+      })
+    );
+  });
+
+  it("targets the claimed autofill frame when resuming a queued job session", async () => {
+    const runId = "run-frame-resume";
+    const firstUrl = "https://www.indeed.com/viewjob?jk=alpha123";
+    const secondUrl = "https://www.indeed.com/viewjob?jk=beta456";
+    const runStateKey = `remote-job-search-run:${runId}`;
+
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 2,
+          openedJobPages: 2,
+          openedJobKeys: [
+            getJobDedupKey(firstUrl),
+            getJobDedupKey(secondUrl),
+          ],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          updatedAt: 1,
+        },
+        "remote-job-search-session:101": {
+          tabId: 101,
+          site: "indeed",
+          phase: "running",
+          message: "Autofilling...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "autofill-form",
+          runId,
+        },
+        "remote-job-search-session:102": {
+          tabId: 102,
+          site: "indeed",
+          phase: "idle",
+          message:
+            "Queued this Indeed job page. It will start automatically when an application slot is available.",
+          updatedAt: 2,
+          shouldResume: false,
+          stage: "autofill-form",
+          runId,
+          controllerFrameId: 9,
+        },
+        "remote-job-search-job-context:101": {
+          title: "Front End Engineer",
+          company: "Example",
+          description: "Description",
+          question: "",
+          pageUrl: firstUrl,
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "finalize-session",
+        status: {
+          site: "indeed",
+          phase: "completed",
+          message: "Filled 2 fields. Review before submitting.",
+          updatedAt: 10,
+        },
+        stage: "autofill-form",
+        completionKind: "successful",
+      },
+      {
+        tab: {
+          id: 101,
+          url: firstUrl,
+        },
+        frameId: 0,
+      }
+    );
+
+    expect(response).toEqual({ ok: true });
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      102,
+      expect.objectContaining({
+        type: "start-automation",
+      }),
+      { frameId: 9 }
+    );
+  });
+
   it("pauses queued run advancement after a ZipRecruiter rate-limit error", async () => {
     const runId = "run-rate-limit";
     const runStateKey = `remote-job-search-run:${runId}`;
@@ -557,5 +883,59 @@ describe("background spawn quota handling", () => {
       })
     );
     expect(chrome.tabs.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("returns an error when spawn-tabs cannot open any requested tab", async () => {
+    const firstUrl = "https://www.indeed.com/viewjob?jk=alpha123";
+    const runId = "run-open-none";
+    const runStateKey = `remote-job-search-run:${runId}`;
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 1,
+          openedJobPages: 1,
+          openedJobKeys: [getJobDedupKey(firstUrl)],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          updatedAt: 1,
+        },
+      },
+      vi.fn().mockRejectedValue(new Error("Popup blocked"))
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "spawn-tabs",
+        items: [
+          {
+            url: firstUrl,
+            site: "indeed",
+            stage: "open-apply",
+            runId,
+          },
+        ],
+      },
+      {
+        tab: {
+          id: 42,
+          index: 0,
+        },
+      }
+    );
+
+    expect(response).toEqual({
+      ok: false,
+      error: "The browser blocked opening the requested tabs.",
+    });
+    expect(chromeMock.local.state[runStateKey]).toEqual(
+      expect.objectContaining({
+        openedJobPages: 0,
+        openedJobKeys: [],
+      })
+    );
   });
 });

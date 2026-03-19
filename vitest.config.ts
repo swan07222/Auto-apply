@@ -5,6 +5,13 @@ export default defineConfig({
     environment: "jsdom",
     include: ["tests/**/*.test.ts"],
     setupFiles: ["./tests/setup.ts"],
+    clearMocks: true,
+    restoreMocks: true,
+    mockReset: true,
+    unstubGlobals: true,
+    unstubEnvs: true,
+    passWithNoTests: false,
+    allowOnly: false,
     environmentOptions: {
       jsdom: {
         url: "https://example.com/",
@@ -16,6 +23,8 @@ export default defineConfig({
       include: [
         "src/shared.ts",
         "src/popup.ts",
+        "src/popupDialog.ts",
+        "src/content/sitePatterns.ts",
         "src/content/text.ts",
         "src/content/dom.ts",
         "src/content/applicationSurface.ts",

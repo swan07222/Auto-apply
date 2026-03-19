@@ -844,10 +844,22 @@
           return { ok: false, shouldResume: false };
         }
         const session = await getSession(tabId);
+        if (!session) {
+          return {
+            ok: true,
+            shouldResume: false,
+            session: null
+          };
+        }
+        const resolved = await resolveContentReadySession(
+          session,
+          typeof sender.frameId === "number" ? sender.frameId : 0,
+          Boolean(message.looksLikeApplicationSurface)
+        );
         return {
           ok: true,
-          shouldResume: Boolean(session?.shouldResume),
-          session
+          shouldResume: resolved.shouldResume,
+          session: resolved.session
         };
       }
       case "status-update":
@@ -867,6 +879,12 @@
           itemsToOpen = capJobOpeningItems(itemsToOpen, cap);
         }
         itemsToOpen = deduplicateSpawnItems(itemsToOpen);
+        if (itemsToOpen.length === 0) {
+          return {
+            ok: false,
+            error: "No tabs were available to open."
+          };
+        }
         const baseIndex = currentTab.index ?? 0;
         reserveExtensionSpawnSlots(currentTab.id, itemsToOpen.length);
         let openedCount = 0;
@@ -921,6 +939,12 @@
         if (failedJobOpeningItems.length > 0) {
           await releaseJobOpeningsForItems(failedJobOpeningItems);
         }
+        if (openedCount === 0) {
+          return {
+            ok: false,
+            error: "The browser blocked opening the requested tabs."
+          };
+        }
         for (const runId of queuedRunIds) {
           await resumePendingJobSessionsForRunId(runId);
         }
@@ -962,6 +986,9 @@
       return { ok: true };
     }
     const shouldResume = isFinal ? false : ("shouldResume" in message ? message.shouldResume : void 0) ?? existingSession?.shouldResume ?? false;
+    const nextStage = message.stage ?? existingSession?.stage ?? "bootstrap";
+    const controllerFrameId = nextStage === "autofill-form" ? typeof sender.frameId === "number" ? sender.frameId : existingSession?.controllerFrameId : void 0;
+    const completionKind = message.completionKind;
     const nextSession = {
       tabId,
       site,
@@ -969,12 +996,13 @@
       message: message.status.message,
       updatedAt: message.status.updatedAt,
       shouldResume,
-      stage: message.stage ?? existingSession?.stage ?? "bootstrap",
+      stage: nextStage,
       runId: existingSession?.runId,
       jobSlots: existingSession?.jobSlots,
       label: message.label ?? existingSession?.label,
       resumeKind: message.resumeKind ?? existingSession?.resumeKind,
-      profileId: message.profileId ?? existingSession?.profileId
+      profileId: message.profileId ?? existingSession?.profileId,
+      controllerFrameId
     };
     await setSession(nextSession);
     if (isFinal && nextSession.runId && isRateLimitedSession(nextSession)) {
@@ -982,8 +1010,14 @@
       return { ok: true };
     }
     if (isFinal && nextSession.runId && isManagedJobSession(nextSession)) {
-      if (isSuccessfulJobCompletion(nextSession)) {
+      if (isSuccessfulJobCompletion(nextSession, completionKind)) {
         await recordSuccessfulJobCompletion(
+          nextSession.runId,
+          nextSession.tabId,
+          sender.tab?.url
+        );
+      } else if (shouldReleaseManagedJobOpening(nextSession, completionKind)) {
+        await releaseManagedJobOpening(
           nextSession.runId,
           nextSession.tabId,
           sender.tab?.url
@@ -1428,6 +1462,38 @@
     const stored = await chrome.storage.local.get(key);
     return stored[key] ?? null;
   }
+  function isFrameBoundSession(session) {
+    return session.stage === "autofill-form" && session.site !== "unsupported";
+  }
+  async function resolveContentReadySession(session, senderFrameId, looksLikeApplicationSurface) {
+    if (!isFrameBoundSession(session)) {
+      return {
+        session,
+        shouldResume: Boolean(session.shouldResume)
+      };
+    }
+    if (typeof session.controllerFrameId === "number") {
+      return {
+        session,
+        shouldResume: session.controllerFrameId === senderFrameId && Boolean(session.shouldResume)
+      };
+    }
+    if (!looksLikeApplicationSurface) {
+      return {
+        session,
+        shouldResume: false
+      };
+    }
+    const claimedSession = {
+      ...session,
+      controllerFrameId: senderFrameId
+    };
+    await setSession(claimedSession);
+    return {
+      session: claimedSession,
+      shouldResume: Boolean(claimedSession.shouldResume)
+    };
+  }
   async function reserveJobOpeningsForSender(sender, requested) {
     const tabId = sender.tab?.id;
     if (tabId === void 0) {
@@ -1636,12 +1702,31 @@
   function isRateLimitedSession(session) {
     return session.phase === "error" && isRateLimitMessage(session.message);
   }
-  function isSuccessfulJobCompletion(session) {
+  function isSuccessfulJobCompletion(session, completionKind) {
     if (!isManagedJobSession(session) || session.phase !== "completed") {
       return false;
     }
+    if (completionKind) {
+      return completionKind === "successful";
+    }
     const message = session.message.toLowerCase();
-    return message.includes("review before submitting") || message.includes("application opened. no fields auto-filled") || message.includes("application page opened. review and complete manually");
+    return message.includes("review before submitting") || message.includes("application opened. no fields auto-filled") || message.includes("application opened, nothing auto-filled") || message.includes("application page opened. review and complete manually") || message.includes("review manually");
+  }
+  function shouldReleaseManagedJobOpening(session, completionKind) {
+    if (!isManagedJobSession(session)) {
+      return false;
+    }
+    if (completionKind) {
+      return completionKind === "released";
+    }
+    if (session.phase === "error") {
+      return !isRateLimitedSession(session);
+    }
+    if (session.phase !== "completed") {
+      return false;
+    }
+    const message = session.message.toLowerCase();
+    return message.includes("already applied") || message.includes("no application form detected") || message.includes("no apply button found");
   }
   async function markRunRateLimited(runId) {
     await withRunLock(runId, async () => {
@@ -1656,15 +1741,21 @@
       });
     });
   }
+  async function resolveManagedJobCompletionKey(tabId, fallbackUrl) {
+    const rememberedJobContext = await getJobContext(tabId);
+    return getJobDedupKey(
+      rememberedJobContext?.pageUrl ?? fallbackUrl ?? ""
+    );
+  }
   async function recordSuccessfulJobCompletion(runId, tabId, fallbackUrl) {
     await withRunLock(runId, async () => {
       const runState = await getRunState(runId);
       if (!runState) {
         return;
       }
-      const rememberedJobContext = await getJobContext(tabId);
-      const completionKey = getJobDedupKey(
-        rememberedJobContext?.pageUrl ?? fallbackUrl ?? ""
+      const completionKey = await resolveManagedJobCompletionKey(
+        tabId,
+        fallbackUrl
       );
       if (!completionKey) {
         return;
@@ -1681,6 +1772,13 @@
         updatedAt: Date.now()
       });
     });
+  }
+  async function releaseManagedJobOpening(runId, tabId, fallbackUrl) {
+    const completionKey = await resolveManagedJobCompletionKey(tabId, fallbackUrl);
+    if (!completionKey) {
+      return;
+    }
+    await releaseJobOpeningsForRunId(runId, [completionKey]);
   }
   async function listSessionsForRunId(runId) {
     const allStored = await chrome.storage.local.get(null);
@@ -1725,10 +1823,19 @@
     });
     for (const session of sessionsToResume) {
       try {
-        await chrome.tabs.sendMessage(session.tabId, {
+        const message = {
           type: "start-automation",
           session
-        });
+        };
+        if (typeof session.controllerFrameId === "number") {
+          await chrome.tabs.sendMessage(
+            session.tabId,
+            message,
+            { frameId: session.controllerFrameId }
+          );
+        } else {
+          await chrome.tabs.sendMessage(session.tabId, message);
+        }
       } catch {
       }
     }

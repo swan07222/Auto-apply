@@ -49787,6 +49787,224 @@
     return asset.name && asset.dataUrl ? asset : void 0;
   }
 
+  // src/popupDialog.ts
+  function createPopupDialogController(elements) {
+    let currentState = null;
+    let restoreFocusTarget = null;
+    const hideError = () => {
+      elements.error.textContent = "";
+      elements.error.hidden = true;
+    };
+    const showError = (message) => {
+      elements.error.textContent = message;
+      elements.error.hidden = false;
+    };
+    const setDialogHiddenState = (hidden) => {
+      elements.root.hidden = hidden;
+      elements.root.dataset.open = hidden ? "false" : "true";
+      elements.root.setAttribute("aria-hidden", hidden ? "true" : "false");
+      if (hidden) {
+        elements.root.setAttribute("inert", "");
+      } else {
+        elements.root.removeAttribute("inert");
+      }
+    };
+    const focusBodyFallback = () => {
+      const body = elements.root.ownerDocument.body;
+      const previousTabIndex = body.getAttribute("tabindex");
+      body.setAttribute("tabindex", "-1");
+      body.focus();
+      if (previousTabIndex === null) {
+        body.removeAttribute("tabindex");
+        return;
+      }
+      body.setAttribute("tabindex", previousTabIndex);
+    };
+    const restoreFocusBeforeHide = () => {
+      const activeElement = elements.root.ownerDocument.activeElement;
+      if (!(activeElement instanceof HTMLElement) || !elements.root.contains(activeElement)) {
+        return;
+      }
+      if (restoreFocusTarget && restoreFocusTarget.isConnected && !elements.root.contains(restoreFocusTarget)) {
+        restoreFocusTarget.focus();
+        return;
+      }
+      focusBodyFallback();
+    };
+    const closeDialog = () => {
+      restoreFocusBeforeHide();
+      setDialogHiddenState(true);
+      elements.submitButton.dataset.tone = "default";
+      elements.form.reset();
+      hideError();
+    };
+    const finishDialog = (result2) => {
+      const pendingState = currentState;
+      currentState = null;
+      closeDialog();
+      if (!pendingState) {
+        return;
+      }
+      if (pendingState.kind === "text") {
+        pendingState.resolve(result2);
+        return;
+      }
+      if (pendingState.kind === "pair") {
+        pendingState.resolve(
+          result2
+        );
+        return;
+      }
+      pendingState.resolve(Boolean(result2));
+    };
+    const focusPrimaryTarget = () => {
+      queueMicrotask(() => {
+        if (!elements.primaryField.hidden) {
+          elements.primaryInput.focus();
+          elements.primaryInput.select();
+          return;
+        }
+        if (!elements.secondaryField.hidden) {
+          elements.secondaryInput.focus();
+          elements.secondaryInput.select();
+          return;
+        }
+        elements.submitButton.focus();
+      });
+    };
+    const openBaseDialog = (config) => {
+      if (currentState) {
+        finishDialog(null);
+      }
+      const activeElement = elements.root.ownerDocument.activeElement;
+      restoreFocusTarget = activeElement instanceof HTMLElement && !elements.root.contains(activeElement) ? activeElement : null;
+      elements.kicker.textContent = config.kicker || "Edit";
+      elements.title.textContent = config.title;
+      elements.description.textContent = config.description;
+      elements.submitButton.textContent = config.submitLabel;
+      elements.submitButton.dataset.tone = config.submitTone ?? "default";
+      elements.primaryField.hidden = !config.showPrimaryField;
+      elements.primaryLabel.textContent = config.primaryLabel ?? "";
+      elements.primaryInput.value = config.primaryValue ?? "";
+      elements.primaryInput.placeholder = config.primaryPlaceholder ?? "";
+      elements.secondaryField.hidden = !config.showSecondaryField;
+      elements.secondaryLabel.textContent = config.secondaryLabel ?? "";
+      elements.secondaryInput.value = config.secondaryValue ?? "";
+      elements.secondaryInput.placeholder = config.secondaryPlaceholder ?? "";
+      hideError();
+      setDialogHiddenState(false);
+      focusPrimaryTarget();
+    };
+    elements.cancelButton.addEventListener("click", () => {
+      finishDialog(null);
+    });
+    elements.backdrop.addEventListener("click", () => {
+      finishDialog(null);
+    });
+    elements.root.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        finishDialog(null);
+      }
+    });
+    elements.form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!currentState) {
+        return;
+      }
+      if (currentState.kind === "confirm") {
+        finishDialog(true);
+        return;
+      }
+      const primaryValue = elements.primaryInput.value.trim();
+      if (currentState.kind === "text") {
+        const error2 = currentState.validate?.(primaryValue) ?? null;
+        if (error2) {
+          showError(error2);
+          return;
+        }
+        finishDialog(primaryValue);
+        return;
+      }
+      const secondaryValue = elements.secondaryInput.value.trim();
+      const error = currentState.validate?.(primaryValue, secondaryValue) ?? null;
+      if (error) {
+        showError(error);
+        return;
+      }
+      finishDialog({
+        primary: primaryValue,
+        secondary: secondaryValue
+      });
+    });
+    setDialogHiddenState(true);
+    closeDialog();
+    return {
+      promptText(config) {
+        openBaseDialog({
+          kicker: config.kicker,
+          title: config.title,
+          description: config.description,
+          submitLabel: config.submitLabel,
+          showPrimaryField: true,
+          primaryLabel: config.label,
+          primaryValue: config.initialValue,
+          primaryPlaceholder: config.placeholder,
+          showSecondaryField: false
+        });
+        return new Promise((resolve) => {
+          currentState = {
+            kind: "text",
+            validate: config.validate,
+            resolve
+          };
+        });
+      },
+      promptPair(config) {
+        openBaseDialog({
+          kicker: config.kicker,
+          title: config.title,
+          description: config.description,
+          submitLabel: config.submitLabel,
+          showPrimaryField: true,
+          primaryLabel: config.primaryLabel,
+          primaryValue: config.primaryValue,
+          primaryPlaceholder: config.primaryPlaceholder,
+          showSecondaryField: true,
+          secondaryLabel: config.secondaryLabel,
+          secondaryValue: config.secondaryValue,
+          secondaryPlaceholder: config.secondaryPlaceholder
+        });
+        return new Promise(
+          (resolve) => {
+            currentState = {
+              kind: "pair",
+              validate: config.validate,
+              resolve
+            };
+          }
+        );
+      },
+      confirm(config) {
+        openBaseDialog({
+          kicker: config.kicker,
+          title: config.title,
+          description: config.description,
+          submitLabel: config.submitLabel,
+          submitTone: config.submitTone,
+          showPrimaryField: false,
+          showSecondaryField: false
+        });
+        return new Promise((resolve) => {
+          currentState = {
+            kind: "confirm",
+            resolve
+          };
+        });
+      }
+    };
+  }
+
   // src/popup.ts
   var MAX_RESUME_TEXT_CHARS = 24e3;
   var startButton = requireElement("#start-button");
@@ -49838,10 +50056,60 @@
   );
   var resumeInput = requireElement("#resume-upload");
   var resumeNameLabel = requireElement("#resume-upload-name");
+  var dialogRoot = requireElement("#popup-dialog");
+  var dialogBackdrop = requireElement("#popup-dialog-backdrop");
+  var dialogCard = requireElement("#popup-dialog-card");
+  var dialogKicker = requireElement("#popup-dialog-kicker");
+  var dialogTitle = requireElement("#popup-dialog-title");
+  var dialogDescription = requireElement("#popup-dialog-description");
+  var dialogForm = requireElement("#popup-dialog-form");
+  var dialogPrimaryField = requireElement(
+    "#popup-dialog-primary-field"
+  );
+  var dialogPrimaryLabel = requireElement(
+    "#popup-dialog-primary-label"
+  );
+  var dialogPrimaryInput = requireElement(
+    "#popup-dialog-primary-input"
+  );
+  var dialogSecondaryField = requireElement(
+    "#popup-dialog-secondary-field"
+  );
+  var dialogSecondaryLabel = requireElement(
+    "#popup-dialog-secondary-label"
+  );
+  var dialogSecondaryInput = requireElement(
+    "#popup-dialog-secondary-input"
+  );
+  var dialogError = requireElement("#popup-dialog-error");
+  var dialogCancelButton = requireElement(
+    "#popup-dialog-cancel-button"
+  );
+  var dialogSubmitButton = requireElement(
+    "#popup-dialog-submit-button"
+  );
   var activeTabId = null;
   var activeSite = detectSiteFromUrl("");
   var refreshIntervalId = null;
   var settings = createEmptySettings();
+  var popupDialog = createPopupDialogController({
+    root: dialogRoot,
+    backdrop: dialogBackdrop,
+    card: dialogCard,
+    kicker: dialogKicker,
+    title: dialogTitle,
+    description: dialogDescription,
+    form: dialogForm,
+    primaryField: dialogPrimaryField,
+    primaryLabel: dialogPrimaryLabel,
+    primaryInput: dialogPrimaryInput,
+    secondaryField: dialogSecondaryField,
+    secondaryLabel: dialogSecondaryLabel,
+    secondaryInput: dialogSecondaryInput,
+    error: dialogError,
+    cancelButton: dialogCancelButton,
+    submitButton: dialogSubmitButton
+  });
   void initialize();
   startButton.addEventListener("click", () => {
     void startAutomation();
@@ -50314,42 +50582,52 @@
     settingsStatus.dataset.tone = tone;
     settingsStatus.dataset.visible = visible ? "true" : "false";
   }
+  function buildUpdatedProfileFromForm(baseProfile) {
+    return {
+      ...baseProfile,
+      candidate: {
+        ...baseProfile.candidate,
+        fullName: fullNameInput.value.trim(),
+        email: emailInput.value.trim(),
+        phone: phoneInput.value.trim(),
+        city: cityInput.value.trim(),
+        state: stateInput.value.trim(),
+        country: countryInput.value.trim(),
+        linkedinUrl: linkedinInput.value.trim(),
+        portfolioUrl: portfolioInput.value.trim(),
+        currentCompany: currentCompanyInput.value.trim(),
+        yearsExperience: yearsExperienceInput.value.trim(),
+        workAuthorization: workAuthorizationInput.value,
+        needsSponsorship: needsSponsorshipInput.value,
+        willingToRelocate: willingToRelocateInput.value
+      },
+      updatedAt: Date.now()
+    };
+  }
+  function buildFormSettingsUpdate(current, profileId, activeProfileId) {
+    const targetProfile = current.profiles[profileId] ?? createAutomationProfile(profileId);
+    return {
+      searchMode: getSelectedSearchMode(),
+      startupRegion: getSelectedStartupRegion(),
+      datePostedWindow: getSelectedDatePostedWindow(),
+      searchKeywords: normalizeSearchKeywordsInput(),
+      jobPageLimit: Number(jobLimitInput.value) || 5,
+      autoUploadResumes: autoUploadInput.checked,
+      activeProfileId,
+      profiles: {
+        ...current.profiles,
+        [profileId]: buildUpdatedProfileFromForm(targetProfile)
+      }
+    };
+  }
   async function saveCurrentSettings(showFeedback) {
     saveButton.disabled = true;
     setSettingsStatus("Saving settings...", "muted", true);
     try {
       const selectedProfileId = getSelectedProfileId();
-      settings = await writeAutomationSettings((current) => {
-        const scopedCurrent = resolveAutomationSettingsForProfile(
-          current,
-          selectedProfileId
-        );
-        return {
-          activeProfileId: selectedProfileId,
-          searchMode: getSelectedSearchMode(),
-          startupRegion: getSelectedStartupRegion(),
-          datePostedWindow: getSelectedDatePostedWindow(),
-          searchKeywords: normalizeSearchKeywordsInput(),
-          jobPageLimit: Number(jobLimitInput.value) || 5,
-          autoUploadResumes: autoUploadInput.checked,
-          candidate: {
-            ...scopedCurrent.candidate,
-            fullName: fullNameInput.value.trim(),
-            email: emailInput.value.trim(),
-            phone: phoneInput.value.trim(),
-            city: cityInput.value.trim(),
-            state: stateInput.value.trim(),
-            country: countryInput.value.trim(),
-            linkedinUrl: linkedinInput.value.trim(),
-            portfolioUrl: portfolioInput.value.trim(),
-            currentCompany: currentCompanyInput.value.trim(),
-            yearsExperience: yearsExperienceInput.value.trim(),
-            workAuthorization: workAuthorizationInput.value,
-            needsSponsorship: needsSponsorshipInput.value,
-            willingToRelocate: willingToRelocateInput.value
-          }
-        };
-      });
+      settings = await writeAutomationSettings(
+        (current) => buildFormSettingsUpdate(current, selectedProfileId, selectedProfileId)
+      );
       populateSettingsForm(settings);
       setSettingsStatus(
         showFeedback ? "Settings saved." : "Settings are stored locally in the extension.",
@@ -50375,9 +50653,10 @@
     }
     setSettingsStatus("Switching profile...", "muted", true);
     try {
-      settings = await writeAutomationSettings({
-        activeProfileId: normalizedProfileId
-      });
+      const previousProfileId = settings.activeProfileId;
+      settings = await writeAutomationSettings(
+        (current) => buildFormSettingsUpdate(current, previousProfileId, normalizedProfileId)
+      );
       populateSettingsForm(settings);
       setSettingsStatus(
         `Switched to "${getActiveAutomationProfile(settings).name}".`,
@@ -50394,7 +50673,7 @@
     }
   }
   async function createProfile() {
-    const name = promptForProfileName("Create profile", "");
+    const name = await promptForProfileName("Create Profile", "");
     if (!name) {
       return;
     }
@@ -50421,7 +50700,10 @@
   }
   async function renameSelectedProfile() {
     const activeProfile = getActiveAutomationProfile(settings);
-    const nextName = promptForProfileName("Edit profile name", activeProfile.name);
+    const nextName = await promptForProfileName(
+      "Edit Profile Name",
+      activeProfile.name
+    );
     if (!nextName || nextName === activeProfile.name) {
       return;
     }
@@ -50455,9 +50737,14 @@
       return;
     }
     const activeProfile = getActiveAutomationProfile(settings);
-    if (!window.confirm(
-      `Delete profile "${activeProfile.name}"? Its resume, remembered answers, and custom preference answers will also be removed.`
-    )) {
+    const shouldDelete = await popupDialog.confirm({
+      kicker: "Profiles",
+      title: "Delete Profile",
+      description: `Delete "${activeProfile.name}"? Its resume, remembered answers, and custom preference answers will also be removed.`,
+      submitLabel: "Delete Profile",
+      submitTone: "danger"
+    });
+    if (!shouldDelete) {
       return;
     }
     const remainingProfiles = profiles.filter(
@@ -50550,8 +50837,8 @@
     if (!existing) {
       return;
     }
-    const savedAnswer = promptForSavedAnswer(
-      "Edit remembered answer",
+    const savedAnswer = await promptForSavedAnswer(
+      "Edit Remembered Answer",
       existing.question,
       existing.value
     );
@@ -50585,8 +50872,8 @@
     }
   }
   async function addPreferenceAnswer() {
-    const savedAnswer = promptForSavedAnswer(
-      "Add custom preference answer",
+    const savedAnswer = await promptForSavedAnswer(
+      "Add Custom Preference Answer",
       "",
       ""
     );
@@ -50624,8 +50911,8 @@
     if (!existing) {
       return;
     }
-    const savedAnswer = promptForSavedAnswer(
-      "Edit custom preference answer",
+    const savedAnswer = await promptForSavedAnswer(
+      "Edit Custom Preference Answer",
       existing.question,
       existing.value
     );
@@ -50985,45 +51272,48 @@
   function createProfileId() {
     return crypto.randomUUID?.() ?? `profile-${Date.now()}`;
   }
-  function promptForProfileName(title, initialValue) {
-    const value = window.prompt(`${title}: enter a profile name.`, initialValue);
-    if (value === null) {
-      return null;
-    }
-    const trimmed = value.trim();
-    if (!trimmed) {
-      setSettingsStatus("Profile name cannot be empty.", "error", true);
-      return null;
-    }
-    return trimmed;
+  async function promptForProfileName(title, initialValue) {
+    return popupDialog.promptText({
+      kicker: "Profiles",
+      title,
+      description: "Give this profile a clear name so you can switch between candidates quickly.",
+      label: "Profile name",
+      initialValue,
+      placeholder: "Senior Frontend Profile",
+      submitLabel: initialValue ? "Save Name" : "Create Profile",
+      validate: (value) => value.trim() ? null : "Profile name cannot be empty."
+    });
   }
-  function promptForSavedAnswer(title, initialQuestion, initialValue) {
-    const question = window.prompt(
-      `${title}: enter the question.`,
-      initialQuestion
-    );
-    if (question === null) {
-      return null;
-    }
-    const trimmedQuestion = question.trim();
-    if (!trimmedQuestion) {
-      setSettingsStatus("Question cannot be empty.", "error", true);
-      return null;
-    }
-    const value = window.prompt(`${title}: enter the answer.`, initialValue);
-    if (value === null) {
-      return null;
-    }
-    const trimmedValue = value.trim();
-    if (!trimmedValue) {
-      setSettingsStatus("Answer cannot be empty.", "error", true);
+  async function promptForSavedAnswer(title, initialQuestion, initialValue) {
+    const savedAnswer = await popupDialog.promptPair({
+      kicker: "Answer Memory",
+      title,
+      description: "Keep reusable answers tidy so the extension can match them more reliably later.",
+      primaryLabel: "Question",
+      primaryValue: initialQuestion,
+      primaryPlaceholder: "Why are you interested in this role?",
+      secondaryLabel: "Answer",
+      secondaryValue: initialValue,
+      secondaryPlaceholder: "Short, reusable answer",
+      submitLabel: initialQuestion ? "Save Answer" : "Add Answer",
+      validate: (question, value) => {
+        if (!question.trim()) {
+          return "Question cannot be empty.";
+        }
+        if (!value.trim()) {
+          return "Answer cannot be empty.";
+        }
+        return null;
+      }
+    });
+    if (!savedAnswer) {
       return null;
     }
     return {
-      key: normalizeQuestionKey(trimmedQuestion),
+      key: normalizeQuestionKey(savedAnswer.primary),
       answer: {
-        question: trimmedQuestion,
-        value: trimmedValue,
+        question: savedAnswer.primary,
+        value: savedAnswer.secondary,
         updatedAt: Date.now()
       }
     };

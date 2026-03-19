@@ -26,6 +26,7 @@ import {
   sanitizeAutomationSettings,
   writeAutomationSettings,
 } from "./shared";
+import { createPopupDialogController } from "./popupDialog";
 
 const MAX_RESUME_TEXT_CHARS = 24_000;
 
@@ -87,11 +88,61 @@ const addPreferenceButton = requireElement<HTMLButtonElement>(
 );
 const resumeInput = requireElement<HTMLInputElement>("#resume-upload");
 const resumeNameLabel = requireElement<HTMLElement>("#resume-upload-name");
+const dialogRoot = requireElement<HTMLElement>("#popup-dialog");
+const dialogBackdrop = requireElement<HTMLElement>("#popup-dialog-backdrop");
+const dialogCard = requireElement<HTMLElement>("#popup-dialog-card");
+const dialogKicker = requireElement<HTMLElement>("#popup-dialog-kicker");
+const dialogTitle = requireElement<HTMLElement>("#popup-dialog-title");
+const dialogDescription = requireElement<HTMLElement>("#popup-dialog-description");
+const dialogForm = requireElement<HTMLFormElement>("#popup-dialog-form");
+const dialogPrimaryField = requireElement<HTMLElement>(
+  "#popup-dialog-primary-field"
+);
+const dialogPrimaryLabel = requireElement<HTMLElement>(
+  "#popup-dialog-primary-label"
+);
+const dialogPrimaryInput = requireElement<HTMLInputElement>(
+  "#popup-dialog-primary-input"
+);
+const dialogSecondaryField = requireElement<HTMLElement>(
+  "#popup-dialog-secondary-field"
+);
+const dialogSecondaryLabel = requireElement<HTMLElement>(
+  "#popup-dialog-secondary-label"
+);
+const dialogSecondaryInput = requireElement<HTMLTextAreaElement>(
+  "#popup-dialog-secondary-input"
+);
+const dialogError = requireElement<HTMLElement>("#popup-dialog-error");
+const dialogCancelButton = requireElement<HTMLButtonElement>(
+  "#popup-dialog-cancel-button"
+);
+const dialogSubmitButton = requireElement<HTMLButtonElement>(
+  "#popup-dialog-submit-button"
+);
 
 let activeTabId: number | null = null;
 let activeSite = detectSiteFromUrl("");
 let refreshIntervalId: number | null = null;
 let settings = createEmptySettings();
+const popupDialog = createPopupDialogController({
+  root: dialogRoot,
+  backdrop: dialogBackdrop,
+  card: dialogCard,
+  kicker: dialogKicker,
+  title: dialogTitle,
+  description: dialogDescription,
+  form: dialogForm,
+  primaryField: dialogPrimaryField,
+  primaryLabel: dialogPrimaryLabel,
+  primaryInput: dialogPrimaryInput,
+  secondaryField: dialogSecondaryField,
+  secondaryLabel: dialogSecondaryLabel,
+  secondaryInput: dialogSecondaryInput,
+  error: dialogError,
+  cancelButton: dialogCancelButton,
+  submitButton: dialogSubmitButton,
+});
 
 void initialize();
 
@@ -724,44 +775,63 @@ function setSettingsStatus(
   settingsStatus.dataset.visible = visible ? "true" : "false";
 }
 
+function buildUpdatedProfileFromForm(
+  baseProfile: AutomationProfile
+): AutomationProfile {
+  return {
+    ...baseProfile,
+    candidate: {
+      ...baseProfile.candidate,
+      fullName: fullNameInput.value.trim(),
+      email: emailInput.value.trim(),
+      phone: phoneInput.value.trim(),
+      city: cityInput.value.trim(),
+      state: stateInput.value.trim(),
+      country: countryInput.value.trim(),
+      linkedinUrl: linkedinInput.value.trim(),
+      portfolioUrl: portfolioInput.value.trim(),
+      currentCompany: currentCompanyInput.value.trim(),
+      yearsExperience: yearsExperienceInput.value.trim(),
+      workAuthorization: workAuthorizationInput.value,
+      needsSponsorship: needsSponsorshipInput.value,
+      willingToRelocate: willingToRelocateInput.value,
+    },
+    updatedAt: Date.now(),
+  };
+}
+
+function buildFormSettingsUpdate(
+  current: AutomationSettings,
+  profileId: string,
+  activeProfileId: string
+): Partial<AutomationSettings> {
+  const targetProfile =
+    current.profiles[profileId] ?? createAutomationProfile(profileId);
+
+  return {
+    searchMode: getSelectedSearchMode(),
+    startupRegion: getSelectedStartupRegion(),
+    datePostedWindow: getSelectedDatePostedWindow(),
+    searchKeywords: normalizeSearchKeywordsInput(),
+    jobPageLimit: Number(jobLimitInput.value) || 5,
+    autoUploadResumes: autoUploadInput.checked,
+    activeProfileId,
+    profiles: {
+      ...current.profiles,
+      [profileId]: buildUpdatedProfileFromForm(targetProfile),
+    },
+  };
+}
+
 async function saveCurrentSettings(showFeedback: boolean): Promise<void> {
   saveButton.disabled = true;
   setSettingsStatus("Saving settings...", "muted", true);
 
   try {
     const selectedProfileId = getSelectedProfileId();
-    settings = await writeAutomationSettings((current) => {
-      const scopedCurrent = resolveAutomationSettingsForProfile(
-        current,
-        selectedProfileId
-      );
-
-      return {
-        activeProfileId: selectedProfileId,
-        searchMode: getSelectedSearchMode(),
-        startupRegion: getSelectedStartupRegion(),
-        datePostedWindow: getSelectedDatePostedWindow(),
-        searchKeywords: normalizeSearchKeywordsInput(),
-        jobPageLimit: Number(jobLimitInput.value) || 5,
-        autoUploadResumes: autoUploadInput.checked,
-        candidate: {
-          ...scopedCurrent.candidate,
-          fullName: fullNameInput.value.trim(),
-          email: emailInput.value.trim(),
-          phone: phoneInput.value.trim(),
-          city: cityInput.value.trim(),
-          state: stateInput.value.trim(),
-          country: countryInput.value.trim(),
-          linkedinUrl: linkedinInput.value.trim(),
-          portfolioUrl: portfolioInput.value.trim(),
-          currentCompany: currentCompanyInput.value.trim(),
-          yearsExperience: yearsExperienceInput.value.trim(),
-          workAuthorization: workAuthorizationInput.value,
-          needsSponsorship: needsSponsorshipInput.value,
-          willingToRelocate: willingToRelocateInput.value,
-        },
-      };
-    });
+    settings = await writeAutomationSettings((current) =>
+      buildFormSettingsUpdate(current, selectedProfileId, selectedProfileId)
+    );
 
     populateSettingsForm(settings);
     setSettingsStatus(
@@ -795,9 +865,10 @@ async function switchActiveProfile(profileId: string): Promise<void> {
   setSettingsStatus("Switching profile...", "muted", true);
 
   try {
-    settings = await writeAutomationSettings({
-      activeProfileId: normalizedProfileId,
-    });
+    const previousProfileId = settings.activeProfileId;
+    settings = await writeAutomationSettings((current) =>
+      buildFormSettingsUpdate(current, previousProfileId, normalizedProfileId)
+    );
     populateSettingsForm(settings);
     setSettingsStatus(
       `Switched to "${getActiveAutomationProfile(settings).name}".`,
@@ -817,7 +888,7 @@ async function switchActiveProfile(profileId: string): Promise<void> {
 }
 
 async function createProfile(): Promise<void> {
-  const name = promptForProfileName("Create profile", "");
+  const name = await promptForProfileName("Create Profile", "");
   if (!name) {
     return;
   }
@@ -849,7 +920,10 @@ async function createProfile(): Promise<void> {
 
 async function renameSelectedProfile(): Promise<void> {
   const activeProfile = getActiveAutomationProfile(settings);
-  const nextName = promptForProfileName("Edit profile name", activeProfile.name);
+  const nextName = await promptForProfileName(
+    "Edit Profile Name",
+    activeProfile.name
+  );
   if (!nextName || nextName === activeProfile.name) {
     return;
   }
@@ -889,11 +963,14 @@ async function deleteSelectedProfile(): Promise<void> {
   }
 
   const activeProfile = getActiveAutomationProfile(settings);
-  if (
-    !window.confirm(
-      `Delete profile "${activeProfile.name}"? Its resume, remembered answers, and custom preference answers will also be removed.`
-    )
-  ) {
+  const shouldDelete = await popupDialog.confirm({
+    kicker: "Profiles",
+    title: "Delete Profile",
+    description: `Delete "${activeProfile.name}"? Its resume, remembered answers, and custom preference answers will also be removed.`,
+    submitLabel: "Delete Profile",
+    submitTone: "danger",
+  });
+  if (!shouldDelete) {
     return;
   }
 
@@ -1007,8 +1084,8 @@ async function editRememberedAnswer(key: string): Promise<void> {
     return;
   }
 
-  const savedAnswer = promptForSavedAnswer(
-    "Edit remembered answer",
+  const savedAnswer = await promptForSavedAnswer(
+    "Edit Remembered Answer",
     existing.question,
     existing.value
   );
@@ -1049,8 +1126,8 @@ async function editRememberedAnswer(key: string): Promise<void> {
 }
 
 async function addPreferenceAnswer(): Promise<void> {
-  const savedAnswer = promptForSavedAnswer(
-    "Add custom preference answer",
+  const savedAnswer = await promptForSavedAnswer(
+    "Add Custom Preference Answer",
     "",
     ""
   );
@@ -1096,8 +1173,8 @@ async function editPreferenceAnswer(key: string): Promise<void> {
     return;
   }
 
-  const savedAnswer = promptForSavedAnswer(
-    "Edit custom preference answer",
+  const savedAnswer = await promptForSavedAnswer(
+    "Edit Custom Preference Answer",
     existing.question,
     existing.value
   );
@@ -1566,56 +1643,62 @@ function createProfileId(): string {
   return crypto.randomUUID?.() ?? `profile-${Date.now()}`;
 }
 
-function promptForProfileName(title: string, initialValue: string): string | null {
-  const value = window.prompt(`${title}: enter a profile name.`, initialValue);
-  if (value === null) {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    setSettingsStatus("Profile name cannot be empty.", "error", true);
-    return null;
-  }
-
-  return trimmed;
+async function promptForProfileName(
+  title: string,
+  initialValue: string
+): Promise<string | null> {
+  return popupDialog.promptText({
+    kicker: "Profiles",
+    title,
+    description:
+      "Give this profile a clear name so you can switch between candidates quickly.",
+    label: "Profile name",
+    initialValue,
+    placeholder: "Senior Frontend Profile",
+    submitLabel: initialValue ? "Save Name" : "Create Profile",
+    validate: (value) =>
+      value.trim() ? null : "Profile name cannot be empty.",
+  });
 }
 
-function promptForSavedAnswer(
+async function promptForSavedAnswer(
   title: string,
   initialQuestion: string,
   initialValue: string
-): { key: string; answer: SavedAnswer } | null {
-  const question = window.prompt(
-    `${title}: enter the question.`,
-    initialQuestion
-  );
-  if (question === null) {
-    return null;
-  }
+): Promise<{ key: string; answer: SavedAnswer } | null> {
+  const savedAnswer = await popupDialog.promptPair({
+    kicker: "Answer Memory",
+    title,
+    description:
+      "Keep reusable answers tidy so the extension can match them more reliably later.",
+    primaryLabel: "Question",
+    primaryValue: initialQuestion,
+    primaryPlaceholder: "Why are you interested in this role?",
+    secondaryLabel: "Answer",
+    secondaryValue: initialValue,
+    secondaryPlaceholder: "Short, reusable answer",
+    submitLabel: initialQuestion ? "Save Answer" : "Add Answer",
+    validate: (question, value) => {
+      if (!question.trim()) {
+        return "Question cannot be empty.";
+      }
 
-  const trimmedQuestion = question.trim();
-  if (!trimmedQuestion) {
-    setSettingsStatus("Question cannot be empty.", "error", true);
-    return null;
-  }
+      if (!value.trim()) {
+        return "Answer cannot be empty.";
+      }
 
-  const value = window.prompt(`${title}: enter the answer.`, initialValue);
-  if (value === null) {
-    return null;
-  }
-
-  const trimmedValue = value.trim();
-  if (!trimmedValue) {
-    setSettingsStatus("Answer cannot be empty.", "error", true);
+      return null;
+    },
+  });
+  if (!savedAnswer) {
     return null;
   }
 
   return {
-    key: normalizeQuestionKey(trimmedQuestion),
+    key: normalizeQuestionKey(savedAnswer.primary),
     answer: {
-      question: trimmedQuestion,
-      value: trimmedValue,
+      question: savedAnswer.primary,
+      value: savedAnswer.secondary,
       updatedAt: Date.now(),
     },
   };

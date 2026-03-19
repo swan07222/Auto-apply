@@ -44,6 +44,7 @@ export interface AutomationSession extends AutomationStatus {
   label?: string;
   resumeKind?: ResumeKind;
   profileId?: string;
+  controllerFrameId?: number;
 }
 
 export interface SearchTarget {

@@ -78,6 +78,7 @@ import {
   truncateText,
 } from "./content/text";
 import {
+  getResumeAssetUploadKey,
   getSelectedFileName,
   pickResumeAssetForUpload,
   resolveResumeKindForJob,
@@ -152,6 +153,11 @@ type ContentRequest =
   | { type: "get-status" }
   | { type: "automation-child-tab-opened" };
 
+type ManagedSessionCompletionKind =
+  | "successful"
+  | "released"
+  | "handoff";
+
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
 
 const MAX_AUTOFILL_STEPS = 15;
@@ -204,6 +210,10 @@ const pendingAnswers = new Map<string, SavedAnswer>();
 const recentResumeUploadAttempts = new WeakMap<
   HTMLInputElement,
   number
+>();
+const extensionManagedResumeUploads = new WeakMap<
+  HTMLInputElement,
+  string
 >();
 
 const overlay: {
@@ -326,6 +336,24 @@ function hasLikelyApplicationSurface(site: SiteKey): boolean {
   return detectLikelyApplicationSurface(site, applicationSurfaceCollectors);
 }
 
+function looksLikeCurrentFrameApplicationSurface(
+  site: SiteKey | "unsupported" | null
+): boolean {
+  if (site && site !== "unsupported" && isLikelyApplyUrl(window.location.href, site)) {
+    return true;
+  }
+
+  if (hasLikelyApplicationForm() || collectResumeFileInputs().length > 0) {
+    return true;
+  }
+
+  if (IS_TOP_FRAME) {
+    return hasLikelyApplicationPageContent() && !hasLikelyApplicationFrame();
+  }
+
+  return hasLikelyApplicationPageContent();
+}
+
 function isLikelyApplicationField(field: AutofillField): boolean {
   return detectLikelyApplicationField(field);
 }
@@ -360,7 +388,8 @@ async function openApplicationTargetInNewTab(
     "completed",
     `Opened ${description} in a new tab. Keeping this job page open.`,
     false,
-    "autofill-form"
+    "autofill-form",
+    "handoff"
   );
 }
 
@@ -368,16 +397,18 @@ async function openApplicationTargetInNewTab(
 
 chrome.runtime.onMessage.addListener(
   (message: ContentRequest, _sender, sendResponse) => {
-    if (!IS_TOP_FRAME) {
-      return false;
-    }
-
     if (message.type === "get-status") {
+      if (!IS_TOP_FRAME) {
+        return false;
+      }
       sendResponse({ ok: true, status });
       return false;
     }
 
     if (message.type === "automation-child-tab-opened") {
+      if (!IS_TOP_FRAME) {
+        return false;
+      }
       childApplicationTabOpened = true;
       updateStatus(
         "completed",
@@ -385,7 +416,8 @@ chrome.runtime.onMessage.addListener(
           ? "Application opened in a new tab. Keeping this job page open."
           : "Application opened in a new tab. Continuing there...",
         false,
-        "autofill-form"
+        "autofill-form",
+        "handoff"
       );
       if (!shouldKeepJobPageOpen(status.site)) {
         void closeCurrentTab();
@@ -395,6 +427,15 @@ chrome.runtime.onMessage.addListener(
     }
 
     if (message.type === "start-automation") {
+      const detectedSite = detectSiteFromUrl(window.location.href);
+      if (message.session) {
+        if (!shouldHandleAutomationInCurrentFrame(message.session, detectedSite)) {
+          return false;
+        }
+      } else if (!IS_TOP_FRAME) {
+        return false;
+      }
+
       childApplicationTabOpened = false;
       stageDepth = 0;
       lastNavigationUrl = window.location.href;
@@ -453,12 +494,15 @@ async function resumeAutomationIfNeeded(): Promise<void> {
     let response: {
       ok?: boolean;
       shouldResume?: boolean;
-      session?: AutomationSession;
+      session?: AutomationSession | null;
     } | null = null;
 
     try {
       response = await chrome.runtime.sendMessage({
         type: "content-ready",
+        looksLikeApplicationSurface: looksLikeCurrentFrameApplicationSurface(
+          detectedSite
+        ),
       });
     } catch {
       return;
@@ -468,6 +512,14 @@ async function resumeAutomationIfNeeded(): Promise<void> {
       const s = response.session;
 
       if (!shouldHandleAutomationInCurrentFrame(s, detectedSite)) {
+        if (
+          s.stage === "autofill-form" &&
+          typeof s.controllerFrameId !== "number" &&
+          attempt < maxAttempts - 1
+        ) {
+          await sleep(400);
+          continue;
+        }
         return;
       }
 
@@ -482,6 +534,16 @@ async function resumeAutomationIfNeeded(): Promise<void> {
 
       if (response.shouldResume) {
         await ensureAutomationRunning();
+        return;
+      }
+
+      if (
+        s.stage === "autofill-form" &&
+        typeof s.controllerFrameId !== "number" &&
+        attempt < maxAttempts - 1
+      ) {
+        await sleep(400);
+        continue;
       }
       return;
     }
@@ -797,7 +859,8 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       "completed",
       "Job page opened. Review and apply manually.",
       false,
-      "autofill-form"
+      "autofill-form",
+      "successful"
     );
     return;
   }
@@ -809,7 +872,8 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       "completed",
       "Skipped - already applied.",
       false,
-      "open-apply"
+      "open-apply",
+      "released"
     );
     await closeCurrentTab();
     return;
@@ -997,7 +1061,8 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       "error",
       `No apply button found on this ${getSiteLabel(site)} page.`,
       false,
-      "open-apply"
+      "open-apply",
+      "released"
     );
     return;
   }
@@ -1085,7 +1150,8 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
           "completed",
           `Opened apply page in new tab.`,
           false,
-          "autofill-form"
+          "autofill-form",
+          "handoff"
         );
         await closeCurrentTab();
         return;
@@ -1296,7 +1362,8 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     "completed",
     "Apply button clicked but no application form detected. Review the page manually.",
     false,
-    "autofill-form"
+    "autofill-form",
+    "successful"
   );
 }
 
@@ -1314,7 +1381,8 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       "completed",
       "Application page opened. Review and complete manually.",
       false,
-      "autofill-form"
+      "autofill-form",
+      "successful"
     );
     return;
   }
@@ -1324,7 +1392,8 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       "completed",
       "Skipped - already applied.",
       false,
-      "autofill-form"
+      "autofill-form",
+      "released"
     );
     await closeCurrentTab();
     return;
@@ -1541,7 +1610,8 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       "completed",
       buildAutofillSummary(combinedResult),
       false,
-      "autofill-form"
+      "autofill-form",
+      "successful"
     );
     return;
   }
@@ -1551,7 +1621,8 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       "completed",
       "Application opened. No fields auto-filled - review manually.",
       false,
-      "autofill-form"
+      "autofill-form",
+      "successful"
     );
     return;
   }
@@ -1560,7 +1631,8 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     "completed",
     "Job page opened. No application form detected.",
     false,
-    "autofill-form"
+    "autofill-form",
+    "released"
   );
 }
 
@@ -1818,6 +1890,7 @@ async function uploadResumeIfNeeded(
 ): Promise<ResumeAsset | null> {
   const resume = pickResumeAsset(settings);
   if (!resume) return null;
+  const resumeUploadKey = getResumeAssetUploadKey(resume);
 
   const fileInputs = collectResumeFileInputs();
 
@@ -1836,14 +1909,19 @@ async function uploadResumeIfNeeded(
           input,
           resume.name,
           lastAttemptAt > 0 ? lastAttemptAt : null,
-          now
+          now,
+          undefined,
+          extensionManagedResumeUploads.get(input) === resumeUploadKey
         )
       ) {
         continue;
       }
       recentResumeUploadAttempts.set(input, now);
       try {
-        if (await setFileInputValue(input, resume)) return resume;
+        if (await setFileInputValue(input, resume)) {
+          extensionManagedResumeUploads.set(input, resumeUploadKey);
+          return resume;
+        }
       } catch { /* ignore */ }
     }
     return null;
@@ -1865,7 +1943,9 @@ async function uploadResumeIfNeeded(
         input,
         resume.name,
         lastAttemptAt > 0 ? lastAttemptAt : null,
-        now
+        now,
+        undefined,
+        extensionManagedResumeUploads.get(input) === resumeUploadKey
       )
     ) {
       continue;
@@ -1873,7 +1953,10 @@ async function uploadResumeIfNeeded(
 
     recentResumeUploadAttempts.set(input, now);
     try {
-      if (await setFileInputValue(input, resume)) return resume;
+      if (await setFileInputValue(input, resume)) {
+        extensionManagedResumeUploads.set(input, resumeUploadKey);
+        return resume;
+      }
     } catch { /* ignore */ }
   }
   return null;
@@ -2868,7 +2951,8 @@ function updateStatus(
   phase: AutomationPhase,
   message: string,
   shouldResume: boolean,
-  nextStage: AutomationStage = currentStage
+  nextStage: AutomationStage = currentStage,
+  completionKind?: ManagedSessionCompletionKind
 ): void {
   currentStage = nextStage;
   status = createStatus(status.site, phase, message);
@@ -2885,6 +2969,7 @@ function updateStatus(
       label: currentLabel,
       resumeKind: currentResumeKind,
       profileId: currentProfileId,
+      completionKind,
     })
     .catch(() => { /* ignore */ });
 }
@@ -3086,11 +3171,25 @@ function shouldHandleAutomationInCurrentFrame(
   session: AutomationSession,
   detectedSite: SiteKey | null
 ): boolean {
-  if (IS_TOP_FRAME) {
-    return true;
+  if (session.stage !== "autofill-form") {
+    return IS_TOP_FRAME;
   }
 
-  if (session.stage !== "autofill-form" || session.site === "unsupported") {
+  if (typeof session.controllerFrameId === "number") {
+    if (session.controllerFrameId === 0) {
+      return IS_TOP_FRAME;
+    }
+
+    if (IS_TOP_FRAME) {
+      return false;
+    }
+  }
+
+  if (IS_TOP_FRAME) {
+    return looksLikeCurrentFrameApplicationSurface(session.site);
+  }
+
+  if (session.site === "unsupported") {
     return false;
   }
 

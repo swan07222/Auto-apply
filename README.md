@@ -1,6 +1,6 @@
 # Remote Job Search Starter
 
-Remote Job Search Starter is a Chrome extension built with TypeScript for streamlining multi-site software job searches and reducing repetitive application work. It can open targeted search flows, collect job pages, open application surfaces, autofill common fields, upload the appropriate resume, and reuse previously answered questions.
+Remote Job Search Starter is a Chrome extension built with TypeScript for streamlining multi-site software job searches and reducing repetitive application work. It can open targeted search flows from saved keywords, collect job pages, open application surfaces, autofill common fields, upload the active profile resume, and reuse previously answered questions.
 
 The extension is designed to assist with application prep and form completion. It does not auto-submit applications.
 
@@ -8,11 +8,11 @@ The extension is designed to assist with application prep and form completion. I
 
 The project supports three search modes:
 
-- `Job Boards`: Starts from a supported job board tab and opens search flows for front end, back end, and full stack roles.
+- `Job Boards`: Starts from a supported job board tab and works from the keywords saved in the popup.
 - `Startup Careers`: Opens curated startup career pages by region and scans them for matching roles.
 - `Other Job Sites`: Opens curated regional searches on additional job platforms and scans them for matching roles.
 
-For each run, the extension tracks progress across tabs, limits how many job pages are opened, and attempts to continue automation when a flow moves into a new tab.
+For each run, the extension tracks progress across tabs, limits how many managed job pages are processed, and attempts to continue automation when a flow moves into a new tab.
 
 ## Supported Sources
 
@@ -41,26 +41,28 @@ For each run, the extension tracks progress across tabs, limits how many job pag
 
 ## Core Capabilities
 
-- Opens role-specific searches for `Front End`, `Back End`, and `Full Stack`
-- Stores separate resumes for each resume type
+- Supports multiple named profiles with separate candidate data, resume, remembered answers, and custom preference answers
+- Uses saved keyword lists instead of hard-coded role presets
+- Stores one resume per profile for uploads and AI drafting
 - Stores candidate profile data for common application fields
 - Lets you choose a search region or derive it from the saved country
-- Limits the number of job pages opened in a run
+- Limits how many job pages are actively processed in a run
 - Scans result pages and opens matching job or application pages
 - Attempts to autofill blank fields on supported application forms
-- Uploads the matching saved resume when resume upload is enabled
+- Uploads the active profile resume when resume upload is enabled
 - Remembers answers typed into application questions and reuses them later
+- Lets you manage custom work-preference question and answer pairs directly in the popup
 - Skips jobs that already appear to be applied or submitted
 - Can open ChatGPT to draft longer written responses using job context and the selected resume
 - Pauses when a site presents human verification and resumes after the challenge is cleared
 
 ## How It Works
 
-1. Configure resumes, candidate profile details, region, and job page limits in the extension popup.
+1. Configure a profile, resume, search keywords, candidate details, region, and job page limits in the extension popup.
 2. Start a run in one of the available search modes.
-3. The extension opens targeted search or career pages for the selected role types.
+3. The extension opens targeted search or career pages from the saved keywords.
 4. It collects job links, opens job pages or application pages, and tries to continue into the apply flow.
-5. On supported forms, it fills common fields, reuses remembered answers, and uploads the corresponding resume.
+5. On supported forms, it fills common fields, reuses remembered answers, and uploads the active profile resume.
 6. If a long-form question needs help, it can hand off context to ChatGPT and paste the generated answer back into the form.
 
 ## Build
@@ -98,7 +100,7 @@ If you load the project root, Chrome will use `manifest.json`. If you load `dist
 
 1. Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab.
 2. Open the extension popup.
-3. Confirm your resumes, profile details, and job page limit.
+3. Confirm your active profile, search keywords, profile details, and job page limit.
 4. Leave `Search Mode` set to `Job Boards`.
 5. Start the run.
 
@@ -120,10 +122,12 @@ If you load the project root, Chrome will use `manifest.json`. If you load `dist
 
 The extension stores its working data locally in Chrome extension storage, including:
 
-- Saved resumes
+- Named profiles
+- Per-profile resumes
 - Candidate profile details
 - Search preferences
 - Remembered application answers
+- Custom preference question and answer pairs
 - Temporary automation session state
 
 ## Limitations

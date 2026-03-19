@@ -41,7 +41,7 @@ type BackgroundRequest =
   | { type: "get-tab-session"; tabId: number }
   | { type: "remember-job-context"; context: JobContextSnapshot }
   | { type: "get-job-context" }
-  | { type: "content-ready" }
+  | { type: "content-ready"; looksLikeApplicationSurface?: boolean }
   | {
       type: "status-update";
       status: AutomationStatus;
@@ -50,6 +50,7 @@ type BackgroundRequest =
       label?: string;
       resumeKind?: SpawnTabRequest["resumeKind"];
       profileId?: SpawnTabRequest["profileId"];
+      completionKind?: ManagedSessionCompletionKind;
     }
   | { type: "spawn-tabs"; items: SpawnTabRequest[]; maxJobPages?: number }
   | {
@@ -59,8 +60,14 @@ type BackgroundRequest =
       label?: string;
       resumeKind?: SpawnTabRequest["resumeKind"];
       profileId?: SpawnTabRequest["profileId"];
+      completionKind?: ManagedSessionCompletionKind;
     }
   | { type: "close-current-tab" };
+
+type ManagedSessionCompletionKind =
+  | "successful"
+  | "released"
+  | "handoff";
 
 type AutomationRunState = {
   id: string;
@@ -280,10 +287,24 @@ async function handleMessage(
       }
 
       const session = await getSession(tabId);
+      if (!session) {
+        return {
+          ok: true,
+          shouldResume: false,
+          session: null,
+        };
+      }
+
+      const resolved = await resolveContentReadySession(
+        session,
+        typeof sender.frameId === "number" ? sender.frameId : 0,
+        Boolean(message.looksLikeApplicationSurface)
+      );
+
       return {
         ok: true,
-        shouldResume: Boolean(session?.shouldResume),
-        session,
+        shouldResume: resolved.shouldResume,
+        session: resolved.session,
       };
     }
 
@@ -315,6 +336,13 @@ async function handleMessage(
 
       // FIX: Deduplicate items before opening — uses getSpawnDedupKey to preserve query params
       itemsToOpen = deduplicateSpawnItems(itemsToOpen);
+
+      if (itemsToOpen.length === 0) {
+        return {
+          ok: false,
+          error: "No tabs were available to open.",
+        };
+      }
 
       const baseIndex = currentTab.index ?? 0;
       reserveExtensionSpawnSlots(currentTab.id, itemsToOpen.length);
@@ -385,6 +413,13 @@ async function handleMessage(
         await releaseJobOpeningsForItems(failedJobOpeningItems);
       }
 
+      if (openedCount === 0) {
+        return {
+          ok: false,
+          error: "The browser blocked opening the requested tabs.",
+        };
+      }
+
       for (const runId of queuedRunIds) {
         await resumePendingJobSessionsForRunId(runId);
       }
@@ -450,6 +485,14 @@ async function updateSessionFromMessage(
     : ("shouldResume" in message ? message.shouldResume : undefined) ??
       existingSession?.shouldResume ??
       false;
+  const nextStage = message.stage ?? existingSession?.stage ?? "bootstrap";
+  const controllerFrameId =
+    nextStage === "autofill-form"
+      ? typeof sender.frameId === "number"
+        ? sender.frameId
+        : existingSession?.controllerFrameId
+      : undefined;
+  const completionKind = message.completionKind;
 
   const nextSession: AutomationSession = {
     tabId,
@@ -458,12 +501,13 @@ async function updateSessionFromMessage(
     message: message.status.message,
     updatedAt: message.status.updatedAt,
     shouldResume,
-    stage: message.stage ?? existingSession?.stage ?? "bootstrap",
+    stage: nextStage,
     runId: existingSession?.runId,
     jobSlots: existingSession?.jobSlots,
     label: message.label ?? existingSession?.label,
     resumeKind: message.resumeKind ?? existingSession?.resumeKind,
     profileId: message.profileId ?? existingSession?.profileId,
+    controllerFrameId,
   };
 
   await setSession(nextSession);
@@ -478,8 +522,14 @@ async function updateSessionFromMessage(
     nextSession.runId &&
     isManagedJobSession(nextSession)
   ) {
-    if (isSuccessfulJobCompletion(nextSession)) {
+    if (isSuccessfulJobCompletion(nextSession, completionKind)) {
       await recordSuccessfulJobCompletion(
+        nextSession.runId,
+        nextSession.tabId,
+        sender.tab?.url
+      );
+    } else if (shouldReleaseManagedJobOpening(nextSession, completionKind)) {
+      await releaseManagedJobOpening(
         nextSession.runId,
         nextSession.tabId,
         sender.tab?.url
@@ -1063,6 +1113,50 @@ async function getSession(tabId: number): Promise<AutomationSession | null> {
   return (stored[key] as AutomationSession | undefined) ?? null;
 }
 
+function isFrameBoundSession(session: AutomationSession): boolean {
+  return session.stage === "autofill-form" && session.site !== "unsupported";
+}
+
+async function resolveContentReadySession(
+  session: AutomationSession,
+  senderFrameId: number,
+  looksLikeApplicationSurface: boolean
+): Promise<{ session: AutomationSession; shouldResume: boolean }> {
+  if (!isFrameBoundSession(session)) {
+    return {
+      session,
+      shouldResume: Boolean(session.shouldResume),
+    };
+  }
+
+  if (typeof session.controllerFrameId === "number") {
+    return {
+      session,
+      shouldResume:
+        session.controllerFrameId === senderFrameId &&
+        Boolean(session.shouldResume),
+    };
+  }
+
+  if (!looksLikeApplicationSurface) {
+    return {
+      session,
+      shouldResume: false,
+    };
+  }
+
+  const claimedSession: AutomationSession = {
+    ...session,
+    controllerFrameId: senderFrameId,
+  };
+  await setSession(claimedSession);
+
+  return {
+    session: claimedSession,
+    shouldResume: Boolean(claimedSession.shouldResume),
+  };
+}
+
 async function reserveJobOpeningsForSender(
   sender: chrome.runtime.MessageSender,
   requested: number
@@ -1378,7 +1472,10 @@ function isRateLimitedSession(session: AutomationSession): boolean {
   return session.phase === "error" && isRateLimitMessage(session.message);
 }
 
-function isSuccessfulJobCompletion(session: AutomationSession): boolean {
+function isSuccessfulJobCompletion(
+  session: AutomationSession,
+  completionKind?: ManagedSessionCompletionKind
+): boolean {
   if (
     !isManagedJobSession(session) ||
     session.phase !== "completed"
@@ -1386,12 +1483,46 @@ function isSuccessfulJobCompletion(session: AutomationSession): boolean {
     return false;
   }
 
+  if (completionKind) {
+    return completionKind === "successful";
+  }
+
   const message = session.message.toLowerCase();
 
   return (
     message.includes("review before submitting") ||
     message.includes("application opened. no fields auto-filled") ||
-    message.includes("application page opened. review and complete manually")
+    message.includes("application opened, nothing auto-filled") ||
+    message.includes("application page opened. review and complete manually") ||
+    message.includes("review manually")
+  );
+}
+
+function shouldReleaseManagedJobOpening(
+  session: AutomationSession,
+  completionKind?: ManagedSessionCompletionKind
+): boolean {
+  if (!isManagedJobSession(session)) {
+    return false;
+  }
+
+  if (completionKind) {
+    return completionKind === "released";
+  }
+
+  if (session.phase === "error") {
+    return !isRateLimitedSession(session);
+  }
+
+  if (session.phase !== "completed") {
+    return false;
+  }
+
+  const message = session.message.toLowerCase();
+  return (
+    message.includes("already applied") ||
+    message.includes("no application form detected") ||
+    message.includes("no apply button found")
   );
 }
 
@@ -1411,6 +1542,16 @@ async function markRunRateLimited(runId: string): Promise<void> {
   });
 }
 
+async function resolveManagedJobCompletionKey(
+  tabId: number,
+  fallbackUrl?: string
+): Promise<string> {
+  const rememberedJobContext = await getJobContext(tabId);
+  return getJobDedupKey(
+    rememberedJobContext?.pageUrl ?? fallbackUrl ?? ""
+  );
+}
+
 async function recordSuccessfulJobCompletion(
   runId: string,
   tabId: number,
@@ -1423,9 +1564,9 @@ async function recordSuccessfulJobCompletion(
       return;
     }
 
-    const rememberedJobContext = await getJobContext(tabId);
-    const completionKey = getJobDedupKey(
-      rememberedJobContext?.pageUrl ?? fallbackUrl ?? ""
+    const completionKey = await resolveManagedJobCompletionKey(
+      tabId,
+      fallbackUrl
     );
 
     if (!completionKey) {
@@ -1446,6 +1587,19 @@ async function recordSuccessfulJobCompletion(
       updatedAt: Date.now(),
     });
   });
+}
+
+async function releaseManagedJobOpening(
+  runId: string,
+  tabId: number,
+  fallbackUrl?: string
+): Promise<void> {
+  const completionKey = await resolveManagedJobCompletionKey(tabId, fallbackUrl);
+  if (!completionKey) {
+    return;
+  }
+
+  await releaseJobOpeningsForRunId(runId, [completionKey]);
 }
 
 async function listSessionsForRunId(runId: string): Promise<AutomationSession[]> {
@@ -1515,10 +1669,20 @@ async function resumePendingJobSessionsForRunId(runId: string): Promise<void> {
 
   for (const session of sessionsToResume) {
     try {
-      await chrome.tabs.sendMessage(session.tabId, {
-        type: "start-automation",
+      const message = {
+        type: "start-automation" as const,
         session,
-      });
+      };
+
+      if (typeof session.controllerFrameId === "number") {
+        await chrome.tabs.sendMessage(
+          session.tabId,
+          message,
+          { frameId: session.controllerFrameId }
+        );
+      } else {
+        await chrome.tabs.sendMessage(session.tabId, message);
+      }
     } catch {
       // The content script may still be loading; content-ready will pick this up.
     }

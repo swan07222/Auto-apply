@@ -109,7 +109,6 @@
           <div class="field-grid compact-grid">
             <label class="field">
               <span>Search mode</span>
-              <!-- FIX: option values must exactly match SearchMode type values -->
               <select id="search-mode">
                 <option value="job_board">Job boards</option>
                 <option value="startup_careers">Startup careers</option>
@@ -354,6 +353,74 @@
         </footer>
       </section>
     </main>
+
+    <section
+      id="popup-dialog"
+      class="popup-dialog"
+      data-open="false"
+      aria-hidden="true"
+      inert
+      hidden
+    >
+      <button
+        id="popup-dialog-backdrop"
+        class="popup-dialog-backdrop"
+        type="button"
+        tabindex="-1"
+        aria-hidden="true"
+      ></button>
+
+      <section
+        id="popup-dialog-card"
+        class="popup-dialog-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="popup-dialog-title"
+        aria-describedby="popup-dialog-description"
+      >
+        <div class="popup-dialog-header">
+          <p id="popup-dialog-kicker" class="group-kicker">Edit</p>
+          <h2 id="popup-dialog-title">Dialog</h2>
+          <p id="popup-dialog-description" class="settings-copy"></p>
+        </div>
+
+        <form id="popup-dialog-form" class="popup-dialog-form">
+          <label id="popup-dialog-primary-field" class="field">
+            <span id="popup-dialog-primary-label">Primary</span>
+            <input id="popup-dialog-primary-input" type="text" />
+          </label>
+
+          <label id="popup-dialog-secondary-field" class="field">
+            <span id="popup-dialog-secondary-label">Secondary</span>
+            <textarea id="popup-dialog-secondary-input" rows="4"></textarea>
+          </label>
+
+          <p
+            id="popup-dialog-error"
+            class="popup-dialog-error"
+            role="alert"
+            hidden
+          ></p>
+
+          <div class="popup-dialog-actions">
+            <button
+              id="popup-dialog-cancel-button"
+              class="secondary-button"
+              type="button"
+            >
+              Cancel
+            </button>
+            <button
+              id="popup-dialog-submit-button"
+              class="start-button popup-dialog-submit-button"
+              type="submit"
+            >
+              Save
+            </button>
+          </div>
+        </form>
+      </section>
+    </section>
 
     <script src="popup.js"></script>
   </body>

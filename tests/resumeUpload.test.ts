@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  getResumeAssetUploadKey,
   getSelectedFileName,
   inferResumeKindFromLabel,
   pickResumeAssetForUpload,
@@ -37,8 +38,36 @@ describe("resume upload helpers", () => {
       value: [{ name: "old-resume.pdf" }],
     });
 
-    expect(shouldAttemptResumeUpload(input, "new-resume.pdf", null, 1_000_000)).toBe(true);
-    expect(shouldAttemptResumeUpload(input, "old-resume.pdf", null, 1_000_000)).toBe(false);
+    expect(
+      shouldAttemptResumeUpload(input, "new-resume.pdf", null, 1_000_000)
+    ).toBe(true);
+    expect(
+      shouldAttemptResumeUpload(
+        input,
+        "old-resume.pdf",
+        null,
+        1_000_000,
+        20_000,
+        true
+      )
+    ).toBe(false);
+  });
+
+  it("does not trust a matching file name unless the extension uploaded that resume", () => {
+    const input = document.createElement("input");
+    input.type = "file";
+
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [{ name: "resume.pdf" }],
+    });
+
+    expect(
+      shouldAttemptResumeUpload(input, "resume.pdf", null, 1_000_000)
+    ).toBe(true);
+    expect(
+      shouldAttemptResumeUpload(input, "resume.pdf", null, 1_000_000, 20_000, true)
+    ).toBe(false);
   });
 
   it("respects the retry cooldown and disabled inputs", () => {
@@ -120,5 +149,15 @@ describe("resume upload helpers", () => {
     expect(pickResumeAssetForUpload(settings, "front_end")).toBe(frontEndResume);
     expect(pickResumeAssetForUpload(settings, "back_end")).toBe(fullStackResume);
     expect(pickResumeAssetForUpload(settings)).toBe(fullStackResume);
+  });
+
+  it("creates a stable upload key for the stored extension resume", () => {
+    expect(
+      getResumeAssetUploadKey({
+        name: "Resume.PDF",
+        size: 42.4,
+        updatedAt: 1234.8,
+      })
+    ).toBe("resume.pdf:42:1235");
   });
 });
