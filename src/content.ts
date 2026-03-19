@@ -1,6 +1,5 @@
 // src/content.ts
-// COMPLETE FILE — replace entirely
-// Part 1 of 3
+// COMPLETE FILE — Part 1 of 3
 
 import {
   AiAnswerRequest,
@@ -70,6 +69,10 @@ import {
   truncateText,
 } from "./content/text";
 import {
+  getSelectedFileName,
+  shouldAttemptResumeUpload,
+} from "./content/resumeUpload";
+import {
   findFirstVisibleElement,
   getActionText,
   getNavigationUrl,
@@ -80,6 +83,7 @@ import {
 } from "./content/dom";
 import {
   collectJobDetailCandidates,
+  isAppliedJobText,
   isCurrentPageAppliedJob,
   pickRelevantJobUrls,
 } from "./content/jobSearch";
@@ -107,8 +111,9 @@ type ContentRequest =
 
 const MAX_AUTOFILL_STEPS = 15;
 const OVERLAY_AUTO_HIDE_MS = 10_000;
-const MAX_STAGE_DEPTH = 10; // FIX: Increased for deeper company-site flows
+const MAX_STAGE_DEPTH = 10;
 const MAX_RESUME_TEXT_CHARS = 24_000;
+const IS_TOP_FRAME = window.top === window;
 
 // ─── RESULT HELPERS ──────────────────────────────────────────────────────────
 
@@ -170,6 +175,10 @@ const overlay: {
 
 chrome.runtime.onMessage.addListener(
   (message: ContentRequest, _sender, sendResponse) => {
+    if (!IS_TOP_FRAME) {
+      return false;
+    }
+
     if (message.type === "get-status") {
       sendResponse({ ok: true, status });
       return false;
@@ -239,7 +248,6 @@ async function resumeAutomationIfNeeded(): Promise<void> {
   stageDepth = 0;
   lastNavigationUrl = window.location.href;
 
-  // FIX: More retry attempts and longer wait for session detection
   const maxAttempts = detectedSite ? 30 : 18;
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -259,6 +267,11 @@ async function resumeAutomationIfNeeded(): Promise<void> {
 
     if (response?.session) {
       const s = response.session;
+
+      if (!shouldHandleAutomationInCurrentFrame(s, detectedSite)) {
+        return;
+      }
+
       status = s;
       currentStage = s.stage;
       currentLabel = s.label;
@@ -350,23 +363,16 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
   await waitForHumanVerificationToClear();
 
   const targets = buildSearchTargets(site, window.location.origin);
-  const jobSlots = distributeJobSlots(
-    settings.jobPageLimit,
-    targets.length
-  );
-
-  const items: SpawnTabRequest[] = targets
-    .map((target, index) => ({
-      url: target.url,
-      site,
-      stage: "collect-results" as const,
-      runId: currentRunId,
-      jobSlots: jobSlots[index],
-      message: `Collecting ${target.label} job pages on ${getSiteLabel(site)}...`,
-      label: target.label,
-      resumeKind: target.resumeKind,
-    }))
-    .filter((item) => (item.jobSlots ?? 0) > 0);
+  const items: SpawnTabRequest[] = targets.map((target) => ({
+    url: target.url,
+    site,
+    stage: "collect-results" as const,
+    runId: currentRunId,
+    jobSlots: settings.jobPageLimit,
+    message: `Collecting ${target.label} job pages on ${getSiteLabel(site)}...`,
+    label: target.label,
+    resumeKind: target.resumeKind,
+  }));
 
   const response = await spawnTabs(items);
 
@@ -396,17 +402,19 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
 
   await waitForHumanVerificationToClear();
 
-  // FIX: Give pages more time to render dynamic content — especially startup career pages
+  // FIX: Dice needs longer render wait — its custom web components load slowly
   const renderWaitMs =
     site === "startup" || site === "other_sites"
       ? 5000
-      : site === "monster"
+      : site === "dice"
         ? 5000
-        : 2500;
+        : site === "monster"
+          ? 5000
+          : 2500;
   await sleep(renderWaitMs);
 
-  // FIX: Scroll the page to trigger lazy loading on career sites
-  if (site === "startup" || site === "other_sites") {
+  // FIX: Scroll for Dice too — its cards may lazy-load
+  if (site === "startup" || site === "other_sites" || site === "dice") {
     await scrollPageForLazyContent();
   }
 
@@ -423,16 +431,10 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     return;
   }
 
-  let effectiveLimit: number;
-
-  if (typeof currentJobSlots === "number") {
-    effectiveLimit = Math.max(0, Math.floor(currentJobSlots));
-  } else {
-    effectiveLimit = Math.max(
-      1,
-      Math.floor(settings.jobPageLimit / 3)
-    );
-  }
+  const effectiveLimit =
+    typeof currentJobSlots === "number"
+      ? Math.max(0, Math.floor(currentJobSlots))
+      : Math.max(1, Math.floor(settings.jobPageLimit));
 
   if (effectiveLimit <= 0) {
     updateStatus(
@@ -445,8 +447,39 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     return;
   }
 
+  // FIX: Build a title map for resume-kind inference AND applied-job filtering
+  const candidates = collectJobDetailCandidates(site);
+  const titleMap = new Map<string, string>();
+  const contextMap = new Map<string, string>();
+  for (const c of candidates) {
+    const key = getJobDedupKey(c.url);
+    if (key) {
+      if (c.title) titleMap.set(key, c.title);
+      if (c.contextText) contextMap.set(key, c.contextText);
+    }
+  }
+
+  // FIX: Filter out already-applied jobs BEFORE claiming slots
+  const filteredJobUrls = jobUrls.filter((url) => {
+    const key = getJobDedupKey(url);
+    const ctx = key ? contextMap.get(key) ?? "" : "";
+    const title = key ? titleMap.get(key) ?? "" : "";
+    return !isAppliedJobText(ctx) && !isAppliedJobText(title);
+  });
+
+  if (filteredJobUrls.length === 0) {
+    updateStatus(
+      "completed",
+      `All ${jobUrls.length} jobs on this ${labelPrefix}${getSiteLabel(site)} page were already applied to.`,
+      false,
+      "collect-results"
+    );
+    await closeCurrentTab();
+    return;
+  }
+
   const approvedUrls = await claimJobOpenings(
-    jobUrls,
+    filteredJobUrls,
     effectiveLimit
   );
 
@@ -461,21 +494,11 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     return;
   }
 
-  // FIX: For startup/other_sites, infer resume kind per-job from title
-  const candidates = collectJobDetailCandidates(site);
-  const titleMap = new Map<string, string>();
-  for (const c of candidates) {
-    const key = getJobDedupKey(c.url);
-    if (key && c.title) titleMap.set(key, c.title);
-  }
-
   const items: SpawnTabRequest[] = approvedUrls.map((url) => {
-    // FIX: Infer resume kind from job title for all site types when possible
     let itemResumeKind = currentResumeKind;
     const jobTitle = titleMap.get(getJobDedupKey(url)) ?? "";
     if (jobTitle) {
       const inferred = inferResumeKindFromTitle(jobTitle);
-      // Only override if we have a clear signal (not just full_stack default)
       if (inferred !== "full_stack" || !itemResumeKind) {
         itemResumeKind = inferred;
       }
@@ -520,11 +543,10 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   await closeCurrentTab();
 }
 
-// FIX: Helper to scroll page for lazy-loaded content on career sites
 async function scrollPageForLazyContent(): Promise<void> {
   const totalHeight = document.body.scrollHeight;
   const viewportHeight = window.innerHeight;
-  const steps = Math.min(8, Math.ceil(totalHeight / viewportHeight));
+  const steps = Math.min(10, Math.ceil(totalHeight / viewportHeight));
 
   for (let i = 1; i <= steps; i++) {
     const target = Math.min(totalHeight, (totalHeight / steps) * i);
@@ -532,7 +554,6 @@ async function scrollPageForLazyContent(): Promise<void> {
     await sleep(800);
   }
 
-  // Scroll back to top
   window.scrollTo({ top: 0, behavior: "smooth" });
   await sleep(500);
 }
@@ -590,13 +611,14 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     "open-apply"
   );
   await waitForHumanVerificationToClear();
-  await sleep(2500);
+
+  // FIX: Dice needs extra render time for its web components
+  await sleep(site === "dice" ? 4000 : 2500);
 
   let action: ApplyAction | null = null;
   const scrollPositions = [0, 300, 600, -1, -2, 0, -3, 200];
 
   for (let attempt = 0; attempt < 35; attempt += 1) {
-    // FIX: Check for navigation after each iteration
     if (window.location.href !== urlAtStart) {
       await sleep(2500);
       await waitForHumanVerificationToClear();
@@ -614,7 +636,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
         return;
       }
 
-      // FIX: Recursively try open-apply on the new page
       updateStatus(
         "running",
         "Navigated to new page. Looking for apply button...",
@@ -625,7 +646,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       return;
     }
 
-    // FIX: Try site-specific finders first based on site
+    // FIX: Site-specific apply-button finders first
     if (site === "monster") {
       action = findMonsterApplyAction();
       if (action) break;
@@ -636,7 +657,16 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       if (action) break;
     }
 
-    // FIX: Always try company-site action for all sites
+    // FIX: For Dice, try the generic apply finder with the site hint
+    if (site === "dice") {
+      action = findApplyAction(site, "job-page");
+      if (action) break;
+
+      // FIX: Also check Dice shadow DOM for apply buttons
+      action = findDiceApplyAction();
+      if (action) break;
+    }
+
     action = findCompanySiteAction();
     if (action) break;
 
@@ -656,7 +686,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       return;
     }
 
-    // FIX: More varied scroll patterns
     if (attempt < scrollPositions.length) {
       const pos = scrollPositions[attempt];
       if (pos === -1)
@@ -730,7 +759,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
   const urlBeforeClick = window.location.href;
 
-  // FIX: Check for anchor with href before clicking
   const anchorElement =
     action.element.closest("a") ??
     (action.element instanceof HTMLAnchorElement
@@ -791,7 +819,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
   performClickAction(action.element);
 
-  // FIX: Wait longer and check more thoroughly after click
   for (let wait = 0; wait < 20; wait += 1) {
     await sleep(700);
 
@@ -807,7 +834,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
         return;
       }
 
-      // FIX: If we navigated to a company page, recursively look for apply button
       currentStage = "open-apply";
       updateStatus(
         "running",
@@ -821,9 +847,9 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
     if (site === "indeed" && hasIndeedApplyIframe()) {
       updateStatus(
-        "completed",
-        "Indeed Easy Apply opened. Complete the application in the popup.",
-        false,
+        "running",
+        "Indeed Easy Apply iframe detected. Continuing inside the embedded form...",
+        true,
         "autofill-form"
       );
       return;
@@ -849,9 +875,9 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
     if (hasLikelyApplicationFrame()) {
       updateStatus(
-        "completed",
-        "Application opened in an embedded frame. Review and complete manually.",
-        false,
+        "running",
+        "Embedded application detected. Continuing inside the embedded form...",
+        true,
         "autofill-form"
       );
       return;
@@ -866,7 +892,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
   if (childApplicationTabOpened) return;
 
-  // FIX: Try company site action as a retry before giving up
   const retryCompanyAction = findCompanySiteAction();
   if (retryCompanyAction) {
     updateStatus(
@@ -894,10 +919,11 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     }
   }
 
-  // FIX: Try site-specific retry
   let retryAction: ApplyAction | null = null;
   if (site === "monster") {
     retryAction = findMonsterApplyAction();
+  } else if (site === "dice") {
+    retryAction = findDiceApplyAction() ?? findApplyAction(site, "job-page");
   } else {
     retryAction = findApplyAction(site, "job-page");
   }
@@ -947,6 +973,95 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     false,
     "autofill-form"
   );
+}
+
+// FIX: Dice-specific apply button finder — handles shadow DOM web components
+function findDiceApplyAction(): ApplyAction | null {
+  // Try custom web components
+  const applyComponents = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "apply-button-wc, [data-cy='apply-button'], [data-cy*='apply'], [class*='apply-button'], [class*='ApplyButton']"
+    )
+  );
+
+  for (const component of applyComponents) {
+    const root = component.shadowRoot ?? component;
+
+    const btn = root.querySelector<HTMLElement>(
+      "a[href], button, input[type='submit'], [role='button']"
+    );
+
+    if (btn && isElementVisible(btn)) {
+      const url = getNavigationUrl(btn);
+      if (url) {
+        return {
+          type: "navigate",
+          url,
+          description: cleanText(getActionText(btn)) || "Dice apply button",
+        };
+      }
+      return {
+        type: "click",
+        element: btn,
+        description: cleanText(getActionText(btn)) || "Dice apply button",
+      };
+    }
+
+    if (isElementVisible(component)) {
+      const url = getNavigationUrl(component);
+      if (url) {
+        return {
+          type: "navigate",
+          url,
+          description: cleanText(getActionText(component)) || "Dice apply button",
+        };
+      }
+      return {
+        type: "click",
+        element: component,
+        description: cleanText(getActionText(component)) || "Dice apply button",
+      };
+    }
+  }
+
+  // Scan all shadow roots for apply buttons
+  const allHosts = Array.from(document.querySelectorAll<HTMLElement>("*")).filter(
+    (el) => el.shadowRoot
+  );
+
+  for (const host of allHosts) {
+    if (!host.shadowRoot) continue;
+    const applyBtn = host.shadowRoot.querySelector<HTMLElement>(
+      "a[href*='apply'], button[class*='apply'], [data-cy*='apply'], [aria-label*='apply' i]"
+    );
+
+    if (applyBtn && isElementVisible(applyBtn)) {
+      const text = cleanText(getActionText(applyBtn)).toLowerCase();
+      if (
+        text.includes("save") ||
+        text.includes("share") ||
+        text.includes("alert")
+      ) {
+        continue;
+      }
+
+      const url = getNavigationUrl(applyBtn);
+      if (url) {
+        return {
+          type: "navigate",
+          url,
+          description: text || "Dice apply button",
+        };
+      }
+      return {
+        type: "click",
+        element: applyBtn,
+        description: text || "Dice apply button",
+      };
+    }
+  }
+
+  return null;
 }
 // src/content.ts
 // Part 2 of 3 — continues from Part 1
@@ -1048,7 +1163,6 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       return;
     }
 
-    // FIX: Try company site action during autofill for ALL sites
     const companySiteAction = findCompanySiteAction();
     if (companySiteAction) {
       noProgressCount = 0;
@@ -1074,7 +1188,6 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       performClickAction(companySiteAction.element);
       await sleep(2800);
 
-      // FIX: After clicking company site link, check if we navigated
       if (window.location.href !== previousUrl) {
         await waitForHumanVerificationToClear();
         currentStage = "open-apply";
@@ -1111,7 +1224,6 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       performClickAction(followUp.element);
       await sleep(2800);
 
-      // FIX: After clicking follow-up, check if we navigated
       if (window.location.href !== previousUrl) {
         await waitForHumanVerificationToClear();
         if (hasLikelyApplicationSurface(site)) {
@@ -1300,10 +1412,11 @@ async function waitForJobDetailUrls(
 ): Promise<string[]> {
   const isCareerSite =
     site === "startup" || site === "other_sites";
+  // FIX: Dice also gets aggressive scanning like career sites
+  const needsAggressiveScan = isCareerSite || site === "dice";
   let careerSurfaceAttempts = 0;
 
-  // FIX: More attempts for dynamic pages, especially career sites
-  const maxAttempts = isCareerSite ? 50 : 35;
+  const maxAttempts = needsAggressiveScan ? 50 : 35;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const candidates = collectJobDetailCandidates(site);
@@ -1330,7 +1443,6 @@ async function waitForJobDetailUrls(
         }
       }
 
-      // FIX: More aggressive scrolling patterns for career sites
       if (attempt % 5 === 0) {
         window.scrollTo({
           top: document.body.scrollHeight,
@@ -1355,8 +1467,32 @@ async function waitForJobDetailUrls(
         });
       }
 
-      // FIX: Try clicking "show more" / "load more" buttons on career sites
       if (attempt === 10 || attempt === 20 || attempt === 30) {
+        tryClickLoadMoreButton();
+      }
+    } else if (site === "dice") {
+      // FIX: Dice-specific scrolling to trigger lazy card rendering
+      if (attempt % 4 === 0) {
+        window.scrollTo({
+          top: document.body.scrollHeight,
+          behavior: "smooth",
+        });
+      } else if (attempt % 4 === 1) {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } else if (attempt % 4 === 2) {
+        window.scrollTo({
+          top: document.body.scrollHeight / 2,
+          behavior: "smooth",
+        });
+      } else {
+        window.scrollTo({
+          top: document.body.scrollHeight / 3,
+          behavior: "smooth",
+        });
+      }
+
+      // FIX: Try clicking "Show more" on Dice
+      if (attempt === 8 || attempt === 16 || attempt === 24) {
         tryClickLoadMoreButton();
       }
     } else {
@@ -1590,7 +1726,6 @@ function collectCareerListingActions(): Array<{
   return actions.sort((a, b) => b.score - a.score);
 }
 
-// FIX: Helper to click "load more" / "show more" buttons on career pages
 function tryClickLoadMoreButton(): void {
   const loadMoreSelectors = [
     "button",
@@ -1614,7 +1749,10 @@ function tryClickLoadMoreButton(): void {
           text.includes("more openings") ||
           text.includes("view all") ||
           text.includes("see all") ||
-          text.includes("show all")
+          text.includes("show all") ||
+          // FIX: Dice-specific load more patterns
+          text.includes("next page") ||
+          text.includes("load next")
         ) {
           performClickAction(el);
           return;
@@ -1840,7 +1978,7 @@ function clearChatGptComposer(
     document.execCommand("selectAll", false);
     document.execCommand("delete", false);
   } catch {
-    // Ignore and fall back to DOM replacement.
+    // Ignore
   }
 
   composer.replaceChildren();
@@ -2378,6 +2516,8 @@ async function copyTextToClipboard(
     return false;
   }
 }
+// src/content.ts
+// Part 3 of 3 — continues from Part 2
 
 // ─── AUTOFILL HELPERS ────────────────────────────────────────────────────────
 
@@ -2438,6 +2578,8 @@ async function autofillVisibleApplication(
 ): Promise<AutofillResult> {
   const result = createEmptyAutofillResult();
 
+  // FIX: Always attempt resume upload first — even if autoUploadResumes is
+  // technically on, ensure we actually find and fill the file input
   if (settings.autoUploadResumes) {
     const uploaded = await uploadResumeIfNeeded(settings);
     if (uploaded) result.uploadedResume = uploaded;
@@ -2498,16 +2640,58 @@ async function uploadResumeIfNeeded(
   if (!resume) return null;
 
   const fileInputs = collectResumeFileInputs();
+
+  // FIX: If no file inputs found via deep matching, also check for
+  // visually-hidden file inputs that might be triggered by a button
+  if (fileInputs.length === 0) {
+    const hiddenFileInputs = Array.from(
+      document.querySelectorAll<HTMLInputElement>("input[type='file']")
+    );
+    for (const input of hiddenFileInputs) {
+      if (input.disabled) continue;
+      const lastAttemptAt = recentResumeUploadAttempts.get(input) ?? 0;
+      const now = Date.now();
+      if (
+        !shouldAttemptResumeUpload(
+          input,
+          resume.name,
+          lastAttemptAt > 0 ? lastAttemptAt : null,
+          now
+        )
+      ) {
+        continue;
+      }
+      recentResumeUploadAttempts.set(input, now);
+      try {
+        if (await setFileInputValue(input, resume)) return resume;
+      } catch { /* ignore */ }
+    }
+    return null;
+  }
+
   const usable = fileInputs.filter((i) =>
     shouldUseFileInputForResume(i, fileInputs.length)
   );
 
-  for (const input of usable) {
-    if (input.files?.length) continue;
+  // FIX: If no usable inputs after filtering, try all file inputs as fallback
+  const targets = usable.length > 0 ? usable : fileInputs;
+
+  for (const input of targets) {
     const lastAttemptAt =
       recentResumeUploadAttempts.get(input) ?? 0;
-    if (Date.now() - lastAttemptAt < 20_000) continue;
-    recentResumeUploadAttempts.set(input, Date.now());
+    const now = Date.now();
+    if (
+      !shouldAttemptResumeUpload(
+        input,
+        resume.name,
+        lastAttemptAt > 0 ? lastAttemptAt : null,
+        now
+      )
+    ) {
+      continue;
+    }
+
+    recentResumeUploadAttempts.set(input, now);
     try {
       if (await setFileInputValue(input, resume)) return resume;
     } catch { /* ignore */ }
@@ -2521,9 +2705,9 @@ function pickResumeAsset(
   if (currentResumeKind && settings.resumes[currentResumeKind])
     return settings.resumes[currentResumeKind] ?? null;
   for (const kind of [
+    "full_stack",
     "front_end",
     "back_end",
-    "full_stack",
   ] as ResumeKind[]) {
     if (settings.resumes[kind]) return settings.resumes[kind]!;
   }
@@ -2544,10 +2728,54 @@ async function setFileInputValue(
     });
     const transfer = new DataTransfer();
     transfer.items.add(file);
-    input.files = transfer.files;
+
+    // FIX: Try multiple approaches to set the files property
+    const filesDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "files"
+    );
+    if (filesDescriptor?.set) {
+      filesDescriptor.set.call(input, transfer.files);
+    } else {
+      input.files = transfer.files;
+    }
+
+    // FIX: Dispatch a comprehensive set of events to ensure frameworks detect the change
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
-    return true;
+
+    // FIX: Some React-based forms need these additional events
+    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    );
+    if (nativeInputValueSetter?.set) {
+      // Trigger React's synthetic event system
+      input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+    }
+
+    input.dispatchEvent(new Event("blur", { bubbles: true }));
+
+    // FIX: Also dispatch a drop event — some upload widgets listen for drag-and-drop
+    try {
+      const dropEvent = new DragEvent("drop", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: transfer,
+      });
+      input.dispatchEvent(dropEvent);
+    } catch {
+      // DragEvent constructor may not be supported in all contexts
+    }
+
+    // FIX: Give the framework a moment to process the file
+    await sleep(500);
+
+    const success =
+      Boolean(input.files?.length) ||
+      getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase();
+
+    return success;
   } catch {
     return false;
   }
@@ -2561,7 +2789,13 @@ function shouldUseFileInputForResume(
   if (ctx.includes("cover letter") || ctx.includes("transcript"))
     return false;
   if (ctx.includes("resume") || ctx.includes("cv")) return true;
-  return count === 1;
+  // FIX: Also match "upload" and "document" when it's the only file input
+  if (count === 1) return true;
+  // FIX: Match generic upload fields when context suggests application
+  if (ctx.includes("upload") || ctx.includes("attachment") || ctx.includes("document")) {
+    return true;
+  }
+  return false;
 }
 
 function collectEssayFieldsNeedingAi(
@@ -3055,8 +3289,6 @@ function buildChatGptRequestUrl(requestId: string): string {
   url.searchParams.set("remoteJobSearchRequest", requestId);
   return url.toString();
 }
-// src/content.ts
-// Part 3 of 3 — continues from Part 2
 
 // ─── FIELD ANSWER LOGIC ─────────────────────────────────────────────────────
 
@@ -3168,7 +3400,6 @@ function deriveProfileAnswer(
   if (autocomplete === "organization") return p.currentCompany || null;
   if (autocomplete === "url") return p.portfolioUrl || null;
 
-  // FIX: More comprehensive field matching with descriptor
   if (
     matchesDescriptor(d, ["first name", "given name", "firstname", "givenname"])
   )
@@ -3360,11 +3591,7 @@ async function applyGeneratedEssayAnswer(
     );
   }
 
-  const appliedValue = cleanText(
-    field instanceof HTMLTextAreaElement
-      ? field.value
-      : field.value
-  );
+  const appliedValue = cleanText(field.value);
 
   return (
     appliedValue === cleanText(answer) ||
@@ -3667,7 +3894,6 @@ function isLikelyApplicationField(
   const descriptor = getFieldDescriptor(field, question);
   if (!descriptor) return false;
 
-  // FIX: Exclude search-related fields
   if (
     matchesDescriptor(descriptor, [
       "job title",
@@ -3856,7 +4082,6 @@ async function claimJobOpenings(
   urls: string[],
   requested: number
 ): Promise<string[]> {
-  // FIX: Deduplicate URLs before sending to background
   const uniqueMap = new Map<string, string>();
   for (const url of urls) {
     const key = getJobDedupKey(url);
@@ -3887,7 +4112,7 @@ async function claimJobOpenings(
       return response.approvedUrls as string[];
     }
   } catch {
-    // Fall back to local dedupe if the background claim fails.
+    // Fall back to local dedupe
   }
 
   return candidates
@@ -3908,20 +4133,6 @@ function navigateCurrentTab(url: string): void {
   if (!n) throw new Error("Invalid URL.");
   lastNavigationUrl = n;
   window.location.assign(n);
-}
-
-function distributeJobSlots(
-  totalSlots: number,
-  targetCount: number
-): number[] {
-  const tc = Math.max(0, Math.floor(targetCount)),
-    ts = Math.max(0, Math.floor(totalSlots));
-  const slots = new Array<number>(tc).fill(0);
-  for (let i = 0; i < ts; i++) {
-    if (tc === 0) break;
-    slots[i % tc] += 1;
-  }
-  return slots;
 }
 
 // ─── STATUS / OVERLAY ────────────────────────────────────────────────────────
@@ -3966,6 +4177,7 @@ function createInitialStatus(): AutomationStatus {
 }
 
 function ensureOverlay(): void {
+  if (!IS_TOP_FRAME) return;
   if (overlay.host || !document.documentElement) return;
   const host = document.createElement("div");
   host.id = "remote-job-search-overlay-host";
@@ -3994,6 +4206,10 @@ function ensureOverlay(): void {
 }
 
 function renderOverlay(): void {
+  if (!IS_TOP_FRAME) {
+    return;
+  }
+
   if (overlayHideTimerId !== null) {
     window.clearTimeout(overlayHideTimerId);
     overlayHideTimerId = null;
@@ -4119,4 +4335,30 @@ function buildAutofillSummary(
   return parts.length === 0
     ? "Application opened, nothing auto-filled."
     : `${parts.join(", ")}. Review before submitting.`;
+}
+
+function shouldHandleAutomationInCurrentFrame(
+  session: AutomationSession,
+  detectedSite: SiteKey | null
+): boolean {
+  if (IS_TOP_FRAME) {
+    return true;
+  }
+
+  if (session.stage !== "autofill-form" || session.site === "unsupported") {
+    return false;
+  }
+
+  const looksLikeApplyFrame =
+    isLikelyApplyUrl(window.location.href, session.site) ||
+    hasLikelyApplicationForm() ||
+    hasLikelyApplicationFrame() ||
+    hasLikelyApplicationPageContent() ||
+    collectResumeFileInputs().length > 0;
+
+  if (!looksLikeApplyFrame) {
+    return false;
+  }
+
+  return detectedSite === session.site || isLikelyApplyUrl(window.location.href, session.site);
 }

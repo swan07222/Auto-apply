@@ -69,6 +69,7 @@ export function getNavigationUrl(el: HTMLElement): string | null {
   const dataUrlAttributes = [
     "data-href",
     "data-url",
+    "data-to",
     "data-apply-url",
     "data-apply-href",
     "data-link",
@@ -123,7 +124,7 @@ export function getNavigationUrl(el: HTMLElement): string | null {
       continue;
     }
 
-    if (!/(href|url|link|target|dest|redirect|navigate|action)/i.test(name)) {
+    if (!/(href|url|link|target|dest|redirect|navigate|action|(^|-)to$)/i.test(name)) {
       continue;
     }
 

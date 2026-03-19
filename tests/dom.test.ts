@@ -37,6 +37,7 @@ describe("dom helpers", () => {
     document.body.innerHTML = `
       <a id="anchor" href="/apply#step-1">Apply</a>
       <button id="data" data-apply-url="https://company.example.com/jobs/apply">Apply on company site</button>
+      <button id="data-to" data-to="/candidate/apply">Continue</button>
       <button id="onclick" onclick="window.open('https://jobs.example.com/opening/123')">Open</button>
       <form action="https://company.example.com/candidate/submit">
         <button id="form-action" formaction="https://company.example.com/candidate/submit">Continue</button>
@@ -48,6 +49,9 @@ describe("dom helpers", () => {
     );
     expect(getNavigationUrl(document.querySelector("#data") as HTMLButtonElement)).toBe(
       "https://company.example.com/jobs/apply"
+    );
+    expect(getNavigationUrl(document.querySelector("#data-to") as HTMLButtonElement)).toBe(
+      "https://example.com/candidate/apply"
     );
     expect(getNavigationUrl(document.querySelector("#onclick") as HTMLButtonElement)).toBe(
       "https://jobs.example.com/opening/123"

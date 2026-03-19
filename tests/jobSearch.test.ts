@@ -48,6 +48,32 @@ describe("job search candidate filtering", () => {
     ]);
   });
 
+  it("keeps fallback generic jobs after preferred matches so boards can fill the requested limit", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://www.ziprecruiter.com/jobs/front-end-engineer-1?jid=fe-1",
+        title: "Front End Engineer",
+        contextText: "Posted today.",
+      },
+      {
+        url: "https://www.ziprecruiter.com/jobs/software-engineer-2?jid=se-2",
+        title: "Software Engineer",
+        contextText: "Posted today.",
+      },
+      {
+        url: "https://www.ziprecruiter.com/jobs/software-engineer-3?jid=se-3",
+        title: "Software Engineer II",
+        contextText: "Posted 2 days ago.",
+      },
+    ];
+
+    expect(pickRelevantJobUrls(candidates, "ziprecruiter", "front_end", "3d")).toEqual([
+      "https://www.ziprecruiter.com/jobs/front-end-engineer-1?jid=fe-1",
+      "https://www.ziprecruiter.com/jobs/software-engineer-2?jid=se-2",
+      "https://www.ziprecruiter.com/jobs/software-engineer-3?jid=se-3",
+    ]);
+  });
+
   it("accepts Monster detail URLs and rejects listing URLs", () => {
     expect(
       isLikelyJobDetailUrl(
@@ -161,6 +187,8 @@ describe("job search candidate filtering", () => {
     expect(
       isAppliedJobText("Application submitted. You applied 2 days ago.")
     ).toBe(true);
+    expect(isAppliedJobText("Applied")).toBe(true);
+    expect(isAppliedJobText("Previously applied")).toBe(true);
     expect(isAppliedJobText("Applied Scientist, Search Ranking")).toBe(false);
   });
 });

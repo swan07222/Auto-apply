@@ -49490,8 +49490,7 @@
     "reqid",
     "id",
     "posting_id",
-    "req_id",
-    "lk"
+    "req_id"
   ];
   function getJobDedupKey(url) {
     const raw = url.trim().toLowerCase();
@@ -49501,6 +49500,29 @@
       const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
       let path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
       path = path.replace(/\/job-opening\//, "/job-openings/").replace(/\/jobs\/search$/, "/jobs").replace(/\/+/g, "/");
+      if (hostname.includes("ziprecruiter")) {
+        const jid = parsed.searchParams.get("jid");
+        if (jid) return `ziprecruiter:jid:${jid.toLowerCase()}`;
+        if (path.startsWith("/c/") || path.startsWith("/k/") || path.includes("/job-details/")) {
+          return `${hostname}${path}`;
+        }
+        const lk = parsed.searchParams.get("lk");
+        if (lk) return `ziprecruiter:lk:${lk.toLowerCase()}`;
+        return `${hostname}${path}`;
+      }
+      if (hostname.includes("dice")) {
+        const m1 = path.match(/\/job-detail\/([a-f0-9-]{8,})/i);
+        if (m1) return `dice:job:${m1[1].toLowerCase()}`;
+        const m2 = path.match(/\/jobs\/detail\/([a-f0-9-]{8,})/i);
+        if (m2) return `dice:job:${m2[1].toLowerCase()}`;
+        const m3 = path.match(/\/([a-f0-9]{24,})/i);
+        if (m3) return `dice:job:${m3[1].toLowerCase()}`;
+      }
+      if (hostname.includes("monster")) {
+        path = path.replace(/\/job-opening\//, "/job-openings/");
+        const jobId = parsed.searchParams.get("jobid") ?? parsed.searchParams.get("job_id");
+        if (jobId) return `${hostname}${path}?jobid=${jobId.toLowerCase()}`;
+      }
       for (const param of IDENTIFYING_PARAMS) {
         const value = parsed.searchParams.get(param);
         if (value) {
@@ -49802,6 +49824,7 @@
     const dataUrlAttributes = [
       "data-href",
       "data-url",
+      "data-to",
       "data-apply-url",
       "data-apply-href",
       "data-link",
@@ -49848,7 +49871,7 @@
       ].includes(name)) {
         continue;
       }
-      if (!/(href|url|link|target|dest|redirect|navigate|action)/i.test(name)) {
+      if (!/(href|url|link|target|dest|redirect|navigate|action|(^|-)to$)/i.test(name)) {
         continue;
       }
       const normalized = normalizeUrl(value);
@@ -50314,6 +50337,37 @@
     return root2 instanceof ShadowRoot && root2.host instanceof HTMLElement && isElementVisible(root2.host);
   }
 
+  // src/content/resumeUpload.ts
+  function getSelectedFileName(input) {
+    const fileName = input.files?.[0]?.name?.trim();
+    if (fileName) {
+      return fileName;
+    }
+    const value = input.value.trim();
+    if (!value) {
+      return "";
+    }
+    const lastSlashIndex = Math.max(value.lastIndexOf("\\"), value.lastIndexOf("/"));
+    return lastSlashIndex >= 0 ? value.slice(lastSlashIndex + 1).trim() : value;
+  }
+  function shouldAttemptResumeUpload(input, assetName, lastAttemptAt, now = Date.now(), cooldownMs = 2e4) {
+    if (input.disabled) {
+      return false;
+    }
+    if (lastAttemptAt !== null && now - lastAttemptAt < cooldownMs) {
+      return false;
+    }
+    const currentFileName = normalizeFileName(getSelectedFileName(input));
+    const desiredFileName = normalizeFileName(assetName);
+    if (currentFileName && desiredFileName && currentFileName === desiredFileName) {
+      return false;
+    }
+    return true;
+  }
+  function normalizeFileName(value) {
+    return value.trim().toLowerCase();
+  }
+
   // src/content/jobSearch.ts
   var JOB_DETAIL_QUERY_PARAMS = [
     "gh_jid",
@@ -50404,6 +50458,10 @@
               "[data-testid*='job']",
               "[class*='job_result']",
               "[class*='jobList']",
+              "[class*='job-listing']",
+              "[class*='JobListing']",
+              "[class*='job_content']",
+              "[class*='JobContent']",
               "article",
               "section",
               "li"
@@ -50413,19 +50471,24 @@
               "a[href*='/job/' i]",
               "a[href*='/job-details/' i]",
               "a[href*='/k/' i]",
-              "a[href*='?jid=' i]",
+              "a[href*='jid=' i]",
               "a[href*='/c/' i][href*='/job/' i]",
               "a[data-testid*='job-title']",
+              "a[data-testid='job-title']",
               "a[class*='job']",
               "a[class*='job_link']",
-              "a[data-testid='job-title']"
+              // FIX: Additional ZipRecruiter anchor patterns
+              "a[href*='/t-']",
+              "a[href*='mid=']"
             ],
             [
               "h1",
               "h2",
               "h3",
               "[data-testid*='job-title']",
-              "[class*='job_title']"
+              "[class*='job_title']",
+              "[class*='jobTitle']",
+              "[class*='job-title']"
             ]
           ),
           ...collectCandidatesFromAnchors([
@@ -50433,21 +50496,64 @@
             "a[href*='/job/' i]",
             "a[href*='/job-details/' i]",
             "a[href*='/k/' i]",
-            "a[href*='?jid=' i]",
+            "a[href*='jid=' i]",
             "a[href*='/c/' i][href*='/job/' i]",
             "a[data-testid*='job-title']",
-            "a[data-testid='job-title']"
+            "a[data-testid='job-title']",
+            "a[href*='/t-']"
           ]),
-          ...collectZipRecruiterCardCandidates()
+          ...collectZipRecruiterCardCandidates(),
+          // FIX: Also collect from data attributes that contain job IDs
+          ...collectZipRecruiterDataAttributeCandidates()
         ]);
       case "dice":
-        return dedupeJobCandidates(
-          collectCandidatesFromAnchors([
+        return dedupeJobCandidates([
+          // FIX: Dice uses custom web components — collect from shadow DOM
+          ...collectDiceSearchCardCandidates(),
+          ...collectCandidatesFromAnchors([
             "a[href*='/job-detail/']",
             "a[href*='/jobs/detail/']",
-            "a[data-cy*='job']"
-          ])
-        );
+            "a[data-cy*='job']",
+            "a[data-id]",
+            // FIX: Additional Dice selectors
+            "a.card-title-link",
+            "a[class*='card-title']",
+            "a[class*='job-title']",
+            "a[data-testid*='job']"
+          ]),
+          ...collectCandidatesFromContainers(
+            [
+              "[data-cy*='search-card']",
+              "[data-testid*='search-card']",
+              "[class*='search-card']",
+              "[class*='SearchCard']",
+              "[class*='job-card']",
+              "[class*='JobCard']",
+              ".dhi-search-cards-widget .card",
+              "article",
+              "li"
+            ],
+            [
+              "a[href*='/job-detail/']",
+              "a[href*='/jobs/detail/']",
+              "a[data-cy*='job']",
+              "a.card-title-link",
+              "a[class*='card-title']",
+              "a[class*='job-title']"
+            ],
+            [
+              "h1",
+              "h2",
+              "h3",
+              "h5",
+              "[data-cy*='title']",
+              "[class*='card-title']",
+              "[class*='job-title']",
+              "[class*='jobTitle']",
+              "a.card-title-link"
+            ]
+          )
+        ]);
       case "monster":
         return dedupeJobCandidates([
           ...collectCandidatesFromContainers(
@@ -50467,7 +50573,6 @@
               "[class*='JobCardStyle']",
               "[class*='flip-card']",
               "[class*='job-search-resultsstyle']",
-              // FIX: Additional Monster container patterns
               "[class*='job-search-result']",
               "[class*='JobSearchResult']",
               "[class*='job-list-item']",
@@ -50493,7 +50598,6 @@
               "a[class*='title']",
               "a[data-bypass]",
               "a[href*='?jobid=']",
-              // FIX: Additional Monster anchor patterns
               "a[href*='job_id=']",
               "a[href*='monster'][href*='/job']"
             ],
@@ -50546,7 +50650,6 @@
               "[class*='vacancy']",
               "[class*='listing']",
               "[class*='opportunity']",
-              // FIX: Additional career site container patterns
               "[class*='career']",
               "[class*='Career']",
               "[class*='openings']",
@@ -50650,7 +50753,8 @@
     if (!resumeKind) {
       return sortCandidatesByRecency(eligible, datePostedWindow).map((candidate) => candidate.url);
     }
-    const scored = eligible.map((candidate, index) => ({
+    const fallbackPool = site === "startup" || site === "other_sites" ? eligible.filter((candidate) => looksLikeTechnicalRoleTitle(candidate.title)) : eligible;
+    const scored = fallbackPool.map((candidate, index) => ({
       candidate,
       index,
       score: scoreJobTitleForResume(candidate.title, resumeKind),
@@ -50659,7 +50763,12 @@
     const preferred = scored.filter((entry) => entry.score > 0).sort(
       (a, b) => b.score - a.score || comparePostedAgeHours(a.ageHours, b.ageHours, datePostedWindow) || a.index - b.index
     ).map((entry) => entry.candidate.url);
-    return preferred.length > 0 ? preferred : sortCandidatesByRecency(eligible, datePostedWindow).map((candidate) => candidate.url);
+    if (preferred.length === 0) {
+      return sortCandidatesByRecency(fallbackPool, datePostedWindow).map((candidate) => candidate.url);
+    }
+    const preferredSet = new Set(preferred);
+    const fallback = sortCandidatesByRecency(fallbackPool, datePostedWindow).map((candidate) => candidate.url).filter((url) => !preferredSet.has(url));
+    return [...preferred, ...fallback];
   }
   function isLikelyJobDetailUrl(site, url, text, contextText = "") {
     if (!site) {
@@ -50687,10 +50796,41 @@
     switch (site) {
       case "indeed":
         return lowerUrl.includes("/viewjob") || lowerUrl.includes("/rc/clk") || lowerUrl.includes("/pagead/clk");
-      case "ziprecruiter":
-        return /[?&]lk=/i.test(lowerUrl) || lowerUrl.includes("?jid=") || lowerUrl.includes("/job-details/") || lowerUrl.includes("/k/") || lowerUrl.includes("/c/") && lowerUrl.includes("/job/");
-      case "dice":
-        return lowerUrl.includes("/job-detail/") || lowerUrl.includes("/jobs/detail/");
+      // FIX: Completely rewritten ZipRecruiter URL matching
+      case "ziprecruiter": {
+        if (lowerUrl.includes("/jobs-search") || lowerUrl.includes("/candidate/") || lowerUrl.includes("/post-a-job") || lowerUrl.includes("/salaries/") || /\/jobs\/?$/i.test(lowerUrl) || /\/jobs\?(?!.*(?:jid|lk)=)/i.test(lowerUrl)) {
+          return false;
+        }
+        if (/[?&]jid=/i.test(lowerUrl)) return true;
+        if (/[?&]lk=/i.test(lowerUrl)) return true;
+        if (lowerUrl.includes("/job-details/")) return true;
+        if (/\/k\/[^/?#]+/i.test(lowerUrl)) return true;
+        if (/\/c\/[^/]+\/job\//i.test(lowerUrl)) return true;
+        if (/ziprecruiter\.[a-z.]+\/jobs\/[^/?#]{4,}/i.test(lowerUrl)) {
+          if (!lowerUrl.includes("/jobs/search") && !lowerUrl.includes("/jobs/browse")) {
+            return true;
+          }
+        }
+        if (/\/t-[^/?#]+/i.test(lowerUrl) && lowerUrl.includes("ziprecruiter")) {
+          return true;
+        }
+        return false;
+      }
+      // FIX: Expanded Dice URL matching
+      case "dice": {
+        if (lowerUrl.includes("/job-detail/")) return true;
+        if (lowerUrl.includes("/jobs/detail/")) return true;
+        if (/dice\.com\/.*\/[a-f0-9-]{8,}/i.test(lowerUrl)) {
+          if (lowerUrl.includes("/jobs?") || /\/jobs\/?$/i.test(lowerUrl) || lowerUrl.includes("/jobs/q-")) {
+            return false;
+          }
+          return true;
+        }
+        if (lowerUrl.includes("dice.com") && /\/[a-f0-9]{24,}/i.test(lowerUrl)) {
+          return true;
+        }
+        return false;
+      }
       case "monster": {
         if (/\/jobs\/?$/i.test(lowerUrl) || lowerUrl.includes("/jobs/search") || lowerUrl.includes("/jobs/browse") || lowerUrl.includes("/salary/") || lowerUrl.includes("/career-advice/") || lowerUrl.includes("/company/") || lowerUrl.includes("/profile/") || lowerUrl.includes("/account/")) {
           return false;
@@ -50874,7 +51014,6 @@
       "embedded",
       "firmware",
       "network",
-      // FIX: Additional role title keywords
       "product engineer",
       "staff engineer",
       "senior engineer",
@@ -50899,18 +51038,32 @@
       return false;
     }
     return [
+      /^\s*applied\s*$/i,
       /\balready applied\b/,
+      /\bpreviously applied\b/,
+      /\byou already applied\b/,
       /\byou applied\b/,
       /\byou(?:'ve| have)? applied\b/,
       /\bapplication submitted\b/,
       /\bapplication sent\b/,
+      /\balready submitted\b/,
       /\bapplication status:\s*applied\b/,
       /\bjob status:\s*applied\b/,
       /\bjob activity:\s*applied\b/,
       /\bcandidate status:\s*applied\b/,
       /\bapplied on \d/,
       /\bapplied\s+\d+\s+(minute|hour|day|week|month)s?\s+ago\b/,
-      /\bstatus:\s*applied\b/
+      /\bstatus:\s*applied\b/,
+      /\bapplied\b(?=\s*(?:[|,.:;)\]]|$))/,
+      // FIX: ZipRecruiter badge patterns
+      /\bapplied\s*✓/i,
+      /✓\s*applied\b/i,
+      /\bapplication\s+complete\b/i,
+      /\byour application was sent\b/i,
+      /\bapplication received\b/i,
+      // FIX: Dice applied patterns
+      /\bapplied\s+to this job\b/i,
+      /\bapplied\s+for this\b/i
     ].some((pattern) => pattern.test(normalized));
   }
   function isCurrentPageAppliedJob() {
@@ -50929,7 +51082,6 @@
       } catch {
       }
     }
-    let joinedLinkSelectors = "";
     const validLinkSelectors = [];
     for (const sel of linkSelectors) {
       try {
@@ -50938,8 +51090,7 @@
       } catch {
       }
     }
-    joinedLinkSelectors = validLinkSelectors.join(",");
-    let joinedTitleSelectors = "";
+    const joinedLinkSelectors = validLinkSelectors.join(",");
     const validTitleSelectors = [];
     for (const sel of titleSelectors) {
       try {
@@ -50948,7 +51099,7 @@
       } catch {
       }
     }
-    joinedTitleSelectors = validTitleSelectors.join(",");
+    const joinedTitleSelectors = validTitleSelectors.join(",");
     for (const container of containers) {
       let anchor = null;
       try {
@@ -51009,6 +51160,110 @@
     }
     return candidates;
   }
+  function collectDiceSearchCardCandidates() {
+    const candidates = [];
+    const customElements = Array.from(
+      document.querySelectorAll(
+        "dhi-search-card, dhi-job-card, dhi-search-cards-widget .card, [data-testid='search-card'], [class*='search-card'], [class*='SearchCard']"
+      )
+    );
+    for (const card of customElements) {
+      const root2 = card.shadowRoot ?? card;
+      const anchor = root2.querySelector(
+        "a[href*='/job-detail/'], a[href*='/jobs/detail/'], a.card-title-link, a[class*='card-title'], a[class*='job-title'], a[href]"
+      );
+      if (!anchor?.href) {
+        const dataId = card.getAttribute("data-id") || card.getAttribute("data-job-id");
+        if (dataId) {
+          const title2 = cleanText(
+            root2.querySelector(
+              "h5, h3, h2, [class*='card-title'], [class*='job-title'], a"
+            )?.textContent || ""
+          );
+          const contextText2 = cleanText(card.innerText || card.textContent || "");
+          if (title2) {
+            addJobCandidate(
+              candidates,
+              `https://www.dice.com/job-detail/${dataId}`,
+              title2,
+              contextText2
+            );
+          }
+        }
+        continue;
+      }
+      const href = anchor.href;
+      if (!href.includes("/job-detail/") && !href.includes("/jobs/detail/")) {
+        continue;
+      }
+      const title = cleanText(
+        root2.querySelector(
+          "h5, h3, h2, [class*='card-title'], [class*='job-title']"
+        )?.textContent || anchor.textContent || ""
+      );
+      const contextText = cleanText(card.innerText || card.textContent || "");
+      if (!title || title.length < 3) {
+        continue;
+      }
+      addJobCandidate(candidates, href, title, contextText);
+    }
+    const allShadowHosts = Array.from(
+      document.querySelectorAll("*")
+    ).filter((el) => el.shadowRoot);
+    for (const host of allShadowHosts) {
+      if (!host.shadowRoot) continue;
+      const shadowAnchors = Array.from(
+        host.shadowRoot.querySelectorAll(
+          "a[href*='/job-detail/'], a[href*='/jobs/detail/']"
+        )
+      );
+      for (const anchor of shadowAnchors) {
+        const title = cleanText(anchor.textContent || "");
+        const contextText = cleanText(host.innerText || host.textContent || "");
+        if (title && title.length >= 3) {
+          addJobCandidate(candidates, anchor.href, title, contextText);
+        }
+      }
+    }
+    return candidates;
+  }
+  function collectZipRecruiterDataAttributeCandidates() {
+    const candidates = [];
+    const elements = Array.from(
+      document.querySelectorAll(
+        "[data-job-id], [data-jid], [data-jobid], [data-job]"
+      )
+    );
+    for (const el of elements) {
+      const jobId = el.getAttribute("data-job-id") || el.getAttribute("data-jid") || el.getAttribute("data-jobid") || el.getAttribute("data-job") || "";
+      if (!jobId || jobId.length < 3) continue;
+      const anchor = el.querySelector("a[href]");
+      if (anchor?.href) {
+        const title2 = cleanText(
+          el.querySelector(
+            "h1, h2, h3, [data-testid*='job-title'], [class*='job_title'], [class*='job-title'], [class*='jobTitle']"
+          )?.textContent || anchor.textContent || ""
+        );
+        const contextText2 = cleanText(el.innerText || el.textContent || "");
+        if (title2) {
+          addJobCandidate(candidates, anchor.href, title2, contextText2);
+        }
+        continue;
+      }
+      const title = cleanText(
+        el.querySelector(
+          "h1, h2, h3, [data-testid*='job-title'], [class*='job_title'], [class*='job-title']"
+        )?.textContent || ""
+      );
+      const contextText = cleanText(el.innerText || el.textContent || "");
+      if (title) {
+        const detailUrl = new URL(window.location.href);
+        detailUrl.searchParams.set("jid", jobId);
+        addJobCandidate(candidates, detailUrl.toString(), title, contextText);
+      }
+    }
+    return candidates;
+  }
   function collectMonsterFallbackCandidates() {
     const candidates = [];
     const currentHost = window.location.hostname.toLowerCase();
@@ -51042,9 +51297,7 @@
       ].some((skip) => text.toLowerCase().includes(skip))) {
         continue;
       }
-      const isJobUrl = href.includes("/job-opening") || href.includes("/job/") || href.includes("/job-detail/") || href.includes("job-openings.monster") || href.includes("jobview.monster") || /[?&]jobid=/i.test(href) || /[?&]job_id=/i.test(href) || // FIX: Match /jobs/ with an actual slug (not just /jobs/ or /jobs/search)
-      href.includes("monster.") && /\/jobs\/[^/?#]{4,}/.test(href) && !href.includes("/jobs/search") && !href.includes("/jobs/browse") && !href.includes("/jobs/q-") && !href.includes("/jobs/l-") || // FIX: Match Monster URLs with UUID-like IDs
-      href.includes("monster.") && /\/[a-f0-9-]{8,}(?:[?#]|$)/i.test(href);
+      const isJobUrl = href.includes("/job-opening") || href.includes("/job/") || href.includes("/job-detail/") || href.includes("job-openings.monster") || href.includes("jobview.monster") || /[?&]jobid=/i.test(href) || /[?&]job_id=/i.test(href) || href.includes("monster.") && /\/jobs\/[^/?#]{4,}/.test(href) && !href.includes("/jobs/search") && !href.includes("/jobs/browse") && !href.includes("/jobs/q-") && !href.includes("/jobs/l-") || href.includes("monster.") && /\/[a-f0-9-]{8,}(?:[?#]|$)/i.test(href);
       if (!isJobUrl) {
         continue;
       }
@@ -51068,11 +51321,14 @@
       const titleButton = card.querySelector("button[aria-label^='View ']");
       const title = cleanText(
         card.querySelector(
-          "h1, h2, h3, [data-testid*='job-title'], [class*='job_title'], [class*='jobTitle']"
+          "h1, h2, h3, [data-testid*='job-title'], [class*='job_title'], [class*='jobTitle'], [class*='job-title']"
         )?.textContent
       ) || cleanText(titleButton?.getAttribute("aria-label")?.replace(/^View\s+/i, "") || "");
       const contextText = cleanText(card.innerText || card.textContent || "");
       if (!title) {
+        continue;
+      }
+      if (isAppliedJobText(contextText)) {
         continue;
       }
       const detailUrl = new URL(window.location.href);
@@ -51315,7 +51571,7 @@
     const container = anchor.closest("article, li, section, div");
     if (container) {
       const heading = container.querySelector(
-        "h1, h2, h3, h4, [data-testid*='title'], [class*='title'], [class*='job-title'], [class*='role-title']"
+        "h1, h2, h3, h4, h5, [data-testid*='title'], [class*='title'], [class*='job-title'], [class*='role-title']"
       );
       const headingText = cleanText(heading?.textContent || "");
       if (headingText && !isCareerListingCtaText(headingText)) {
@@ -51879,16 +52135,30 @@
   }
   function findZipRecruiterApplyAction() {
     const selectors = [
+      "a[data-testid*='apply' i]",
       "button[data-testid='apply-button']",
       "button[data-testid*='apply']",
+      "[data-testid*='quick-apply' i]",
+      "[data-testid*='company' i]",
+      "[data-qa*='apply' i]",
+      "[data-qa*='company' i]",
       "[class*='apply_button']",
       "[class*='applyButton']",
+      "[class*='quickApply']",
+      "[class*='quick-apply']",
+      "[class*='company']",
       "button[name='apply']",
       "button[data-testid='one-click-apply']",
       "[class*='one-click']",
+      "[aria-label*='apply' i]",
+      "[aria-label*='company site' i]",
+      "[title*='apply' i]",
       "a[href*='/apply/']",
-      "a[href*='zipapply']"
+      "a[href*='zipapply']",
+      "a[href*='jobapply']",
+      "a[href*='candidate']"
     ];
+    let best;
     for (const selector of selectors) {
       let elements;
       try {
@@ -51897,29 +52167,93 @@
         continue;
       }
       for (const element of elements) {
-        if (!isElementVisible(element)) {
+        const actionElement = getClickableApplyElement(element);
+        if (!isElementVisible(actionElement)) {
           continue;
         }
-        const text = getActionText(element).toLowerCase();
-        if (text.includes("save") || text.includes("share") || text.includes("alert")) {
+        const text = (getActionText(actionElement) || getActionText(element)).trim();
+        const lower = text.toLowerCase();
+        if (!lower || lower.includes("save") || lower.includes("share") || lower.includes("alert") || lower.includes("sign in") || lower.includes("job alert")) {
           continue;
         }
-        const url = getNavigationUrl(element);
-        if (url && (url.includes("zipapply") || url.includes("/apply/"))) {
-          return {
-            type: "navigate",
-            url,
-            description: "ZipRecruiter apply"
-          };
+        const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
+        const attrs = [
+          actionElement.getAttribute("data-testid"),
+          actionElement.getAttribute("data-qa"),
+          actionElement.getAttribute("aria-label"),
+          actionElement.getAttribute("title"),
+          actionElement.className,
+          actionElement.id,
+          element.getAttribute("data-testid"),
+          element.getAttribute("data-qa"),
+          element.getAttribute("aria-label"),
+          element.getAttribute("title"),
+          element.className,
+          element.id
+        ].join(" ").toLowerCase();
+        let score = 0;
+        if (lower === "apply now" || lower === "apply") score += 95;
+        if (lower.includes("1-click apply") || lower.includes("1 click apply")) score += 92;
+        if (lower.includes("quick apply") || lower.includes("easy apply")) score += 90;
+        if (lower.includes("apply on company") || lower.includes("apply on employer")) score += 88;
+        if (lower.includes("continue to company") || lower.includes("company site")) score += 86;
+        if (lower.includes("apply")) score += 70;
+        if (lower.includes("continue")) score += 40;
+        if (attrs.includes("apply")) score += 25;
+        if (attrs.includes("quick")) score += 15;
+        if (attrs.includes("company")) score += 15;
+        if (url && shouldPreferApplyNavigation(url, text, "ziprecruiter")) score += 35;
+        if (url && /zipapply|jobapply|\/apply\/|candidate/i.test(url)) score += 35;
+        if (score < 45) {
+          continue;
         }
-        return {
-          type: "click",
-          element,
-          description: getActionText(element) || "Apply"
-        };
+        if (!best || score > best.score) {
+          best = { element: actionElement, score, text, url };
+        }
       }
     }
-    return null;
+    if (!best) {
+      for (const element of Array.from(document.querySelectorAll("a[href], button, [role='button']"))) {
+        const actionElement = getClickableApplyElement(element);
+        if (!isElementVisible(actionElement)) {
+          continue;
+        }
+        const text = (getActionText(actionElement) || getActionText(element)).trim();
+        const lower = text.toLowerCase();
+        if (!lower || ["save", "share", "alert", "sign in", "job alert", "subscribe"].some(
+          (token) => lower.includes(token)
+        )) {
+          continue;
+        }
+        const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
+        let score = 0;
+        if (/apply|company|employer|continue|resume/.test(lower)) score += 55;
+        if (/\bapply\b/.test(lower)) score += 20;
+        if (url && shouldPreferApplyNavigation(url, text, "ziprecruiter")) score += 35;
+        if (url && /zipapply|jobapply|\/apply\/|candidate/i.test(url)) score += 30;
+        if (score < 55) {
+          continue;
+        }
+        if (!best || score > best.score) {
+          best = { element: actionElement, score, text, url };
+        }
+      }
+    }
+    if (!best) {
+      return null;
+    }
+    if (best.url && shouldPreferApplyNavigation(best.url, best.text, "ziprecruiter")) {
+      return {
+        type: "navigate",
+        url: best.url,
+        description: describeApplyTarget(best.url, best.text || "ZipRecruiter apply")
+      };
+    }
+    return {
+      type: "click",
+      element: best.element,
+      description: best.text || "ZipRecruiter apply"
+    };
   }
   function hasIndeedApplyIframe() {
     return Boolean(
@@ -51930,14 +52264,14 @@
   }
   function hasZipRecruiterApplyModal() {
     const modals = document.querySelectorAll(
-      "[role='dialog'], [class*='modal'], [class*='overlay'], [class*='popup']"
+      "[role='dialog'], [aria-modal='true'], [class*='modal'], [class*='overlay'], [class*='popup'], [data-testid*='modal'], [data-testid*='apply']"
     );
     for (const modal of Array.from(modals)) {
       if (!isElementVisible(modal)) {
         continue;
       }
       const text = (modal.innerText || "").toLowerCase().slice(0, 2e3);
-      if ((text.includes("apply") || text.includes("resume") || text.includes("upload")) && modal.querySelector("input, textarea, select, button")) {
+      if ((text.includes("apply") || text.includes("resume") || text.includes("upload") || text.includes("experience") || text.includes("work authorization")) && modal.querySelector("input, textarea, select, button")) {
         return true;
       }
     }
@@ -52181,7 +52515,7 @@
   }
   function isLikelyApplyUrl(url, site) {
     const lower = url.toLowerCase();
-    if (lower.includes("smartapply.indeed.com") || lower.includes("indeedapply") || lower.includes("zipapply") || lower.includes("/apply") || lower.includes("application") || lower.includes("jobapply") || lower.includes("job_app") || lower.includes("applytojob") || lower.includes("candidateexperience")) {
+    if (lower.includes("smartapply.indeed.com") || lower.includes("indeedapply") || lower.includes("zipapply") || lower.includes("/apply") || lower.includes("application") || lower.includes("candidate") || lower.includes("jobapply") || lower.includes("job_app") || lower.includes("applytojob") || lower.includes("candidateexperience")) {
       return true;
     }
     if (site === "startup" || site === "other_sites") {
@@ -52448,8 +52782,14 @@
       case "ziprecruiter":
         return [
           "a[href*='zipapply']",
+          "a[href*='jobapply']",
+          "a[href*='candidate']",
           "[data-testid*='apply']",
+          "[data-qa*='apply']",
+          "[data-testid*='company']",
           "[class*='apply']",
+          "[class*='quickApply']",
+          "[class*='quick-apply']",
           "button[data-testid='apply-button']",
           "button[data-testid='one-click-apply']",
           "[class*='apply_button']",
@@ -52565,6 +52905,7 @@
   var OVERLAY_AUTO_HIDE_MS = 1e4;
   var MAX_STAGE_DEPTH = 10;
   var MAX_RESUME_TEXT_CHARS = 24e3;
+  var IS_TOP_FRAME = window.top === window;
   function createEmptyAutofillResult() {
     return {
       filledFields: 0,
@@ -52605,6 +52946,9 @@
   };
   chrome.runtime.onMessage.addListener(
     (message, _sender, sendResponse) => {
+      if (!IS_TOP_FRAME) {
+        return false;
+      }
       if (message.type === "get-status") {
         sendResponse({ ok: true, status });
         return false;
@@ -52671,6 +53015,9 @@
       }
       if (response?.session) {
         const s = response.session;
+        if (!shouldHandleAutomationInCurrentFrame(s, detectedSite)) {
+          return;
+        }
         status = s;
         currentStage = s.stage;
         currentLabel = s.label;
@@ -52741,20 +53088,16 @@
     );
     await waitForHumanVerificationToClear();
     const targets = buildSearchTargets(site, window.location.origin);
-    const jobSlots = distributeJobSlots(
-      settings.jobPageLimit,
-      targets.length
-    );
-    const items = targets.map((target, index) => ({
+    const items = targets.map((target) => ({
       url: target.url,
       site,
       stage: "collect-results",
       runId: currentRunId,
-      jobSlots: jobSlots[index],
+      jobSlots: settings.jobPageLimit,
       message: `Collecting ${target.label} job pages on ${getSiteLabel(site)}...`,
       label: target.label,
       resumeKind: target.resumeKind
-    })).filter((item) => (item.jobSlots ?? 0) > 0);
+    }));
     const response = await spawnTabs(items);
     updateStatus(
       "completed",
@@ -52776,9 +53119,9 @@
       "collect-results"
     );
     await waitForHumanVerificationToClear();
-    const renderWaitMs = site === "startup" || site === "other_sites" ? 5e3 : site === "monster" ? 5e3 : 2500;
+    const renderWaitMs = site === "startup" || site === "other_sites" ? 5e3 : site === "dice" ? 5e3 : site === "monster" ? 5e3 : 2500;
     await sleep(renderWaitMs);
-    if (site === "startup" || site === "other_sites") {
+    if (site === "startup" || site === "other_sites" || site === "dice") {
       await scrollPageForLazyContent();
     }
     const jobUrls = await waitForJobDetailUrls(site, settings.datePostedWindow);
@@ -52792,15 +53135,7 @@
       await closeCurrentTab();
       return;
     }
-    let effectiveLimit;
-    if (typeof currentJobSlots === "number") {
-      effectiveLimit = Math.max(0, Math.floor(currentJobSlots));
-    } else {
-      effectiveLimit = Math.max(
-        1,
-        Math.floor(settings.jobPageLimit / 3)
-      );
-    }
+    const effectiveLimit = typeof currentJobSlots === "number" ? Math.max(0, Math.floor(currentJobSlots)) : Math.max(1, Math.floor(settings.jobPageLimit));
     if (effectiveLimit <= 0) {
       updateStatus(
         "completed",
@@ -52811,8 +53146,34 @@
       await closeCurrentTab();
       return;
     }
+    const candidates = collectJobDetailCandidates(site);
+    const titleMap = /* @__PURE__ */ new Map();
+    const contextMap = /* @__PURE__ */ new Map();
+    for (const c of candidates) {
+      const key = getJobDedupKey(c.url);
+      if (key) {
+        if (c.title) titleMap.set(key, c.title);
+        if (c.contextText) contextMap.set(key, c.contextText);
+      }
+    }
+    const filteredJobUrls = jobUrls.filter((url) => {
+      const key = getJobDedupKey(url);
+      const ctx = key ? contextMap.get(key) ?? "" : "";
+      const title = key ? titleMap.get(key) ?? "" : "";
+      return !isAppliedJobText(ctx) && !isAppliedJobText(title);
+    });
+    if (filteredJobUrls.length === 0) {
+      updateStatus(
+        "completed",
+        `All ${jobUrls.length} jobs on this ${labelPrefix}${getSiteLabel(site)} page were already applied to.`,
+        false,
+        "collect-results"
+      );
+      await closeCurrentTab();
+      return;
+    }
     const approvedUrls = await claimJobOpenings(
-      jobUrls,
+      filteredJobUrls,
       effectiveLimit
     );
     if (approvedUrls.length === 0) {
@@ -52824,12 +53185,6 @@
       );
       await closeCurrentTab();
       return;
-    }
-    const candidates = collectJobDetailCandidates(site);
-    const titleMap = /* @__PURE__ */ new Map();
-    for (const c of candidates) {
-      const key = getJobDedupKey(c.url);
-      if (key && c.title) titleMap.set(key, c.title);
     }
     const items = approvedUrls.map((url) => {
       let itemResumeKind = currentResumeKind;
@@ -52874,7 +53229,7 @@
   async function scrollPageForLazyContent() {
     const totalHeight = document.body.scrollHeight;
     const viewportHeight = window.innerHeight;
-    const steps = Math.min(8, Math.ceil(totalHeight / viewportHeight));
+    const steps = Math.min(10, Math.ceil(totalHeight / viewportHeight));
     for (let i = 1; i <= steps; i++) {
       const target = Math.min(totalHeight, totalHeight / steps * i);
       window.scrollTo({ top: target, behavior: "smooth" });
@@ -52926,7 +53281,7 @@
       "open-apply"
     );
     await waitForHumanVerificationToClear();
-    await sleep(2500);
+    await sleep(site === "dice" ? 4e3 : 2500);
     let action = null;
     const scrollPositions = [0, 300, 600, -1, -2, 0, -3, 200];
     for (let attempt = 0; attempt < 35; attempt += 1) {
@@ -52960,6 +53315,12 @@
       }
       if (site === "ziprecruiter") {
         action = findZipRecruiterApplyAction();
+        if (action) break;
+      }
+      if (site === "dice") {
+        action = findApplyAction(site, "job-page");
+        if (action) break;
+        action = findDiceApplyAction();
         if (action) break;
       }
       action = findCompanySiteAction();
@@ -53112,9 +53473,9 @@
       }
       if (site === "indeed" && hasIndeedApplyIframe()) {
         updateStatus(
-          "completed",
-          "Indeed Easy Apply opened. Complete the application in the popup.",
-          false,
+          "running",
+          "Indeed Easy Apply iframe detected. Continuing inside the embedded form...",
+          true,
           "autofill-form"
         );
         return;
@@ -53137,9 +53498,9 @@
       }
       if (hasLikelyApplicationFrame()) {
         updateStatus(
-          "completed",
-          "Application opened in an embedded frame. Review and complete manually.",
-          false,
+          "running",
+          "Embedded application detected. Continuing inside the embedded form...",
+          true,
           "autofill-form"
         );
         return;
@@ -53179,6 +53540,8 @@
     let retryAction = null;
     if (site === "monster") {
       retryAction = findMonsterApplyAction();
+    } else if (site === "dice") {
+      retryAction = findDiceApplyAction() ?? findApplyAction(site, "job-page");
     } else {
       retryAction = findApplyAction(site, "job-page");
     }
@@ -53218,6 +53581,78 @@
       false,
       "autofill-form"
     );
+  }
+  function findDiceApplyAction() {
+    const applyComponents = Array.from(
+      document.querySelectorAll(
+        "apply-button-wc, [data-cy='apply-button'], [data-cy*='apply'], [class*='apply-button'], [class*='ApplyButton']"
+      )
+    );
+    for (const component of applyComponents) {
+      const root2 = component.shadowRoot ?? component;
+      const btn = root2.querySelector(
+        "a[href], button, input[type='submit'], [role='button']"
+      );
+      if (btn && isElementVisible(btn)) {
+        const url = getNavigationUrl(btn);
+        if (url) {
+          return {
+            type: "navigate",
+            url,
+            description: cleanText(getActionText(btn)) || "Dice apply button"
+          };
+        }
+        return {
+          type: "click",
+          element: btn,
+          description: cleanText(getActionText(btn)) || "Dice apply button"
+        };
+      }
+      if (isElementVisible(component)) {
+        const url = getNavigationUrl(component);
+        if (url) {
+          return {
+            type: "navigate",
+            url,
+            description: cleanText(getActionText(component)) || "Dice apply button"
+          };
+        }
+        return {
+          type: "click",
+          element: component,
+          description: cleanText(getActionText(component)) || "Dice apply button"
+        };
+      }
+    }
+    const allHosts = Array.from(document.querySelectorAll("*")).filter(
+      (el) => el.shadowRoot
+    );
+    for (const host of allHosts) {
+      if (!host.shadowRoot) continue;
+      const applyBtn = host.shadowRoot.querySelector(
+        "a[href*='apply'], button[class*='apply'], [data-cy*='apply'], [aria-label*='apply' i]"
+      );
+      if (applyBtn && isElementVisible(applyBtn)) {
+        const text = cleanText(getActionText(applyBtn)).toLowerCase();
+        if (text.includes("save") || text.includes("share") || text.includes("alert")) {
+          continue;
+        }
+        const url = getNavigationUrl(applyBtn);
+        if (url) {
+          return {
+            type: "navigate",
+            url,
+            description: text || "Dice apply button"
+          };
+        }
+        return {
+          type: "click",
+          element: applyBtn,
+          description: text || "Dice apply button"
+        };
+      }
+    }
+    return null;
   }
   async function runAutofillStage(site) {
     if (childApplicationTabOpened) return;
@@ -53489,8 +53924,9 @@
   }
   async function waitForJobDetailUrls(site, datePostedWindow) {
     const isCareerSite = site === "startup" || site === "other_sites";
+    const needsAggressiveScan = isCareerSite || site === "dice";
     let careerSurfaceAttempts = 0;
-    const maxAttempts = isCareerSite ? 50 : 35;
+    const maxAttempts = needsAggressiveScan ? 50 : 35;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const candidates = collectJobDetailCandidates(site);
       const urls = pickRelevantJobUrls(
@@ -53535,6 +53971,28 @@
           });
         }
         if (attempt === 10 || attempt === 20 || attempt === 30) {
+          tryClickLoadMoreButton();
+        }
+      } else if (site === "dice") {
+        if (attempt % 4 === 0) {
+          window.scrollTo({
+            top: document.body.scrollHeight,
+            behavior: "smooth"
+          });
+        } else if (attempt % 4 === 1) {
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        } else if (attempt % 4 === 2) {
+          window.scrollTo({
+            top: document.body.scrollHeight / 2,
+            behavior: "smooth"
+          });
+        } else {
+          window.scrollTo({
+            top: document.body.scrollHeight / 3,
+            behavior: "smooth"
+          });
+        }
+        if (attempt === 8 || attempt === 16 || attempt === 24) {
           tryClickLoadMoreButton();
         }
       } else {
@@ -53724,7 +54182,8 @@
         for (const el of elements) {
           if (!isElementVisible(el)) continue;
           const text = cleanText(el.textContent || "").toLowerCase();
-          if (text.includes("load more") || text.includes("show more") || text.includes("view more") || text.includes("see more") || text.includes("more jobs") || text.includes("more positions") || text.includes("more openings") || text.includes("view all") || text.includes("see all") || text.includes("show all")) {
+          if (text.includes("load more") || text.includes("show more") || text.includes("view more") || text.includes("see more") || text.includes("more jobs") || text.includes("more positions") || text.includes("more openings") || text.includes("view all") || text.includes("see all") || text.includes("show all") || // FIX: Dice-specific load more patterns
+          text.includes("next page") || text.includes("load next")) {
             performClickAction(el);
             return;
           }
@@ -54365,14 +54824,46 @@
     const resume = pickResumeAsset(settings);
     if (!resume) return null;
     const fileInputs = collectResumeFileInputs();
+    if (fileInputs.length === 0) {
+      const hiddenFileInputs = Array.from(
+        document.querySelectorAll("input[type='file']")
+      );
+      for (const input of hiddenFileInputs) {
+        if (input.disabled) continue;
+        const lastAttemptAt = recentResumeUploadAttempts.get(input) ?? 0;
+        const now = Date.now();
+        if (!shouldAttemptResumeUpload(
+          input,
+          resume.name,
+          lastAttemptAt > 0 ? lastAttemptAt : null,
+          now
+        )) {
+          continue;
+        }
+        recentResumeUploadAttempts.set(input, now);
+        try {
+          if (await setFileInputValue(input, resume)) return resume;
+        } catch {
+        }
+      }
+      return null;
+    }
     const usable = fileInputs.filter(
       (i) => shouldUseFileInputForResume(i, fileInputs.length)
     );
-    for (const input of usable) {
-      if (input.files?.length) continue;
+    const targets = usable.length > 0 ? usable : fileInputs;
+    for (const input of targets) {
       const lastAttemptAt = recentResumeUploadAttempts.get(input) ?? 0;
-      if (Date.now() - lastAttemptAt < 2e4) continue;
-      recentResumeUploadAttempts.set(input, Date.now());
+      const now = Date.now();
+      if (!shouldAttemptResumeUpload(
+        input,
+        resume.name,
+        lastAttemptAt > 0 ? lastAttemptAt : null,
+        now
+      )) {
+        continue;
+      }
+      recentResumeUploadAttempts.set(input, now);
       try {
         if (await setFileInputValue(input, resume)) return resume;
       } catch {
@@ -54384,9 +54875,9 @@
     if (currentResumeKind && settings.resumes[currentResumeKind])
       return settings.resumes[currentResumeKind] ?? null;
     for (const kind of [
+      "full_stack",
       "front_end",
-      "back_end",
-      "full_stack"
+      "back_end"
     ]) {
       if (settings.resumes[kind]) return settings.resumes[kind];
     }
@@ -54402,10 +54893,37 @@
       });
       const transfer = new DataTransfer();
       transfer.items.add(file);
-      input.files = transfer.files;
+      const filesDescriptor = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "files"
+      );
+      if (filesDescriptor?.set) {
+        filesDescriptor.set.call(input, transfer.files);
+      } else {
+        input.files = transfer.files;
+      }
       input.dispatchEvent(new Event("input", { bubbles: true }));
       input.dispatchEvent(new Event("change", { bubbles: true }));
-      return true;
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value"
+      );
+      if (nativeInputValueSetter?.set) {
+        input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+      }
+      input.dispatchEvent(new Event("blur", { bubbles: true }));
+      try {
+        const dropEvent = new DragEvent("drop", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: transfer
+        });
+        input.dispatchEvent(dropEvent);
+      } catch {
+      }
+      await sleep(500);
+      const success = Boolean(input.files?.length) || getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase();
+      return success;
     } catch {
       return false;
     }
@@ -54415,7 +54933,11 @@
     if (ctx.includes("cover letter") || ctx.includes("transcript"))
       return false;
     if (ctx.includes("resume") || ctx.includes("cv")) return true;
-    return count === 1;
+    if (count === 1) return true;
+    if (ctx.includes("upload") || ctx.includes("attachment") || ctx.includes("document")) {
+      return true;
+    }
+    return false;
   }
   function collectEssayFieldsNeedingAi(settings) {
     const result2 = [];
@@ -55002,9 +55524,7 @@
         new Event("blur", { bubbles: true })
       );
     }
-    const appliedValue = cleanText(
-      field instanceof HTMLTextAreaElement ? field.value : field.value
-    );
+    const appliedValue = cleanText(field.value);
     return appliedValue === cleanText(answer) || appliedValue.length >= Math.min(cleanText(answer).length, 40);
   }
   function resolveEssayTargetField(candidate) {
@@ -55405,15 +55925,6 @@
     lastNavigationUrl = n;
     window.location.assign(n);
   }
-  function distributeJobSlots(totalSlots, targetCount) {
-    const tc = Math.max(0, Math.floor(targetCount)), ts = Math.max(0, Math.floor(totalSlots));
-    const slots = new Array(tc).fill(0);
-    for (let i = 0; i < ts; i++) {
-      if (tc === 0) break;
-      slots[i % tc] += 1;
-    }
-    return slots;
-  }
   function updateStatus(phase, message, shouldResume, nextStage = currentStage) {
     currentStage = nextStage;
     status = createStatus(status.site, phase, message);
@@ -55441,6 +55952,7 @@
     );
   }
   function ensureOverlay() {
+    if (!IS_TOP_FRAME) return;
     if (overlay.host || !document.documentElement) return;
     const host = document.createElement("div");
     host.id = "remote-job-search-overlay-host";
@@ -55463,6 +55975,9 @@
     overlay.text = text;
   }
   function renderOverlay() {
+    if (!IS_TOP_FRAME) {
+      return;
+    }
     if (overlayHideTimerId !== null) {
       window.clearTimeout(overlayHideTimerId);
       overlayHideTimerId = null;
@@ -55551,6 +56066,19 @@
         `generated ${result2.generatedAiAnswers} ChatGPT answer${result2.generatedAiAnswers === 1 ? "" : "s"}`
       );
     return parts.length === 0 ? "Application opened, nothing auto-filled." : `${parts.join(", ")}. Review before submitting.`;
+  }
+  function shouldHandleAutomationInCurrentFrame(session, detectedSite) {
+    if (IS_TOP_FRAME) {
+      return true;
+    }
+    if (session.stage !== "autofill-form" || session.site === "unsupported") {
+      return false;
+    }
+    const looksLikeApplyFrame = isLikelyApplyUrl(window.location.href, session.site) || hasLikelyApplicationForm() || hasLikelyApplicationFrame() || hasLikelyApplicationPageContent() || collectResumeFileInputs().length > 0;
+    if (!looksLikeApplyFrame) {
+      return false;
+    }
+    return detectedSite === session.site || isLikelyApplyUrl(window.location.href, session.site);
   }
 })();
 /*! Bundled license information:

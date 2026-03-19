@@ -99,6 +99,10 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "[data-testid*='job']",
             "[class*='job_result']",
             "[class*='jobList']",
+            "[class*='job-listing']",
+            "[class*='JobListing']",
+            "[class*='job_content']",
+            "[class*='JobContent']",
             "article",
             "section",
             "li",
@@ -108,12 +112,15 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "a[href*='/job/' i]",
             "a[href*='/job-details/' i]",
             "a[href*='/k/' i]",
-            "a[href*='?jid=' i]",
+            "a[href*='jid=' i]",
             "a[href*='/c/' i][href*='/job/' i]",
             "a[data-testid*='job-title']",
+            "a[data-testid='job-title']",
             "a[class*='job']",
             "a[class*='job_link']",
-            "a[data-testid='job-title']",
+            // FIX: Additional ZipRecruiter anchor patterns
+            "a[href*='/t-']",
+            "a[href*='mid=']",
           ],
           [
             "h1",
@@ -121,6 +128,8 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "h3",
             "[data-testid*='job-title']",
             "[class*='job_title']",
+            "[class*='jobTitle']",
+            "[class*='job-title']",
           ]
         ),
         ...collectCandidatesFromAnchors([
@@ -128,22 +137,65 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
           "a[href*='/job/' i]",
           "a[href*='/job-details/' i]",
           "a[href*='/k/' i]",
-          "a[href*='?jid=' i]",
+          "a[href*='jid=' i]",
           "a[href*='/c/' i][href*='/job/' i]",
           "a[data-testid*='job-title']",
           "a[data-testid='job-title']",
+          "a[href*='/t-']",
         ]),
         ...collectZipRecruiterCardCandidates(),
+        // FIX: Also collect from data attributes that contain job IDs
+        ...collectZipRecruiterDataAttributeCandidates(),
       ]);
 
     case "dice":
-      return dedupeJobCandidates(
-        collectCandidatesFromAnchors([
+      return dedupeJobCandidates([
+        // FIX: Dice uses custom web components — collect from shadow DOM
+        ...collectDiceSearchCardCandidates(),
+        ...collectCandidatesFromAnchors([
           "a[href*='/job-detail/']",
           "a[href*='/jobs/detail/']",
           "a[data-cy*='job']",
-        ])
-      );
+          "a[data-id]",
+          // FIX: Additional Dice selectors
+          "a.card-title-link",
+          "a[class*='card-title']",
+          "a[class*='job-title']",
+          "a[data-testid*='job']",
+        ]),
+        ...collectCandidatesFromContainers(
+          [
+            "[data-cy*='search-card']",
+            "[data-testid*='search-card']",
+            "[class*='search-card']",
+            "[class*='SearchCard']",
+            "[class*='job-card']",
+            "[class*='JobCard']",
+            ".dhi-search-cards-widget .card",
+            "article",
+            "li",
+          ],
+          [
+            "a[href*='/job-detail/']",
+            "a[href*='/jobs/detail/']",
+            "a[data-cy*='job']",
+            "a.card-title-link",
+            "a[class*='card-title']",
+            "a[class*='job-title']",
+          ],
+          [
+            "h1",
+            "h2",
+            "h3",
+            "h5",
+            "[data-cy*='title']",
+            "[class*='card-title']",
+            "[class*='job-title']",
+            "[class*='jobTitle']",
+            "a.card-title-link",
+          ]
+        ),
+      ]);
 
     case "monster":
       return dedupeJobCandidates([
@@ -164,7 +216,6 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "[class*='JobCardStyle']",
             "[class*='flip-card']",
             "[class*='job-search-resultsstyle']",
-            // FIX: Additional Monster container patterns
             "[class*='job-search-result']",
             "[class*='JobSearchResult']",
             "[class*='job-list-item']",
@@ -190,7 +241,6 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "a[class*='title']",
             "a[data-bypass]",
             "a[href*='?jobid=']",
-            // FIX: Additional Monster anchor patterns
             "a[href*='job_id=']",
             "a[href*='monster'][href*='/job']",
           ],
@@ -244,7 +294,6 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "[class*='vacancy']",
             "[class*='listing']",
             "[class*='opportunity']",
-            // FIX: Additional career site container patterns
             "[class*='career']",
             "[class*='Career']",
             "[class*='openings']",
@@ -358,7 +407,12 @@ export function pickRelevantJobUrls(
     return sortCandidatesByRecency(eligible, datePostedWindow).map((candidate) => candidate.url);
   }
 
-  const scored = eligible.map((candidate, index) => ({
+  const fallbackPool =
+    site === "startup" || site === "other_sites"
+      ? eligible.filter((candidate) => looksLikeTechnicalRoleTitle(candidate.title))
+      : eligible;
+
+  const scored = fallbackPool.map((candidate, index) => ({
     candidate,
     index,
     score: scoreJobTitleForResume(candidate.title, resumeKind),
@@ -375,11 +429,11 @@ export function pickRelevantJobUrls(
     .map((entry) => entry.candidate.url);
 
   if (preferred.length === 0) {
-    return sortCandidatesByRecency(eligible, datePostedWindow).map((candidate) => candidate.url);
+    return sortCandidatesByRecency(fallbackPool, datePostedWindow).map((candidate) => candidate.url);
   }
 
   const preferredSet = new Set(preferred);
-  const fallback = sortCandidatesByRecency(eligible, datePostedWindow)
+  const fallback = sortCandidatesByRecency(fallbackPool, datePostedWindow)
     .map((candidate) => candidate.url)
     .filter((url) => !preferredSet.has(url));
 
@@ -428,20 +482,74 @@ export function isLikelyJobDetailUrl(
         lowerUrl.includes("/pagead/clk")
       );
 
-    case "ziprecruiter":
-      return (
-        /[?&]lk=/i.test(lowerUrl) ||
-        lowerUrl.includes("?jid=") ||
-        lowerUrl.includes("/job-details/") ||
-        lowerUrl.includes("/k/") ||
-        (lowerUrl.includes("/c/") && lowerUrl.includes("/job/"))
-      );
+    // FIX: Completely rewritten ZipRecruiter URL matching
+    case "ziprecruiter": {
+      // Exclude search/category pages
+      if (
+        lowerUrl.includes("/jobs-search") ||
+        lowerUrl.includes("/candidate/") ||
+        lowerUrl.includes("/post-a-job") ||
+        lowerUrl.includes("/salaries/") ||
+        /\/jobs\/?$/i.test(lowerUrl) ||
+        /\/jobs\?(?!.*(?:jid|lk)=)/i.test(lowerUrl)
+      ) {
+        return false;
+      }
 
-    case "dice":
-      return lowerUrl.includes("/job-detail/") || lowerUrl.includes("/jobs/detail/");
+      // Explicit job detail patterns
+      if (/[?&]jid=/i.test(lowerUrl)) return true;
+      if (/[?&]lk=/i.test(lowerUrl)) return true;
+      if (lowerUrl.includes("/job-details/")) return true;
+
+      // Path-based patterns: /k/HASH, /c/Company/job/Title
+      if (/\/k\/[^/?#]+/i.test(lowerUrl)) return true;
+      if (/\/c\/[^/]+\/job\//i.test(lowerUrl)) return true;
+
+      // /jobs/ with a specific slug (not just /jobs/ or /jobs?search=)
+      if (/ziprecruiter\.[a-z.]+\/jobs\/[^/?#]{4,}/i.test(lowerUrl)) {
+        if (
+          !lowerUrl.includes("/jobs/search") &&
+          !lowerUrl.includes("/jobs/browse")
+        ) {
+          return true;
+        }
+      }
+
+      // /t-Title/l-Location pattern
+      if (/\/t-[^/?#]+/i.test(lowerUrl) && lowerUrl.includes("ziprecruiter")) {
+        return true;
+      }
+
+      return false;
+    }
+
+    // FIX: Expanded Dice URL matching
+    case "dice": {
+      if (lowerUrl.includes("/job-detail/")) return true;
+      if (lowerUrl.includes("/jobs/detail/")) return true;
+
+      // Dice job URLs often have UUIDs
+      if (/dice\.com\/.*\/[a-f0-9-]{8,}/i.test(lowerUrl)) {
+        // Exclude search/filter pages
+        if (
+          lowerUrl.includes("/jobs?") ||
+          /\/jobs\/?$/i.test(lowerUrl) ||
+          lowerUrl.includes("/jobs/q-")
+        ) {
+          return false;
+        }
+        return true;
+      }
+
+      // data-id based links
+      if (lowerUrl.includes("dice.com") && /\/[a-f0-9]{24,}/i.test(lowerUrl)) {
+        return true;
+      }
+
+      return false;
+    }
 
     case "monster": {
-      // FIX: Exclude listing/search/category pages
       if (
         /\/jobs\/?$/i.test(lowerUrl) ||
         lowerUrl.includes("/jobs/search") ||
@@ -455,7 +563,6 @@ export function isLikelyJobDetailUrl(
         return false;
       }
 
-      // Explicit job detail patterns
       if (
         lowerUrl.includes("/job-openings/") ||
         lowerUrl.includes("/job-opening/") ||
@@ -469,15 +576,11 @@ export function isLikelyJobDetailUrl(
         return true;
       }
 
-      // FIX: Monster /job/ path with a slug after it
-      // Matches: monster.com/job/some-title-123, monster.co.uk/job/some-title
       if (/monster\.[a-z.]+\/job\/[^/?#]+/i.test(lowerUrl)) {
         return true;
       }
 
-      // FIX: Monster /jobs/ with an actual job slug (not a search/category)
       if (/monster\.[a-z.]+\/jobs\/[^/?#]+/i.test(lowerUrl)) {
-        // Exclude search-like patterns
         if (
           lowerUrl.includes("/jobs/search") ||
           lowerUrl.includes("/jobs/browse") ||
@@ -490,7 +593,6 @@ export function isLikelyJobDetailUrl(
         try {
           const parsed = new URL(lowerUrl);
           const pathParts = parsed.pathname.split("/").filter(Boolean);
-          // e.g. /jobs/some-job-title-123 => ["jobs", "some-job-title-123"]
           if (pathParts.length >= 2 && pathParts[1].length > 3) {
             return true;
           }
@@ -499,7 +601,6 @@ export function isLikelyJobDetailUrl(
         }
       }
 
-      // FIX: Match Monster job links that have a numeric or hash-like ID in the path
       if (/monster\.[a-z.]+\/.*\/[a-f0-9-]{8,}/i.test(lowerUrl)) {
         return true;
       }
@@ -543,7 +644,7 @@ export function isLikelyJobDetailUrl(
           return true;
         }
       } catch {
-        // Ignore parse errors and continue with path heuristics.
+        // Ignore parse errors
       }
 
       if (isListingOrCategoryUrl(lowerUrl)) {
@@ -597,7 +698,7 @@ export function isLikelyJobDetailUrl(
             looksLikeTechnicalRoleTitle(text)
           );
         } catch {
-          // Fall through to title check
+          // Fall through
         }
         return !isListingOrCategoryUrl(lowerUrl) && looksLikeTechnicalRoleTitle(text);
       }
@@ -638,7 +739,7 @@ export function isLikelyJobDetailUrl(
           return true;
         }
       } catch {
-        // Ignore parse errors and fall through.
+        // Ignore
       }
 
       return false;
@@ -697,7 +798,6 @@ export function looksLikeTechnicalRoleTitle(text: string): boolean {
     "embedded",
     "firmware",
     "network",
-    // FIX: Additional role title keywords
     "product engineer",
     "staff engineer",
     "senior engineer",
@@ -712,6 +812,7 @@ export function looksLikeTechnicalRoleTitle(text: string): boolean {
   ].some((keyword) => normalized.includes(normalizeChoiceText(keyword)));
 }
 
+// FIX: Strengthened applied-job detection with site-specific patterns
 export function isAppliedJobText(text: string): boolean {
   if (!text) {
     return false;
@@ -744,6 +845,15 @@ export function isAppliedJobText(text: string): boolean {
     /\bapplied\s+\d+\s+(minute|hour|day|week|month)s?\s+ago\b/,
     /\bstatus:\s*applied\b/,
     /\bapplied\b(?=\s*(?:[|,.:;)\]]|$))/,
+    // FIX: ZipRecruiter badge patterns
+    /\bapplied\s*✓/i,
+    /✓\s*applied\b/i,
+    /\bapplication\s+complete\b/i,
+    /\byour application was sent\b/i,
+    /\bapplication received\b/i,
+    // FIX: Dice applied patterns
+    /\bapplied\s+to this job\b/i,
+    /\bapplied\s+for this\b/i,
   ].some((pattern) => pattern.test(normalized));
 }
 
@@ -754,6 +864,8 @@ export function isCurrentPageAppliedJob(): boolean {
       .slice(0, 12000)
   );
 }
+
+// ─── CANDIDATE COLLECTORS ────────────────────────────────────────────────────
 
 function collectCandidatesFromContainers(
   containerSelectors: string[],
@@ -773,8 +885,6 @@ function collectCandidatesFromContainers(
     }
   }
 
-  // FIX: Build joined selectors safely
-  let joinedLinkSelectors = "";
   const validLinkSelectors: string[] = [];
   for (const sel of linkSelectors) {
     try {
@@ -784,9 +894,8 @@ function collectCandidatesFromContainers(
       // Skip invalid selector
     }
   }
-  joinedLinkSelectors = validLinkSelectors.join(",");
+  const joinedLinkSelectors = validLinkSelectors.join(",");
 
-  let joinedTitleSelectors = "";
   const validTitleSelectors: string[] = [];
   for (const sel of titleSelectors) {
     try {
@@ -796,7 +905,7 @@ function collectCandidatesFromContainers(
       // Skip invalid selector
     }
   }
-  joinedTitleSelectors = validTitleSelectors.join(",");
+  const joinedTitleSelectors = validTitleSelectors.join(",");
 
   for (const container of containers) {
     let anchor: HTMLAnchorElement | null = null;
@@ -875,6 +984,148 @@ function collectCandidatesFromAnchors(selectors: string[]): JobCandidate[] {
   return candidates;
 }
 
+// FIX: New collector for Dice custom web components
+function collectDiceSearchCardCandidates(): JobCandidate[] {
+  const candidates: JobCandidate[] = [];
+
+  // Dice uses custom elements like dhi-search-card, dhi-job-card, etc.
+  const customElements = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "dhi-search-card, dhi-job-card, dhi-search-cards-widget .card, [data-testid='search-card'], [class*='search-card'], [class*='SearchCard']"
+    )
+  );
+
+  for (const card of customElements) {
+    // Try shadow DOM first
+    const root = card.shadowRoot ?? card;
+    const anchor = root.querySelector<HTMLAnchorElement>(
+      "a[href*='/job-detail/'], a[href*='/jobs/detail/'], a.card-title-link, a[class*='card-title'], a[class*='job-title'], a[href]"
+    );
+
+    if (!anchor?.href) {
+      // Check data attributes for job URL
+      const dataId = card.getAttribute("data-id") || card.getAttribute("data-job-id");
+      if (dataId) {
+        const title = cleanText(
+          root.querySelector<HTMLElement>(
+            "h5, h3, h2, [class*='card-title'], [class*='job-title'], a"
+          )?.textContent || ""
+        );
+        const contextText = cleanText(card.innerText || card.textContent || "");
+        if (title) {
+          addJobCandidate(
+            candidates,
+            `https://www.dice.com/job-detail/${dataId}`,
+            title,
+            contextText
+          );
+        }
+      }
+      continue;
+    }
+
+    const href = anchor.href;
+    if (!href.includes("/job-detail/") && !href.includes("/jobs/detail/")) {
+      continue;
+    }
+
+    const title = cleanText(
+      root.querySelector<HTMLElement>(
+        "h5, h3, h2, [class*='card-title'], [class*='job-title']"
+      )?.textContent ||
+      anchor.textContent ||
+      ""
+    );
+    const contextText = cleanText(card.innerText || card.textContent || "");
+
+    if (!title || title.length < 3) {
+      continue;
+    }
+
+    addJobCandidate(candidates, href, title, contextText);
+  }
+
+  // Also scan shadow roots of all elements on the page for Dice links
+  const allShadowHosts = Array.from(
+    document.querySelectorAll<HTMLElement>("*")
+  ).filter((el) => el.shadowRoot);
+
+  for (const host of allShadowHosts) {
+    if (!host.shadowRoot) continue;
+    const shadowAnchors = Array.from(
+      host.shadowRoot.querySelectorAll<HTMLAnchorElement>(
+        "a[href*='/job-detail/'], a[href*='/jobs/detail/']"
+      )
+    );
+
+    for (const anchor of shadowAnchors) {
+      const title = cleanText(anchor.textContent || "");
+      const contextText = cleanText(host.innerText || host.textContent || "");
+      if (title && title.length >= 3) {
+        addJobCandidate(candidates, anchor.href, title, contextText);
+      }
+    }
+  }
+
+  return candidates;
+}
+
+// FIX: New collector for ZipRecruiter data-attribute based candidates
+function collectZipRecruiterDataAttributeCandidates(): JobCandidate[] {
+  const candidates: JobCandidate[] = [];
+
+  // Some ZipRecruiter layouts store job IDs in data attributes
+  const elements = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "[data-job-id], [data-jid], [data-jobid], [data-job]"
+    )
+  );
+
+  for (const el of elements) {
+    const jobId =
+      el.getAttribute("data-job-id") ||
+      el.getAttribute("data-jid") ||
+      el.getAttribute("data-jobid") ||
+      el.getAttribute("data-job") ||
+      "";
+
+    if (!jobId || jobId.length < 3) continue;
+
+    // Check if there's already an anchor with a proper URL
+    const anchor = el.querySelector<HTMLAnchorElement>("a[href]");
+    if (anchor?.href) {
+      const title = cleanText(
+        el.querySelector<HTMLElement>(
+          "h1, h2, h3, [data-testid*='job-title'], [class*='job_title'], [class*='job-title'], [class*='jobTitle']"
+        )?.textContent ||
+        anchor.textContent ||
+        ""
+      );
+      const contextText = cleanText(el.innerText || el.textContent || "");
+      if (title) {
+        addJobCandidate(candidates, anchor.href, title, contextText);
+      }
+      continue;
+    }
+
+    // Build URL from job ID
+    const title = cleanText(
+      el.querySelector<HTMLElement>(
+        "h1, h2, h3, [data-testid*='job-title'], [class*='job_title'], [class*='job-title']"
+      )?.textContent || ""
+    );
+    const contextText = cleanText(el.innerText || el.textContent || "");
+
+    if (title) {
+      const detailUrl = new URL(window.location.href);
+      detailUrl.searchParams.set("jid", jobId);
+      addJobCandidate(candidates, detailUrl.toString(), title, contextText);
+    }
+  }
+
+  return candidates;
+}
+
 function collectMonsterFallbackCandidates(): JobCandidate[] {
   const candidates: JobCandidate[] = [];
   const currentHost = window.location.hostname.toLowerCase();
@@ -915,7 +1166,6 @@ function collectMonsterFallbackCandidates(): JobCandidate[] {
       continue;
     }
 
-    // FIX: Expanded Monster URL matching with all known patterns
     const isJobUrl =
       href.includes("/job-opening") ||
       href.includes("/job/") ||
@@ -924,14 +1174,12 @@ function collectMonsterFallbackCandidates(): JobCandidate[] {
       href.includes("jobview.monster") ||
       /[?&]jobid=/i.test(href) ||
       /[?&]job_id=/i.test(href) ||
-      // FIX: Match /jobs/ with an actual slug (not just /jobs/ or /jobs/search)
       (href.includes("monster.") &&
         /\/jobs\/[^/?#]{4,}/.test(href) &&
         !href.includes("/jobs/search") &&
         !href.includes("/jobs/browse") &&
         !href.includes("/jobs/q-") &&
         !href.includes("/jobs/l-")) ||
-      // FIX: Match Monster URLs with UUID-like IDs
       (href.includes("monster.") && /\/[a-f0-9-]{8,}(?:[?#]|$)/i.test(href));
 
     if (!isJobUrl) {
@@ -963,13 +1211,18 @@ function collectZipRecruiterCardCandidates(): JobCandidate[] {
     const title =
       cleanText(
         card.querySelector<HTMLElement>(
-          "h1, h2, h3, [data-testid*='job-title'], [class*='job_title'], [class*='jobTitle']"
+          "h1, h2, h3, [data-testid*='job-title'], [class*='job_title'], [class*='jobTitle'], [class*='job-title']"
         )?.textContent
       ) ||
       cleanText(titleButton?.getAttribute("aria-label")?.replace(/^View\s+/i, "") || "");
     const contextText = cleanText(card.innerText || card.textContent || "");
 
     if (!title) {
+      continue;
+    }
+
+    // FIX: Check if already applied before adding
+    if (isAppliedJobText(contextText)) {
       continue;
     }
 
@@ -1089,6 +1342,8 @@ function collectFallbackJobCandidates(): JobCandidate[] {
 
   return candidates;
 }
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 function addJobCandidate(
   candidates: JobCandidate[],
@@ -1290,7 +1545,7 @@ function resolveAnchorCandidateTitle(
   const container = anchor.closest("article, li, section, div");
   if (container) {
     const heading = container.querySelector<HTMLElement>(
-      "h1, h2, h3, h4, [data-testid*='title'], [class*='title'], [class*='job-title'], [class*='role-title']"
+      "h1, h2, h3, h4, h5, [data-testid*='title'], [class*='title'], [class*='job-title'], [class*='role-title']"
     );
     const headingText = cleanText(heading?.textContent || "");
     if (headingText && !isCareerListingCtaText(headingText)) {
@@ -1370,6 +1625,8 @@ function isGenericListingSegment(segment: string): boolean {
     "vacancies",
   ]).has(segment);
 }
+
+// ─── DATE / RECENCY HELPERS ─────────────────────────────────────────────────
 
 function filterCandidatesByDatePostedWindow(
   candidates: JobCandidate[],
@@ -1504,6 +1761,8 @@ function convertAgeValueToHours(rawValue: string, rawUnit: string): number | nul
   }
   return null;
 }
+
+// ─── RESUME-KIND SCORING ────────────────────────────────────────────────────
 
 function scoreJobTitleForResume(title: string, resumeKind: ResumeKind): number {
   const normalizedTitle = title.toLowerCase();

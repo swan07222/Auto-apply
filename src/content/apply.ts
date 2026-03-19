@@ -466,16 +466,38 @@ export function findMonsterApplyAction(): ApplyAction | null {
 
 export function findZipRecruiterApplyAction(): ApplyAction | null {
   const selectors = [
+    "a[data-testid*='apply' i]",
     "button[data-testid='apply-button']",
     "button[data-testid*='apply']",
+    "[data-testid*='quick-apply' i]",
+    "[data-testid*='company' i]",
+    "[data-qa*='apply' i]",
+    "[data-qa*='company' i]",
     "[class*='apply_button']",
     "[class*='applyButton']",
+    "[class*='quickApply']",
+    "[class*='quick-apply']",
+    "[class*='company']",
     "button[name='apply']",
     "button[data-testid='one-click-apply']",
     "[class*='one-click']",
+    "[aria-label*='apply' i]",
+    "[aria-label*='company site' i]",
+    "[title*='apply' i]",
     "a[href*='/apply/']",
     "a[href*='zipapply']",
+    "a[href*='jobapply']",
+    "a[href*='candidate']",
   ];
+
+  let best:
+    | {
+        element: HTMLElement;
+        score: number;
+        text: string;
+        url: string | null;
+      }
+    | undefined;
 
   for (const selector of selectors) {
     let elements: HTMLElement[];
@@ -486,33 +508,118 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
     }
 
     for (const element of elements) {
-      if (!isElementVisible(element)) {
+      const actionElement = getClickableApplyElement(element);
+      if (!isElementVisible(actionElement)) {
         continue;
       }
 
-      const text = getActionText(element).toLowerCase();
-      if (text.includes("save") || text.includes("share") || text.includes("alert")) {
+      const text = (getActionText(actionElement) || getActionText(element)).trim();
+      const lower = text.toLowerCase();
+      if (
+        !lower ||
+        lower.includes("save") ||
+        lower.includes("share") ||
+        lower.includes("alert") ||
+        lower.includes("sign in") ||
+        lower.includes("job alert")
+      ) {
         continue;
       }
 
-      const url = getNavigationUrl(element);
-      if (url && (url.includes("zipapply") || url.includes("/apply/"))) {
-        return {
-          type: "navigate",
-          url,
-          description: "ZipRecruiter apply",
-        };
+      const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
+      const attrs = [
+        actionElement.getAttribute("data-testid"),
+        actionElement.getAttribute("data-qa"),
+        actionElement.getAttribute("aria-label"),
+        actionElement.getAttribute("title"),
+        actionElement.className,
+        actionElement.id,
+        element.getAttribute("data-testid"),
+        element.getAttribute("data-qa"),
+        element.getAttribute("aria-label"),
+        element.getAttribute("title"),
+        element.className,
+        element.id,
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      let score = 0;
+      if (lower === "apply now" || lower === "apply") score += 95;
+      if (lower.includes("1-click apply") || lower.includes("1 click apply")) score += 92;
+      if (lower.includes("quick apply") || lower.includes("easy apply")) score += 90;
+      if (lower.includes("apply on company") || lower.includes("apply on employer")) score += 88;
+      if (lower.includes("continue to company") || lower.includes("company site")) score += 86;
+      if (lower.includes("apply")) score += 70;
+      if (lower.includes("continue")) score += 40;
+      if (attrs.includes("apply")) score += 25;
+      if (attrs.includes("quick")) score += 15;
+      if (attrs.includes("company")) score += 15;
+      if (url && shouldPreferApplyNavigation(url, text, "ziprecruiter")) score += 35;
+      if (url && /zipapply|jobapply|\/apply\/|candidate/i.test(url)) score += 35;
+
+      if (score < 45) {
+        continue;
       }
 
-      return {
-        type: "click",
-        element,
-        description: getActionText(element) || "Apply",
-      };
+      if (!best || score > best.score) {
+        best = { element: actionElement, score, text, url };
+      }
     }
   }
 
-  return null;
+  if (!best) {
+    for (const element of Array.from(document.querySelectorAll<HTMLElement>("a[href], button, [role='button']"))) {
+      const actionElement = getClickableApplyElement(element);
+      if (!isElementVisible(actionElement)) {
+        continue;
+      }
+
+      const text = (getActionText(actionElement) || getActionText(element)).trim();
+      const lower = text.toLowerCase();
+      if (
+        !lower ||
+        ["save", "share", "alert", "sign in", "job alert", "subscribe"].some((token) =>
+          lower.includes(token)
+        )
+      ) {
+        continue;
+      }
+
+      const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
+      let score = 0;
+      if (/apply|company|employer|continue|resume/.test(lower)) score += 55;
+      if (/\bapply\b/.test(lower)) score += 20;
+      if (url && shouldPreferApplyNavigation(url, text, "ziprecruiter")) score += 35;
+      if (url && /zipapply|jobapply|\/apply\/|candidate/i.test(url)) score += 30;
+
+      if (score < 55) {
+        continue;
+      }
+
+      if (!best || score > best.score) {
+        best = { element: actionElement, score, text, url };
+      }
+    }
+  }
+
+  if (!best) {
+    return null;
+  }
+
+  if (best.url && shouldPreferApplyNavigation(best.url, best.text, "ziprecruiter")) {
+    return {
+      type: "navigate",
+      url: best.url,
+      description: describeApplyTarget(best.url, best.text || "ZipRecruiter apply"),
+    };
+  }
+
+  return {
+    type: "click",
+    element: best.element,
+    description: best.text || "ZipRecruiter apply",
+  };
 }
 
 export function hasIndeedApplyIframe(): boolean {
@@ -530,7 +637,7 @@ export function hasIndeedApplyIframe(): boolean {
 
 export function hasZipRecruiterApplyModal(): boolean {
   const modals = document.querySelectorAll<HTMLElement>(
-    "[role='dialog'], [class*='modal'], [class*='overlay'], [class*='popup']"
+    "[role='dialog'], [aria-modal='true'], [class*='modal'], [class*='overlay'], [class*='popup'], [data-testid*='modal'], [data-testid*='apply']"
   );
 
   for (const modal of Array.from(modals)) {
@@ -540,7 +647,13 @@ export function hasZipRecruiterApplyModal(): boolean {
 
     const text = (modal.innerText || "").toLowerCase().slice(0, 2000);
     if (
-      (text.includes("apply") || text.includes("resume") || text.includes("upload")) &&
+      (
+        text.includes("apply") ||
+        text.includes("resume") ||
+        text.includes("upload") ||
+        text.includes("experience") ||
+        text.includes("work authorization")
+      ) &&
       modal.querySelector("input, textarea, select, button")
     ) {
       return true;
@@ -904,6 +1017,7 @@ export function isLikelyApplyUrl(url: string, site: SiteKey): boolean {
     lower.includes("zipapply") ||
     lower.includes("/apply") ||
     lower.includes("application") ||
+    lower.includes("candidate") ||
     lower.includes("jobapply") ||
     lower.includes("job_app") ||
     lower.includes("applytojob") ||
@@ -1239,8 +1353,14 @@ function getApplyCandidateSelectors(site: SiteKey | null): string[] {
     case "ziprecruiter":
       return [
         "a[href*='zipapply']",
+        "a[href*='jobapply']",
+        "a[href*='candidate']",
         "[data-testid*='apply']",
+        "[data-qa*='apply']",
+        "[data-testid*='company']",
         "[class*='apply']",
+        "[class*='quickApply']",
+        "[class*='quick-apply']",
         "button[data-testid='apply-button']",
         "button[data-testid='one-click-apply']",
         "[class*='apply_button']",

@@ -116,6 +116,26 @@ describe("application progression actions", () => {
     }
   });
 
+  it("finds ZipRecruiter company-site actions from generic apply controls", () => {
+    document.body.innerHTML = `
+      <button
+        data-testid="company-apply-button"
+        data-to="https://company.example.com/careers/apply/123"
+        aria-label="Apply on company site"
+      >
+        Continue to company site
+      </button>
+    `;
+
+    const action = findZipRecruiterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe("https://company.example.com/careers/apply/123");
+    }
+  });
+
   it("prefers external apply links on generic career sites", () => {
     document.body.innerHTML = `
       <section>
@@ -140,6 +160,10 @@ describe("application progression actions", () => {
         <div>Apply with your resume</div>
         <input type="text" />
       </div>
+      <section aria-modal="true">
+        <div>Upload your resume and continue your application</div>
+        <button>Continue</button>
+      </section>
     `;
 
     expect(hasIndeedApplyIframe()).toBe(true);

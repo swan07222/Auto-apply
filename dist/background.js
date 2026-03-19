@@ -359,8 +359,7 @@
     "reqid",
     "id",
     "posting_id",
-    "req_id",
-    "lk"
+    "req_id"
   ];
   function getJobDedupKey(url) {
     const raw = url.trim().toLowerCase();
@@ -370,6 +369,29 @@
       const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
       let path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
       path = path.replace(/\/job-opening\//, "/job-openings/").replace(/\/jobs\/search$/, "/jobs").replace(/\/+/g, "/");
+      if (hostname.includes("ziprecruiter")) {
+        const jid = parsed.searchParams.get("jid");
+        if (jid) return `ziprecruiter:jid:${jid.toLowerCase()}`;
+        if (path.startsWith("/c/") || path.startsWith("/k/") || path.includes("/job-details/")) {
+          return `${hostname}${path}`;
+        }
+        const lk = parsed.searchParams.get("lk");
+        if (lk) return `ziprecruiter:lk:${lk.toLowerCase()}`;
+        return `${hostname}${path}`;
+      }
+      if (hostname.includes("dice")) {
+        const m1 = path.match(/\/job-detail\/([a-f0-9-]{8,})/i);
+        if (m1) return `dice:job:${m1[1].toLowerCase()}`;
+        const m2 = path.match(/\/jobs\/detail\/([a-f0-9-]{8,})/i);
+        if (m2) return `dice:job:${m2[1].toLowerCase()}`;
+        const m3 = path.match(/\/([a-f0-9]{24,})/i);
+        if (m3) return `dice:job:${m3[1].toLowerCase()}`;
+      }
+      if (hostname.includes("monster")) {
+        path = path.replace(/\/job-opening\//, "/job-openings/");
+        const jobId = parsed.searchParams.get("jobid") ?? parsed.searchParams.get("job_id");
+        if (jobId) return `${hostname}${path}?jobid=${jobId.toLowerCase()}`;
+      }
       for (const param of IDENTIFYING_PARAMS) {
         const value = parsed.searchParams.get(param);
         if (value) {

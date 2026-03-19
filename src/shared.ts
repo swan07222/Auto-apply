@@ -397,7 +397,6 @@ export const DEFAULT_SETTINGS: AutomationSettings = {
   answers: {},
 };
 
-// FIX: Monster detection — completely rewritten to handle all TLD variants
 export function detectSiteFromUrl(url: string): SiteKey | null {
   if (!url || typeof url !== "string") return null;
 
@@ -422,14 +421,9 @@ export function detectSiteFromUrl(url: string): SiteKey | null {
     return "dice";
   }
 
-  // FIX: Monster — split hostname into parts and check if "monster" is a domain segment
-  // This handles: monster.com, monster.co.uk, monster.de, monster.fr, monster.ca,
-  // job-openings.monster.com, jobview.monster.com, etc.
   const hostParts = bare.split(".");
   for (let i = 0; i < hostParts.length; i++) {
     if (hostParts[i] === "monster") {
-      // Ensure "monster" is not a subdomain prefix of a non-monster site
-      // It must be followed by a TLD pattern (at least one more part)
       if (i < hostParts.length - 1) {
         return "monster";
       }
@@ -534,8 +528,6 @@ export function buildStartupSearchTargets(
     company.regions.includes(region)
   );
 
-  // FIX: Each company gets one target with full_stack as default resume kind.
-  // The content script will infer per-job resume kind from job titles found on the page.
   return companies.map((company) => ({
     label: company.name,
     resumeKind: "full_stack" as ResumeKind,
@@ -612,11 +604,15 @@ const CANONICAL_JOB_BOARD_ORIGINS: Record<JobBoardSite, string> = {
   monster: "https://www.monster.com",
 };
 
+// FIX: Removed "lk" from general identifying params — handled site-specifically
+// in getJobDedupKey to prevent cross-search duplicate openings on ZipRecruiter
 const IDENTIFYING_PARAMS = [
   "jk", "vjk", "jobid", "job_id", "jid", "gh_jid", "ashby_jid",
-  "requisitionid", "requisition_id", "reqid", "id", "posting_id", "req_id", "lk",
+  "requisitionid", "requisition_id", "reqid", "id", "posting_id", "req_id",
 ];
 
+// FIX: Completely rewritten for site-specific dedup to fix ZipRecruiter
+// duplicate openings and Dice low job count
 export function getJobDedupKey(url: string): string {
   const raw = url.trim().toLowerCase();
   if (!raw) return "";
@@ -631,6 +627,57 @@ export function getJobDedupKey(url: string): string {
       .replace(/\/jobs\/search$/, "/jobs")
       .replace(/\/+/g, "/");
 
+    // ── ZipRecruiter site-specific dedup ──
+    // The same job can appear as /c/Company/Job/Title AND as ?lk=HASH
+    // from card-based collection. We normalise both forms so they collapse
+    // to a single key whenever the collection already picked the canonical
+    // anchor URL.  When only the lk form exists we keep it as-is.
+    if (hostname.includes("ziprecruiter")) {
+      // Prefer jid — most specific identifier
+      const jid = parsed.searchParams.get("jid");
+      if (jid) return `ziprecruiter:jid:${jid.toLowerCase()}`;
+
+      // Canonical path-based URLs  /c/…  /k/…  /job-details/…
+      if (
+        path.startsWith("/c/") ||
+        path.startsWith("/k/") ||
+        path.includes("/job-details/")
+      ) {
+        return `${hostname}${path}`;
+      }
+
+      // Card-collected lk URLs — keep the lk value only so all three
+      // search tabs that find the same card ID collapse to one key
+      const lk = parsed.searchParams.get("lk");
+      if (lk) return `ziprecruiter:lk:${lk.toLowerCase()}`;
+
+      // Fallback — strip volatile search params
+      return `${hostname}${path}`;
+    }
+
+    // ── Dice site-specific dedup ──
+    // Dice job URLs are /job-detail/UUID — normalise the UUID so
+    // minor casing or trailing-slash differences don't create dupes
+    if (hostname.includes("dice")) {
+      const m1 = path.match(/\/job-detail\/([a-f0-9-]{8,})/i);
+      if (m1) return `dice:job:${m1[1].toLowerCase()}`;
+
+      const m2 = path.match(/\/jobs\/detail\/([a-f0-9-]{8,})/i);
+      if (m2) return `dice:job:${m2[1].toLowerCase()}`;
+
+      // Dice URLs with a numeric/hash ID anywhere in path
+      const m3 = path.match(/\/([a-f0-9]{24,})/i);
+      if (m3) return `dice:job:${m3[1].toLowerCase()}`;
+    }
+
+    // ── Monster normalisation ──
+    if (hostname.includes("monster")) {
+      path = path.replace(/\/job-opening\//, "/job-openings/");
+      const jobId = parsed.searchParams.get("jobid") ?? parsed.searchParams.get("job_id");
+      if (jobId) return `${hostname}${path}?jobid=${jobId.toLowerCase()}`;
+    }
+
+    // ── Generic identifying-param check ──
     for (const param of IDENTIFYING_PARAMS) {
       const value = parsed.searchParams.get(param);
       if (value) {
@@ -644,8 +691,6 @@ export function getJobDedupKey(url: string): string {
   }
 }
 
-// FIX: Separate dedup key for spawn items — preserves query params so different
-// search URLs on the same site don't collapse into one
 export function getSpawnDedupKey(url: string): string {
   const raw = url.trim().toLowerCase();
   if (!raw) return "";
@@ -684,7 +729,6 @@ function slugifyMonsterQuery(query: string): string {
     .replace(/-+/g, "-");
 }
 
-// FIX: Monster search — use the current path-based result URL shape
 function buildSingleSearchUrl(
   site: JobBoardSite,
   _origin: string,
