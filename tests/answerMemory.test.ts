@@ -83,4 +83,35 @@ describe("answer memory helpers", () => {
     expect(relevant.map((entry) => entry.value)).toContain("Mission fit.");
     expect(relevant.map((entry) => entry.value)).not.toContain("VS Code");
   });
+
+  it("does not confuse sponsorship and work-authorization answers", () => {
+    const answers = {
+      [normalizeQuestionKey("Will you now or in the future require sponsorship?")]: {
+        question: "Will you now or in the future require sponsorship?",
+        value: "No",
+        updatedAt: 1,
+      },
+      [normalizeQuestionKey("Are you legally authorized to work in the United States?")]: {
+        question: "Are you legally authorized to work in the United States?",
+        value: "Yes",
+        updatedAt: 2,
+      },
+    };
+
+    expect(
+      findBestSavedAnswerMatch(
+        "Are you authorized to work in the U.S.?",
+        "work authorization",
+        answers
+      )?.value
+    ).toBe("Yes");
+
+    expect(
+      findBestSavedAnswerMatch(
+        "Will you require visa sponsorship?",
+        "sponsorship",
+        answers
+      )?.value
+    ).toBe("No");
+  });
 });

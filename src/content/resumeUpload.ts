@@ -87,22 +87,44 @@ export function resolveResumeKindForJob(options: {
 }
 
 export function pickResumeAssetForUpload(
-  settings: Pick<AutomationSettings, "resumes">,
+  settings: Pick<AutomationSettings, "resume" | "resumes">,
   desiredResumeKind?: ResumeKind
 ): ResumeAsset | null {
+  if (settings.resume) {
+    return settings.resume;
+  }
+
   if (desiredResumeKind) {
-    return settings.resumes[desiredResumeKind] ?? null;
-  }
-
-  for (const kind of [
-    "full_stack",
-    "front_end",
-    "back_end",
-  ] as ResumeKind[]) {
-    if (settings.resumes[kind]) {
-      return settings.resumes[kind] ?? null;
+    for (const kind of getResumeFallbackOrder(desiredResumeKind)) {
+      const asset = settings.resumes[kind];
+      if (asset) {
+        return asset;
+      }
     }
+    return null;
   }
 
-  return null;
+  const available = (["full_stack", "front_end", "back_end"] as ResumeKind[])
+    .map((kind) => settings.resumes[kind] ?? null)
+    .filter((asset): asset is ResumeAsset => Boolean(asset))
+    .sort(
+      (left, right) =>
+        right.updatedAt - left.updatedAt ||
+        left.name.localeCompare(right.name)
+    );
+
+  return available[0] ?? null;
+}
+
+function getResumeFallbackOrder(
+  desiredResumeKind: ResumeKind
+): ResumeKind[] {
+  switch (desiredResumeKind) {
+    case "front_end":
+      return ["front_end", "full_stack", "back_end"];
+    case "back_end":
+      return ["back_end", "full_stack", "front_end"];
+    case "full_stack":
+      return ["full_stack", "front_end", "back_end"];
+  }
 }

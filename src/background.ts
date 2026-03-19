@@ -7,6 +7,7 @@ import {
   AutomationStatus,
   JobContextSnapshot,
   SEARCH_OPEN_DELAY_MS,
+  SearchTarget,
   SiteKey,
   STARTUP_COMPANIES_REFRESH_ALARM,
   STARTUP_COMPANIES_REFRESH_INTERVAL_MS,
@@ -15,13 +16,15 @@ import {
   buildStartupSearchTargets,
   createSession,
   detectSiteFromUrl,
+  formatStartupRegionList,
   getJobDedupKey,
   getSpawnDedupKey,
   getSessionStorageKey,
   isJobBoardSite,
+  parseSearchKeywords,
   readAutomationSettings,
   refreshStartupCompanies,
-  resolveStartupRegion,
+  resolveStartupTargetRegions,
 } from "./shared";
 
 type BackgroundRequest =
@@ -46,6 +49,7 @@ type BackgroundRequest =
       stage?: AutomationStage;
       label?: string;
       resumeKind?: SpawnTabRequest["resumeKind"];
+      profileId?: SpawnTabRequest["profileId"];
     }
   | { type: "spawn-tabs"; items: SpawnTabRequest[]; maxJobPages?: number }
   | {
@@ -54,6 +58,7 @@ type BackgroundRequest =
       stage?: AutomationStage;
       label?: string;
       resumeKind?: SpawnTabRequest["resumeKind"];
+      profileId?: SpawnTabRequest["profileId"];
     }
   | { type: "close-current-tab" };
 
@@ -290,6 +295,7 @@ async function handleMessage(
       }
 
       let itemsToOpen = message.items;
+      const failedJobOpeningItems: SpawnTabRequest[] = [];
 
       if (
         typeof message.maxJobPages === "number" &&
@@ -319,7 +325,10 @@ async function handleMessage(
           openedCount += 1;
         } catch (error: unknown) {
           releaseExtensionSpawnSlots(currentTab.id, 1);
-          // FIX: Don't throw on individual tab creation failure — continue with others
+          if (item.stage === "open-apply" || item.stage === "autofill-form") {
+            failedJobOpeningItems.push(item);
+          }
+          // FIX: Don't throw on individual tab creation failure - continue with others
           continue;
         }
 
@@ -333,7 +342,8 @@ async function handleMessage(
             item.stage,
             item.runId,
             item.label,
-            item.resumeKind
+            item.resumeKind,
+            item.profileId
           );
           session.jobSlots = item.jobSlots;
 
@@ -341,6 +351,10 @@ async function handleMessage(
         }
 
         await delay(SEARCH_OPEN_DELAY_MS);
+      }
+
+      if (failedJobOpeningItems.length > 0) {
+        await releaseJobOpeningsForItems(failedJobOpeningItems);
       }
 
       return {
@@ -417,6 +431,7 @@ async function updateSessionFromMessage(
     jobSlots: existingSession?.jobSlots,
     label: message.label ?? existingSession?.label,
     resumeKind: message.resumeKind ?? existingSession?.resumeKind,
+    profileId: message.profileId ?? existingSession?.profileId,
   };
 
   await setSession(nextSession);
@@ -462,7 +477,8 @@ async function attachSessionToSiteOpenedChildTab(
     "open-apply",
     openerSession.runId,
     openerSession.label,
-    openerSession.resumeKind
+    openerSession.resumeKind,
+    openerSession.profileId
   );
 
   childSession.jobSlots = openerSession.jobSlots;
@@ -503,11 +519,19 @@ async function startAutomationForTab(
   const site = detectSiteFromUrl(getTabUrl(tab));
   const settings = await readAutomationSettings();
   const runId = createRunId();
+  const searchKeywords = parseSearchKeywords(settings.searchKeywords);
 
   if (!isJobBoardSite(site)) {
     return {
       ok: false,
       error: "Open an Indeed, ZipRecruiter, Dice, Monster, or Glassdoor page first.",
+    };
+  }
+
+  if (searchKeywords.length === 0) {
+    return {
+      ok: false,
+      error: "Add at least one search keyword in the extension before starting automation.",
     };
   }
 
@@ -528,7 +552,10 @@ async function startAutomationForTab(
     `Preparing ${getReadableSiteName(site)} automation...`,
     true,
     "bootstrap",
-    runId
+    runId,
+    undefined,
+    undefined,
+    settings.activeProfileId
   );
 
   await setSession(session);
@@ -562,13 +589,28 @@ async function startStartupAutomation(
   const sourceTab = await resolvePreferredTab(tabId, "web_page");
   const settings = await readAutomationSettings();
   const runId = createRunId();
+  const searchKeywords = parseSearchKeywords(settings.searchKeywords);
   const startupCompanies = await refreshStartupCompanies();
-  const targets = buildStartupSearchTargets(settings, startupCompanies);
+  const targetRegions = resolveStartupTargetRegions(
+    settings.startupRegion,
+    settings.candidate.country
+  );
+
+  if (searchKeywords.length === 0) {
+    return {
+      ok: false,
+      error: "Add at least one search keyword in the extension before starting startup automation.",
+    };
+  }
+
+  const targets = await filterReachableSearchTargets(
+    buildStartupSearchTargets(settings, startupCompanies)
+  );
 
   if (targets.length === 0) {
     return {
       ok: false,
-      error: "No startup career pages are configured for the selected region.",
+      error: "No startup career pages are currently reachable for the selected region.",
     };
   }
 
@@ -584,6 +626,8 @@ async function startStartupAutomation(
       message: `Collecting ${target.label} roles...`,
       label: target.label,
       resumeKind: target.resumeKind,
+      profileId: settings.activeProfileId,
+      keyword: target.keyword,
     }))
     .filter((item) => (item.jobSlots ?? 0) > 0);
 
@@ -645,7 +689,8 @@ async function startStartupAutomation(
         item.stage,
         item.runId,
         item.label,
-        item.resumeKind
+        item.resumeKind,
+        item.profileId ?? settings.activeProfileId
       );
       childSession.jobSlots = item.jobSlots;
 
@@ -654,11 +699,6 @@ async function startStartupAutomation(
 
     await delay(SEARCH_OPEN_DELAY_MS);
   }
-
-  const region = resolveStartupRegion(
-    settings.startupRegion,
-    settings.candidate.country
-  );
 
   if (openedCount === 0) {
     await removeRunState(runId);
@@ -674,7 +714,7 @@ async function startStartupAutomation(
   return {
     ok: true,
     opened: openedCount,
-    regionLabel: region.toUpperCase(),
+    regionLabel: formatStartupRegionList(targetRegions),
   };
 }
 
@@ -689,12 +729,27 @@ async function startOtherSitesAutomation(
   const sourceTab = await resolvePreferredTab(tabId, "web_page");
   const settings = await readAutomationSettings();
   const runId = createRunId();
-  const targets = buildOtherJobSiteTargets(settings);
+  const searchKeywords = parseSearchKeywords(settings.searchKeywords);
+  const targetRegions = resolveStartupTargetRegions(
+    settings.startupRegion,
+    settings.candidate.country
+  );
+
+  if (searchKeywords.length === 0) {
+    return {
+      ok: false,
+      error: "Add at least one search keyword in the extension before starting other job site automation.",
+    };
+  }
+
+  const targets = await filterReachableSearchTargets(
+    buildOtherJobSiteTargets(settings)
+  );
 
   if (targets.length === 0) {
     return {
       ok: false,
-      error: "No other job site searches are configured for the selected region.",
+      error: "No other job site searches are currently reachable for the selected region.",
     };
   }
 
@@ -710,6 +765,8 @@ async function startOtherSitesAutomation(
       message: `Collecting ${target.label} roles...`,
       label: target.label,
       resumeKind: target.resumeKind,
+      profileId: settings.activeProfileId,
+      keyword: target.keyword,
     }))
     .filter((item) => (item.jobSlots ?? 0) > 0);
 
@@ -771,7 +828,8 @@ async function startOtherSitesAutomation(
         item.stage,
         item.runId,
         item.label,
-        item.resumeKind
+        item.resumeKind,
+        item.profileId ?? settings.activeProfileId
       );
       childSession.jobSlots = item.jobSlots;
 
@@ -780,11 +838,6 @@ async function startOtherSitesAutomation(
 
     await delay(SEARCH_OPEN_DELAY_MS);
   }
-
-  const region = resolveStartupRegion(
-    settings.startupRegion,
-    settings.candidate.country
-  );
 
   if (openedCount === 0) {
     await removeRunState(runId);
@@ -800,8 +853,121 @@ async function startOtherSitesAutomation(
   return {
     ok: true,
     opened: openedCount,
-    regionLabel: region.toUpperCase(),
+    regionLabel: formatStartupRegionList(targetRegions),
   };
+}
+
+async function filterReachableSearchTargets(
+  targets: SearchTarget[]
+): Promise<SearchTarget[]> {
+  const results = await Promise.all(
+    targets.map((target) => probeSearchTarget(target))
+  );
+  const reachable = results
+    .filter((result) => result.ok)
+    .map((result) => result.target);
+
+  if (reachable.length > 0) {
+    return reachable;
+  }
+
+  return results
+    .filter((result) => !result.hardFailure)
+    .map((result) => result.target);
+}
+
+async function probeSearchTarget(target: SearchTarget): Promise<{
+  target: SearchTarget;
+  ok: boolean;
+  hardFailure: boolean;
+}> {
+  const timeout = 8_000;
+  const controller = new AbortController();
+  const timeoutId = globalThis.setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const response = await fetch(target.url, {
+      cache: "no-store",
+      redirect: "follow",
+      signal: controller.signal,
+    });
+
+    if (
+      response.status === 401 ||
+      response.status === 403 ||
+      response.status === 404 ||
+      response.status === 410 ||
+      response.status >= 500
+    ) {
+      return {
+        target,
+        ok: false,
+        hardFailure: true,
+      };
+    }
+
+    const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+    if (contentType && !contentType.includes("text/html")) {
+      return {
+        target,
+        ok: false,
+        hardFailure: true,
+      };
+    }
+
+    const finalUrl = response.url.toLowerCase();
+    if (
+      ["/404", "not-found", "page-not-found", "/error", "/unavailable"].some((token) =>
+        finalUrl.includes(token)
+      )
+    ) {
+      return {
+        target,
+        ok: false,
+        hardFailure: true,
+      };
+    }
+
+    const bodyText = (await response.text()).toLowerCase().replace(/\s+/g, " ").slice(0, 2500);
+    if (
+      [
+        "page not found",
+        "this page does not exist",
+        "this page doesn t exist",
+        "temporarily unavailable",
+        "service unavailable",
+        "access denied",
+      ].some((token) => bodyText.includes(token))
+    ) {
+      return {
+        target,
+        ok: false,
+        hardFailure: true,
+      };
+    }
+
+    return {
+      target,
+      ok: true,
+      hardFailure: false,
+    };
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      return {
+        target,
+        ok: true,
+        hardFailure: false,
+      };
+    }
+
+    return {
+      target,
+      ok: true,
+      hardFailure: false,
+    };
+  } finally {
+    globalThis.clearTimeout(timeoutId);
+  }
 }
 
 async function getSession(tabId: number): Promise<AutomationSession | null> {
@@ -1002,6 +1168,69 @@ async function claimJobOpeningsForRunId(
       ),
       limit: runState.jobPageLimit,
     };
+  });
+}
+
+async function releaseJobOpeningsForItems(
+  items: SpawnTabRequest[]
+): Promise<void> {
+  const grouped = new Map<string, string[]>();
+
+  for (const item of items) {
+    const runId = item.runId?.trim();
+    const key = getJobDedupKey(item.url);
+
+    if (!runId || !key) {
+      continue;
+    }
+
+    const existing = grouped.get(runId) ?? [];
+    existing.push(key);
+    grouped.set(runId, existing);
+  }
+
+  for (const [runId, keys] of grouped) {
+    await releaseJobOpeningsForRunId(runId, keys);
+  }
+}
+
+async function releaseJobOpeningsForRunId(
+  runId: string,
+  releasedKeys: string[]
+): Promise<void> {
+  if (releasedKeys.length === 0) {
+    return;
+  }
+
+  await withRunLock(runId, async () => {
+    const runState = await getRunState(runId);
+
+    if (!runState) {
+      return;
+    }
+
+    const uniqueReleasedKeys = Array.from(new Set(releasedKeys));
+    const openKeySet = new Set(runState.openedJobKeys ?? []);
+    let releasedCount = 0;
+
+    for (const key of uniqueReleasedKeys) {
+      if (!openKeySet.delete(key)) {
+        continue;
+      }
+
+      releasedCount += 1;
+    }
+
+    if (releasedCount <= 0) {
+      return;
+    }
+
+    await setRunState({
+      ...runState,
+      openedJobPages: Math.max(0, runState.openedJobPages - releasedCount),
+      openedJobKeys: Array.from(openKeySet),
+      updatedAt: Date.now(),
+    });
   });
 }
 

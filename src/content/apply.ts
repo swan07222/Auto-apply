@@ -168,7 +168,15 @@ export function findCompanySiteAction(): ApplyAction | null {
       continue;
     }
 
-    const text = (getActionText(actionElement) || getActionText(element)).trim();
+    const text = cleanText(
+      getActionText(actionElement) ||
+        getActionText(element) ||
+        actionElement.getAttribute("aria-label") ||
+        actionElement.getAttribute("title") ||
+        element.getAttribute("aria-label") ||
+        element.getAttribute("title") ||
+        ""
+    );
     const lower = text.toLowerCase();
     const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
     const attrs = [
@@ -208,6 +216,10 @@ export function findCompanySiteAction(): ApplyAction | null {
         "subscribe",
       ].some((blocked) => lower.includes(blocked))
     ) {
+      continue;
+    }
+
+    if (isLikelyNavigationChrome(actionElement) && !hasGateText && !url) {
       continue;
     }
 
@@ -269,6 +281,11 @@ export function findCompanySiteAction(): ApplyAction | null {
     }
     if (hasGateText) {
       score += 18;
+    }
+    if (isLikelyApplicationContext(actionElement)) {
+      score += 18;
+    } else if (isLikelyNavigationChrome(actionElement)) {
+      score -= 28;
     }
 
     // FIX: Lower threshold so company-site buttons are found more reliably
@@ -892,17 +909,24 @@ export function findProgressionAction(
       continue;
     }
 
-    const text = getActionText(element).trim();
-    const lower = text.toLowerCase();
-    if (!lower || lower.length > 60) {
+    const text = cleanText(
+      getActionText(element) ||
+        element.getAttribute("aria-label") ||
+        element.getAttribute("title") ||
+        ""
+    );
+    const metadata = getElementActionMetadata(element);
+    const lower = metadata.toLowerCase();
+    const lowerText = text.toLowerCase();
+    if (!lower || lower.length > 140) {
       continue;
     }
 
     if (
-      /submit\s*(my\s*)?application/i.test(lower) ||
-      /send\s*application/i.test(lower) ||
-      /confirm\s*and\s*submit/i.test(lower) ||
-      lower === "submit"
+      /submit\s*(my\s*)?application/i.test(lowerText) ||
+      /send\s*application/i.test(lowerText) ||
+      /confirm\s*and\s*submit/i.test(lowerText) ||
+      lowerText === "submit"
     ) {
       continue;
     }
@@ -929,59 +953,59 @@ export function findProgressionAction(
 
     let score = 0;
 
-    if (/^next$/i.test(lower)) {
+    if (/^next$/i.test(lowerText)) {
       score = 100;
-    } else if (/^continue$/i.test(lower)) {
+    } else if (/^continue$/i.test(lowerText)) {
       score = 95;
     } else if (
-      lower === "start my application" ||
-      lower === "start application"
+      lowerText === "start my application" ||
+      lowerText === "start application"
     ) {
       score = 94;
     } else if (
-      lower.includes("start applying") ||
-      lower.includes("start your application")
+      lowerText.includes("start applying") ||
+      lowerText.includes("start your application")
     ) {
       score = 92;
-    } else if (lower === "next step" || lower === "next page") {
+    } else if (lowerText === "next step" || lowerText === "next page") {
       score = 90;
-    } else if (lower.includes("save and continue") || lower.includes("save & continue")) {
+    } else if (lowerText.includes("save and continue") || lowerText.includes("save & continue")) {
       score = 88;
-    } else if (lower.includes("save and next") || lower.includes("save & next")) {
+    } else if (lowerText.includes("save and next") || lowerText.includes("save & next")) {
       score = 85;
     } else if (
-      lower.includes("continue to company site") ||
-      lower.includes("continue to company website") ||
-      lower.includes("continue to employer site")
+      lowerText.includes("continue to company site") ||
+      lowerText.includes("continue to company website") ||
+      lowerText.includes("continue to employer site")
     ) {
       score = 84;
-    } else if (lower.includes("continue to")) {
+    } else if (lowerText.includes("continue to")) {
       score = 82;
     } else if (
-      lower.includes("visit company site") ||
-      lower.includes("visit company website")
+      lowerText.includes("visit company site") ||
+      lowerText.includes("visit company website")
     ) {
       score = 80;
-    } else if (lower.includes("proceed")) {
+    } else if (lowerText.includes("proceed")) {
       score = 78;
     } else if (
-      lower.includes("review application") ||
-      lower.includes("review my application")
+      lowerText.includes("review application") ||
+      lowerText.includes("review my application")
     ) {
       score = 75;
     } else if (
-      lower === "review" ||
-      lower === "review and continue"
+      lowerText === "review" ||
+      lowerText === "review and continue"
     ) {
       score = 74;
     } else if (
-      lower.includes("continue application") ||
-      lower.includes("continue applying")
+      lowerText.includes("continue application") ||
+      lowerText.includes("continue applying")
     ) {
       score = 73;
-    } else if (lower.includes("next") && !lower.includes("submit")) {
+    } else if (lowerText.includes("next") && !lowerText.includes("submit")) {
       score = 70;
-    } else if (lower.includes("continue") && !lower.includes("submit")) {
+    } else if (lowerText.includes("continue") && !lowerText.includes("submit")) {
       score = 65;
     }
 
@@ -1007,6 +1031,11 @@ export function findProgressionAction(
 
     if (element.closest("form")) {
       score += 10;
+    }
+    if (isLikelyApplicationContext(element)) {
+      score += 18;
+    } else if (isLikelyNavigationChrome(element)) {
+      score -= 35;
     }
 
     if (
@@ -1166,6 +1195,44 @@ function getMeaningfulProgressionUrl(
   }
 
   return url;
+}
+
+function getElementActionMetadata(element: HTMLElement): string {
+  return cleanText(
+    [
+      getActionText(element),
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.getAttribute("data-test"),
+      element.getAttribute("data-testid"),
+      element.getAttribute("data-cy"),
+      element.id,
+      element.className,
+    ]
+      .filter(Boolean)
+      .join(" ")
+  );
+}
+
+function isLikelyApplicationContext(element: HTMLElement): boolean {
+  if (
+    element.closest(
+      "form, [role='dialog'], [aria-modal='true'], [data-testid*='apply'], [data-test*='apply'], [class*='apply'], [class*='application'], [class*='candidate']"
+    )
+  ) {
+    return true;
+  }
+
+  const surroundingText = cleanText(
+    element.closest("section, article, main, div")?.textContent || ""
+  )
+    .toLowerCase()
+    .slice(0, 500);
+  return /apply|application|resume|candidate/.test(surroundingText);
+}
+
+function isLikelyNavigationChrome(element: HTMLElement): boolean {
+  return Boolean(element.closest("header, nav, footer, aside"));
 }
 
 export function findApplyAction(
@@ -1442,6 +1509,9 @@ function scoreApplyElement(
   if (blocked.some((value) => lower.includes(value))) {
     return -1;
   }
+  if (isLikelyNavigationChrome(element) && !lower.includes("apply")) {
+    return -1;
+  }
 
   let score = 0;
 
@@ -1495,6 +1565,8 @@ function scoreApplyElement(
   if (attrs.includes("apply-button-wc")) score += 30;
   if (attrs.includes("svx_applybutton") || attrs.includes("applybutton")) score += 35;
   if (attrs.includes("company") || attrs.includes("external")) score += 20;
+  if (isLikelyApplicationContext(element)) score += 12;
+  if (isLikelyNavigationChrome(element)) score -= 20;
 
   return score;
 }

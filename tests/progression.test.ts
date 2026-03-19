@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { handleProgressionAction } from "../src/content/progression";
+import {
+  handleProgressionAction,
+  waitForReadyProgressionAction,
+} from "../src/content/progression";
 
 describe("progression helpers", () => {
   afterEach(() => {
@@ -73,5 +76,114 @@ describe("progression helpers", () => {
     expect(waitForHumanVerificationToClear).not.toHaveBeenCalled();
     expect(waitForLikelyApplicationSurface).toHaveBeenCalledWith("startup");
     expect(reopenApplyStage).toHaveBeenCalledWith("startup");
+  });
+
+  it("returns a navigate progression immediately without clicking the page", async () => {
+    const navigateCurrentTab = vi.fn();
+    const waitForHumanVerificationToClear = vi.fn();
+    const reopenApplyStage = vi.fn();
+
+    await expect(
+      handleProgressionAction({
+        site: "glassdoor",
+        progression: {
+          type: "navigate",
+          url: "https://example.com/apply",
+          description: "Continue to application",
+          text: "Continue to application",
+        },
+        updateStatus: vi.fn(),
+        navigateCurrentTab,
+        waitForHumanVerificationToClear,
+        hasLikelyApplicationSurface: vi.fn(),
+        waitForLikelyApplicationSurface: vi.fn(),
+        reopenApplyStage,
+        collectAutofillFields: () => [],
+      })
+    ).resolves.toBe(false);
+
+    expect(navigateCurrentTab).toHaveBeenCalledWith("https://example.com/apply");
+    expect(waitForHumanVerificationToClear).not.toHaveBeenCalled();
+    expect(reopenApplyStage).not.toHaveBeenCalled();
+  });
+
+  it("waits until a progression button appears before timing out", async () => {
+    vi.useFakeTimers();
+
+    const promise = waitForReadyProgressionAction("glassdoor", 1_000);
+
+    window.setTimeout(() => {
+      document.body.innerHTML = `
+        <section role="dialog" aria-modal="true">
+          <button>Start My Application</button>
+        </section>
+      `;
+    }, 300);
+
+    await vi.advanceTimersByTimeAsync(500);
+
+    await expect(promise).resolves.toEqual(
+      expect.objectContaining({
+        type: "click",
+        text: "Start My Application",
+      })
+    );
+  });
+
+  it("returns null when no progression action appears before the timeout", async () => {
+    vi.useFakeTimers();
+
+    const promise = waitForReadyProgressionAction("startup", 400);
+    await vi.advanceTimersByTimeAsync(500);
+
+    await expect(promise).resolves.toBeNull();
+  });
+
+  it("detects blank file, select, and textarea fields after an in-place progression click", async () => {
+    vi.useFakeTimers();
+
+    const button = document.createElement("button");
+    button.textContent = "Continue";
+    document.body.appendChild(button);
+
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "contact-method";
+
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.setAttribute("aria-label", "Upload resume");
+
+    const select = document.createElement("select");
+    select.setAttribute("aria-label", "Work authorization");
+    select.innerHTML = `
+      <option value="">Select one</option>
+      <option value="yes">Yes</option>
+    `;
+
+    const textarea = document.createElement("textarea");
+    textarea.setAttribute("aria-label", "Cover letter");
+    textarea.value = "";
+
+    const promise = handleProgressionAction({
+      site: "glassdoor",
+      progression: {
+        type: "click",
+        element: button,
+        description: "Continue",
+        text: "Continue",
+      },
+      updateStatus: vi.fn(),
+      navigateCurrentTab: vi.fn(),
+      waitForHumanVerificationToClear: vi.fn().mockResolvedValue(undefined),
+      hasLikelyApplicationSurface: vi.fn().mockReturnValue(true),
+      waitForLikelyApplicationSurface: vi.fn().mockResolvedValue(false),
+      reopenApplyStage: vi.fn().mockResolvedValue(undefined),
+      collectAutofillFields: () => [radio, fileInput, select, textarea],
+    });
+
+    await vi.runAllTimersAsync();
+
+    await expect(promise).resolves.toBe(true);
   });
 });

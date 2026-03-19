@@ -1,9 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   findStandaloneApplicationFrameUrl,
+  hasLikelyApplicationForm,
   hasLikelyApplicationFrame,
   hasLikelyApplicationPageContent,
+  isLikelyApplicationField,
+  waitForLikelyApplicationSurface,
 } from "../src/content/applicationSurface";
 import { AutofillField } from "../src/content/types";
 
@@ -15,6 +18,10 @@ const collectors = {
 };
 
 describe("application surface helpers", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("returns the embedded application URL when the page only hosts an iframe", () => {
     document.body.innerHTML = `
       <section>
@@ -88,5 +95,68 @@ describe("application surface helpers", () => {
     `;
 
     expect(hasLikelyApplicationPageContent()).toBe(true);
+  });
+
+  it("rejects generic search inputs when deciding whether a field belongs to an application form", () => {
+    document.body.innerHTML = `
+      <form>
+        <label>
+          Search jobs
+          <input id="job-search" type="search" />
+        </label>
+        <label>
+          Where
+          <input id="location-search" type="text" />
+        </label>
+      </form>
+    `;
+
+    const searchInput = document.querySelector<HTMLInputElement>("#job-search");
+    const locationInput =
+      document.querySelector<HTMLInputElement>("#location-search");
+
+    expect(searchInput).not.toBeNull();
+    expect(locationInput).not.toBeNull();
+    expect(isLikelyApplicationField(searchInput as AutofillField)).toBe(false);
+    expect(hasLikelyApplicationForm(collectors)).toBe(false);
+  });
+
+  it("treats a visible resume upload as an application form signal", () => {
+    document.body.innerHTML = `
+      <form>
+        <label>
+          Upload resume
+          <input type="file" />
+        </label>
+      </form>
+    `;
+
+    expect(hasLikelyApplicationForm(collectors)).toBe(true);
+  });
+
+  it("waits for a likely application surface to appear after delayed rendering", async () => {
+    vi.useFakeTimers();
+    document.body.innerHTML = `<main><h1>Job details</h1></main>`;
+
+    const promise = waitForLikelyApplicationSurface("glassdoor", collectors);
+
+    window.setTimeout(() => {
+      document.body.innerHTML = `
+        <form>
+          <label>
+            Full name
+            <input type="text" autocomplete="name" />
+          </label>
+          <label>
+            Email
+            <input type="email" autocomplete="email" />
+          </label>
+        </form>
+      `;
+    }, 1_400);
+
+    await vi.advanceTimersByTimeAsync(2_100);
+
+    await expect(promise).resolves.toBe(true);
   });
 });

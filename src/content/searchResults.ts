@@ -35,23 +35,32 @@ type WaitForJobDetailUrlsOptions = {
   targetCount?: number;
   detectedSite: SiteKey | null;
   resumeKind?: ResumeKind;
+  searchKeywords?: string[];
   label?: string;
   onOpenListingsSurface?: (message: string) => void;
 };
 
 export async function scrollPageForLazyContent(): Promise<void> {
-  const totalHeight = document.body.scrollHeight;
-  const viewportHeight = window.innerHeight;
-  const steps = Math.min(10, Math.ceil(totalHeight / viewportHeight));
+  let previousHeight = 0;
 
-  for (let i = 1; i <= steps; i++) {
-    const target = Math.min(totalHeight, (totalHeight / steps) * i);
+  for (let step = 0; step < 10; step += 1) {
+    const totalHeight = Math.max(
+      document.body.scrollHeight,
+      document.documentElement?.scrollHeight ?? 0
+    );
+    const viewportHeight = Math.max(window.innerHeight, 1);
+    const target = Math.min(totalHeight, viewportHeight * (step + 1));
     window.scrollTo({ top: target, behavior: "smooth" });
-    await sleep(800);
+    await waitForDomSettle(1_000, 350);
+
+    if (totalHeight <= previousHeight && step >= 2) {
+      break;
+    }
+    previousHeight = totalHeight;
   }
 
   window.scrollTo({ top: 0, behavior: "smooth" });
-  await sleep(500);
+  await waitForDomSettle(700, 250);
 }
 
 export async function waitForJobDetailUrls({
@@ -60,6 +69,7 @@ export async function waitForJobDetailUrls({
   targetCount = 1,
   detectedSite,
   resumeKind,
+  searchKeywords = [],
   label,
   onOpenListingsSurface,
 }: WaitForJobDetailUrlsOptions): Promise<string[]> {
@@ -86,7 +96,8 @@ export async function waitForJobDetailUrls({
           candidates,
           detectedSite,
           resumeKind,
-          datePostedWindow
+          datePostedWindow,
+          searchKeywords
         )
       )
     );
@@ -106,6 +117,7 @@ export async function waitForJobDetailUrls({
         detectedSite,
         resumeKind,
         datePostedWindow,
+        searchKeywords,
       });
 
       if (embeddedUrls.length > bestUrls.length) {
@@ -141,11 +153,12 @@ export async function waitForJobDetailUrls({
           datePostedWindow,
           detectedSite,
           resumeKind,
+          searchKeywords,
           label,
           onOpenListingsSurface,
         });
         if (openedCareerSurface) {
-          await sleep(2200);
+          await waitForDomSettle(2_400, 500);
         }
       }
 
@@ -222,19 +235,67 @@ export async function waitForJobDetailUrls({
       });
     }
 
-    await sleep(800);
+    await waitForResultSurfaceSettle(site);
   }
 
   return bestUrls;
+}
+
+async function waitForResultSurfaceSettle(site: SiteKey): Promise<void> {
+  const maxWaitMs =
+    site === "startup" || site === "other_sites" || site === "glassdoor"
+      ? 1_600
+      : site === "dice" || site === "ziprecruiter"
+        ? 1_400
+        : 1_000;
+
+  await waitForDomSettle(maxWaitMs, 350);
+}
+
+async function waitForDomSettle(
+  maxWaitMs: number,
+  quietWindowMs: number
+): Promise<void> {
+  const observer = new MutationObserver(() => {
+    lastMutationAt = Date.now();
+  });
+  let lastMutationAt = Date.now();
+  const startedAt = lastMutationAt;
+
+  try {
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      characterData: true,
+    });
+  } catch {
+    await sleep(Math.min(maxWaitMs, quietWindowMs));
+    return;
+  }
+
+  try {
+    while (Date.now() - startedAt < maxWaitMs) {
+      const quietFor = Date.now() - lastMutationAt;
+      if (quietFor >= quietWindowMs) {
+        return;
+      }
+
+      await sleep(Math.min(quietWindowMs, 150));
+    }
+  } finally {
+    observer.disconnect();
+  }
 }
 
 async function collectMonsterEmbeddedUrls({
   detectedSite,
   resumeKind,
   datePostedWindow,
+  searchKeywords = [],
 }: Pick<
   WaitForJobDetailUrlsOptions,
-  "detectedSite" | "resumeKind" | "datePostedWindow"
+  "detectedSite" | "resumeKind" | "datePostedWindow" | "searchKeywords"
 >): Promise<string[]> {
   try {
     const response = await chrome.runtime.sendMessage({
@@ -250,7 +311,8 @@ async function collectMonsterEmbeddedUrls({
           embeddedCandidates,
           detectedSite,
           resumeKind,
-          datePostedWindow
+          datePostedWindow,
+          searchKeywords
         )
       )
     );
@@ -275,6 +337,7 @@ async function tryOpenCareerListingsSurface({
   datePostedWindow,
   detectedSite,
   resumeKind,
+  searchKeywords = [],
   label,
   onOpenListingsSurface,
 }: Omit<WaitForJobDetailUrlsOptions, "targetCount">): Promise<boolean> {
@@ -319,7 +382,8 @@ async function tryOpenCareerListingsSurface({
       updatedCandidates,
       detectedSite,
       resumeKind,
-      datePostedWindow
+      datePostedWindow,
+      searchKeywords
     );
     if (updatedUrls.length > 0) {
       return true;

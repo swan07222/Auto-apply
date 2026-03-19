@@ -6,12 +6,15 @@ import {
   buildSearchTargets,
   buildStartupSearchTargets,
   detectSiteFromUrl,
+  formatStartupRegionList,
   getJobDedupKey,
   inferResumeKindFromTitle,
+  inferStartupRegionFromCountry,
   isStartupCompaniesCacheFresh,
   isProbablyHumanVerificationPage,
   normalizeQuestionKey,
   resolveStartupRegion,
+  resolveStartupTargetRegions,
   sanitizeStartupCompaniesPayload,
   sanitizeAutomationSettings,
 } from "../src/shared";
@@ -35,35 +38,37 @@ describe("shared automation target logic", () => {
   it("builds remote Monster search targets with the current form-based search URL", () => {
     const targets = buildSearchTargets(
       "monster",
-      "https://www.monster.com"
+      "https://www.monster.com",
+      "frontend engineer\nplatform engineer"
     );
 
-    expect(targets).toHaveLength(3);
+    expect(targets).toHaveLength(2);
     const firstUrl = new URL(targets[0].url);
-    const secondUrl = new URL(targets[1].url);
-
     expect(firstUrl.pathname).toBe("/jobs/search");
-    expect(firstUrl.searchParams.get("q")).toBe("front end developer");
+    expect(firstUrl.searchParams.get("q")).toBe("frontend engineer");
     expect(firstUrl.searchParams.get("where")).toBe("remote");
     expect(firstUrl.searchParams.get("so")).toBe("m.h.s");
-
-    expect(secondUrl.pathname).toBe("/jobs/search");
-    expect(secondUrl.searchParams.get("q")).toBe("back end developer");
-    expect(secondUrl.searchParams.get("where")).toBe("remote");
+    expect(
+      targets.some(
+        (target) =>
+          new URL(target.url).searchParams.get("q") === "platform engineer"
+      )
+    ).toBe(true);
   });
 
   it("builds remote Glassdoor search targets using the jobs route", () => {
     const targets = buildSearchTargets(
       "glassdoor",
-      "https://www.glassdoor.com"
+      "https://www.glassdoor.com",
+      "software engineer"
     );
 
-    expect(targets).toHaveLength(3);
+    expect(targets).toHaveLength(1);
     const firstUrl = new URL(targets[0].url);
 
     expect(firstUrl.pathname).toBe("/Job/jobs.htm");
     expect(firstUrl.searchParams.get("sc.keyword")).toBe(
-      "remote front end developer"
+      "remote software engineer"
     );
     expect(firstUrl.searchParams.get("locT")).toBe("N");
     expect(firstUrl.searchParams.get("locId")).toBe("1");
@@ -74,12 +79,16 @@ describe("shared automation target logic", () => {
     expect(resolveStartupRegion("auto", "United Kingdom")).toBe("uk");
     expect(resolveStartupRegion("auto", "Germany")).toBe("eu");
     expect(resolveStartupRegion("us", "Germany")).toBe("us");
+    expect(inferStartupRegionFromCountry("")).toBeNull();
+    expect(resolveStartupTargetRegions("auto", "")).toEqual(["us", "uk", "eu"]);
+    expect(formatStartupRegionList(["us", "uk", "eu"])).toBe("US / UK / EU");
   });
 
   it("builds US startup targets from direct ATS boards where configured", () => {
     const settings = {
       ...DEFAULT_SETTINGS,
       startupRegion: "us" as const,
+      searchKeywords: "software engineer",
       candidate: {
         ...DEFAULT_SETTINGS.candidate,
         country: "United States",
@@ -95,12 +104,14 @@ describe("shared automation target logic", () => {
     expect(urls).toContain("https://job-boards.greenhouse.io/figma");
     expect(urls).toContain("https://careers.veeva.com/job-search-results/");
     expect(urls).not.toContain("https://job-boards.greenhouse.io/monzo");
+    expect(targets.every((target) => target.resumeKind === undefined)).toBe(true);
   });
 
   it("includes Veeva in UK and EU startup targets", () => {
     const ukSettings = {
       ...DEFAULT_SETTINGS,
       startupRegion: "uk" as const,
+      searchKeywords: "software engineer",
       candidate: {
         ...DEFAULT_SETTINGS.candidate,
         country: "United Kingdom",
@@ -109,6 +120,7 @@ describe("shared automation target logic", () => {
     const euSettings = {
       ...DEFAULT_SETTINGS,
       startupRegion: "eu" as const,
+      searchKeywords: "software engineer",
       candidate: {
         ...DEFAULT_SETTINGS.candidate,
         country: "Germany",
@@ -127,6 +139,7 @@ describe("shared automation target logic", () => {
     const settings = {
       ...DEFAULT_SETTINGS,
       startupRegion: "us" as const,
+      searchKeywords: "software engineer",
       candidate: {
         ...DEFAULT_SETTINGS.candidate,
         country: "United States",
@@ -155,6 +168,7 @@ describe("shared automation target logic", () => {
     const settings = {
       ...DEFAULT_SETTINGS,
       startupRegion: "us" as const,
+      searchKeywords: "frontend engineer\nsoftware engineer",
       candidate: {
         ...DEFAULT_SETTINGS.candidate,
         country: "United States",
@@ -165,16 +179,13 @@ describe("shared automation target logic", () => {
     const urls = targets.map((target) => target.url);
 
     expect(urls).toContain(
-      "https://builtin.com/jobs/remote/dev-engineering/front-end"
+      "https://builtin.com/jobs?search=frontend%20engineer"
     );
     expect(urls).toContain(
-      "https://builtin.com/jobs/remote/dev-engineering/back-end"
+      "https://www.workatastartup.com/jobs?query=frontend%20engineer"
     );
     expect(urls).toContain(
-      "https://builtin.com/jobs/remote/dev-engineering/full-stack"
-    );
-    expect(urls).toContain(
-      "https://www.workatastartup.com/jobs?query=front%20end%20developer"
+      "https://www.workatastartup.com/jobs?query=software%20engineer"
     );
   });
 
@@ -236,6 +247,20 @@ describe("shared automation target logic", () => {
     expect(isProbablyHumanVerificationPage(document)).toBe(true);
   });
 
+  it("detects Cloudflare verification pages used by ZipRecruiter", () => {
+    document.title = "Just a moment...";
+    document.body.innerHTML = `
+      <main>
+        <h1>Performing security verification</h1>
+        <p>This website uses a security service to protect against malicious bots.</p>
+        <p>Performance and Security by Cloudflare</p>
+        <p>Ray ID: 9dedcdb5d9f3b4c6</p>
+      </main>
+    `;
+
+    expect(isProbablyHumanVerificationPage(document)).toBe(true);
+  });
+
   it("does not treat application forms with embedded captcha markers as verification pages", () => {
     document.title = "Apply";
     document.body.innerHTML = `
@@ -258,6 +283,7 @@ describe("shared automation target logic", () => {
       searchMode: "other_job_sites",
       startupRegion: "uk",
       datePostedWindow: "24h",
+      searchKeywords: "software engineer\nfrontend engineer",
       candidate: {
         fullName: "  Ada Lovelace  ",
         email: " ada@example.com ",
@@ -280,6 +306,13 @@ describe("shared automation target logic", () => {
           updatedAt: 456,
         },
       },
+      preferenceAnswers: {
+        " can you relocate ": {
+          question: "Can you relocate?",
+          value: "Yes",
+          updatedAt: 789,
+        },
+      },
     });
 
     expect(settings.jobPageLimit).toBe(25);
@@ -287,13 +320,18 @@ describe("shared automation target logic", () => {
     expect(settings.searchMode).toBe("other_job_sites");
     expect(settings.startupRegion).toBe("uk");
     expect(settings.datePostedWindow).toBe("24h");
+    expect(settings.searchKeywords).toBe("software engineer\nfrontend engineer");
     expect(settings.candidate.fullName).toBe("Ada Lovelace");
     expect(settings.candidate.email).toBe("ada@example.com");
     expect(settings.candidate.country).toBe("United Kingdom");
-    expect(settings.resumes.front_end?.name).toBe("resume.pdf");
+    expect(settings.resume?.name).toBe("resume.pdf");
+    expect(settings.profiles[settings.activeProfileId]?.resume?.name).toBe("resume.pdf");
     expect(settings.answers[normalizeQuestionKey("Why do you want this role?")]?.value).toBe(
       "Impact and scope."
     );
+    expect(
+      settings.preferenceAnswers[normalizeQuestionKey("Can you relocate?")]?.value
+    ).toBe("Yes");
   });
 
   it("sanitizes startup company feeds and cache freshness", () => {

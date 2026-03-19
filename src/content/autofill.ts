@@ -2,6 +2,43 @@ import { AutofillField } from "./types";
 import { isElementVisible } from "./dom";
 import { cleanText, cssEscape, normalizeChoiceText } from "./text";
 
+const STABLE_PROFILE_FIELD_TOKENS = [
+  "full name",
+  "first name",
+  "last name",
+  "given name",
+  "family name",
+  "surname",
+  "email",
+  "phone",
+  "mobile",
+  "telephone",
+  "linkedin",
+  "portfolio",
+  "website",
+  "personal site",
+  "github",
+  "city",
+  "state",
+  "province",
+  "region",
+  "country",
+  "current company",
+  "current employer",
+  "years of experience",
+  "year of experience",
+  "total experience",
+  "overall experience",
+  "authorized to work",
+  "work authorization",
+  "eligible to work",
+  "legally authorized",
+  "sponsorship",
+  "visa",
+  "relocate",
+  "relocation",
+] as const;
+
 export function shouldAutofillField(
   field: AutofillField,
   ignoreBlankCheck = false
@@ -65,6 +102,50 @@ export function isSelectBlank(field: HTMLSelectElement): boolean {
     field.selectedIndex <= 0 ||
     /^select\b|^choose\b|please select|^--/i.test(field.selectedOptions[0]?.textContent || "")
   );
+}
+
+export function shouldOverwriteAutofillValue(
+  field: AutofillField,
+  answer: string,
+  question = getQuestionText(field)
+): boolean {
+  if (!answer.trim() || document.activeElement === field) {
+    return false;
+  }
+
+  const descriptor = getFieldDescriptor(field, question);
+  if (!matchesDescriptor(descriptor, [...STABLE_PROFILE_FIELD_TOKENS])) {
+    return false;
+  }
+
+  if (field instanceof HTMLTextAreaElement) {
+    return false;
+  }
+
+  if (field instanceof HTMLSelectElement) {
+    if (isSelectBlank(field)) {
+      return true;
+    }
+
+    const current = cleanText(field.selectedOptions[0]?.textContent || field.value);
+    return scoreChoiceMatch(answer, current) < 100;
+  }
+
+  if (!(field instanceof HTMLInputElement) || !isTextLikeInput(field)) {
+    return false;
+  }
+
+  const current = normalizeAutofillComparableValue(field.value);
+  const desired = normalizeAutofillComparableValue(answer);
+  if (!current || current === desired) {
+    return false;
+  }
+
+  if (isPlaceholderLikeValue(current)) {
+    return true;
+  }
+
+  return true;
 }
 
 export function setFieldValue(
@@ -262,40 +343,7 @@ export function shouldRememberField(field: AutofillField): boolean {
   }
   if (
     matchesDescriptor(descriptor, [
-      "full name",
-      "first name",
-      "last name",
-      "given name",
-      "family name",
-      "surname",
-      "email",
-      "phone",
-      "mobile",
-      "telephone",
-      "linkedin",
-      "portfolio",
-      "website",
-      "personal site",
-      "github",
-      "city",
-      "state",
-      "province",
-      "region",
-      "country",
-      "current company",
-      "current employer",
-      "years of experience",
-      "year of experience",
-      "total experience",
-      "overall experience",
-      "authorized to work",
-      "work authorization",
-      "eligible to work",
-      "legally authorized",
-      "sponsorship",
-      "visa",
-      "relocate",
-      "relocation",
+      ...STABLE_PROFILE_FIELD_TOKENS,
     ])
   ) {
     return false;
@@ -357,4 +405,22 @@ function isFieldContextVisible(field: AutofillField): boolean {
 
   const root = field.getRootNode();
   return root instanceof ShadowRoot && root.host instanceof HTMLElement && isElementVisible(root.host);
+}
+
+function normalizeAutofillComparableValue(value: string): string {
+  return normalizeChoiceText(value).replace(/\s+/g, " ").trim();
+}
+
+function isPlaceholderLikeValue(value: string): boolean {
+  return [
+    "select",
+    "choose",
+    "none",
+    "n a",
+    "na",
+    "unknown",
+    "not provided",
+    "not specified",
+    "pending",
+  ].some((token) => value === token || value.startsWith(`${token} `));
 }

@@ -337,6 +337,25 @@ describe("job search candidate filtering", () => {
     expect(urls).toEqual(["https://example.com/careers/jobs/platform-engineer-123"]);
   });
 
+  it("keeps startup and other-site fallback scans focused on technical roles even without a selected track", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://example.com/jobs/frontend-engineer-1",
+        title: "Frontend Engineer",
+        contextText: "Posted today.",
+      },
+      {
+        url: "https://example.com/jobs/recruiter-2",
+        title: "Technical Recruiter",
+        contextText: "Posted today.",
+      },
+    ];
+
+    expect(pickRelevantJobUrls(candidates, "startup")).toEqual([
+      "https://example.com/jobs/frontend-engineer-1",
+    ]);
+  });
+
   it("accepts ATS detail URLs on startup and other job sites but rejects listing pages", () => {
     expect(
       isLikelyJobDetailUrl(
@@ -405,10 +424,13 @@ describe("job search candidate filtering", () => {
     expect(isStrongAppliedJobText("Applied")).toBe(true);
   });
 
-  it("waits for enough job results unless ZipRecruiter or Dice has clearly stabilized", () => {
+  it("waits for enough job results until slower boards exhaust their later recovery passes", () => {
     expect(shouldFinishJobResultScan(1, 5, 0, 2, "dice")).toBe(false);
     expect(shouldFinishJobResultScan(5, 5, 0, 2, "dice")).toBe(true);
-    expect(shouldFinishJobResultScan(3, 5, 5, 8, "ziprecruiter")).toBe(false);
-    expect(shouldFinishJobResultScan(3, 5, 6, 8, "ziprecruiter")).toBe(true);
+    expect(shouldFinishJobResultScan(3, 5, 6, 8, "ziprecruiter")).toBe(false);
+    expect(shouldFinishJobResultScan(3, 5, 7, 14, "ziprecruiter")).toBe(false);
+    expect(shouldFinishJobResultScan(3, 5, 8, 14, "ziprecruiter")).toBe(true);
+    expect(shouldFinishJobResultScan(2, 5, 7, 20, "startup")).toBe(false);
+    expect(shouldFinishJobResultScan(2, 5, 8, 22, "startup")).toBe(true);
   });
 });

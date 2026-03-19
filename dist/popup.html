@@ -19,6 +19,11 @@
 
         <section class="overview-grid" aria-label="Current run summary">
           <article class="overview-card">
+            <p class="overview-label">Active profile</p>
+            <p id="profile-preview" class="overview-value">Default Profile</p>
+          </article>
+
+          <article class="overview-card">
             <p class="overview-label">Active site</p>
             <p id="site-name" class="overview-value pill">Checking...</p>
           </article>
@@ -33,6 +38,36 @@
             <p id="region-preview" class="overview-value">Auto</p>
           </article>
         </section>
+
+        <details class="settings-group" open>
+          <summary class="group-summary">
+            <div class="group-heading">
+              <h2>Set Profile</h2>
+              <p>Choose an existing profile, create a new one, rename it, or remove it.</p>
+            </div>
+          </summary>
+
+          <div class="subsection">
+            <div class="field-grid compact-grid">
+              <label class="field">
+                <span>Current profile</span>
+                <select id="profile-select"></select>
+              </label>
+            </div>
+
+            <div class="inline-button-row">
+              <button id="create-profile-button" class="secondary-button inline-button" type="button">
+                Create Profile
+              </button>
+              <button id="rename-profile-button" class="secondary-button inline-button" type="button">
+                Edit Profile Name
+              </button>
+              <button id="delete-profile-button" class="secondary-button inline-button" type="button">
+                Delete Profile
+              </button>
+            </div>
+          </div>
+        </details>
 
         <section class="status-panel" id="status-panel" data-phase="idle" aria-live="polite">
           <div class="status-header">
@@ -94,6 +129,15 @@
                 <option value="3d">Past 3 days</option>
                 <option value="1w">Past week</option>
               </select>
+            </label>
+
+            <label class="field">
+              <span>Search keywords</span>
+              <textarea
+                id="search-keywords"
+                rows="3"
+                placeholder="software engineer&#10;frontend engineer&#10;react developer"
+              ></textarea>
             </label>
 
             <label class="toggle-field">
@@ -209,6 +253,24 @@
                   </select>
                 </label>
               </div>
+
+              <div class="answer-row">
+                <div>
+                  <p class="subsection-title">Custom preference answers</p>
+                  <p class="settings-copy">
+                    Add your own question and answer pairs for preferences the extension should reuse automatically.
+                  </p>
+                </div>
+                <button id="add-preference-button" class="secondary-button inline-button" type="button">
+                  Add Question &amp; Answer
+                </button>
+              </div>
+
+              <p id="preference-empty-state" class="settings-copy answer-empty-state">
+                No custom preference answers yet.
+              </p>
+
+              <div id="preference-list" class="answer-list" aria-live="polite"></div>
             </div>
           </details>
         </details>
@@ -217,27 +279,15 @@
           <summary class="group-summary">
             <div class="group-heading">
               <h2>Resume Library</h2>
-              <p>Each role type can use its own resume automatically during uploads and AI drafting.</p>
+              <p>Upload one resume for the currently selected profile. This resume is used for uploads and AI drafting.</p>
             </div>
           </summary>
 
           <div class="resume-list">
             <label class="resume-card">
-              <span class="resume-title">Front End Resume</span>
-              <input id="resume-front-end" type="file" accept=".pdf,.doc,.docx" />
-              <span id="resume-front-end-name" class="resume-name">No file saved</span>
-            </label>
-
-            <label class="resume-card">
-              <span class="resume-title">Back End Resume</span>
-              <input id="resume-back-end" type="file" accept=".pdf,.doc,.docx" />
-              <span id="resume-back-end-name" class="resume-name">No file saved</span>
-            </label>
-
-            <label class="resume-card">
-              <span class="resume-title">Full Stack Resume</span>
-              <input id="resume-full-stack" type="file" accept=".pdf,.doc,.docx" />
-              <span id="resume-full-stack-name" class="resume-name">No file saved</span>
+              <span class="resume-title">Upload Resume</span>
+              <input id="resume-upload" type="file" accept=".pdf,.doc,.docx,.txt,.md,.rtf" />
+              <span id="resume-upload-name" class="resume-name">No file saved</span>
             </label>
           </div>
         </details>
@@ -254,7 +304,7 @@
             <div>
               <p class="subsection-title">Saved answer count</p>
               <p class="settings-copy">
-                Keep this list clean if you change your preferred responses over time.
+                Edit or remove remembered answers whenever your preferred responses change.
               </p>
             </div>
             <span id="answer-count" class="pill subtle">0</span>

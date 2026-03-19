@@ -456,7 +456,8 @@ export function pickRelevantJobUrls(
   candidates: JobCandidate[],
   site: SiteKey | null,
   resumeKind?: ResumeKind,
-  datePostedWindow: DatePostedWindow = "any"
+  datePostedWindow: DatePostedWindow = "any",
+  searchKeywords: string[] = []
 ): string[] {
   const valid = candidates.filter((candidate) =>
     isLikelyJobDetailUrl(site, candidate.url, candidate.title, candidate.contextText)
@@ -464,15 +465,33 @@ export function pickRelevantJobUrls(
 
   const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
   const eligible = datePostedWindow === "any" ? valid : recencyFiltered;
+  const keywordEligible =
+    searchKeywords.length > 0
+      ? eligible.filter((candidate) =>
+          matchesConfiguredSearchKeywords(candidate, searchKeywords)
+        )
+      : eligible;
+  const technicalEligible =
+    site === "startup" || site === "other_sites"
+      ? keywordEligible.filter((candidate) =>
+          looksLikeTechnicalRoleTitle(candidate.title)
+        )
+      : keywordEligible;
+
+  if (searchKeywords.length > 0 && keywordEligible.length === 0) {
+    return [];
+  }
 
   if (!resumeKind) {
-    return sortCandidatesByRecency(eligible, datePostedWindow).map((candidate) => candidate.url);
+    const fallbackPool =
+      technicalEligible.length > 0 ? technicalEligible : keywordEligible;
+    return sortCandidatesByRecency(fallbackPool, datePostedWindow).map((candidate) => candidate.url);
   }
 
   const fallbackPool =
     site === "startup" || site === "other_sites"
-      ? eligible.filter((candidate) => looksLikeTechnicalRoleTitle(candidate.title))
-      : eligible;
+      ? technicalEligible
+      : keywordEligible;
 
   const scored = fallbackPool.map((candidate, index) => ({
     candidate,
@@ -500,6 +519,47 @@ export function pickRelevantJobUrls(
     .filter((url) => !preferredSet.has(url));
 
   return [...preferred, ...fallback];
+}
+
+function matchesConfiguredSearchKeywords(
+  candidate: JobCandidate,
+  searchKeywords: string[]
+): boolean {
+  const haystack = normalizeChoiceText(
+    `${candidate.title} ${candidate.contextText}`
+  );
+
+  return searchKeywords.some((keyword) =>
+    matchesSearchKeyword(haystack, keyword)
+  );
+}
+
+function matchesSearchKeyword(haystack: string, keyword: string): boolean {
+  const normalizedKeyword = normalizeChoiceText(keyword);
+  if (!haystack || !normalizedKeyword) {
+    return false;
+  }
+
+  if (haystack.includes(normalizedKeyword)) {
+    return true;
+  }
+
+  const keywordTokens = normalizedKeyword
+    .split(/\s+/)
+    .filter((token) => token.length >= 2);
+  if (keywordTokens.length === 0) {
+    return false;
+  }
+
+  const haystackTokens = new Set(haystack.split(/\s+/).filter(Boolean));
+  const matchedTokens = keywordTokens.filter((token) =>
+    haystackTokens.has(token)
+  ).length;
+
+  return (
+    matchedTokens === keywordTokens.length ||
+    matchedTokens / keywordTokens.length >= 0.75
+  );
 }
 
 export function isLikelyJobDetailUrl(
@@ -829,10 +889,8 @@ export function looksLikeTechnicalRoleTitle(text: string): boolean {
     return false;
   }
 
-  return [
+  const strongSignals = [
     "software engineer",
-    "engineer",
-    "developer",
     "front end",
     "frontend",
     "back end",
@@ -865,7 +923,6 @@ export function looksLikeTechnicalRoleTitle(text: string): boolean {
     "ios",
     "android",
     "security",
-    "architect",
     "systems",
     "embedded",
     "firmware",
@@ -881,7 +938,53 @@ export function looksLikeTechnicalRoleTitle(text: string): boolean {
     "software development",
     "sdet",
     "automation engineer",
-  ].some((keyword) => normalized.includes(normalizeChoiceText(keyword)));
+  ];
+
+  const broadSignals = [
+    "engineer",
+    "developer",
+    "architect",
+  ];
+
+  const negativeSignals = [
+    "sales",
+    "marketing",
+    "recruiter",
+    "talent acquisition",
+    "people operations",
+    "human resources",
+    "finance",
+    "account executive",
+    "customer success",
+    "support specialist",
+    "operations manager",
+    "office manager",
+    "attorney",
+    "legal counsel",
+    "copywriter",
+    "content strategist",
+    "business development",
+  ];
+
+  const hasStrongSignal = strongSignals.some((keyword) =>
+    normalized.includes(normalizeChoiceText(keyword))
+  );
+  const hasBroadSignal = broadSignals.some((keyword) =>
+    normalized.includes(normalizeChoiceText(keyword))
+  );
+  const hasNegativeSignal = negativeSignals.some((keyword) =>
+    normalized.includes(normalizeChoiceText(keyword))
+  );
+
+  if (!hasStrongSignal && !hasBroadSignal) {
+    return false;
+  }
+
+  if (hasNegativeSignal && !hasStrongSignal) {
+    return false;
+  }
+
+  return true;
 }
 
 // FIX: Strengthened applied-job detection with site-specific patterns
@@ -996,14 +1099,22 @@ export function shouldFinishJobResultScan(
     return false;
   }
 
-  const needsDeeperWait =
+  // Give slower boards enough time to reach their later "open jobs list" or
+  // "load more" recovery passes before we conclude the surface is exhausted.
+  let minAttemptsBeforeEarlyStop = 5;
+  let stableThreshold = 4;
+
+  if (site === "startup" || site === "other_sites") {
+    minAttemptsBeforeEarlyStop = 22;
+    stableThreshold = 8;
+  } else if (
     site === "ziprecruiter" ||
     site === "dice" ||
-    site === "glassdoor" ||
-    site === "startup" ||
-    site === "other_sites";
-  const minAttemptsBeforeEarlyStop = needsDeeperWait ? 8 : 5;
-  const stableThreshold = needsDeeperWait ? 6 : 4;
+    site === "glassdoor"
+  ) {
+    minAttemptsBeforeEarlyStop = 14;
+    stableThreshold = 8;
+  }
 
   return attempt >= minAttemptsBeforeEarlyStop && stablePasses >= stableThreshold;
 }

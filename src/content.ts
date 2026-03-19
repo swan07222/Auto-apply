@@ -29,9 +29,11 @@ import {
   inferResumeKindFromTitle,
   isProbablyHumanVerificationPage,
   normalizeQuestionKey,
+  parseSearchKeywords,
   readAiAnswerRequest,
   readAiAnswerResponse,
   readAutomationSettings,
+  resolveAutomationSettingsForProfile,
   sleep,
   writeAiAnswerRequest,
   writeAiAnswerResponse,
@@ -59,6 +61,7 @@ import {
   scoreChoiceMatch,
   setFieldValue,
   shouldAutofillField,
+  shouldOverwriteAutofillValue,
   shouldRememberField,
 } from "./content/autofill";
 import {
@@ -175,6 +178,7 @@ let status = createInitialStatus();
 let currentStage: AutomationStage = "bootstrap";
 let currentLabel: string | undefined;
 let currentResumeKind: ResumeKind | undefined;
+let currentProfileId: string | undefined;
 let currentRunId: string | undefined;
 let currentJobSlots: number | undefined;
 let activeRun: Promise<void> | null = null;
@@ -208,6 +212,13 @@ function getPostedWindowDescription(datePostedWindow: DatePostedWindow): string 
   return describePostedWindow(datePostedWindow);
 }
 
+async function readCurrentAutomationSettings(): Promise<AutomationSettings> {
+  return resolveAutomationSettingsForProfile(
+    await readAutomationSettings(),
+    currentProfileId
+  );
+}
+
 async function scrollPageForLazyContent(): Promise<void> {
   await scrollSearchResultsPage();
 }
@@ -215,7 +226,8 @@ async function scrollPageForLazyContent(): Promise<void> {
 async function waitForJobDetailUrls(
   site: SiteKey,
   datePostedWindow: DatePostedWindow,
-  targetCount = 1
+  targetCount = 1,
+  searchKeywords: string[] = []
 ): Promise<string[]> {
   return collectJobDetailUrls({
     site,
@@ -223,6 +235,7 @@ async function waitForJobDetailUrls(
     targetCount,
     detectedSite: status.site === "unsupported" ? null : status.site,
     resumeKind: currentResumeKind,
+    searchKeywords,
     label: currentLabel,
     onOpenListingsSurface: (message) => {
       updateStatus("running", message, true, "collect-results");
@@ -304,6 +317,7 @@ async function openApplicationTargetInNewTab(
       runId: currentRunId,
       label: currentLabel,
       resumeKind: currentResumeKind,
+      profileId: currentProfileId,
       message: `Continuing application from ${description}...`,
     },
   ]);
@@ -355,6 +369,7 @@ chrome.runtime.onMessage.addListener(
         currentStage = message.session.stage;
         currentLabel = message.session.label;
         currentResumeKind = message.session.resumeKind;
+        currentProfileId = message.session.profileId;
         currentRunId = message.session.runId;
         currentJobSlots = message.session.jobSlots;
         renderOverlay();
@@ -362,6 +377,7 @@ chrome.runtime.onMessage.addListener(
         currentStage = "bootstrap";
         currentLabel = undefined;
         currentResumeKind = undefined;
+        currentProfileId = undefined;
         currentRunId = undefined;
         currentJobSlots = undefined;
       }
@@ -425,6 +441,7 @@ async function resumeAutomationIfNeeded(): Promise<void> {
       currentStage = s.stage;
       currentLabel = s.label;
       currentResumeKind = s.resumeKind;
+      currentProfileId = s.profileId;
       currentRunId = s.runId;
       currentJobSlots = s.jobSlots;
       renderOverlay();
@@ -500,18 +517,27 @@ async function runAutomation(): Promise<void> {
 // ─── BOOTSTRAP ───────────────────────────────────────────────────────────────
 
 async function runBootstrapStage(site: JobBoardSite): Promise<void> {
-  const settings = await readAutomationSettings();
+  const settings = await readCurrentAutomationSettings();
 
   updateStatus(
     "running",
-    `Opening ${getSiteLabel(site)} searches for front end, back end, and full stack jobs...`,
+    `Opening ${getSiteLabel(site)} searches for your configured keywords...`,
     true,
     "bootstrap"
   );
 
   await waitForHumanVerificationToClear();
 
-  const targets = buildSearchTargets(site, window.location.origin);
+  const targets = buildSearchTargets(
+    site,
+    window.location.origin,
+    settings.searchKeywords
+  );
+  if (targets.length === 0) {
+    throw new Error(
+      "Add at least one search keyword in the extension before starting job board automation."
+    );
+  }
   const items: SpawnTabRequest[] = targets.map((target) => ({
     url: target.url,
     site,
@@ -521,6 +547,8 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
     message: `Collecting ${target.label} job pages on ${getSiteLabel(site)}...`,
     label: target.label,
     resumeKind: target.resumeKind,
+    profileId: currentProfileId,
+    keyword: target.keyword,
   }));
 
   const response = await spawnTabs(items);
@@ -536,7 +564,7 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
 // ─── COLLECT RESULTS ─────────────────────────────────────────────────────────
 
 async function runCollectResultsStage(site: SiteKey): Promise<void> {
-  const settings = await readAutomationSettings();
+  const settings = await readCurrentAutomationSettings();
   const labelPrefix = currentLabel ? `${currentLabel} ` : "";
   const postedWindowDescription = getPostedWindowDescription(
     settings.datePostedWindow
@@ -592,7 +620,8 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   const jobUrls = await waitForJobDetailUrls(
     site,
     settings.datePostedWindow,
-    effectiveLimit
+    effectiveLimit,
+    parseSearchKeywords(settings.searchKeywords)
   );
 
   if (jobUrls.length === 0) {
@@ -670,6 +699,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
         message: `Autofilling ${labelPrefix}${getSiteLabel(site)} apply page...`,
         label: currentLabel,
         resumeKind: itemResumeKind,
+        profileId: currentProfileId,
       };
     }
     return {
@@ -680,6 +710,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
       message: `Opening ${labelPrefix}${getSiteLabel(site)} job page...`,
       label: currentLabel,
       resumeKind: itemResumeKind,
+      profileId: currentProfileId,
     };
   });
 
@@ -990,6 +1021,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
             runId: currentRunId,
             label: currentLabel,
             resumeKind: currentResumeKind,
+            profileId: currentProfileId,
             message: `Continuing application from ${action.description}...`,
           },
         ]);
@@ -1300,7 +1332,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       if (childApplicationTabOpened) return;
     }
 
-    const settings = await readAutomationSettings();
+    const settings = await readCurrentAutomationSettings();
     const result = await autofillVisibleApplication(settings);
     mergeAutofillResult(combinedResult, result);
 
@@ -1439,7 +1471,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     await sleep(1200);
   }
 
-  const finalSettings = await readAutomationSettings();
+  const finalSettings = await readCurrentAutomationSettings();
   const finalResult = await autofillVisibleApplication(finalSettings);
   mergeAutofillResult(combinedResult, finalResult);
 
@@ -1488,16 +1520,16 @@ async function waitForHumanVerificationToClear(): Promise<void> {
     true
   );
 
-  const startTime = Date.now();
+  let lastReminderAt = Date.now();
 
   while (isProbablyHumanVerificationPage(document)) {
-    if (Date.now() - startTime > VERIFICATION_TIMEOUT_MS) {
+    if (Date.now() - lastReminderAt > VERIFICATION_TIMEOUT_MS) {
       updateStatus(
-        "error",
-        "Verification timed out after 5 minutes. Please complete it and restart.",
-        false
+        "waiting_for_verification",
+        "Still waiting for verification. Complete it manually and the run will resume automatically.",
+        true
       );
-      throw new Error("Human verification timed out.");
+      lastReminderAt = Date.now();
     }
     await sleep(VERIFICATION_POLL_MS);
   }
@@ -1539,7 +1571,7 @@ async function runGenerateAiAnswerStage(): Promise<void> {
   );
 
   try {
-    const settings = await readAutomationSettings();
+    const settings = await readCurrentAutomationSettings();
     await waitForHumanVerificationToClear();
     const composer = await waitForChatGptComposer();
     if (!composer)
@@ -2337,7 +2369,10 @@ async function autofillVisibleApplication(
     }
 
     const answer = getAnswerForField(field, settings);
-    if (!answer || !applyAnswerToField(field, answer.value))
+    if (
+      !answer ||
+      !applyAnswerToField(field, answer.value, answer.allowOverwrite ?? false)
+    )
       continue;
 
     result.filledFields += 1;
@@ -2673,6 +2708,7 @@ async function generateAiAnswerForField(
         active: false,
         label: currentLabel,
         resumeKind: currentResumeKind,
+        profileId: currentProfileId,
       },
     ]);
 
@@ -3053,7 +3089,11 @@ function buildChatGptRequestUrl(requestId: string): string {
 function getAnswerForField(
   field: AutofillField,
   settings: AutomationSettings
-): { value: string; source: "saved" | "profile" } | null {
+): {
+  value: string;
+  source: "saved" | "profile";
+  allowOverwrite?: boolean;
+} | null {
   const question = getQuestionText(field);
   const descriptor = getFieldDescriptor(field, question);
   const availableAnswers = getAvailableAnswers(settings);
@@ -3061,7 +3101,11 @@ function getAnswerForField(
   if (normalized) {
     const saved = availableAnswers[normalized];
     if (saved?.value)
-      return { value: saved.value, source: "saved" };
+      return {
+        value: saved.value,
+        source: "saved",
+        allowOverwrite: true,
+      };
   }
   const fuzzySaved = findBestSavedAnswerMatch(
     question,
@@ -3071,17 +3115,27 @@ function getAnswerForField(
   if (fuzzySaved?.value)
     return { value: fuzzySaved.value, source: "saved" };
   const profile = deriveProfileAnswer(field, question, settings);
-  return profile ? { value: profile, source: "profile" } : null;
+  return profile
+    ? {
+        value: profile,
+        source: "profile",
+        allowOverwrite: true,
+      }
+    : null;
 }
 
 function getAvailableAnswers(
   settings: AutomationSettings
 ): Record<string, SavedAnswer> {
+  const mergedAnswers: Record<string, SavedAnswer> = {
+    ...settings.answers,
+    ...settings.preferenceAnswers,
+  };
+
   if (pendingAnswers.size === 0) {
-    return settings.answers;
+    return mergedAnswers;
   }
 
-  const mergedAnswers = { ...settings.answers };
   for (const [key, value] of pendingAnswers.entries()) {
     mergedAnswers[key] = value;
   }
@@ -3253,7 +3307,8 @@ function deriveProfileAnswer(
 
 function applyAnswerToField(
   field: AutofillField,
-  answer: string
+  answer: string,
+  allowOverwrite = false
 ): boolean {
   if (!answer.trim()) return false;
   if (field instanceof HTMLInputElement && field.type === "radio")
@@ -3264,16 +3319,31 @@ function applyAnswerToField(
   )
     return applyAnswerToCheckbox(field, answer);
   if (field instanceof HTMLSelectElement) {
-    if (!isSelectBlank(field)) return false;
+    if (
+      !isSelectBlank(field) &&
+      (!allowOverwrite || !shouldOverwriteAutofillValue(field, answer))
+    ) {
+      return false;
+    }
     return selectOptionByAnswer(field, answer);
   }
   if (field instanceof HTMLTextAreaElement) {
-    if (field.value.trim()) return false;
+    if (
+      field.value.trim() &&
+      (!allowOverwrite || !shouldOverwriteAutofillValue(field, answer))
+    ) {
+      return false;
+    }
     setFieldValue(field, answer);
     return true;
   }
   if (field instanceof HTMLInputElement) {
-    if (!isTextLikeInput(field) || field.value.trim())
+    if (!isTextLikeInput(field))
+      return false;
+    if (
+      field.value.trim() &&
+      (!allowOverwrite || !shouldOverwriteAutofillValue(field, answer))
+    )
       return false;
     if (
       field.type === "number" &&
@@ -3480,6 +3550,7 @@ function selectOptionByAnswer(
     }
   }
   if (!bestOpt || bestScore <= 0) return false;
+  if (select.value === bestOpt.value) return false;
   select.value = bestOpt.value;
   select.dispatchEvent(new Event("input", { bubbles: true }));
   select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -3621,6 +3692,7 @@ function updateStatus(
       stage: currentStage,
       label: currentLabel,
       resumeKind: currentResumeKind,
+      profileId: currentProfileId,
     })
     .catch(() => { /* ignore */ });
 }
@@ -3750,15 +3822,16 @@ async function flushPendingAnswers(): Promise<void> {
       pendingAnswers.clear();
 
       try {
-        const settings = await readAutomationSettings();
-        const answers = { ...settings.answers };
-        for (const [key, value] of batch.entries()) {
-          answers[key] = value;
-        }
-        await writeAutomationSettings({
-          ...settings,
-          answers,
-        });
+        await writeAutomationSettings((current) => ({
+          activeProfileId: currentProfileId ?? current.activeProfileId,
+          answers: {
+            ...resolveAutomationSettingsForProfile(
+              current,
+              currentProfileId
+            ).answers,
+            ...Object.fromEntries(batch),
+          },
+        }));
       } catch {
         for (const [key, value] of batch.entries()) {
           if (!pendingAnswers.has(key)) {

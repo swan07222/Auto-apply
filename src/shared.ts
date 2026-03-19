@@ -43,18 +43,14 @@ export interface AutomationSession extends AutomationStatus {
   jobSlots?: number;
   label?: string;
   resumeKind?: ResumeKind;
-}
-
-export interface SearchDefinition {
-  label: string;
-  query: string;
-  resumeKind: ResumeKind;
+  profileId?: string;
 }
 
 export interface SearchTarget {
   label: string;
   url: string;
-  resumeKind: ResumeKind;
+  resumeKind?: ResumeKind;
+  keyword?: string;
 }
 
 export interface StartupCompany {
@@ -69,11 +65,10 @@ export interface StartupCompanyCache {
   sourceUrl: string;
 }
 
-export interface CuratedJobSiteTarget {
+interface CuratedJobSiteDefinition {
   label: string;
-  url: string;
-  resumeKind: ResumeKind;
   regions: Exclude<StartupRegion, "auto">[];
+  buildUrl: (keyword: string) => string | null;
 }
 
 export interface SpawnTabRequest {
@@ -86,6 +81,8 @@ export interface SpawnTabRequest {
   message?: string;
   label?: string;
   resumeKind?: ResumeKind;
+  profileId?: string;
+  keyword?: string;
 }
 
 export interface JobContextSnapshot {
@@ -144,15 +141,30 @@ export interface CandidateProfile {
   willingToRelocate: string;
 }
 
+export interface AutomationProfile {
+  id: string;
+  name: string;
+  candidate: CandidateProfile;
+  resume: ResumeAsset | null;
+  answers: Record<string, SavedAnswer>;
+  preferenceAnswers: Record<string, SavedAnswer>;
+  updatedAt: number;
+}
+
 export interface AutomationSettings {
   jobPageLimit: number;
   autoUploadResumes: boolean;
   searchMode: SearchMode;
   startupRegion: StartupRegion;
   datePostedWindow: DatePostedWindow;
+  searchKeywords: string;
+  activeProfileId: string;
+  profiles: Record<string, AutomationProfile>;
   candidate: CandidateProfile;
+  resume: ResumeAsset | null;
   resumes: Partial<Record<ResumeKind, ResumeAsset>>;
   answers: Record<string, SavedAnswer>;
+  preferenceAnswers: Record<string, SavedAnswer>;
 }
 
 export const SUPPORTED_SITE_LABELS: Record<SiteKey, string> = {
@@ -192,15 +204,42 @@ export const RESUME_KIND_LABELS: Record<ResumeKind, string> = {
   full_stack: "Full Stack",
 };
 
-export const SEARCH_DEFINITIONS: SearchDefinition[] = [
-  { label: "Front End", query: "front end developer", resumeKind: "front_end" },
-  { label: "Back End", query: "back end developer", resumeKind: "back_end" },
-  {
-    label: "Full Stack",
-    query: "full stack developer",
-    resumeKind: "full_stack",
-  },
-];
+export const DEFAULT_PROFILE_ID = "default-profile";
+export const DEFAULT_PROFILE_NAME = "Default Profile";
+
+export function createEmptyCandidateProfile(): CandidateProfile {
+  return {
+    fullName: "",
+    email: "",
+    phone: "",
+    city: "",
+    state: "",
+    country: "",
+    linkedinUrl: "",
+    portfolioUrl: "",
+    currentCompany: "",
+    yearsExperience: "",
+    workAuthorization: "",
+    needsSponsorship: "",
+    willingToRelocate: "",
+  };
+}
+
+export function createAutomationProfile(
+  id = DEFAULT_PROFILE_ID,
+  name = DEFAULT_PROFILE_NAME,
+  now = Date.now()
+): AutomationProfile {
+  return {
+    id,
+    name: readString(name) || DEFAULT_PROFILE_NAME,
+    candidate: createEmptyCandidateProfile(),
+    resume: null,
+    answers: {},
+    preferenceAnswers: {},
+    updatedAt: now,
+  };
+}
 
 export const DEFAULT_STARTUP_COMPANIES: StartupCompany[] = [
   { name: "Ramp", careersUrl: "https://jobs.ashbyhq.com/ramp", regions: ["us"] },
@@ -233,150 +272,54 @@ export const STARTUP_COMPANIES = DEFAULT_STARTUP_COMPANIES;
 export const STARTUP_COMPANIES_FEED_URL =
   "https://raw.githubusercontent.com/swan07222/Auto-apply/main/data/startup-companies.json";
 
-export const OTHER_JOB_SITE_TARGETS: CuratedJobSiteTarget[] = [
+const OTHER_JOB_SITE_DEFINITIONS: CuratedJobSiteDefinition[] = [
   {
-    label: "Built In Front End",
-    url: "https://builtin.com/jobs/remote/dev-engineering/front-end",
-    resumeKind: "front_end",
+    label: "Built In",
     regions: ["us"],
+    buildUrl: (keyword) =>
+      `https://builtin.com/jobs?search=${encodeURIComponent(keyword)}`,
   },
   {
-    label: "Built In Back End",
-    url: "https://builtin.com/jobs/remote/dev-engineering/back-end",
-    resumeKind: "back_end",
+    label: "The Muse",
     regions: ["us"],
+    buildUrl: (keyword) =>
+      `https://www.themuse.com/search/jobs?search=${encodeURIComponent(keyword)}&location=United%20States`,
   },
   {
-    label: "Built In Full Stack",
-    url: "https://builtin.com/jobs/remote/dev-engineering/full-stack",
-    resumeKind: "full_stack",
+    label: "Work at a Startup",
     regions: ["us"],
+    buildUrl: (keyword) =>
+      `https://www.workatastartup.com/jobs?query=${encodeURIComponent(keyword)}`,
   },
   {
-    label: "The Muse Front End",
-    url: "https://www.themuse.com/search/jobs?search=front%20end%20developer&location=United%20States",
-    resumeKind: "front_end",
-    regions: ["us"],
-  },
-  {
-    label: "The Muse Back End",
-    url: "https://www.themuse.com/search/jobs?search=back%20end%20developer&location=United%20States",
-    resumeKind: "back_end",
-    regions: ["us"],
-  },
-  {
-    label: "The Muse Full Stack",
-    url: "https://www.themuse.com/search/jobs?search=full%20stack%20developer&location=United%20States",
-    resumeKind: "full_stack",
-    regions: ["us"],
-  },
-  {
-    label: "Work at a Startup Front End",
-    url: "https://www.workatastartup.com/jobs?query=front%20end%20developer",
-    resumeKind: "front_end",
-    regions: ["us"],
-  },
-  {
-    label: "Work at a Startup Back End",
-    url: "https://www.workatastartup.com/jobs?query=back%20end%20developer",
-    resumeKind: "back_end",
-    regions: ["us"],
-  },
-  {
-    label: "Work at a Startup Full Stack",
-    url: "https://www.workatastartup.com/jobs?query=full%20stack%20developer",
-    resumeKind: "full_stack",
-    regions: ["us"],
-  },
-  {
-    label: "Reed Front End",
-    url: "https://www.reed.co.uk/jobs/front-end-developer-jobs-in-united-kingdom",
-    resumeKind: "front_end",
+    label: "Reed",
     regions: ["uk"],
+    buildUrl: (keyword) =>
+      `https://www.reed.co.uk/jobs/${encodeSearchQueryForPath(keyword)}-jobs-in-united-kingdom`,
   },
   {
-    label: "Reed Back End",
-    url: "https://www.reed.co.uk/jobs/back-end-developer-jobs-in-united-kingdom",
-    resumeKind: "back_end",
+    label: "CWJobs",
     regions: ["uk"],
+    buildUrl: (keyword) =>
+      `https://www.cwjobs.co.uk/jobs/${encodeSearchQueryForPath(keyword)}/in-united-kingdom`,
   },
   {
-    label: "Reed Full Stack",
-    url: "https://www.reed.co.uk/jobs/full-stack-developer-jobs-in-united-kingdom",
-    resumeKind: "full_stack",
+    label: "Totaljobs",
     regions: ["uk"],
+    buildUrl: (keyword) =>
+      `https://www.totaljobs.com/jobs/${encodeSearchQueryForPath(keyword)}/in-united-kingdom`,
   },
   {
-    label: "CWJobs Front End",
-    url: "https://www.cwjobs.co.uk/jobs/front-end-developer/in-united-kingdom",
-    resumeKind: "front_end",
-    regions: ["uk"],
-  },
-  {
-    label: "CWJobs Back End",
-    url: "https://www.cwjobs.co.uk/jobs/back-end-developer/in-united-kingdom",
-    resumeKind: "back_end",
-    regions: ["uk"],
-  },
-  {
-    label: "CWJobs Full Stack",
-    url: "https://www.cwjobs.co.uk/jobs/full-stack-developer/in-united-kingdom",
-    resumeKind: "full_stack",
-    regions: ["uk"],
-  },
-  {
-    label: "Totaljobs Front End",
-    url: "https://www.totaljobs.com/jobs/front-end-developer/in-united-kingdom",
-    resumeKind: "front_end",
-    regions: ["uk"],
-  },
-  {
-    label: "Totaljobs Back End",
-    url: "https://www.totaljobs.com/jobs/back-end-developer/in-united-kingdom",
-    resumeKind: "back_end",
-    regions: ["uk"],
-  },
-  {
-    label: "Totaljobs Full Stack",
-    url: "https://www.totaljobs.com/jobs/full-stack-developer/in-united-kingdom",
-    resumeKind: "full_stack",
-    regions: ["uk"],
-  },
-  {
-    label: "Welcome to the Jungle Front End",
-    url: "https://www.welcometothejungle.com/en/jobs?query=front%20end%20developer",
-    resumeKind: "front_end",
+    label: "Welcome to the Jungle",
     regions: ["eu"],
+    buildUrl: (keyword) =>
+      `https://www.welcometothejungle.com/en/jobs?query=${encodeURIComponent(keyword)}`,
   },
   {
-    label: "Welcome to the Jungle Back End",
-    url: "https://www.welcometothejungle.com/en/jobs?query=back%20end%20developer",
-    resumeKind: "back_end",
+    label: "Berlin Startup Jobs",
     regions: ["eu"],
-  },
-  {
-    label: "Welcome to the Jungle Full Stack",
-    url: "https://www.welcometothejungle.com/en/jobs?query=full%20stack%20developer",
-    resumeKind: "full_stack",
-    regions: ["eu"],
-  },
-  {
-    label: "Berlin Startup Jobs Front End",
-    url: "https://berlinstartupjobs.com/skill-areas/frontend/",
-    resumeKind: "front_end",
-    regions: ["eu"],
-  },
-  {
-    label: "Berlin Startup Jobs Back End",
-    url: "https://berlinstartupjobs.com/skill-areas/backend/",
-    resumeKind: "back_end",
-    regions: ["eu"],
-  },
-  {
-    label: "Berlin Startup Jobs Full Stack",
-    url: "https://berlinstartupjobs.com/skill-areas/full-stack/",
-    resumeKind: "full_stack",
-    regions: ["eu"],
+    buildUrl: (keyword) =>
+      `https://berlinstartupjobs.com/?s=${encodeURIComponent(keyword)}`,
   },
 ];
 
@@ -394,30 +337,27 @@ export const AI_RESPONSE_STORAGE_PREFIX = "remote-job-search-ai-response:";
 export const MIN_JOB_PAGE_LIMIT = 1;
 export const MAX_JOB_PAGE_LIMIT = 25;
 
+const DEFAULT_PROFILE = createAutomationProfile();
+
 export const DEFAULT_SETTINGS: AutomationSettings = {
   jobPageLimit: 5,
   autoUploadResumes: true,
   searchMode: "job_board",
   startupRegion: "auto",
   datePostedWindow: "any",
-  candidate: {
-    fullName: "",
-    email: "",
-    phone: "",
-    city: "",
-    state: "",
-    country: "",
-    linkedinUrl: "",
-    portfolioUrl: "",
-    currentCompany: "",
-    yearsExperience: "",
-    workAuthorization: "",
-    needsSponsorship: "",
-    willingToRelocate: "",
+  searchKeywords: "",
+  activeProfileId: DEFAULT_PROFILE.id,
+  profiles: {
+    [DEFAULT_PROFILE.id]: DEFAULT_PROFILE,
   },
+  candidate: createEmptyCandidateProfile(),
+  resume: null,
   resumes: {},
   answers: {},
+  preferenceAnswers: {},
 };
+
+let automationSettingsWriteQueue: Promise<void> = Promise.resolve();
 
 export function detectSiteFromUrl(url: string): SiteKey | null {
   if (!url || typeof url !== "string") return null;
@@ -489,7 +429,8 @@ export function createSession(
   stage: AutomationStage,
   runId?: string,
   label?: string,
-  resumeKind?: ResumeKind
+  resumeKind?: ResumeKind,
+  profileId?: string
 ): AutomationSession {
   return {
     tabId,
@@ -498,6 +439,7 @@ export function createSession(
     runId,
     label,
     resumeKind,
+    profileId,
     ...createStatus(site, phase, message),
   };
 }
@@ -537,70 +479,183 @@ export function getResumeKindLabel(resumeKind: ResumeKind): string {
   return RESUME_KIND_LABELS[resumeKind];
 }
 
+export function parseSearchKeywords(value: string): string[] {
+  const source = typeof value === "string" ? value : "";
+  return Array.from(
+    new Set(
+      source
+        .split(/[\r\n,]+/)
+        .map((keyword) => keyword.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+export function hasConfiguredSearchKeywords(value: string): boolean {
+  return parseSearchKeywords(value).length > 0;
+}
+
 export function buildSearchTargets(
   site: JobBoardSite,
-  origin: string
+  _origin: string,
+  searchKeywords: string
 ): SearchTarget[] {
-  return SEARCH_DEFINITIONS.map(({ label, query, resumeKind }) => ({
-    label,
-    resumeKind,
-    url: buildSingleSearchUrl(site, origin, query),
-  }));
+  return dedupeSearchTargets(
+    parseSearchKeywords(searchKeywords).map((keyword) => ({
+      label: keyword,
+      keyword,
+      url: buildSingleSearchUrl(site, keyword),
+    }))
+  );
 }
 
 export function buildStartupSearchTargets(
   settings: AutomationSettings,
   companies: StartupCompany[] = STARTUP_COMPANIES
 ): SearchTarget[] {
-  const region = resolveStartupRegion(
-    settings.startupRegion,
-    settings.candidate.country
+  const regionSet = new Set(
+    resolveStartupTargetRegions(
+      settings.startupRegion,
+      settings.candidate.country
+    )
   );
   const matchingCompanies = companies.filter((company) =>
-    company.regions.includes(region)
+    company.regions.some((region) => regionSet.has(region))
   );
 
-  return matchingCompanies.map((company) => ({
-    label: company.name,
-    resumeKind: "full_stack" as ResumeKind,
-    url: company.careersUrl,
-  }));
+  return dedupeSearchTargets(
+    matchingCompanies.map((company) => ({
+      label: company.name,
+      url: company.careersUrl,
+    }))
+  );
 }
 
 export function buildOtherJobSiteTargets(
   settings: AutomationSettings
 ): SearchTarget[] {
-  const region = resolveStartupRegion(
-    settings.startupRegion,
-    settings.candidate.country
+  const regionSet = new Set(
+    resolveStartupTargetRegions(
+      settings.startupRegion,
+      settings.candidate.country
+    )
   );
 
-  return OTHER_JOB_SITE_TARGETS.filter((target) =>
-    target.regions.includes(region)
-  ).map((target) => ({
-    label: target.label,
-    url: target.url,
-    resumeKind: target.resumeKind,
-  }));
+  const targets: SearchTarget[] = [];
+  for (const keyword of parseSearchKeywords(settings.searchKeywords)) {
+    for (const site of OTHER_JOB_SITE_DEFINITIONS) {
+      if (!site.regions.some((region) => regionSet.has(region))) {
+        continue;
+      }
+
+      const url = site.buildUrl(keyword);
+      if (!url) {
+        continue;
+      }
+
+      targets.push({
+        label: `${site.label}: ${keyword}`,
+        keyword,
+        url,
+      });
+    }
+  }
+
+  return dedupeSearchTargets(targets);
+}
+
+function dedupeSearchTargets(targets: SearchTarget[]): SearchTarget[] {
+  const deduped = new Map<string, SearchTarget>();
+
+  for (const target of targets) {
+    const normalizedUrl = sanitizeHttpUrl(target.url);
+    if (!normalizedUrl) {
+      continue;
+    }
+
+    const key = `${normalizedUrl.toLowerCase()}::${target.resumeKind ?? ""}`;
+    if (!deduped.has(key)) {
+      deduped.set(key, {
+        ...target,
+        url: normalizedUrl,
+      });
+    }
+  }
+
+  return Array.from(deduped.values());
+}
+
+function interleaveTargetsByResumeKind(targets: SearchTarget[]): SearchTarget[] {
+  const grouped = new Map<ResumeKind | "unscoped", SearchTarget[]>();
+
+  for (const target of targets) {
+    const key = target.resumeKind ?? "unscoped";
+    const existing = grouped.get(key) ?? [];
+    existing.push(target);
+    grouped.set(key, existing);
+  }
+
+  const orderedKeys: Array<ResumeKind | "unscoped"> = [
+    "front_end",
+    "back_end",
+    "full_stack",
+    "unscoped",
+  ];
+  const result: SearchTarget[] = [];
+  let remaining = true;
+
+  while (remaining) {
+    remaining = false;
+
+    for (const key of orderedKeys) {
+      const queue = grouped.get(key);
+      if (!queue || queue.length === 0) {
+        continue;
+      }
+
+      const next = queue.shift();
+      if (next) {
+        result.push(next);
+        remaining = true;
+      }
+    }
+  }
+
+  return result;
+}
+
+const STARTUP_TARGET_REGIONS: Array<Exclude<StartupRegion, "auto">> = [
+  "us",
+  "uk",
+  "eu",
+];
+
+export function resolveStartupTargetRegions(
+  startupRegion: StartupRegion,
+  candidateCountry: string
+): Array<Exclude<StartupRegion, "auto">> {
+  if (startupRegion !== "auto") {
+    return [startupRegion];
+  }
+
+  const inferred = inferStartupRegionFromCountry(candidateCountry);
+  return inferred ? [inferred] : [...STARTUP_TARGET_REGIONS];
 }
 
 export function resolveStartupRegion(
   startupRegion: StartupRegion,
   candidateCountry: string
 ): Exclude<StartupRegion, "auto"> {
-  if (startupRegion !== "auto") {
-    return startupRegion;
-  }
-  return inferStartupRegionFromCountry(candidateCountry);
+  return resolveStartupTargetRegions(startupRegion, candidateCountry)[0] ?? "us";
 }
 
 export function inferStartupRegionFromCountry(
   candidateCountry: string
-): Exclude<StartupRegion, "auto"> {
+): Exclude<StartupRegion, "auto"> | null {
   const normalized = normalizeQuestionKey(candidateCountry);
 
   if (!normalized) {
-    return "us";
+    return null;
   }
 
   if (
@@ -626,7 +681,57 @@ export function inferStartupRegionFromCountry(
     "portugal", "romania", "slovakia", "slovenia", "spain", "sweden",
   ]);
 
-  return euCountries.has(normalized) ? "eu" : "us";
+  return euCountries.has(normalized) ? "eu" : null;
+}
+
+export function formatStartupRegionList(
+  regions: ReadonlyArray<Exclude<StartupRegion, "auto">>
+): string {
+  return regions
+    .filter((region, index, values) => values.indexOf(region) === index)
+    .map((region) => STARTUP_REGION_LABELS[region])
+    .join(" / ");
+}
+
+export function getActiveAutomationProfile(
+  settings: AutomationSettings
+): AutomationProfile {
+  return (
+    settings.profiles[settings.activeProfileId] ??
+    settings.profiles[Object.keys(settings.profiles)[0] ?? DEFAULT_PROFILE_ID] ??
+    createAutomationProfile()
+  );
+}
+
+export function resolveAutomationSettingsForProfile(
+  settings: AutomationSettings,
+  profileId?: string
+): AutomationSettings {
+  const nextProfileId =
+    profileId && settings.profiles[profileId]
+      ? profileId
+      : settings.activeProfileId;
+  const activeProfile =
+    settings.profiles[nextProfileId] ?? getActiveAutomationProfile(settings);
+  const derivedResume = activeProfile.resume ?? null;
+
+  return {
+    ...settings,
+    activeProfileId: activeProfile.id,
+    candidate: { ...activeProfile.candidate },
+    resume: derivedResume,
+    resumes: derivedResume ? { full_stack: derivedResume } : {},
+    answers: { ...activeProfile.answers },
+    preferenceAnswers: { ...activeProfile.preferenceAnswers },
+  };
+}
+
+function encodeSearchQueryForPath(query: string): string {
+  return query
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 const CANONICAL_JOB_BOARD_ORIGINS: Record<JobBoardSite, string> = {
@@ -787,11 +892,7 @@ function buildGlassdoorSearchUrl(query: string, baseOrigin: string): string {
   return url.toString();
 }
 
-function buildSingleSearchUrl(
-  site: JobBoardSite,
-  _origin: string,
-  query: string
-): string {
+function buildSingleSearchUrl(site: JobBoardSite, query: string): string {
   const baseOrigin = CANONICAL_JOB_BOARD_ORIGINS[site];
 
   switch (site) {
@@ -838,6 +939,9 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
     "press and hold", "human verification", "security challenge",
     "i am human", "i'm not a robot", "verify that you are human",
     "help us protect glassdoor",
+    "performing security verification",
+    "performance and security by cloudflare",
+    "security service to protect against malicious bots",
   ];
 
   if (strongPhrases.some((phrase) => title.includes(phrase) || bodyText.includes(phrase))) {
@@ -849,6 +953,7 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
     const weakPhrases = [
       "checking your browser", "just a moment",
       "enable javascript and cookies to continue", "captcha",
+      "security verification", "ray id", "cloudflare",
     ];
     if (weakPhrases.some((phrase) => title.includes(phrase) || bodyText.includes(phrase))) {
       return true;
@@ -1042,11 +1147,86 @@ export async function readAutomationSettings(): Promise<AutomationSettings> {
 }
 
 export async function writeAutomationSettings(
-  settings: Partial<AutomationSettings> | AutomationSettings
+  update:
+    | Partial<AutomationSettings>
+    | AutomationSettings
+    | ((
+        current: AutomationSettings
+      ) => Partial<AutomationSettings> | AutomationSettings)
 ): Promise<AutomationSettings> {
-  const sanitized = sanitizeAutomationSettings(settings);
-  await chrome.storage.local.set({ [AUTOMATION_SETTINGS_STORAGE_KEY]: sanitized });
-  return sanitized;
+  const queuedWrite = automationSettingsWriteQueue.then(async () => {
+    const current = await readAutomationSettings();
+    const nextRaw = typeof update === "function" ? update(current) : update;
+    const merged = mergeAutomationSettings(current, nextRaw);
+    const sanitized = sanitizeAutomationSettings(merged);
+    await chrome.storage.local.set({ [AUTOMATION_SETTINGS_STORAGE_KEY]: sanitized });
+    return sanitized;
+  });
+
+  automationSettingsWriteQueue = queuedWrite.then(
+    () => undefined,
+    () => undefined
+  );
+
+  return queuedWrite;
+}
+
+function mergeAutomationSettings(
+  current: AutomationSettings,
+  update: Partial<AutomationSettings> | AutomationSettings
+): AutomationSettings {
+  const source = isRecord(update) ? update : {};
+  const profiles =
+    "profiles" in source
+      ? sanitizeAutomationProfiles(source.profiles)
+      : cloneAutomationProfiles(current.profiles);
+  let activeProfileId =
+    readString(source.activeProfileId) || current.activeProfileId;
+
+  if (!profiles[activeProfileId]) {
+    activeProfileId = Object.keys(profiles)[0] ?? DEFAULT_PROFILE_ID;
+  }
+
+  const existingProfile =
+    profiles[activeProfileId] ?? createAutomationProfile(activeProfileId);
+  const nextProfile: AutomationProfile = {
+    ...existingProfile,
+    candidate:
+      "candidate" in source && isRecord(source.candidate)
+        ? sanitizeCandidateProfile({
+            ...existingProfile.candidate,
+            ...source.candidate,
+          })
+        : { ...existingProfile.candidate },
+    resume:
+      "resume" in source
+        ? sanitizeResumeAsset(source.resume) ?? null
+        : "resumes" in source && isRecord(source.resumes)
+          ? pickPrimaryResumeAssetFromLegacyResumes(source.resumes)
+          : existingProfile.resume,
+    answers:
+      "answers" in source
+        ? sanitizeSavedAnswerRecord(source.answers)
+        : cloneSavedAnswers(existingProfile.answers),
+    preferenceAnswers:
+      "preferenceAnswers" in source
+        ? sanitizeSavedAnswerRecord(source.preferenceAnswers)
+        : cloneSavedAnswers(existingProfile.preferenceAnswers),
+    updatedAt: Date.now(),
+  };
+
+  profiles[activeProfileId] = nextProfile;
+
+  return sanitizeAutomationSettings({
+    ...current,
+    ...source,
+    searchKeywords:
+      "searchKeywords" in source
+        ? sanitizeSearchKeywords(source.searchKeywords)
+        : current.searchKeywords,
+    activeProfileId,
+    profiles,
+  });
 }
 
 export async function writeAiAnswerRequest(request: AiAnswerRequest): Promise<void> {
@@ -1079,45 +1259,122 @@ export async function deleteAiAnswerResponse(requestId: string): Promise<void> {
 
 export function sanitizeAutomationSettings(raw: unknown): AutomationSettings {
   const source = isRecord(raw) ? raw : {};
-  const candidateSource = isRecord(source.candidate) ? source.candidate : {};
-  const resumesSource = isRecord(source.resumes) ? source.resumes : {};
-  const answersSource = isRecord(source.answers) ? source.answers : {};
+  const profiles = sanitizeAutomationProfiles(source.profiles);
+  const hasStoredProfiles = Object.keys(profiles).length > 0;
+  const fallbackProfile = sanitizeLegacyProfile(source);
+  const mergedProfiles = hasStoredProfiles
+    ? profiles
+    : {
+        [fallbackProfile.id]: fallbackProfile,
+      };
 
-  const candidate: CandidateProfile = {
-    fullName: readString(candidateSource.fullName),
-    email: readString(candidateSource.email),
-    phone: readString(candidateSource.phone),
-    city: readString(candidateSource.city),
-    state: readString(candidateSource.state),
-    country: readString(candidateSource.country),
-    linkedinUrl: readString(candidateSource.linkedinUrl),
-    portfolioUrl: readString(candidateSource.portfolioUrl),
-    currentCompany: readString(candidateSource.currentCompany),
-    yearsExperience: readString(candidateSource.yearsExperience),
-    workAuthorization: readString(candidateSource.workAuthorization),
-    needsSponsorship: readString(candidateSource.needsSponsorship),
-    willingToRelocate: readString(candidateSource.willingToRelocate),
-  };
+  let activeProfileId =
+    readString(source.activeProfileId) ||
+    Object.keys(mergedProfiles)[0] ||
+    DEFAULT_PROFILE_ID;
 
-  const resumes: Partial<Record<ResumeKind, ResumeAsset>> = {};
-  for (const key of Object.keys(RESUME_KIND_LABELS) as ResumeKind[]) {
-    const asset = resumesSource[key];
-    if (!isRecord(asset)) continue;
-    const sanitizedAsset: ResumeAsset = {
-      name: readString(asset.name),
-      type: readString(asset.type),
-      dataUrl: readString(asset.dataUrl),
-      textContent: readString(asset.textContent),
-      size: Number.isFinite(asset.size) ? Number(asset.size) : 0,
-      updatedAt: Number.isFinite(asset.updatedAt) ? Number(asset.updatedAt) : Date.now(),
-    };
-    if (sanitizedAsset.name && sanitizedAsset.dataUrl) {
-      resumes[key] = sanitizedAsset;
-    }
+  if (!mergedProfiles[activeProfileId]) {
+    activeProfileId = Object.keys(mergedProfiles)[0] ?? DEFAULT_PROFILE_ID;
   }
 
+  const baseSettings: AutomationSettings = {
+    jobPageLimit: clampJobPageLimit(source.jobPageLimit),
+    autoUploadResumes:
+      typeof source.autoUploadResumes === "boolean"
+        ? source.autoUploadResumes
+        : DEFAULT_SETTINGS.autoUploadResumes,
+    searchMode: sanitizeSearchMode(source.searchMode),
+    startupRegion: sanitizeStartupRegion(source.startupRegion),
+    datePostedWindow: sanitizeDatePostedWindow(source.datePostedWindow),
+    searchKeywords: sanitizeSearchKeywords(source.searchKeywords),
+    activeProfileId,
+    profiles: mergedProfiles,
+    candidate: createEmptyCandidateProfile(),
+    resume: null,
+    resumes: {},
+    answers: {},
+    preferenceAnswers: {},
+  };
+
+  return resolveAutomationSettingsForProfile(baseSettings, activeProfileId);
+}
+
+function sanitizeLegacyProfile(source: Record<string, unknown>): AutomationProfile {
+  const now = Date.now();
+  const legacyResumes = isRecord(source.resumes) ? source.resumes : {};
+
+  return {
+    ...createAutomationProfile(DEFAULT_PROFILE_ID, DEFAULT_PROFILE_NAME, now),
+    candidate: sanitizeCandidateProfile(source.candidate),
+    resume: pickPrimaryResumeAssetFromLegacyResumes(legacyResumes),
+    answers: sanitizeSavedAnswerRecord(source.answers),
+    preferenceAnswers: sanitizeSavedAnswerRecord(source.preferenceAnswers),
+    updatedAt: now,
+  };
+}
+
+function sanitizeAutomationProfiles(raw: unknown): Record<string, AutomationProfile> {
+  const source = isRecord(raw) ? raw : {};
+  const profiles: Record<string, AutomationProfile> = {};
+
+  for (const [rawId, value] of Object.entries(source)) {
+    const id = readString(rawId);
+    if (!id || !isRecord(value)) {
+      continue;
+    }
+
+    profiles[id] = sanitizeAutomationProfile(id, value);
+  }
+
+  return profiles;
+}
+
+function sanitizeAutomationProfile(
+  id: string,
+  value: Record<string, unknown>
+): AutomationProfile {
+  return {
+    id,
+    name: readString(value.name) || DEFAULT_PROFILE_NAME,
+    candidate: sanitizeCandidateProfile(value.candidate),
+    resume:
+      sanitizeResumeAsset(value.resume) ??
+      (isRecord(value.resumes)
+        ? pickPrimaryResumeAssetFromLegacyResumes(value.resumes)
+        : null),
+    answers: sanitizeSavedAnswerRecord(value.answers),
+    preferenceAnswers: sanitizeSavedAnswerRecord(value.preferenceAnswers),
+    updatedAt: Number.isFinite(value.updatedAt)
+      ? Number(value.updatedAt)
+      : Date.now(),
+  };
+}
+
+function sanitizeCandidateProfile(value: unknown): CandidateProfile {
+  const source = isRecord(value) ? value : {};
+
+  return {
+    fullName: readString(source.fullName),
+    email: readString(source.email),
+    phone: readString(source.phone),
+    city: readString(source.city),
+    state: readString(source.state),
+    country: readString(source.country),
+    linkedinUrl: readString(source.linkedinUrl),
+    portfolioUrl: readString(source.portfolioUrl),
+    currentCompany: readString(source.currentCompany),
+    yearsExperience: readString(source.yearsExperience),
+    workAuthorization: readString(source.workAuthorization),
+    needsSponsorship: readString(source.needsSponsorship),
+    willingToRelocate: readString(source.willingToRelocate),
+  };
+}
+
+function sanitizeSavedAnswerRecord(raw: unknown): Record<string, SavedAnswer> {
+  const source = isRecord(raw) ? raw : {};
   const answers: Record<string, SavedAnswer> = {};
-  for (const [key, value] of Object.entries(answersSource)) {
+
+  for (const [key, value] of Object.entries(source)) {
     if (!isRecord(value)) continue;
     const question = readString(value.question);
     const savedValue = readString(value.value);
@@ -1127,23 +1384,53 @@ export function sanitizeAutomationSettings(raw: unknown): AutomationSettings {
     answers[normalizedKey] = {
       question,
       value: savedValue,
-      updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now(),
+      updatedAt: Number.isFinite(value.updatedAt)
+        ? Number(value.updatedAt)
+        : Date.now(),
     };
   }
 
-  return {
-    jobPageLimit: clampJobPageLimit(source.jobPageLimit),
-    autoUploadResumes:
-      typeof source.autoUploadResumes === "boolean"
-        ? source.autoUploadResumes
-        : DEFAULT_SETTINGS.autoUploadResumes,
-    searchMode: sanitizeSearchMode(source.searchMode),
-    startupRegion: sanitizeStartupRegion(source.startupRegion),
-    datePostedWindow: sanitizeDatePostedWindow(source.datePostedWindow),
-    candidate,
-    resumes,
-    answers,
-  };
+  return answers;
+}
+
+function cloneSavedAnswers(
+  answers: Record<string, SavedAnswer>
+): Record<string, SavedAnswer> {
+  return Object.fromEntries(
+    Object.entries(answers).map(([key, value]) => [key, { ...value }])
+  );
+}
+
+function cloneAutomationProfiles(
+  profiles: Record<string, AutomationProfile>
+): Record<string, AutomationProfile> {
+  return Object.fromEntries(
+    Object.entries(profiles).map(([id, profile]) => [
+      id,
+      {
+        ...profile,
+        candidate: { ...profile.candidate },
+        resume: profile.resume ? { ...profile.resume } : null,
+        answers: cloneSavedAnswers(profile.answers),
+        preferenceAnswers: cloneSavedAnswers(profile.preferenceAnswers),
+      },
+    ])
+  );
+}
+
+function pickPrimaryResumeAssetFromLegacyResumes(
+  raw: Record<string, unknown>
+): ResumeAsset | null {
+  const assets = (Object.keys(RESUME_KIND_LABELS) as ResumeKind[])
+    .map((key) => sanitizeResumeAsset(raw[key]))
+    .filter((asset): asset is ResumeAsset => Boolean(asset))
+    .sort(
+      (left, right) =>
+        right.updatedAt - left.updatedAt ||
+        left.name.localeCompare(right.name)
+    );
+
+  return assets[0] ?? null;
 }
 
 function clampJobPageLimit(raw: unknown): number {
@@ -1219,13 +1506,18 @@ function sanitizeDatePostedWindow(value: unknown): DatePostedWindow {
     : DEFAULT_SETTINGS.datePostedWindow;
 }
 
+function sanitizeSearchKeywords(value: unknown): string {
+  const raw = typeof value === "string" ? value : "";
+  return parseSearchKeywords(raw).join("\n");
+}
+
 function sanitizeAiAnswerRequest(value: Record<string, unknown>): AiAnswerRequest {
   return {
     id: readString(value.id),
     createdAt: Number.isFinite(value.createdAt) ? Number(value.createdAt) : Date.now(),
     resumeKind: sanitizeResumeKind(value.resumeKind),
     resume: sanitizeResumeAsset(value.resume),
-    candidate: sanitizeAutomationSettings({ candidate: value.candidate }).candidate,
+    candidate: sanitizeCandidateProfile(value.candidate),
     job: sanitizeJobContextSnapshot(value.job),
   };
 }

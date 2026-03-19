@@ -92,7 +92,7 @@ describe("resume upload helpers", () => {
     ).toBe("front_end");
   });
 
-  it("only returns the matching saved resume when a specific track is requested", () => {
+  it("falls back to the closest resume track when the exact one is missing", () => {
     const frontEndResume = {
       name: "frontend.pdf",
       type: "application/pdf",
@@ -107,7 +107,7 @@ describe("resume upload helpers", () => {
       dataUrl: "data:application/pdf;base64,BB==",
       textContent: "",
       size: 1,
-      updatedAt: 1,
+      updatedAt: 2,
     };
 
     const settings = {
@@ -118,7 +118,7 @@ describe("resume upload helpers", () => {
     };
 
     expect(pickResumeAssetForUpload(settings, "front_end")).toBe(frontEndResume);
-    expect(pickResumeAssetForUpload(settings, "back_end")).toBeNull();
+    expect(pickResumeAssetForUpload(settings, "back_end")).toBe(fullStackResume);
     expect(pickResumeAssetForUpload(settings)).toBe(fullStackResume);
   });
 });

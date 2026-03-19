@@ -15,6 +15,7 @@ import {
   scoreChoiceMatch,
   setFieldValue,
   shouldAutofillField,
+  shouldOverwriteAutofillValue,
   shouldRememberField,
 } from "../src/content/autofill";
 
@@ -126,6 +127,43 @@ describe("autofill helpers", () => {
     expect(isSelectBlank(select)).toBe(false);
     expect(isTextLikeInput(phone)).toBe(true);
     expect(isTextLikeInput(avatar)).toBe(false);
+  });
+
+  it("allows stable profile fields to overwrite stale prefilled values", () => {
+    document.body.innerHTML = `
+      <form>
+        <label for="email">Email</label>
+        <input id="email" type="email" value="old@example.com" />
+
+        <label for="country">Country</label>
+        <select id="country">
+          <option value="ca" selected>Canada</option>
+          <option value="us">United States</option>
+        </select>
+
+        <label for="motivation">Why do you want this role?</label>
+        <textarea id="motivation">Old answer</textarea>
+      </form>
+    `;
+
+    expect(
+      shouldOverwriteAutofillValue(
+        document.querySelector("#email") as HTMLInputElement,
+        "ada@example.com"
+      )
+    ).toBe(true);
+    expect(
+      shouldOverwriteAutofillValue(
+        document.querySelector("#country") as HTMLSelectElement,
+        "United States"
+      )
+    ).toBe(true);
+    expect(
+      shouldOverwriteAutofillValue(
+        document.querySelector("#motivation") as HTMLTextAreaElement,
+        "Mission fit."
+      )
+    ).toBe(false);
   });
 
   it("sets field values and emits input, change, and blur events", () => {

@@ -3,7 +3,12 @@ import { resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { AutomationSettings } from "../src/shared";
+import {
+  AUTOMATION_SETTINGS_STORAGE_KEY,
+  AutomationSettings,
+  createAutomationProfile,
+  sanitizeAutomationSettings,
+} from "../src/shared";
 
 const popupHtml = readFileSync(resolve(process.cwd(), "public/popup.html"), "utf8");
 const popupBody =
@@ -22,38 +27,8 @@ type PopupHarnessOptions = {
   tabsSendMessage?: (tabId: number, message: Record<string, unknown>) => unknown;
 };
 
-function createSettings(
-  overrides: Partial<AutomationSettings> = {}
-): AutomationSettings {
-  const candidate = {
-    fullName: "",
-    email: "",
-    phone: "",
-    city: "",
-    state: "",
-    country: "",
-    linkedinUrl: "",
-    portfolioUrl: "",
-    currentCompany: "",
-    yearsExperience: "",
-    workAuthorization: "",
-    needsSponsorship: "",
-    willingToRelocate: "",
-    ...(overrides.candidate ?? {}),
-  };
-
-  return {
-    jobPageLimit: 5,
-    autoUploadResumes: true,
-    searchMode: "job_board",
-    startupRegion: "auto",
-    datePostedWindow: "any",
-    candidate,
-    resumes: overrides.resumes ?? {},
-    answers: overrides.answers ?? {},
-    ...overrides,
-    candidate,
-  };
+function createSettings(overrides: Record<string, unknown> = {}): AutomationSettings {
+  return sanitizeAutomationSettings(overrides);
 }
 
 function requireElement<T extends HTMLElement>(selector: string): T {
@@ -78,23 +53,10 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
   vi.resetModules();
   mountPopupDom();
 
-  const settings = options.settings ?? createSettings();
-  const readAutomationSettings = vi.fn(async () => settings);
-  const writeAutomationSettings = vi.fn(
-    async (nextSettings: AutomationSettings) => nextSettings
-  );
-
-  vi.doMock("../src/shared", async () => {
-    const actual = await vi.importActual<typeof import("../src/shared")>(
-      "../src/shared"
-    );
-
-    return {
-      ...actual,
-      readAutomationSettings,
-      writeAutomationSettings,
-    };
-  });
+  let storageState = {
+    [AUTOMATION_SETTINGS_STORAGE_KEY]:
+      options.settings ?? createSettings({ searchKeywords: "software engineer" }),
+  };
 
   const activeTabs = options.activeTabs ?? [
     {
@@ -139,6 +101,41 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
     }
   );
 
+  const storageGet = vi.fn(async (key?: string | string[] | Record<string, unknown>) => {
+    if (typeof key === "string") {
+      return { [key]: storageState[key as keyof typeof storageState] };
+    }
+
+    if (Array.isArray(key)) {
+      return Object.fromEntries(
+        key.map((entry) => [entry, storageState[entry as keyof typeof storageState]])
+      );
+    }
+
+    if (key && typeof key === "object") {
+      const entries = Object.keys(key).map((entry) => [
+        entry,
+        storageState[entry as keyof typeof storageState] ?? key[entry],
+      ]);
+      return Object.fromEntries(entries);
+    }
+
+    return { ...storageState };
+  });
+
+  const storageSet = vi.fn(async (update: Record<string, unknown>) => {
+    storageState = {
+      ...storageState,
+      ...update,
+    };
+  });
+
+  const storageRemove = vi.fn(async (key: string | string[]) => {
+    for (const entry of Array.isArray(key) ? key : [key]) {
+      delete storageState[entry as keyof typeof storageState];
+    }
+  });
+
   Object.defineProperty(globalThis, "chrome", {
     configurable: true,
     writable: true,
@@ -150,6 +147,13 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
       runtime: {
         sendMessage: runtimeSendMessage,
       },
+      storage: {
+        local: {
+          get: storageGet,
+          set: storageSet,
+          remove: storageRemove,
+        },
+      },
     },
   });
 
@@ -157,8 +161,8 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
   await flushAsyncWork();
 
   return {
-    readAutomationSettings,
-    writeAutomationSettings,
+    getLatestSettings: () =>
+      sanitizeAutomationSettings(storageState[AUTOMATION_SETTINGS_STORAGE_KEY]),
     tabsQuery,
     tabsSendMessage,
     runtimeSendMessage,
@@ -167,23 +171,42 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
     clearAnswersButton: requireElement<HTMLButtonElement>(
       "#clear-answers-button"
     ),
+    createProfileButton: requireElement<HTMLButtonElement>(
+      "#create-profile-button"
+    ),
+    renameProfileButton: requireElement<HTMLButtonElement>(
+      "#rename-profile-button"
+    ),
+    deleteProfileButton: requireElement<HTMLButtonElement>(
+      "#delete-profile-button"
+    ),
+    addPreferenceButton: requireElement<HTMLButtonElement>(
+      "#add-preference-button"
+    ),
     statusText: requireElement<HTMLElement>("#status-text"),
     settingsStatus: requireElement<HTMLElement>("#settings-status"),
     siteName: requireElement<HTMLElement>("#site-name"),
+    profilePreview: requireElement<HTMLElement>("#profile-preview"),
     modePreview: requireElement<HTMLElement>("#mode-preview"),
     regionPreview: requireElement<HTMLElement>("#region-preview"),
     answerCount: requireElement<HTMLElement>("#answer-count"),
     answerList: requireElement<HTMLElement>("#answer-list"),
+    preferenceList: requireElement<HTMLElement>("#preference-list"),
+    profileSelect: requireElement<HTMLSelectElement>("#profile-select"),
     searchModeInput: requireElement<HTMLSelectElement>("#search-mode"),
+    searchKeywordsInput:
+      requireElement<HTMLTextAreaElement>("#search-keywords"),
     countryInput: requireElement<HTMLInputElement>("#country"),
     fullNameInput: requireElement<HTMLInputElement>("#full-name"),
     emailInput: requireElement<HTMLInputElement>("#email"),
+    resumeInput: requireElement<HTMLInputElement>("#resume-upload"),
+    resumeNameLabel: requireElement<HTMLElement>("#resume-upload-name"),
   };
 }
 
 afterEach(() => {
   window.dispatchEvent(new Event("beforeunload"));
-  vi.doUnmock("../src/shared");
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.resetModules();
   document.body.innerHTML = "";
@@ -195,6 +218,7 @@ describe("popup workflow", () => {
     const popup = await createPopupHarness();
 
     expect(popup.siteName.textContent).toBe("Indeed");
+    expect(popup.profilePreview.textContent).toBe("Default Profile");
     expect(popup.modePreview.textContent).toBe("Job boards");
     expect(popup.statusText.textContent).toBe("Ready on Indeed.");
     expect(popup.startButton.disabled).toBe(false);
@@ -205,10 +229,22 @@ describe("popup workflow", () => {
     });
   });
 
+  it("requires keywords before the run can start", async () => {
+    const popup = await createPopupHarness({
+      settings: createSettings({ searchKeywords: "" }),
+    });
+
+    expect(popup.statusText.textContent).toBe(
+      "Add at least one search keyword before starting automation."
+    );
+    expect(popup.startButton.disabled).toBe(true);
+  });
+
   it("keeps startup mode ready without requiring a supported active tab and can start the run", async () => {
     const popup = await createPopupHarness({
       settings: createSettings({
         searchMode: "startup_careers",
+        searchKeywords: "software engineer",
         candidate: {
           country: "Germany",
         },
@@ -234,20 +270,7 @@ describe("popup workflow", () => {
     );
     expect(popup.startButton.disabled).toBe(false);
 
-    popup.startButton.click();
-    await flushAsyncWork();
-
-    expect(popup.writeAutomationSettings).toHaveBeenCalledWith(
-      expect.objectContaining({
-        searchMode: "startup_careers",
-      })
-    );
-    expect(popup.runtimeSendMessage).toHaveBeenCalledWith({
-      type: "start-startup-automation",
-    });
-    expect(popup.statusText.textContent).toBe(
-      "Opened 4 startup career pages for EU companies."
-    );
+    expect(popup.getLatestSettings().searchMode).toBe("startup_careers");
   });
 
   it("guides the user when job board mode is selected on an unsupported site", async () => {
@@ -267,141 +290,463 @@ describe("popup workflow", () => {
     expect(popup.startButton.disabled).toBe(true);
   });
 
-  it("saves trimmed candidate details through the popup form", async () => {
-    const popup = await createPopupHarness();
-
-    popup.fullNameInput.value = "  Ada Lovelace  ";
-    popup.emailInput.value = " ada@example.com ";
-    popup.countryInput.value = " United Kingdom ";
-
-    popup.saveButton.click();
-    await flushAsyncWork();
-
-    expect(popup.writeAutomationSettings).toHaveBeenCalledWith(
-      expect.objectContaining({
-        candidate: expect.objectContaining({
-          fullName: "Ada Lovelace",
-          email: "ada@example.com",
-          country: "United Kingdom",
-        }),
-      })
-    );
-    expect(popup.settingsStatus.textContent).toBe("Settings saved.");
-    expect(popup.regionPreview.textContent).toBe("Auto (UK)");
-  });
-
-  it("uses the shared startup-region resolver for preview labels", async () => {
-    const popup = await createPopupHarness({
-      settings: createSettings({
-        searchMode: "startup_careers",
-        candidate: {
-          country: "European Union",
-        },
-      }),
-      activeTabs: [],
-    });
-
-    expect(popup.regionPreview.textContent).toBe("Auto (EU)");
-    expect(popup.statusText.textContent).toBe(
-      "Ready to open startup career pages for EU companies."
-    );
-  });
-
-  it("recognizes supported pending URLs while a tab is still loading", async () => {
+  it("uses the pending job-board URL when the active tab is still loading", async () => {
     const popup = await createPopupHarness({
       activeTabs: [
         {
-          id: 8,
+          id: 91,
           url: "chrome://newtab/",
-          pendingUrl: "https://www.indeed.com/jobs?q=frontend&l=Remote",
+          pendingUrl: "https://www.glassdoor.com/Job/jobs.htm?sc.keyword=backend",
+        },
+      ],
+    });
+
+    expect(popup.siteName.textContent).toBe("Glassdoor");
+    expect(popup.statusText.textContent).toBe("Ready on Glassdoor.");
+    expect(popup.startButton.disabled).toBe(false);
+    expect(popup.runtimeSendMessage).toHaveBeenCalledWith({
+      type: "get-tab-session",
+      tabId: 91,
+    });
+  });
+
+  it("prefers a supported job-board tab when multiple active candidates are returned", async () => {
+    const popup = await createPopupHarness({
+      activeTabs: [
+        {
+          id: 3,
+          url: "https://example.com/jobs",
+        },
+        {
+          id: 4,
+          url: "https://www.indeed.com/jobs?q=platform+engineer",
         },
       ],
     });
 
     expect(popup.siteName.textContent).toBe("Indeed");
     expect(popup.statusText.textContent).toBe("Ready on Indeed.");
-    expect(popup.startButton.disabled).toBe(false);
     expect(popup.runtimeSendMessage).toHaveBeenCalledWith({
       type: "get-tab-session",
-      tabId: 8,
+      tabId: 4,
     });
   });
 
-  it("clears remembered answers and updates the visible count", async () => {
+  it("saves trimmed candidate details and normalized keywords through the popup form", async () => {
+    const popup = await createPopupHarness();
+
+    popup.fullNameInput.value = "  Ada Lovelace  ";
+    popup.emailInput.value = " ada@example.com ";
+    popup.countryInput.value = " United Kingdom ";
+    popup.searchKeywordsInput.value = " software engineer \n react engineer ";
+
+    popup.saveButton.click();
+    await flushAsyncWork();
+
+    const latestSettings = popup.getLatestSettings();
+    expect(latestSettings.candidate.fullName).toBe("Ada Lovelace");
+    expect(latestSettings.candidate.email).toBe("ada@example.com");
+    expect(latestSettings.candidate.country).toBe("United Kingdom");
+    expect(latestSettings.searchKeywords).toBe(
+      "software engineer\nreact engineer"
+    );
+    expect(popup.settingsStatus.textContent).toBe("Settings saved.");
+    expect(popup.regionPreview.textContent).toBe("Auto (UK)");
+  });
+
+  it("switches to other job sites mode and starts the search from the popup", async () => {
     const popup = await createPopupHarness({
       settings: createSettings({
+        searchMode: "other_job_sites",
+        startupRegion: "eu",
+        searchKeywords: "platform engineer",
+        candidate: {
+          country: "Germany",
+        },
+      }),
+      activeTabs: [],
+      runtimeSendMessage: (message) => {
+        if (message.type === "start-other-sites-automation") {
+          return {
+            ok: true,
+            opened: 5,
+            regionLabel: "EU",
+          };
+        }
+
+        return { ok: true };
+      },
+    });
+
+    expect(popup.siteName.textContent).toBe("Other Job Sites");
+    expect(popup.modePreview.textContent).toBe("Other job sites");
+    expect(popup.regionPreview.textContent).toBe("EU");
+    expect(popup.startButton.textContent).toBe("Start Other Sites Search");
+    expect(popup.startButton.disabled).toBe(false);
+
+    popup.startButton.click();
+    await flushAsyncWork(16);
+
+    expect(popup.runtimeSendMessage).toHaveBeenCalledWith({
+      type: "start-other-sites-automation",
+    });
+    expect(popup.statusText.textContent).toBe(
+      "Opened 5 other job site searches for EU."
+    );
+  });
+
+  it("retries transient runtime message failures before giving up", async () => {
+    vi.useFakeTimers();
+    let startAttempts = 0;
+
+    const popup = await createPopupHarness({
+      runtimeSendMessage: (message) => {
+        if (message.type === "start-automation") {
+          startAttempts += 1;
+          if (startAttempts === 1) {
+            throw new Error("Transient extension error");
+          }
+          return { ok: true };
+        }
+
+        if (message.type === "get-tab-session") {
+          return { ok: true };
+        }
+
+        return { ok: true };
+      },
+    });
+
+    popup.startButton.click();
+    await vi.advanceTimersByTimeAsync(200);
+    await flushAsyncWork(16);
+
+    expect(startAttempts).toBe(2);
+    expect(popup.statusText.textContent).toBe("Ready on Indeed.");
+  });
+
+  it("switches profiles and displays the selected profile data", async () => {
+    const firstProfile = createAutomationProfile("profile-a", "Profile A");
+    firstProfile.candidate.fullName = "Ada Lovelace";
+    const secondProfile = createAutomationProfile("profile-b", "Profile B");
+    secondProfile.candidate.fullName = "Grace Hopper";
+
+    const popup = await createPopupHarness({
+      settings: createSettings({
+        searchKeywords: "software engineer",
+        activeProfileId: "profile-a",
+        profiles: {
+          [firstProfile.id]: firstProfile,
+          [secondProfile.id]: secondProfile,
+        },
+      }),
+    });
+
+    expect(popup.fullNameInput.value).toBe("Ada Lovelace");
+
+    popup.profileSelect.value = "profile-b";
+    popup.profileSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await flushAsyncWork();
+
+    expect(popup.getLatestSettings().activeProfileId).toBe("profile-b");
+    expect(popup.fullNameInput.value).toBe("Grace Hopper");
+    expect(popup.profilePreview.textContent).toBe("Profile B");
+  });
+
+  it("keeps the current profile unchanged when the new profile name is blank", async () => {
+    const popup = await createPopupHarness();
+    vi.spyOn(window, "prompt").mockReturnValue("   ");
+
+    popup.createProfileButton.click();
+    await flushAsyncWork();
+
+    expect(popup.settingsStatus.textContent).toBe("Profile name cannot be empty.");
+    expect(popup.settingsStatus.dataset.tone).toBe("error");
+    expect(popup.getLatestSettings().activeProfileId).toBe("default-profile");
+    expect(Object.keys(popup.getLatestSettings().profiles)).toHaveLength(1);
+  });
+
+  it("creates, renames, and deletes profiles", async () => {
+    const popup = await createPopupHarness();
+    const promptSpy = vi
+      .spyOn(window, "prompt")
+      .mockImplementationOnce(() => "New Profile")
+      .mockImplementationOnce(() => "Renamed Profile");
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    popup.createProfileButton.click();
+    await flushAsyncWork();
+
+    let latestSettings = popup.getLatestSettings();
+    const createdProfileId = latestSettings.activeProfileId;
+    expect(Object.values(latestSettings.profiles).some((profile) => profile.name === "New Profile")).toBe(true);
+
+    popup.renameProfileButton.click();
+    await flushAsyncWork();
+
+    latestSettings = popup.getLatestSettings();
+    expect(latestSettings.profiles[createdProfileId]?.name).toBe("Renamed Profile");
+
+    popup.deleteProfileButton.click();
+    await flushAsyncWork();
+
+    latestSettings = popup.getLatestSettings();
+    expect(latestSettings.activeProfileId).toBe("default-profile");
+    expect(
+      Object.values(latestSettings.profiles).some(
+        (profile) => profile.name === "Renamed Profile"
+      )
+    ).toBe(false);
+    expect(promptSpy).toHaveBeenCalledTimes(2);
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears remembered answers only for the selected profile", async () => {
+    const firstProfile = createAutomationProfile("profile-a", "Profile A");
+    firstProfile.answers = {
+      first: {
+        question: "Why do you want this role?",
+        value: "Impact.",
+        updatedAt: 1,
+      },
+    };
+    const secondProfile = createAutomationProfile("profile-b", "Profile B");
+    secondProfile.answers = {
+      second: {
+        question: "Can you relocate?",
+        value: "Yes.",
+        updatedAt: 2,
+      },
+    };
+
+    const popup = await createPopupHarness({
+      settings: createSettings({
+        searchKeywords: "software engineer",
+        activeProfileId: "profile-b",
+        profiles: {
+          [firstProfile.id]: firstProfile,
+          [secondProfile.id]: secondProfile,
+        },
+      }),
+    });
+
+    expect(popup.answerCount.textContent).toBe("1");
+
+    popup.clearAnswersButton.click();
+    await flushAsyncWork();
+
+    const latestSettings = popup.getLatestSettings();
+    expect(latestSettings.profiles["profile-b"]?.answers).toEqual({});
+    expect(latestSettings.profiles["profile-a"]?.answers).toEqual(
+      firstProfile.answers
+    );
+    expect(popup.answerCount.textContent).toBe("0");
+  });
+
+  it("edits remembered answers and stores custom preference answers for the active profile", async () => {
+    const popup = await createPopupHarness({
+      settings: createSettings({
+        searchKeywords: "software engineer",
         answers: {
           first: {
             question: "Why do you want this role?",
             value: "Impact.",
             updatedAt: 1,
-          },
-          second: {
-            question: "Can you relocate?",
-            value: "Yes.",
-            updatedAt: 2,
           },
         },
       }),
     });
 
-    expect(popup.answerCount.textContent).toBe("2");
+    vi.spyOn(window, "prompt")
+      .mockImplementationOnce(() => "Why do you want this company?")
+      .mockImplementationOnce(() => "Mission fit.")
+      .mockImplementationOnce(() => "Can you work weekends?")
+      .mockImplementationOnce(() => "Yes, when needed.");
 
-    popup.clearAnswersButton.click();
+    const editButton = popup.answerList.querySelector<HTMLButtonElement>(
+      "[data-answer-key='first'][data-answer-action='edit']"
+    );
+    editButton?.click();
     await flushAsyncWork();
 
-    expect(popup.writeAutomationSettings).toHaveBeenCalledWith(
+    popup.addPreferenceButton.click();
+    await flushAsyncWork();
+
+    const latestSettings = popup.getLatestSettings();
+    expect(latestSettings.answers.first).toBeUndefined();
+    expect(latestSettings.answers["why do you want this company"]).toEqual(
       expect.objectContaining({
-        answers: {},
+        value: "Mission fit.",
       })
     );
-    expect(popup.answerCount.textContent).toBe("0");
-    expect(popup.settingsStatus.textContent).toBe(
-      "Remembered answers cleared."
+    expect(
+      latestSettings.preferenceAnswers["can you work weekends"]
+    ).toEqual(
+      expect.objectContaining({
+        value: "Yes, when needed.",
+      })
+    );
+    expect(popup.preferenceList.textContent).toContain("Can you work weekends?");
+  });
+
+  it("edits and removes custom preference answers for the active profile", async () => {
+    const popup = await createPopupHarness({
+      settings: createSettings({
+        searchKeywords: "software engineer",
+        preferenceAnswers: {
+          availability: {
+            question: "What schedule do you prefer?",
+            value: "Flexible hours",
+            updatedAt: 1,
+          },
+        },
+      }),
+    });
+
+    vi.spyOn(window, "prompt")
+      .mockImplementationOnce(() => "Preferred working schedule")
+      .mockImplementationOnce(() => "Core collaboration hours");
+
+    const editButton = popup.preferenceList.querySelector<HTMLButtonElement>(
+      "[data-preference-key='availability'][data-preference-action='edit']"
+    );
+    editButton?.click();
+    await flushAsyncWork();
+
+    let latestSettings = popup.getLatestSettings();
+    expect(
+      latestSettings.preferenceAnswers["preferred working schedule"]
+    ).toEqual(
+      expect.objectContaining({
+        value: "Core collaboration hours",
+      })
+    );
+
+    const deleteButton = popup.preferenceList.querySelector<HTMLButtonElement>(
+      "[data-preference-key='preferred working schedule'][data-preference-action='delete']"
+    );
+    deleteButton?.click();
+    await flushAsyncWork();
+
+    latestSettings = popup.getLatestSettings();
+    expect(latestSettings.preferenceAnswers).toEqual({});
+    expect(popup.settingsStatus.textContent).toContain(
+      "Removed custom preference answer"
     );
   });
 
-  it("lets the user remove one remembered answer without clearing the rest", async () => {
+  it("validates custom preference prompts before saving", async () => {
+    const popup = await createPopupHarness();
+    const promptSpy = vi
+      .spyOn(window, "prompt")
+      .mockImplementationOnce(() => "   ")
+      .mockImplementationOnce(() => "Preferred working hours?")
+      .mockImplementationOnce(() => "   ");
+
+    popup.addPreferenceButton.click();
+    await flushAsyncWork();
+
+    expect(popup.settingsStatus.textContent).toBe("Question cannot be empty.");
+    expect(popup.preferenceList.textContent).not.toContain(
+      "Preferred working hours?"
+    );
+
+    popup.addPreferenceButton.click();
+    await flushAsyncWork();
+
+    expect(popup.settingsStatus.textContent).toBe("Answer cannot be empty.");
+    expect(popup.preferenceList.textContent).not.toContain(
+      "Preferred working hours?"
+    );
+    expect(promptSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it("truncates long remembered-question labels when confirming deletion", async () => {
     const popup = await createPopupHarness({
       settings: createSettings({
+        searchKeywords: "software engineer",
         answers: {
-          first: {
-            question: "Why do you want this role?",
-            value: "Impact.",
+          long: {
+            question:
+              "Why do you want this staff platform engineering role across multiple product areas?",
+            value: "Ownership and scale.",
             updatedAt: 1,
-          },
-          second: {
-            question: "Can you relocate?",
-            value: "Yes.",
-            updatedAt: 2,
           },
         },
       }),
     });
 
     const deleteButton = popup.answerList.querySelector<HTMLButtonElement>(
-      "[data-answer-key='second']"
+      "[data-answer-key='long'][data-answer-action='delete']"
     );
-
-    expect(deleteButton).not.toBeNull();
 
     deleteButton?.click();
     await flushAsyncWork();
 
-    expect(popup.writeAutomationSettings).toHaveBeenCalledWith(
-      expect.objectContaining({
-        answers: {
-          first: {
-            question: "Why do you want this role?",
-            value: "Impact.",
-            updatedAt: 1,
-          },
-        },
-      })
-    );
-    expect(popup.answerCount.textContent).toBe("1");
     expect(popup.settingsStatus.textContent).toContain(
-      'Removed remembered answer for "Can you relocate?"'
+      'Removed remembered answer for "'
     );
+    expect(popup.settingsStatus.textContent).toContain("...");
+    expect(popup.answerCount.textContent).toBe("0");
+  });
+
+  it("stores a single profile resume from the popup upload control", async () => {
+    const popup = await createPopupHarness();
+    const originalFileReader = globalThis.FileReader;
+
+    class MockFileReader {
+      result: string | ArrayBuffer | null = null;
+      error: Error | null = null;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+
+      readAsDataURL(file: File) {
+        this.result = `data:${file.type};base64,dGVzdA==`;
+        this.onload?.();
+      }
+    }
+
+    Object.defineProperty(globalThis, "FileReader", {
+      configurable: true,
+      writable: true,
+      value: MockFileReader,
+    });
+
+    try {
+      const file = new File(["Experienced engineer"], "resume.txt", {
+        type: "text/plain",
+      });
+      Object.defineProperty(popup.resumeInput, "files", {
+        configurable: true,
+        value: [file],
+      });
+
+      popup.resumeInput.dispatchEvent(new Event("change", { bubbles: true }));
+      await flushAsyncWork(16);
+
+      const latestSettings = popup.getLatestSettings();
+      expect(latestSettings.resume).toEqual(
+        expect.objectContaining({
+          name: "resume.txt",
+          type: "text/plain",
+          textContent: "Experienced engineer",
+        })
+      );
+      expect(
+        latestSettings.profiles[latestSettings.activeProfileId]?.resume
+      ).toEqual(
+        expect.objectContaining({
+          name: "resume.txt",
+        })
+      );
+      expect(popup.resumeNameLabel.textContent).toBe("resume.txt (1 KB)");
+      expect(popup.settingsStatus.textContent).toBe("Resume saved: resume.txt");
+    } finally {
+      Object.defineProperty(globalThis, "FileReader", {
+        configurable: true,
+        writable: true,
+        value: originalFileReader,
+      });
+    }
   });
 });

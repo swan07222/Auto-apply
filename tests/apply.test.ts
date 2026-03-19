@@ -44,6 +44,22 @@ describe("application progression actions", () => {
     expect(action?.text).toBe("Next");
   });
 
+  it("prefers application-context progression controls over header navigation", () => {
+    document.body.innerHTML = `
+      <header>
+        <button>Continue</button>
+      </header>
+      <form>
+        <button type="button" data-testid="next-step">Next</button>
+      </form>
+    `;
+
+    const action = findProgressionAction("ziprecruiter");
+
+    expect(action).not.toBeNull();
+    expect(action?.text).toBe("Next");
+  });
+
   it("ignores final submit buttons when looking for progression", () => {
     document.body.innerHTML = `
       <form>
@@ -248,6 +264,19 @@ describe("application progression actions", () => {
     expect(action).not.toBeNull();
     expect(action?.type).toBe("click");
     expect(action?.text).toBe("Start My Application");
+  });
+
+  it("uses aria-label metadata for icon-like progression controls", () => {
+    document.body.innerHTML = `
+      <section role="dialog" aria-modal="true">
+        <button aria-label="Continue application"></button>
+      </section>
+    `;
+
+    const action = findProgressionAction("glassdoor");
+
+    expect(action).not.toBeNull();
+    expect(action?.text).toBe("Continue application");
   });
 
   it("detects ZipRecruiter apply modals rendered inside shadow DOM", () => {
