@@ -235,6 +235,21 @@ describe("application progression actions", () => {
     expect(action?.description).toBe("Easy Apply");
   });
 
+  it("treats Glassdoor modal start buttons as progression actions", () => {
+    document.body.innerHTML = `
+      <section role="dialog" aria-modal="true">
+        <p>You're on your way to apply.</p>
+        <button data-test="start-application">Start My Application</button>
+      </section>
+    `;
+
+    const action = findProgressionAction("glassdoor");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.text).toBe("Start My Application");
+  });
+
   it("detects ZipRecruiter apply modals rendered inside shadow DOM", () => {
     const host = document.createElement("zip-modal-host");
     const shadow = host.attachShadow({ mode: "open" });

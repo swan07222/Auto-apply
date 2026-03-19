@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   findStandaloneApplicationFrameUrl,
   hasLikelyApplicationFrame,
+  hasLikelyApplicationPageContent,
 } from "../src/content/applicationSurface";
 import { AutofillField } from "../src/content/types";
 
@@ -76,5 +77,16 @@ describe("application surface helpers", () => {
     expect(findStandaloneApplicationFrameUrl(collectors)).toBe(
       "https://jobs.lever.co/example/abcd1234/apply"
     );
+  });
+
+  it("recognizes Glassdoor start-application modals as application page content", () => {
+    document.body.innerHTML = `
+      <section role="dialog" aria-modal="true">
+        <h2>You're on your way to apply</h2>
+        <button>Start My Application</button>
+      </section>
+    `;
+
+    expect(hasLikelyApplicationPageContent()).toBe(true);
   });
 });

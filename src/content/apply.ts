@@ -933,6 +933,16 @@ export function findProgressionAction(
       score = 100;
     } else if (/^continue$/i.test(lower)) {
       score = 95;
+    } else if (
+      lower === "start my application" ||
+      lower === "start application"
+    ) {
+      score = 94;
+    } else if (
+      lower.includes("start applying") ||
+      lower.includes("start your application")
+    ) {
+      score = 92;
     } else if (lower === "next step" || lower === "next page") {
       score = 90;
     } else if (lower.includes("save and continue") || lower.includes("save & continue")) {
@@ -976,6 +986,7 @@ export function findProgressionAction(
     }
 
     const attrs = [
+      element.getAttribute("data-test"),
       element.getAttribute("data-testid"),
       element.getAttribute("data-cy"),
       element.id,
@@ -1022,6 +1033,16 @@ export function findProgressionAction(
         attrs.includes("jobapply")
       ) {
         score += 8;
+      }
+    }
+
+    if (site === "glassdoor") {
+      if (
+        attrs.includes("start") ||
+        attrs.includes("apply") ||
+        attrs.includes("continue")
+      ) {
+        score += 10;
       }
     }
 
@@ -1110,6 +1131,20 @@ function getProgressionCandidateSelectors(
         "[class*='continue']",
         "[class*='next']",
         "[class*='review']",
+        ...generic,
+      ];
+    case "glassdoor":
+      return [
+        "button[data-test*='start' i]",
+        "button[data-test*='continue' i]",
+        "button[data-test*='apply' i]",
+        "[data-test*='start' i]",
+        "[data-test*='continue' i]",
+        "[data-test*='apply' i]",
+        "[aria-label*='start' i]",
+        "[aria-label*='continue' i]",
+        "[class*='start']",
+        "[class*='continue']",
         ...generic,
       ];
     default:

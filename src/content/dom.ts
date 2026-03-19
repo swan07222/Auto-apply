@@ -1,9 +1,12 @@
 // src/content/dom.ts
 // COMPLETE FILE — replace entirely
 
+import { cleanText } from "./text";
+
 export function getActionText(el: HTMLElement): string {
-  return (
+  return cleanText(
     [
+      el.innerText,
       el.textContent,
       el.shadowRoot?.textContent,
       el.getAttribute("aria-label"),

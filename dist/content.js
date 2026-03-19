@@ -49863,15 +49863,80 @@
     return value === "front_end" || value === "back_end" || value === "full_stack" ? value : void 0;
   }
 
+  // src/content/text.ts
+  function cleanText(value) {
+    if (!value) {
+      return "";
+    }
+    return value.replace(/\s+/g, " ").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+  }
+  function truncateText(value, max2) {
+    if (!value) {
+      return "";
+    }
+    if (value.length <= max2) {
+      return value;
+    }
+    const truncated = value.slice(0, max2 - 3);
+    const lastSpace = truncated.lastIndexOf(" ");
+    if (lastSpace > max2 * 0.7) {
+      return `${truncated.slice(0, lastSpace).trim()}...`;
+    }
+    return `${truncated.trim()}...`;
+  }
+  function normalizeChoiceText(value) {
+    if (!value) {
+      return "";
+    }
+    return value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  }
+  function cssEscape(value) {
+    if (!value) {
+      return "";
+    }
+    if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+      return CSS.escape(value);
+    }
+    return value.replace(/["'\\#.:[\]()>+~=^$*|]/g, "\\$&");
+  }
+  function textSimilarity(a, b) {
+    if (!a || !b) {
+      return 0;
+    }
+    const normalA = normalizeChoiceText(a);
+    const normalB = normalizeChoiceText(b);
+    if (normalA === normalB) {
+      return 1;
+    }
+    if (normalA.includes(normalB) || normalB.includes(normalA)) {
+      return 0.8;
+    }
+    const wordsA = new Set(normalA.split(" ").filter(Boolean));
+    const wordsB = new Set(normalB.split(" ").filter(Boolean));
+    if (wordsA.size === 0 || wordsB.size === 0) {
+      return 0;
+    }
+    let overlap = 0;
+    for (const word of wordsA) {
+      if (wordsB.has(word)) {
+        overlap++;
+      }
+    }
+    return overlap / Math.max(wordsA.size, wordsB.size);
+  }
+
   // src/content/dom.ts
   function getActionText(el) {
-    return [
-      el.textContent,
-      el.shadowRoot?.textContent,
-      el.getAttribute("aria-label"),
-      el.getAttribute("title"),
-      el.getAttribute("value")
-    ].find((value) => value && value.trim().length > 0)?.trim() ?? "";
+    return cleanText(
+      [
+        el.innerText,
+        el.textContent,
+        el.shadowRoot?.textContent,
+        el.getAttribute("aria-label"),
+        el.getAttribute("title"),
+        el.getAttribute("value")
+      ].find((value) => value && value.trim().length > 0)?.trim() ?? ""
+    );
   }
   function getClickableApplyElement(el) {
     if (el.shadowRoot) {
@@ -50123,68 +50188,6 @@
       return false;
     }
     return true;
-  }
-
-  // src/content/text.ts
-  function cleanText(value) {
-    if (!value) {
-      return "";
-    }
-    return value.replace(/\s+/g, " ").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
-  }
-  function truncateText(value, max2) {
-    if (!value) {
-      return "";
-    }
-    if (value.length <= max2) {
-      return value;
-    }
-    const truncated = value.slice(0, max2 - 3);
-    const lastSpace = truncated.lastIndexOf(" ");
-    if (lastSpace > max2 * 0.7) {
-      return `${truncated.slice(0, lastSpace).trim()}...`;
-    }
-    return `${truncated.trim()}...`;
-  }
-  function normalizeChoiceText(value) {
-    if (!value) {
-      return "";
-    }
-    return value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-  }
-  function cssEscape(value) {
-    if (!value) {
-      return "";
-    }
-    if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
-      return CSS.escape(value);
-    }
-    return value.replace(/["'\\#.:[\]()>+~=^$*|]/g, "\\$&");
-  }
-  function textSimilarity(a, b) {
-    if (!a || !b) {
-      return 0;
-    }
-    const normalA = normalizeChoiceText(a);
-    const normalB = normalizeChoiceText(b);
-    if (normalA === normalB) {
-      return 1;
-    }
-    if (normalA.includes(normalB) || normalB.includes(normalA)) {
-      return 0.8;
-    }
-    const wordsA = new Set(normalA.split(" ").filter(Boolean));
-    const wordsB = new Set(normalB.split(" ").filter(Boolean));
-    if (wordsA.size === 0 || wordsB.size === 0) {
-      return 0;
-    }
-    let overlap = 0;
-    for (const word of wordsA) {
-      if (wordsB.has(word)) {
-        overlap++;
-      }
-    }
-    return overlap / Math.max(wordsA.size, wordsB.size);
   }
 
   // src/content/autofill.ts
@@ -53034,6 +53037,10 @@
         score = 100;
       } else if (/^continue$/i.test(lower)) {
         score = 95;
+      } else if (lower === "start my application" || lower === "start application") {
+        score = 94;
+      } else if (lower.includes("start applying") || lower.includes("start your application")) {
+        score = 92;
       } else if (lower === "next step" || lower === "next page") {
         score = 90;
       } else if (lower.includes("save and continue") || lower.includes("save & continue")) {
@@ -53060,6 +53067,7 @@
         score = 65;
       }
       const attrs = [
+        element.getAttribute("data-test"),
         element.getAttribute("data-testid"),
         element.getAttribute("data-cy"),
         element.id,
@@ -53082,6 +53090,11 @@
       if (site === "ziprecruiter") {
         if (attrs.includes("zip") || attrs.includes("zipapply") || attrs.includes("jobapply")) {
           score += 8;
+        }
+      }
+      if (site === "glassdoor") {
+        if (attrs.includes("start") || attrs.includes("apply") || attrs.includes("continue")) {
+          score += 10;
         }
       }
       if (score < 50) {
@@ -53157,6 +53170,20 @@
           "[class*='continue']",
           "[class*='next']",
           "[class*='review']",
+          ...generic
+        ];
+      case "glassdoor":
+        return [
+          "button[data-test*='start' i]",
+          "button[data-test*='continue' i]",
+          "button[data-test*='apply' i]",
+          "[data-test*='start' i]",
+          "[data-test*='continue' i]",
+          "[data-test*='apply' i]",
+          "[aria-label*='start' i]",
+          "[aria-label*='continue' i]",
+          "[class*='start']",
+          "[class*='continue']",
           ...generic
         ];
       default:
@@ -53847,7 +53874,9 @@
       "submit application",
       "apply for this",
       "application form",
-      "submit your application"
+      "submit your application",
+      "start my application",
+      "you re on your way to apply"
     ];
     if (strongSignals.some((token) => bodyText.includes(token))) {
       return true;

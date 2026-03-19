@@ -393,6 +393,8 @@ export function hasLikelyApplicationPageContent(): boolean {
     "apply for this",
     "application form",
     "submit your application",
+    "start my application",
+    "you re on your way to apply",
   ];
 
   if (strongSignals.some((token) => bodyText.includes(token))) {
