@@ -1,10 +1,63 @@
 // src/content/jobSearch.ts
 // COMPLETE FILE — replace entirely
 
-import { ResumeKind, SiteKey, getJobDedupKey } from "../shared";
+import { DatePostedWindow, ResumeKind, SiteKey, getJobDedupKey } from "../shared";
 import { JobCandidate } from "./types";
 import { cleanText, normalizeChoiceText } from "./text";
 import { normalizeUrl } from "./dom";
+
+const JOB_DETAIL_QUERY_PARAMS = [
+  "gh_jid",
+  "jid",
+  "jobid",
+  "job_id",
+  "posting_id",
+  "reqid",
+  "req_id",
+  "requisitionid",
+  "requisition_id",
+  "ashby_jid",
+  "lever-source",
+];
+
+const GENERIC_ROLE_CTA_TEXTS = [
+  "apply",
+  "apply now",
+  "apply here",
+  "learn more",
+  "read more",
+  "details",
+  "job details",
+  "more details",
+  "view details",
+  "view role",
+  "see role",
+  "view position",
+  "see position",
+  "view opening",
+  "see opening",
+];
+
+const CAREER_LISTING_CTA_TEXTS = [
+  "open jobs",
+  "open positions",
+  "open roles",
+  "current openings",
+  "current positions",
+  "search jobs",
+  "search roles",
+  "see open jobs",
+  "see open positions",
+  "see all jobs",
+  "see all openings",
+  "see our jobs",
+  "view jobs",
+  "view all jobs",
+  "view open roles",
+  "browse jobs",
+  "browse roles",
+  "job board",
+];
 
 export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
   switch (site) {
@@ -286,28 +339,39 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
 export function pickRelevantJobUrls(
   candidates: JobCandidate[],
   site: SiteKey | null,
-  resumeKind?: ResumeKind
+  resumeKind?: ResumeKind,
+  datePostedWindow: DatePostedWindow = "any"
 ): string[] {
   const valid = candidates.filter((candidate) =>
     isLikelyJobDetailUrl(site, candidate.url, candidate.title, candidate.contextText)
   );
 
+  const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
+  const eligible = datePostedWindow === "any" ? valid : recencyFiltered;
+
   if (!resumeKind) {
-    return valid.map((candidate) => candidate.url);
+    return sortCandidatesByRecency(eligible, datePostedWindow).map((candidate) => candidate.url);
   }
 
-  const scored = valid.map((candidate, index) => ({
+  const scored = eligible.map((candidate, index) => ({
     candidate,
     index,
     score: scoreJobTitleForResume(candidate.title, resumeKind),
+    ageHours: extractPostedAgeHours(candidate.contextText),
   }));
 
   const preferred = scored
     .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .sort((a, b) =>
+      b.score - a.score ||
+      comparePostedAgeHours(a.ageHours, b.ageHours, datePostedWindow) ||
+      a.index - b.index
+    )
     .map((entry) => entry.candidate.url);
 
-  return preferred.length > 0 ? preferred : valid.map((candidate) => candidate.url);
+  return preferred.length > 0
+    ? preferred
+    : sortCandidatesByRecency(eligible, datePostedWindow).map((candidate) => candidate.url);
 }
 
 export function isLikelyJobDetailUrl(
@@ -432,10 +496,6 @@ export function isLikelyJobDetailUrl(
 
     case "startup":
     case "other_sites": {
-      if (isListingOrCategoryUrl(lowerUrl)) {
-        return false;
-      }
-
       const atsSignals = [
         "gh_jid=",
         "lever.co",
@@ -461,6 +521,19 @@ export function isLikelyJobDetailUrl(
         return true;
       }
 
+      try {
+        const parsed = new URL(lowerUrl);
+        if (hasJobIdentifyingSearchParam(parsed)) {
+          return true;
+        }
+      } catch {
+        // Ignore parse errors and continue with path heuristics.
+      }
+
+      if (isListingOrCategoryUrl(lowerUrl)) {
+        return false;
+      }
+
       const pathSignals = [
         "/jobs/",
         "/job/",
@@ -483,24 +556,32 @@ export function isLikelyJobDetailUrl(
           const parsed = new URL(lowerUrl);
           const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
           const segments = path.split("/").filter(Boolean);
+          const lastSegment = segments[segments.length - 1] ?? "";
 
-          // FIX: Check if there's a segment after the signal segment
           for (const signal of pathSignals) {
             const trimmedSignal = signal.replace(/\//g, "");
             const signalIndex = segments.indexOf(trimmedSignal);
-            if (signalIndex >= 0 && signalIndex < segments.length - 1) {
+            if (
+              signalIndex >= 0 &&
+              signalIndex < segments.length - 1 &&
+              !isGenericListingSegment(lastSegment)
+            ) {
               return true;
             }
           }
 
-          // If query params contain an ID, still count it
-          if (parsed.search.length > 1) {
+          if (hasJobIdentifyingSearchParam(parsed)) {
             return true;
           }
+
+          return (
+            !isGenericListingSegment(lastSegment) &&
+            looksLikeTechnicalRoleTitle(text)
+          );
         } catch {
           // Fall through to title check
         }
-        return looksLikeTechnicalRoleTitle(text);
+        return !isListingOrCategoryUrl(lowerUrl) && looksLikeTechnicalRoleTitle(text);
       }
 
       const hasCareerPath = lowerUrl.includes("/careers/") || lowerUrl.includes("/career/");
@@ -509,8 +590,8 @@ export function isLikelyJobDetailUrl(
           const parsed = new URL(lowerUrl);
           const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
           const segments = path.split("/").filter(Boolean);
-          // FIX: Need at least 2 segments for a detail page (e.g. /careers/software-engineer)
-          if (segments.length >= 2) {
+          const lastSegment = segments[segments.length - 1] ?? "";
+          if (segments.length >= 2 && !isGenericListingSegment(lastSegment)) {
             return true;
           }
         } catch {
@@ -707,6 +788,14 @@ function collectCandidatesFromContainers(
       continue;
     }
 
+    if (!titleText || isGenericRoleCtaText(titleText) || isCareerListingCtaText(titleText)) {
+      titleText = resolveAnchorCandidateTitle(anchor, contextText);
+    }
+
+    if (isCareerListingCtaText(titleText)) {
+      continue;
+    }
+
     addJobCandidate(candidates, anchor.href, titleText, contextText);
   }
 
@@ -719,11 +808,18 @@ function collectCandidatesFromAnchors(selectors: string[]): JobCandidate[] {
   for (const selector of selectors) {
     try {
       for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>(selector))) {
+        const contextText = cleanText(
+          anchor.closest("article, li, section, div")?.textContent || anchor.textContent || ""
+        );
+        const title = resolveAnchorCandidateTitle(anchor, contextText);
+        if (isCareerListingCtaText(title)) {
+          continue;
+        }
         addJobCandidate(
           candidates,
           anchor.href,
-          cleanText(anchor.textContent),
-          cleanText(anchor.closest("article, li, section, div")?.textContent || anchor.textContent || "")
+          title,
+          contextText
         );
       }
     } catch {
@@ -744,7 +840,10 @@ function collectMonsterFallbackCandidates(): JobCandidate[] {
 
   for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"))) {
     const href = anchor.href?.toLowerCase() ?? "";
-    const text = cleanText(anchor.textContent);
+    const contextText = cleanText(
+      anchor.closest("article, li, section, div")?.textContent || anchor.textContent || ""
+    );
+    const text = resolveAnchorCandidateTitle(anchor, contextText);
 
     if (!text || text.length < 3 || text.length > 200) {
       continue;
@@ -798,7 +897,7 @@ function collectMonsterFallbackCandidates(): JobCandidate[] {
       candidates,
       anchor.href,
       text,
-      cleanText(anchor.closest("article, li, section, div")?.textContent || text)
+      contextText
     );
   }
 
@@ -811,7 +910,10 @@ function collectFallbackJobCandidates(): JobCandidate[] {
 
   for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"))) {
     const href = anchor.href?.toLowerCase() ?? "";
-    const text = cleanText(anchor.textContent);
+    const contextText = cleanText(
+      anchor.closest("article, li, section, div")?.textContent || anchor.textContent || ""
+    );
+    const text = resolveAnchorCandidateTitle(anchor, contextText);
 
     if (!text || text.length < 4 || text.length > 240) {
       continue;
@@ -871,6 +973,10 @@ function collectFallbackJobCandidates(): JobCandidate[] {
       continue;
     }
 
+    if (isListingOrCategoryUrl(href) || isCareerListingCtaText(text)) {
+      continue;
+    }
+
     const pathSignals = [
       "/jobs/",
       "/job/",
@@ -897,7 +1003,7 @@ function collectFallbackJobCandidates(): JobCandidate[] {
       candidates,
       anchor.href,
       text,
-      cleanText(anchor.closest("article, li, section, div")?.textContent || text)
+      contextText
     );
   }
 
@@ -945,9 +1051,15 @@ function dedupeJobCandidates(candidates: JobCandidate[]): JobCandidate[] {
 function isListingOrCategoryUrl(lowerUrl: string): boolean {
   try {
     const parsed = new URL(lowerUrl);
+    if (hasJobIdentifyingSearchParam(parsed)) {
+      return false;
+    }
+
     const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+    const segments = path.split("/").filter(Boolean);
     const excludedPaths = [
       "/careers",
+      "/career",
       "/jobs",
       "/jobs/search",
       "/openings",
@@ -964,10 +1076,301 @@ function isListingOrCategoryUrl(lowerUrl: string): boolean {
       "/diversity",
     ];
 
-    return excludedPaths.includes(path);
+    if (excludedPaths.includes(path)) {
+      return true;
+    }
+
+    if (segments.length === 0) {
+      return false;
+    }
+
+    if (
+      segments.some((segment) => segment === "search" || segment === "browse") ||
+      path.includes("/jobs/search") ||
+      path.includes("/jobs/browse")
+    ) {
+      return true;
+    }
+
+    if (
+      segments[0] === "jobs" &&
+      ["remote", "hybrid", "in-office"].includes(segments[1] ?? "")
+    ) {
+      return true;
+    }
+
+    if (
+      ["jobs", "career", "careers", "roles", "positions", "openings", "opportunities"].includes(
+        segments[0]
+      ) &&
+      segments.length > 1 &&
+      segments.slice(1).every((segment) => isGenericListingSegment(segment))
+    ) {
+      return true;
+    }
+
+    return false;
   } catch {
     return false;
   }
+}
+
+function hasJobIdentifyingSearchParam(parsed: URL): boolean {
+  return JOB_DETAIL_QUERY_PARAMS.some((name) => {
+    const value = parsed.searchParams.get(name);
+    return Boolean(value && value.trim().length > 0);
+  });
+}
+
+function isGenericRoleCtaText(text: string): boolean {
+  const normalized = normalizeChoiceText(text);
+  if (!normalized) {
+    return false;
+  }
+
+  return GENERIC_ROLE_CTA_TEXTS.some((label) => normalized === normalizeChoiceText(label));
+}
+
+function isCareerListingCtaText(text: string): boolean {
+  const normalized = normalizeChoiceText(text);
+  if (!normalized) {
+    return false;
+  }
+
+  return CAREER_LISTING_CTA_TEXTS.some((label) => normalized.includes(normalizeChoiceText(label)));
+}
+
+function resolveAnchorCandidateTitle(
+  anchor: HTMLAnchorElement,
+  contextText: string
+): string {
+  const directText = cleanText(
+    anchor.textContent ||
+      anchor.getAttribute("aria-label") ||
+      anchor.getAttribute("title") ||
+      ""
+  );
+
+  if (directText && !isGenericRoleCtaText(directText) && !isCareerListingCtaText(directText)) {
+    return directText;
+  }
+
+  const container = anchor.closest("article, li, section, div");
+  if (container) {
+    const heading = container.querySelector<HTMLElement>(
+      "h1, h2, h3, h4, [data-testid*='title'], [class*='title'], [class*='job-title'], [class*='role-title']"
+    );
+    const headingText = cleanText(heading?.textContent || "");
+    if (headingText && !isCareerListingCtaText(headingText)) {
+      return headingText;
+    }
+  }
+
+  for (const line of extractContextLines(contextText)) {
+    if (isCareerListingCtaText(line) || isGenericRoleCtaText(line)) {
+      continue;
+    }
+    if (looksLikeTechnicalRoleTitle(line)) {
+      return line;
+    }
+  }
+
+  return directText;
+}
+
+function extractContextLines(text: string): string[] {
+  return text
+    .split(/\r?\n+/)
+    .map((line) => cleanText(line))
+    .filter((line) => line.length >= 4 && line.length <= 180);
+}
+
+function isGenericListingSegment(segment: string): boolean {
+  return new Set([
+    "all",
+    "browse",
+    "career",
+    "careers",
+    "department",
+    "departments",
+    "design",
+    "dev-engineering",
+    "engineering",
+    "europe",
+    "eu",
+    "finance",
+    "front-end",
+    "frontend",
+    "full-stack",
+    "fullstack",
+    "hybrid",
+    "in-office",
+    "job",
+    "job-board",
+    "jobs",
+    "location",
+    "locations",
+    "marketing",
+    "open-jobs",
+    "open-positions",
+    "open-roles",
+    "opening",
+    "openings",
+    "opportunities",
+    "opportunity",
+    "people",
+    "position",
+    "positions",
+    "product",
+    "remote",
+    "role",
+    "roles",
+    "sales",
+    "search",
+    "support",
+    "team",
+    "teams",
+    "uk",
+    "united-kingdom",
+    "united-states",
+    "us",
+    "usa",
+    "vacancies",
+  ]).has(segment);
+}
+
+function filterCandidatesByDatePostedWindow(
+  candidates: JobCandidate[],
+  datePostedWindow: DatePostedWindow
+): JobCandidate[] {
+  const maxAgeHours = getMaxPostedAgeHours(datePostedWindow);
+  if (maxAgeHours === null) {
+    return candidates;
+  }
+
+  return candidates.filter((candidate) => {
+    const ageHours = extractPostedAgeHours(candidate.contextText);
+    return ageHours !== null && ageHours <= maxAgeHours;
+  });
+}
+
+function sortCandidatesByRecency(
+  candidates: JobCandidate[],
+  datePostedWindow: DatePostedWindow
+): JobCandidate[] {
+  if (datePostedWindow === "any") {
+    return candidates;
+  }
+
+  return [...candidates].sort((a, b) =>
+    comparePostedAgeHours(
+      extractPostedAgeHours(a.contextText),
+      extractPostedAgeHours(b.contextText),
+      datePostedWindow
+    )
+  );
+}
+
+function comparePostedAgeHours(
+  left: number | null,
+  right: number | null,
+  datePostedWindow: DatePostedWindow
+): number {
+  if (datePostedWindow === "any") {
+    return 0;
+  }
+
+  if (left === null && right === null) {
+    return 0;
+  }
+  if (left === null) {
+    return 1;
+  }
+  if (right === null) {
+    return -1;
+  }
+  return left - right;
+}
+
+function getMaxPostedAgeHours(datePostedWindow: DatePostedWindow): number | null {
+  switch (datePostedWindow) {
+    case "24h":
+      return 24;
+    case "3d":
+      return 24 * 3;
+    case "1w":
+      return 24 * 7;
+    case "any":
+      return null;
+  }
+}
+
+function extractPostedAgeHours(text: string): number | null {
+  const normalized = normalizeChoiceText(text).replace(/\s+/g, " ");
+  if (!normalized) {
+    return null;
+  }
+
+  if (/\bjust posted\b/.test(normalized)) {
+    return 0;
+  }
+
+  if (
+    /\b(?:posted|active|updated|listed)\s+today\b/.test(normalized) ||
+    /\bnew today\b/.test(normalized)
+  ) {
+    return 12;
+  }
+
+  if (/\b(?:posted|active|updated|listed)\s+yesterday\b/.test(normalized)) {
+    return 24;
+  }
+
+  const explicitAgoMatch = normalized.match(
+    /\b(?:(?:posted|active|updated|listed)\s+)?(\d+)\+?\s*(hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\s+ago\b/
+  );
+  if (explicitAgoMatch) {
+    return convertAgeValueToHours(explicitAgoMatch[1], explicitAgoMatch[2]);
+  }
+
+  const postedWithinMatch = normalized.match(
+    /\b(?:posted|active|updated|listed)\s+(\d+)\+?\s*(hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\b/
+  );
+  if (postedWithinMatch) {
+    return convertAgeValueToHours(postedWithinMatch[1], postedWithinMatch[2]);
+  }
+
+  if (/\btoday\b/.test(normalized)) {
+    return 12;
+  }
+
+  if (/\byesterday\b/.test(normalized)) {
+    return 24;
+  }
+
+  return null;
+}
+
+function convertAgeValueToHours(rawValue: string, rawUnit: string): number | null {
+  const value = Number.parseInt(rawValue, 10);
+  if (!Number.isFinite(value) || value < 0) {
+    return null;
+  }
+
+  const unit = rawUnit.toLowerCase();
+  if (unit === "h" || unit === "hr" || unit === "hrs" || unit === "hour" || unit === "hours") {
+    return value;
+  }
+  if (unit === "d" || unit === "day" || unit === "days") {
+    return value * 24;
+  }
+  if (unit === "w" || unit === "week" || unit === "weeks") {
+    return value * 24 * 7;
+  }
+  if (unit === "mo" || unit === "mos" || unit === "month" || unit === "months") {
+    return value * 24 * 30;
+  }
+  return null;
 }
 
 function scoreJobTitleForResume(title: string, resumeKind: ResumeKind): number {

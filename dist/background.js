@@ -7,12 +7,16 @@
     full_stack: "Full Stack"
   };
   var STARTUP_COMPANIES = [
-    { name: "Ramp", careersUrl: "https://ramp.com/careers", regions: ["us"] },
+    { name: "Ramp", careersUrl: "https://jobs.ashbyhq.com/ramp", regions: ["us"] },
     { name: "Vercel", careersUrl: "https://vercel.com/careers", regions: ["us"] },
     { name: "Plaid", careersUrl: "https://plaid.com/careers/", regions: ["us"] },
     { name: "Figma", careersUrl: "https://www.figma.com/careers/", regions: ["us"] },
     { name: "Notion", careersUrl: "https://www.notion.so/careers", regions: ["us"] },
-    { name: "Monzo", careersUrl: "https://monzo.com/careers/", regions: ["uk"] },
+    {
+      name: "Monzo",
+      careersUrl: "https://boards.greenhouse.io/embed/job_board?for=monzo",
+      regions: ["uk"]
+    },
     { name: "Wise", careersUrl: "https://wise.jobs/", regions: ["uk"] },
     { name: "Synthesia", careersUrl: "https://synthesia.io/careers", regions: ["uk"] },
     { name: "Snyk", careersUrl: "https://snyk.io/careers/", regions: ["uk"] },
@@ -26,19 +30,19 @@
   var OTHER_JOB_SITE_TARGETS = [
     {
       label: "Built In Front End",
-      url: "https://builtin.com/jobs/search?search=front%20end%20developer",
+      url: "https://builtin.com/jobs/remote/dev-engineering/front-end",
       resumeKind: "front_end",
       regions: ["us"]
     },
     {
       label: "Built In Back End",
-      url: "https://builtin.com/jobs/search?search=back%20end%20developer",
+      url: "https://builtin.com/jobs/remote/dev-engineering/search/back-end-engineer",
       resumeKind: "back_end",
       regions: ["us"]
     },
     {
       label: "Built In Full Stack",
-      url: "https://builtin.com/jobs/search?search=full%20stack%20developer",
+      url: "https://builtin.com/jobs/remote/dev-engineering/search/full-stack-engineer",
       resumeKind: "full_stack",
       regions: ["us"]
     },
@@ -178,6 +182,7 @@
     autoUploadResumes: true,
     searchMode: "job_board",
     startupRegion: "auto",
+    datePostedWindow: "any",
     candidate: {
       fullName: "",
       email: "",
@@ -214,8 +219,13 @@
     if (bare === "dice.com" || bare.endsWith(".dice.com")) {
       return "dice";
     }
-    if (/^monster\.[a-z.]+$/.test(bare) || /\.monster\.[a-z.]+$/.test(bare)) {
-      return "monster";
+    const hostParts = bare.split(".");
+    for (let i = 0; i < hostParts.length; i++) {
+      if (hostParts[i] === "monster") {
+        if (i < hostParts.length - 1) {
+          return "monster";
+        }
+      }
     }
     if (bare === "chatgpt.com" || bare.endsWith(".chatgpt.com")) {
       return "chatgpt";
@@ -370,6 +380,19 @@
       return raw;
     }
   }
+  function getSpawnDedupKey(url) {
+    const raw = url.trim().toLowerCase();
+    if (!raw) return "";
+    try {
+      const parsed = new URL(url);
+      const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
+      const path = parsed.pathname.toLowerCase().replace(/\/+$/, "").replace(/\/+/g, "/");
+      const search = parsed.search.toLowerCase();
+      return `${hostname}${path}${search}`;
+    } catch {
+      return raw;
+    }
+  }
   function normalizeQuestionKey(question) {
     return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
   }
@@ -405,6 +428,7 @@
         name: readString(asset.name),
         type: readString(asset.type),
         dataUrl: readString(asset.dataUrl),
+        textContent: readString(asset.textContent),
         size: Number.isFinite(asset.size) ? Number(asset.size) : 0,
         updatedAt: Number.isFinite(asset.updatedAt) ? Number(asset.updatedAt) : Date.now()
       };
@@ -431,6 +455,7 @@
       autoUploadResumes: typeof source.autoUploadResumes === "boolean" ? source.autoUploadResumes : DEFAULT_SETTINGS.autoUploadResumes,
       searchMode: sanitizeSearchMode(source.searchMode),
       startupRegion: sanitizeStartupRegion(source.startupRegion),
+      datePostedWindow: sanitizeDatePostedWindow(source.datePostedWindow),
       candidate,
       resumes,
       answers
@@ -452,6 +477,9 @@
   }
   function sanitizeStartupRegion(value) {
     return value === "us" || value === "uk" || value === "eu" || value === "auto" ? value : DEFAULT_SETTINGS.startupRegion;
+  }
+  function sanitizeDatePostedWindow(value) {
+    return value === "24h" || value === "3d" || value === "1w" || value === "any" ? value : DEFAULT_SETTINGS.datePostedWindow;
   }
 
   // src/background.ts
@@ -562,6 +590,7 @@
         itemsToOpen = deduplicateSpawnItems(itemsToOpen);
         const baseIndex = currentTab.index ?? 0;
         reserveExtensionSpawnSlots(currentTab.id, itemsToOpen.length);
+        let openedCount = 0;
         for (const [offset, item] of itemsToOpen.entries()) {
           let createdTab;
           try {
@@ -571,9 +600,10 @@
               index: baseIndex + offset + 1,
               openerTabId: currentTab.id
             });
+            openedCount += 1;
           } catch (error) {
             releaseExtensionSpawnSlots(currentTab.id, 1);
-            throw error;
+            continue;
           }
           if (item.stage && createdTab.id !== void 0) {
             const session = createSession(
@@ -594,7 +624,7 @@
         }
         return {
           ok: true,
-          opened: itemsToOpen.length
+          opened: openedCount
         };
       }
       case "close-current-tab": {
@@ -738,6 +768,12 @@
     const settings = await readAutomationSettings();
     const runId = createRunId();
     const targets = buildStartupSearchTargets(settings);
+    if (targets.length === 0) {
+      return {
+        ok: false,
+        error: "No startup career pages are configured for the selected region."
+      };
+    }
     const jobSlots = distributeJobSlots(settings.jobPageLimit, targets.length);
     const items = targets.map((target, index) => ({
       url: target.url,
@@ -752,7 +788,7 @@
     if (items.length === 0) {
       return {
         ok: false,
-        error: "No startup career pages are configured for the selected region."
+        error: "No startup career pages have available job slots."
       };
     }
     const dedupedItems = deduplicateSpawnItems(items);
@@ -776,6 +812,7 @@
       );
       await setSession(session);
     }
+    let openedCount = 0;
     for (const [offset, item] of dedupedItems.entries()) {
       const createProperties = {
         url: item.url,
@@ -787,7 +824,13 @@
       if (sourceTab?.index !== void 0) {
         createProperties.index = sourceTab.index + offset + 1;
       }
-      const createdTab = await chrome.tabs.create(createProperties);
+      let createdTab;
+      try {
+        createdTab = await chrome.tabs.create(createProperties);
+        openedCount += 1;
+      } catch {
+        continue;
+      }
       if (item.stage && createdTab.id !== void 0) {
         const childSession = createSession(
           createdTab.id,
@@ -815,7 +858,7 @@
           sourceTab.id,
           "startup",
           "completed",
-          `Opened ${dedupedItems.length} startup career pages for ${region.toUpperCase()} companies.`,
+          `Opened ${openedCount} startup career pages for ${region.toUpperCase()} companies.`,
           false,
           "bootstrap",
           runId
@@ -824,7 +867,7 @@
     }
     return {
       ok: true,
-      opened: dedupedItems.length,
+      opened: openedCount,
       regionLabel: region.toUpperCase()
     };
   }
@@ -833,6 +876,12 @@
     const settings = await readAutomationSettings();
     const runId = createRunId();
     const targets = buildOtherJobSiteTargets(settings);
+    if (targets.length === 0) {
+      return {
+        ok: false,
+        error: "No other job site searches are configured for the selected region."
+      };
+    }
     const jobSlots = distributeJobSlots(settings.jobPageLimit, targets.length);
     const items = targets.map((target, index) => ({
       url: target.url,
@@ -847,7 +896,7 @@
     if (items.length === 0) {
       return {
         ok: false,
-        error: "No other job site searches are configured for the selected region."
+        error: "No other job site searches have available job slots."
       };
     }
     const dedupedItems = deduplicateSpawnItems(items);
@@ -871,6 +920,7 @@
       );
       await setSession(session);
     }
+    let openedCount = 0;
     for (const [offset, item] of dedupedItems.entries()) {
       const createProperties = {
         url: item.url,
@@ -882,7 +932,13 @@
       if (sourceTab?.index !== void 0) {
         createProperties.index = sourceTab.index + offset + 1;
       }
-      const createdTab = await chrome.tabs.create(createProperties);
+      let createdTab;
+      try {
+        createdTab = await chrome.tabs.create(createProperties);
+        openedCount += 1;
+      } catch {
+        continue;
+      }
       if (item.stage && createdTab.id !== void 0) {
         const childSession = createSession(
           createdTab.id,
@@ -910,7 +966,7 @@
           sourceTab.id,
           "other_sites",
           "completed",
-          `Opened ${dedupedItems.length} other job site searches for ${region.toUpperCase()}.`,
+          `Opened ${openedCount} other job site searches for ${region.toUpperCase()}.`,
           false,
           "bootstrap",
           runId
@@ -919,7 +975,7 @@
     }
     return {
       ok: true,
-      opened: dedupedItems.length,
+      opened: openedCount,
       regionLabel: region.toUpperCase()
     };
   }
@@ -1167,10 +1223,10 @@
     const seen = /* @__PURE__ */ new Set();
     const result = [];
     for (const item of items) {
-      const key = getJobDedupKey(item.url);
+      const key = getSpawnDedupKey(item.url);
       if (!key || seen.has(key)) {
         if (key && item.jobSlots) {
-          const existing = result.find((r) => getJobDedupKey(r.url) === key);
+          const existing = result.find((r) => getSpawnDedupKey(r.url) === key);
           if (existing && existing.jobSlots !== void 0) {
             existing.jobSlots += item.jobSlots;
           }

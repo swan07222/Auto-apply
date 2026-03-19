@@ -50,6 +50,11 @@
           </article>
 
           <article class="overview-card">
+            <p class="overview-label">Date posted</p>
+            <p id="date-preview" class="overview-value">Any time</p>
+          </article>
+
+          <article class="overview-card">
             <p class="overview-label">Auto upload</p>
             <p id="auto-upload-preview" class="overview-value">On</p>
           </article>
@@ -98,6 +103,16 @@
                 <option value="us">US</option>
                 <option value="uk">UK</option>
                 <option value="eu">EU</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Date posted</span>
+              <select id="date-posted-window">
+                <option value="any">Any time</option>
+                <option value="24h">Past 24 hours</option>
+                <option value="3d">Past 3 days</option>
+                <option value="1w">Past week</option>
               </select>
             </label>
 

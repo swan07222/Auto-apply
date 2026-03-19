@@ -28,6 +28,10 @@ await build({
 });
 
 await cp(publicDir, distDir, { recursive: true });
+await cp(
+  path.join(rootDir, "node_modules", "pdfjs-dist", "build", "pdf.worker.mjs"),
+  path.join(distDir, "pdf.worker.mjs")
+);
 
 const distManifest = JSON.parse(
   await readFile(path.join(distDir, "manifest.json"), "utf8")

@@ -10,6 +10,8 @@ import {
   AutomationSettings,
   AutomationStage,
   AutomationStatus,
+  DATE_POSTED_WINDOW_LABELS,
+  DatePostedWindow,
   JobBoardSite,
   JobContextSnapshot,
   ResumeAsset,
@@ -48,11 +50,13 @@ import {
   cleanText,
   cssEscape,
   normalizeChoiceText,
+  textSimilarity,
   truncateText,
 } from "./content/text";
 import {
   findFirstVisibleElement,
   getActionText,
+  getNavigationUrl,
   isElementVisible,
   normalizeUrl,
   performClickAction,
@@ -358,10 +362,13 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
 async function runCollectResultsStage(site: SiteKey): Promise<void> {
   const settings = await readAutomationSettings();
   const labelPrefix = currentLabel ? `${currentLabel} ` : "";
+  const postedWindowDescription = getPostedWindowDescription(
+    settings.datePostedWindow
+  );
 
   updateStatus(
     "running",
-    `Scanning ${labelPrefix}${getSiteLabel(site)} results for job pages...`,
+    `Scanning ${labelPrefix}${getSiteLabel(site)} results for job pages${postedWindowDescription}...`,
     true,
     "collect-results"
   );
@@ -382,12 +389,12 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     await scrollPageForLazyContent();
   }
 
-  const jobUrls = await waitForJobDetailUrls(site);
+  const jobUrls = await waitForJobDetailUrls(site, settings.datePostedWindow);
 
   if (jobUrls.length === 0) {
     updateStatus(
       "completed",
-      `No job pages found on this ${labelPrefix}${getSiteLabel(site)} results page.`,
+      `No job pages found on this ${labelPrefix}${getSiteLabel(site)} results page${postedWindowDescription}.`,
       false,
       "collect-results"
     );
@@ -1214,10 +1221,12 @@ async function waitForHumanVerificationToClear(): Promise<void> {
 }
 
 async function waitForJobDetailUrls(
-  site: SiteKey
+  site: SiteKey,
+  datePostedWindow: DatePostedWindow
 ): Promise<string[]> {
   const isCareerSite =
     site === "startup" || site === "other_sites";
+  let careerSurfaceAttempts = 0;
 
   // FIX: More attempts for dynamic pages, especially career sites
   const maxAttempts = isCareerSite ? 50 : 35;
@@ -1227,11 +1236,26 @@ async function waitForJobDetailUrls(
     const urls = pickRelevantJobUrls(
       candidates,
       status.site === "unsupported" ? null : status.site,
-      currentResumeKind
+      currentResumeKind,
+      datePostedWindow
     );
     if (urls.length > 0) return urls;
 
     if (isCareerSite) {
+      if (
+        careerSurfaceAttempts < 2 &&
+        (attempt === 8 || attempt === 18)
+      ) {
+        careerSurfaceAttempts += 1;
+        const openedCareerSurface = await tryOpenCareerListingsSurface(
+          site,
+          datePostedWindow
+        );
+        if (openedCareerSurface) {
+          await sleep(2200);
+        }
+      }
+
       // FIX: More aggressive scrolling patterns for career sites
       if (attempt % 5 === 0) {
         window.scrollTo({
@@ -1278,6 +1302,218 @@ async function waitForJobDetailUrls(
     await sleep(800);
   }
   return [];
+}
+
+const CAREER_LISTING_TEXT_PATTERNS = [
+  "open jobs",
+  "open positions",
+  "open roles",
+  "current openings",
+  "current positions",
+  "see open jobs",
+  "see open positions",
+  "view all jobs",
+  "view jobs",
+  "search jobs",
+  "search roles",
+  "job board",
+  "browse jobs",
+  "browse roles",
+];
+
+const CAREER_LISTING_URL_PATTERNS = [
+  "/jobs",
+  "/job-board",
+  "/openings",
+  "/positions",
+  "/roles",
+  "boards.greenhouse.io",
+  "job-boards.greenhouse.io",
+  "jobs.lever.co",
+  "ashbyhq.com",
+  "workdayjobs.com",
+  "myworkdayjobs.com",
+  "workable.com",
+  "jobvite.com",
+  "smartrecruiters.com",
+  "recruitee.com",
+  "bamboohr.com",
+];
+
+async function tryOpenCareerListingsSurface(
+  site: SiteKey,
+  datePostedWindow: DatePostedWindow
+): Promise<boolean> {
+  const iframeUrl = findCareerListingsIframeUrl();
+  const currentUrl = normalizeUrl(window.location.href);
+  const labelPrefix = currentLabel ? `${currentLabel} ` : "";
+
+  if (iframeUrl && iframeUrl !== currentUrl) {
+    updateStatus(
+      "running",
+      `Opening ${labelPrefix}${getSiteLabel(site)} jobs list...`,
+      true,
+      "collect-results"
+    );
+    window.location.assign(iframeUrl);
+    return true;
+  }
+
+  const actions = collectCareerListingActions();
+  for (const action of actions) {
+    const beforeUrl = normalizeUrl(window.location.href);
+
+    updateStatus(
+      "running",
+      `Opening ${labelPrefix}${getSiteLabel(site)} jobs list...`,
+      true,
+      "collect-results"
+    );
+
+    if (action.navUrl && action.navUrl !== beforeUrl) {
+      window.location.assign(action.navUrl);
+      return true;
+    }
+
+    if (!isElementInteractive(action.element)) {
+      continue;
+    }
+
+    performClickAction(action.element);
+    await sleep(1500);
+
+    if (normalizeUrl(window.location.href) !== beforeUrl) {
+      return true;
+    }
+
+    const updatedCandidates = collectJobDetailCandidates(site);
+    const updatedUrls = pickRelevantJobUrls(
+      updatedCandidates,
+      status.site === "unsupported" ? null : status.site,
+      currentResumeKind,
+      datePostedWindow
+    );
+    if (updatedUrls.length > 0) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function getPostedWindowDescription(datePostedWindow: DatePostedWindow): string {
+  if (datePostedWindow === "any") {
+    return "";
+  }
+
+  const label = DATE_POSTED_WINDOW_LABELS[datePostedWindow].toLowerCase();
+  return ` posted within ${label.replace(/^past /, "the last ")}`;
+}
+
+function findCareerListingsIframeUrl(): string | null {
+  for (const frame of Array.from(document.querySelectorAll<HTMLIFrameElement>("iframe[src]"))) {
+    if (!isElementVisible(frame)) {
+      continue;
+    }
+
+    const src = normalizeUrl(frame.src || frame.getAttribute("src") || "");
+    if (!src) {
+      continue;
+    }
+
+    const lowerSrc = src.toLowerCase();
+    const title = cleanText(
+      frame.getAttribute("title") || frame.getAttribute("aria-label") || ""
+    ).toLowerCase();
+
+    if (
+      CAREER_LISTING_URL_PATTERNS.some((token) => lowerSrc.includes(token)) ||
+      title.includes("job") ||
+      title.includes("career")
+    ) {
+      return src;
+    }
+  }
+
+  return null;
+}
+
+function collectCareerListingActions(): Array<{
+  element: HTMLElement;
+  navUrl: string | null;
+  score: number;
+}> {
+  const actions: Array<{
+    element: HTMLElement;
+    navUrl: string | null;
+    score: number;
+  }> = [];
+  const seen = new Set<string>();
+
+  for (const element of Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "a[href], button, [role='button'], [data-href], [data-url], [data-link]"
+    )
+  )) {
+    if (!isElementVisible(element)) {
+      continue;
+    }
+
+    const text = cleanText(getActionText(element)).toLowerCase();
+    const navUrl = getNavigationUrl(element);
+    const lowerNavUrl = navUrl?.toLowerCase() ?? "";
+    const hasTextSignal = CAREER_LISTING_TEXT_PATTERNS.some((token) => text.includes(token));
+    const hasUrlSignal = CAREER_LISTING_URL_PATTERNS.some((token) => lowerNavUrl.includes(token));
+
+    if (!hasTextSignal && !hasUrlSignal) {
+      continue;
+    }
+
+    if (
+      ["sign in", "job alert", "talent network", "saved jobs"].some(
+        (token) => text.includes(token) || lowerNavUrl.includes(token)
+      )
+    ) {
+      continue;
+    }
+
+    const dedupKey = `${navUrl ?? ""}::${text}`;
+    if (seen.has(dedupKey)) {
+      continue;
+    }
+    seen.add(dedupKey);
+
+    let score = 0;
+    if (hasTextSignal) score += 4;
+    if (hasUrlSignal) score += 3;
+    if (
+      ["open jobs", "open positions", "open roles", "current openings"].some((token) =>
+        text.includes(token)
+      )
+    ) {
+      score += 3;
+    }
+    if (
+      [
+        "boards.greenhouse.io",
+        "job-boards.greenhouse.io",
+        "jobs.lever.co",
+        "ashbyhq.com",
+        "workdayjobs.com",
+        "myworkdayjobs.com",
+      ].some((token) => lowerNavUrl.includes(token))
+    ) {
+      score += 5;
+    }
+
+    actions.push({
+      element,
+      navUrl,
+      score,
+    });
+  }
+
+  return actions.sort((a, b) => b.score - a.score);
 }
 
 // FIX: Helper to click "load more" / "show more" buttons on career pages
@@ -1353,6 +1589,7 @@ async function runGenerateAiAnswerStage(): Promise<void> {
   );
 
   try {
+    const settings = await readAutomationSettings();
     await waitForHumanVerificationToClear();
     const composer = await waitForChatGptComposer();
     if (!composer)
@@ -1360,15 +1597,14 @@ async function runGenerateAiAnswerStage(): Promise<void> {
         "ChatGPT composer not found. Are you signed in?"
       );
 
-    if (request.resume)
-      await uploadResumeToChatGpt(request.resume);
+    const prompt = buildChatGptPrompt(request, settings);
 
-    setComposerValue(composer, buildChatGptPrompt(request));
-    const sendBtn = await waitForChatGptSendButton();
-    if (!sendBtn)
-      throw new Error("ChatGPT send button not found.");
+    const promptInserted = await setComposerValue(composer, prompt);
+    if (!promptInserted) {
+      throw new Error("Could not enter the prompt into ChatGPT.");
+    }
 
-    sendBtn.click();
+    await submitChatGptPrompt(composer, prompt);
     const answer = await waitForChatGptAnswerText();
     if (!answer)
       throw new Error(
@@ -1450,89 +1686,190 @@ async function waitForChatGptSendButton(): Promise<HTMLButtonElement | null> {
   return null;
 }
 
-async function uploadResumeToChatGpt(
-  resume: ResumeAsset
-): Promise<void> {
-  let input = await waitForChatGptFileInput(1000);
-  if (input) {
-    await setFileInputValue(input, resume);
-    return;
-  }
-
-  const attachBtn = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      "button, [role='button']"
-    )
-  ).find((el) => {
-    const l = cleanText(
-      [el.getAttribute("aria-label"), el.textContent].join(" ")
-    ).toLowerCase();
-    return (
-      l.includes("attach") ||
-      l.includes("upload") ||
-      l.includes("file") ||
-      l.includes("clip")
-    );
-  });
-  attachBtn?.click();
-  input = await waitForChatGptFileInput(6000);
-  if (input) await setFileInputValue(input, resume);
-}
-
-async function waitForChatGptFileInput(
-  timeoutMs: number
-): Promise<HTMLInputElement | null> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const input = Array.from(
-      document.querySelectorAll<HTMLInputElement>(
-        "input[type='file']"
-      )
-    ).find((i) => !i.disabled);
-    if (input) return input;
-    await sleep(250);
-  }
-  return null;
-}
-
-function setComposerValue(
+async function setComposerValue(
   composer: HTMLElement,
   prompt: string
-): void {
+): Promise<boolean> {
   if (composer instanceof HTMLTextAreaElement) {
     setFieldValue(composer, prompt);
+    return waitForChatGptComposerText(composer, prompt, 1500);
+  }
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    composer.focus();
+    clearChatGptComposer(composer);
+
+    const insertedWithCommand = tryInsertComposerTextWithCommand(
+      composer,
+      prompt
+    );
+    if (!insertedWithCommand) {
+      writeComposerTextFallback(composer, prompt);
+    }
+
+    composer.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        data: prompt,
+        inputType: "insertFromPaste",
+      })
+    );
+
+    if (
+      await waitForChatGptComposerText(
+        composer,
+        prompt,
+        1200
+      )
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function clearChatGptComposer(
+  composer: HTMLElement
+): void {
+  if (composer instanceof HTMLTextAreaElement) {
+    setFieldValue(composer, "");
     return;
   }
+
   composer.focus();
-  const sel = window.getSelection();
-  if (sel) {
-    const r = document.createRange();
-    r.selectNodeContents(composer);
-    sel.removeAllRanges();
-    sel.addRange(r);
+  const selection = window.getSelection();
+  if (selection) {
+    const range = document.createRange();
+    range.selectNodeContents(composer);
+    selection.removeAllRanges();
+    selection.addRange(range);
   }
+
   try {
     document.execCommand("selectAll", false);
-    document.execCommand("insertText", false, prompt);
-  } catch { /* ignore */ }
-  if (cleanText(composer.textContent) !== cleanText(prompt))
-    composer.replaceChildren(document.createTextNode(prompt));
+    document.execCommand("delete", false);
+  } catch {
+    // Ignore and fall back to DOM replacement.
+  }
+
+  composer.replaceChildren();
   composer.dispatchEvent(
     new InputEvent("input", {
       bubbles: true,
-      data: prompt,
-      inputType: "insertText",
+      data: "",
+      inputType: "deleteContentBackward",
     })
   );
 }
 
-function buildChatGptPrompt(request: AiAnswerRequest): string {
-  const resumeNote = request.resume
-    ? `Resume attached as "${request.resume.name}".`
-    : "No resume attached.";
+function tryInsertComposerTextWithCommand(
+  composer: HTMLElement,
+  prompt: string
+): boolean {
+  composer.focus();
+
+  try {
+    return document.execCommand("insertText", false, prompt);
+  } catch {
+    return false;
+  }
+}
+
+function writeComposerTextFallback(
+  composer: HTMLElement,
+  prompt: string
+): void {
+  const fragment = document.createDocumentFragment();
+  const lines = prompt.split("\n");
+
+  if (lines.length <= 1) {
+    composer.replaceChildren(document.createTextNode(prompt));
+    return;
+  }
+
+  for (const line of lines) {
+    const paragraph = document.createElement("p");
+    if (line) {
+      paragraph.textContent = line;
+    } else {
+      paragraph.append(document.createElement("br"));
+    }
+    fragment.append(paragraph);
+  }
+
+  composer.replaceChildren(fragment);
+}
+
+async function waitForChatGptComposerText(
+  composer: HTMLElement,
+  prompt: string,
+  timeoutMs: number
+): Promise<boolean> {
+  const expected = normalizeChoiceText(prompt).slice(0, 120);
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const actual = normalizeChoiceText(
+      composer instanceof HTMLTextAreaElement
+        ? composer.value
+        : cleanText(composer.innerText || composer.textContent || "")
+    );
+
+    if (
+      actual &&
+      (actual.includes(expected) ||
+        expected.includes(actual.slice(0, 60)))
+    ) {
+      return true;
+    }
+
+    await sleep(120);
+  }
+
+  return false;
+}
+
+function buildChatGptPrompt(
+  request: AiAnswerRequest,
+  settings: AutomationSettings
+): string {
+  const resumeKindNote = request.resumeKind
+    ? `Selected resume track: ${getResumeKindLabel(request.resumeKind)}.`
+    : "Selected resume track: Not specified.";
+  const resumeNote = request.resume?.textContent
+    ? "Resume context below was extracted locally from the selected resume file. Use that text as the primary source of candidate history and skills."
+    : request.resume
+      ? "A resume file was selected locally, but no extracted resume text is available. Use the candidate profile and job description only."
+      : "No resume file is attached.";
+  const rememberedAnswers = getRelevantSavedAnswersForPrompt(
+    request.job.question,
+    getAvailableAnswers(settings)
+  );
+  const resumeTextBlock = request.resume?.textContent
+    ? [
+        "",
+        "Resume text:",
+        truncateText(request.resume.textContent, 12_000),
+      ]
+    : [];
   const co = request.job.company
     ? `Company: ${request.job.company}`
     : "Company: Unknown";
+
+  const rememberedAnswerBlock =
+    rememberedAnswers.length > 0
+      ? [
+          "",
+          "Remembered candidate answers:",
+          ...rememberedAnswers.map(
+            (answer) =>
+              `- ${truncateText(answer.question, 90)}: ${truncateText(answer.value, 220)}`
+          ),
+          "Reuse any matching remembered answer when it directly fits the question.",
+        ]
+      : [];
+
   return [
     "Write a polished, job-application-ready answer.",
     "Return only final answer text, no preface, no placeholders.",
@@ -1555,13 +1892,148 @@ function buildChatGptPrompt(request: AiAnswerRequest): string {
     `Sponsorship: ${request.candidate.needsSponsorship || "N/A"}`,
     `Relocate: ${request.candidate.willingToRelocate || "N/A"}`,
     "",
+    resumeKindNote,
     resumeNote,
+    ...resumeTextBlock,
+    ...rememberedAnswerBlock,
     "",
     "Job description:",
     request.job.description || "No description found.",
     "",
     "Keep concise, specific to this role, ready to paste.",
   ].join("\n");
+}
+
+function getRelevantSavedAnswersForPrompt(
+  question: string,
+  answers: Record<string, SavedAnswer>
+): SavedAnswer[] {
+  const normalizedQuestion = normalizeQuestionKey(question);
+  if (!normalizedQuestion) {
+    return [];
+  }
+
+  return Object.values(answers)
+    .map((answer) => {
+      const normalizedSavedQuestion = normalizeQuestionKey(
+        answer.question
+      );
+      let score = textSimilarity(
+        normalizedQuestion,
+        normalizedSavedQuestion
+      );
+
+      if (
+        normalizedQuestion.includes(normalizedSavedQuestion) ||
+        normalizedSavedQuestion.includes(normalizedQuestion)
+      ) {
+        score = Math.max(score, 0.9);
+      }
+
+      return { answer, score };
+    })
+    .filter((entry) => entry.score >= 0.4)
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.answer.updatedAt - a.answer.updatedAt
+    )
+    .slice(0, 5)
+    .map((entry) => entry.answer);
+}
+
+async function submitChatGptPrompt(
+  composer: HTMLElement,
+  prompt: string
+): Promise<void> {
+  const priorUserText = getLatestChatGptUserText();
+  const sendBtn = await waitForChatGptSendButton();
+
+  if (sendBtn && !sendBtn.disabled) {
+    sendBtn.click();
+    if (
+      await waitForChatGptPromptAcceptance(
+        prompt,
+        priorUserText,
+        6000
+      )
+    ) {
+      return;
+    }
+  }
+
+  const form = composer.closest("form");
+  if (form?.requestSubmit) {
+    form.requestSubmit();
+    if (
+      await waitForChatGptPromptAcceptance(
+        prompt,
+        priorUserText,
+        5000
+      )
+    ) {
+      return;
+    }
+  }
+
+  composer.focus();
+  for (const eventType of ["keydown", "keypress", "keyup"] as const) {
+    composer.dispatchEvent(
+      new KeyboardEvent(eventType, {
+        key: "Enter",
+        code: "Enter",
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+      })
+    );
+  }
+
+  if (
+    await waitForChatGptPromptAcceptance(
+      prompt,
+      priorUserText,
+      5000
+    )
+  ) {
+    return;
+  }
+
+  throw new Error("ChatGPT prompt was not submitted.");
+}
+
+async function waitForChatGptPromptAcceptance(
+  prompt: string,
+  priorUserText: string,
+  timeoutMs: number
+): Promise<boolean> {
+  const expected = normalizeChoiceText(prompt);
+  const expectedPrefix = expected.slice(0, 120);
+  const prior = normalizeChoiceText(priorUserText);
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    if (hasActiveChatGptGeneration()) {
+      return true;
+    }
+
+    const latestUserText = normalizeChoiceText(
+      getLatestChatGptUserText()
+    );
+    if (
+      latestUserText &&
+      latestUserText !== prior &&
+      (latestUserText.includes(expectedPrefix) ||
+        expectedPrefix.includes(latestUserText.slice(0, 60)))
+    ) {
+      return true;
+    }
+
+    await sleep(250);
+  }
+
+  return false;
 }
 
 async function waitForChatGptAnswerText(): Promise<string | null> {
@@ -1579,6 +2051,40 @@ async function waitForChatGptAnswerText(): Promise<string | null> {
     await sleep(1200);
   }
   return lastText || null;
+}
+
+function getLatestChatGptUserText(): string {
+  const msgs = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "[data-message-author-role='user']"
+    )
+  );
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const t = readChatGptMsgText(msgs[i]);
+    if (t.length > 10) return t;
+  }
+
+  const turns = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "article, [data-testid*='conversation-turn']"
+    )
+  );
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const el = turns[i];
+    const author = cleanText(
+      el.getAttribute("data-message-author-role") ||
+        el
+          .querySelector<HTMLElement>(
+            "[data-message-author-role]"
+          )
+          ?.getAttribute("data-message-author-role") ||
+        ""
+    ).toLowerCase();
+    const t = readChatGptMsgText(el);
+    if (author === "user" && t.length > 10) return t;
+  }
+
+  return "";
 }
 
 function getLatestChatGptAssistantText(): string {
@@ -1746,7 +2252,7 @@ async function autofillVisibleApplication(
     );
     if (
       generated?.answer &&
-      applyAnswerToField(candidate.field, generated.answer)
+      applyGeneratedEssayAnswer(candidate.field, generated.answer)
     ) {
       result.filledFields += 1;
       result.generatedAiAnswers += 1;
@@ -1928,6 +2434,7 @@ async function generateAiAnswerForField(
   };
 
   try {
+    await flushPendingAnswers();
     await deleteAiAnswerResponse(requestId);
     await writeAiAnswerRequest(request);
     updateStatus(
@@ -2033,14 +2540,77 @@ function getAnswerForField(
   settings: AutomationSettings
 ): { value: string; source: "saved" | "profile" } | null {
   const question = getQuestionText(field);
+  const descriptor = getFieldDescriptor(field, question);
+  const availableAnswers = getAvailableAnswers(settings);
   const normalized = normalizeQuestionKey(question);
   if (normalized) {
-    const saved = settings.answers[normalized];
+    const saved = availableAnswers[normalized];
     if (saved?.value)
       return { value: saved.value, source: "saved" };
   }
+  const fuzzySaved = findBestSavedAnswerMatch(
+    question,
+    descriptor,
+    availableAnswers
+  );
+  if (fuzzySaved?.value)
+    return { value: fuzzySaved.value, source: "saved" };
   const profile = deriveProfileAnswer(field, question, settings);
   return profile ? { value: profile, source: "profile" } : null;
+}
+
+function getAvailableAnswers(
+  settings: AutomationSettings
+): Record<string, SavedAnswer> {
+  if (pendingAnswers.size === 0) {
+    return settings.answers;
+  }
+
+  const mergedAnswers = { ...settings.answers };
+  for (const [key, value] of pendingAnswers.entries()) {
+    mergedAnswers[key] = value;
+  }
+  return mergedAnswers;
+}
+
+function findBestSavedAnswerMatch(
+  question: string,
+  descriptor: string,
+  answers: Record<string, SavedAnswer>
+): SavedAnswer | null {
+  const normalizedQuestion = normalizeQuestionKey(question);
+  if (!normalizedQuestion) {
+    return null;
+  }
+
+  let best: { answer: SavedAnswer; score: number } | null = null;
+
+  for (const [key, answer] of Object.entries(answers)) {
+    const normalizedSavedQuestion = normalizeQuestionKey(
+      answer.question || key
+    );
+    if (!normalizedSavedQuestion) {
+      continue;
+    }
+
+    let score = Math.max(
+      textSimilarity(normalizedQuestion, normalizedSavedQuestion),
+      textSimilarity(descriptor, normalizedSavedQuestion)
+    );
+
+    if (
+      normalizedQuestion.includes(normalizedSavedQuestion) ||
+      normalizedSavedQuestion.includes(normalizedQuestion)
+    ) {
+      score = Math.max(score, 0.9);
+    }
+
+    if (!best || score > best.score) {
+      best = { answer, score };
+    }
+  }
+
+  return best && best.score >= 0.72 ? best.answer : null;
 }
 
 function deriveProfileAnswer(
@@ -2228,6 +2798,29 @@ function applyAnswerToField(
     return true;
   }
   return false;
+}
+
+function applyGeneratedEssayAnswer(
+  field: HTMLInputElement | HTMLTextAreaElement,
+  answer: string
+): boolean {
+  if (!answer.trim()) {
+    return false;
+  }
+
+  field.focus();
+  setFieldValue(field, answer);
+
+  const appliedValue = cleanText(
+    field instanceof HTMLTextAreaElement
+      ? field.value
+      : field.value
+  );
+
+  return (
+    appliedValue === cleanText(answer) ||
+    appliedValue.length >= Math.min(cleanText(answer).length, 40)
+  );
 }
 
 function applyAnswerToRadioGroup(

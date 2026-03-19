@@ -4,6 +4,8 @@
 import {
   AutomationSettings,
   AutomationStatus,
+  DATE_POSTED_WINDOW_LABELS,
+  DatePostedWindow,
   ResumeAsset,
   ResumeKind,
   SearchMode,
@@ -17,6 +19,8 @@ import {
   writeAutomationSettings,
 } from "./shared";
 
+const MAX_RESUME_TEXT_CHARS = 24_000;
+
 const startButton = requireElement<HTMLButtonElement>("#start-button");
 const saveButton = requireElement<HTMLButtonElement>("#save-button");
 const clearAnswersButton =
@@ -28,9 +32,12 @@ const settingsStatus = requireElement<HTMLElement>("#settings-status");
 const answerCount = requireElement<HTMLElement>("#answer-count");
 const modePreview = requireElement<HTMLElement>("#mode-preview");
 const regionPreview = requireElement<HTMLElement>("#region-preview");
+const datePreview = requireElement<HTMLElement>("#date-preview");
 const autoUploadPreview = requireElement<HTMLElement>("#auto-upload-preview");
 const searchModeInput = requireElement<HTMLSelectElement>("#search-mode");
 const startupRegionInput = requireElement<HTMLSelectElement>("#startup-region");
+const datePostedWindowInput =
+  requireElement<HTMLSelectElement>("#date-posted-window");
 const jobLimitInput = requireElement<HTMLInputElement>("#job-limit");
 const autoUploadInput = requireElement<HTMLInputElement>("#auto-upload");
 const fullNameInput = requireElement<HTMLInputElement>("#full-name");
@@ -92,6 +99,10 @@ searchModeInput.addEventListener("change", () => {
 startupRegionInput.addEventListener("change", () => {
   updateOverviewPreview();
   void refreshStatus();
+});
+
+datePostedWindowInput.addEventListener("change", () => {
+  updateOverviewPreview();
 });
 
 autoUploadInput.addEventListener("change", () => {
@@ -503,6 +514,7 @@ async function saveCurrentSettings(showFeedback: boolean): Promise<void> {
       ...settings,
       searchMode: getSelectedSearchMode(),
       startupRegion: getSelectedStartupRegion(),
+      datePostedWindow: getSelectedDatePostedWindow(),
       jobPageLimit: Number(jobLimitInput.value) || 5,
       autoUploadResumes: autoUploadInput.checked,
       candidate: {
@@ -591,6 +603,7 @@ async function storeResumeFile(resumeKind: ResumeKind): Promise<void> {
 function populateSettingsForm(nextSettings: AutomationSettings): void {
   searchModeInput.value = nextSettings.searchMode;
   startupRegionInput.value = nextSettings.startupRegion;
+  datePostedWindowInput.value = nextSettings.datePostedWindow;
   jobLimitInput.value = String(nextSettings.jobPageLimit);
   autoUploadInput.checked = nextSettings.autoUploadResumes;
   fullNameInput.value = nextSettings.candidate.fullName;
@@ -633,14 +646,128 @@ function isBusy(phase: AutomationStatus["phase"]): boolean {
 }
 
 async function readFileAsResumeAsset(file: File): Promise<ResumeAsset> {
-  const dataUrl = await readFileAsDataUrl(file);
+  const [dataUrl, textContent] = await Promise.all([
+    readFileAsDataUrl(file),
+    extractResumeTextFromFile(file),
+  ]);
   return {
     name: file.name,
     type: file.type,
     dataUrl,
+    textContent,
     size: file.size,
     updatedAt: Date.now(),
   };
+}
+
+async function extractResumeTextFromFile(file: File): Promise<string> {
+  try {
+    const extension = getFileExtension(file.name);
+
+    if (extension === "pdf" || file.type === "application/pdf") {
+      return clampResumeText(await extractPdfResumeText(file));
+    }
+
+    if (extension === "docx") {
+      return clampResumeText(await extractDocxResumeText(file));
+    }
+
+    if (
+      extension === "txt" ||
+      extension === "md" ||
+      extension === "rtf" ||
+      file.type.startsWith("text/")
+    ) {
+      return clampResumeText(await file.text());
+    }
+
+    if (extension === "doc") {
+      return clampResumeText(
+        extractPrintableTextFromArrayBuffer(await file.arrayBuffer())
+      );
+    }
+  } catch {
+    // Fall back to empty extracted text while still saving the file asset.
+  }
+
+  return "";
+}
+
+async function extractPdfResumeText(file: File): Promise<string> {
+  const pdfjs = await import("pdfjs-dist");
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+    "pdf.worker.mjs",
+    window.location.href
+  ).toString();
+
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const loadingTask = pdfjs.getDocument({
+    data: bytes,
+    useWorkerFetch: false,
+    isEvalSupported: false,
+    stopAtErrors: false,
+  });
+
+  const pdf = await loadingTask.promise;
+  const pages: string[] = [];
+
+  try {
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items
+        .map((item) =>
+          typeof item === "object" && item !== null && "str" in item
+            ? String(item.str || "")
+            : ""
+        )
+        .join(" ");
+      pages.push(pageText);
+    }
+  } finally {
+    await pdf.destroy();
+  }
+
+  return pages.join("\n");
+}
+
+async function extractDocxResumeText(file: File): Promise<string> {
+  const mammothModule = await import("mammoth");
+  const mammoth = (mammothModule.default ?? mammothModule) as {
+    extractRawText(input: { arrayBuffer: ArrayBuffer }): Promise<{ value: string }>;
+  };
+  const result = await mammoth.extractRawText({
+    arrayBuffer: await file.arrayBuffer(),
+  });
+  return result.value || "";
+}
+
+function extractPrintableTextFromArrayBuffer(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let text = "";
+
+  for (const byte of bytes) {
+    if (byte === 9 || byte === 10 || byte === 13 || (byte >= 32 && byte <= 126)) {
+      text += String.fromCharCode(byte);
+    } else {
+      text += " ";
+    }
+  }
+
+  return text;
+}
+
+function clampResumeText(text: string): string {
+  return text
+    .replace(/\u0000/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_RESUME_TEXT_CHARS);
+}
+
+function getFileExtension(filename: string): string {
+  const match = filename.toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match?.[1] ?? "";
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -666,6 +793,7 @@ function createEmptySettings(): AutomationSettings {
     autoUploadResumes: true,
     searchMode: "job_board",
     startupRegion: "auto",
+    datePostedWindow: "any",
     candidate: {
       fullName: "",
       email: "",
@@ -700,6 +828,7 @@ function updateModeUi(): void {
 function updateOverviewPreview(): void {
   modePreview.textContent = getModePreviewLabel();
   regionPreview.textContent = getRegionPreviewLabel();
+  datePreview.textContent = DATE_POSTED_WINDOW_LABELS[getSelectedDatePostedWindow()];
   autoUploadPreview.textContent = autoUploadInput.checked
     ? "Enabled"
     : "Off";
@@ -720,6 +849,14 @@ function getSelectedStartupRegion(): StartupRegion {
     return value;
   }
   return "auto";
+}
+
+function getSelectedDatePostedWindow(): DatePostedWindow {
+  const value = datePostedWindowInput.value;
+  if (value === "24h" || value === "3d" || value === "1w" || value === "any") {
+    return value;
+  }
+  return "any";
 }
 
 function getStartupRegionLabel(): string {

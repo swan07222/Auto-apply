@@ -10,6 +10,12 @@
     other_sites: "Other Job Sites",
     chatgpt: "ChatGPT"
   };
+  var DATE_POSTED_WINDOW_LABELS = {
+    any: "Any time",
+    "24h": "Past 24 hours",
+    "3d": "Past 3 days",
+    "1w": "Past week"
+  };
   var RESUME_KIND_LABELS = {
     front_end: "Front End",
     back_end: "Back End",
@@ -36,6 +42,7 @@
     autoUploadResumes: true,
     searchMode: "job_board",
     startupRegion: "auto",
+    datePostedWindow: "any",
     candidate: {
       fullName: "",
       email: "",
@@ -72,8 +79,13 @@
     if (bare === "dice.com" || bare.endsWith(".dice.com")) {
       return "dice";
     }
-    if (/^monster\.[a-z.]+$/.test(bare) || /\.monster\.[a-z.]+$/.test(bare)) {
-      return "monster";
+    const hostParts = bare.split(".");
+    for (let i = 0; i < hostParts.length; i++) {
+      if (hostParts[i] === "monster") {
+        if (i < hostParts.length - 1) {
+          return "monster";
+        }
+      }
     }
     if (bare === "chatgpt.com" || bare.endsWith(".chatgpt.com")) {
       return "chatgpt";
@@ -160,6 +172,9 @@
     }
     return "full_stack";
   }
+  function slugifyMonsterQuery(query) {
+    return query.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/-+/g, "-");
+  }
   function buildSingleSearchUrl(site, _origin, query) {
     const baseOrigin = CANONICAL_JOB_BOARD_ORIGINS[site];
     switch (site) {
@@ -182,10 +197,8 @@
         return url.toString();
       }
       case "monster": {
-        const url = new URL("/jobs/search", baseOrigin);
-        url.searchParams.set("q", query);
-        url.searchParams.set("where", "Remote");
-        return url.toString();
+        const slug = slugifyMonsterQuery(query);
+        return new URL(`/jobs/q-${slug}-jobs`, baseOrigin).toString();
       }
     }
   }
@@ -297,6 +310,7 @@
         name: readString(asset.name),
         type: readString(asset.type),
         dataUrl: readString(asset.dataUrl),
+        textContent: readString(asset.textContent),
         size: Number.isFinite(asset.size) ? Number(asset.size) : 0,
         updatedAt: Number.isFinite(asset.updatedAt) ? Number(asset.updatedAt) : Date.now()
       };
@@ -323,6 +337,7 @@
       autoUploadResumes: typeof source.autoUploadResumes === "boolean" ? source.autoUploadResumes : DEFAULT_SETTINGS.autoUploadResumes,
       searchMode: sanitizeSearchMode(source.searchMode),
       startupRegion: sanitizeStartupRegion(source.startupRegion),
+      datePostedWindow: sanitizeDatePostedWindow(source.datePostedWindow),
       candidate,
       resumes,
       answers
@@ -344,6 +359,9 @@
   }
   function sanitizeStartupRegion(value) {
     return value === "us" || value === "uk" || value === "eu" || value === "auto" ? value : DEFAULT_SETTINGS.startupRegion;
+  }
+  function sanitizeDatePostedWindow(value) {
+    return value === "24h" || value === "3d" || value === "1w" || value === "any" ? value : DEFAULT_SETTINGS.datePostedWindow;
   }
   function sanitizeAiAnswerRequest(value) {
     return {
@@ -380,6 +398,7 @@
       name: readString(value.name),
       type: readString(value.type),
       dataUrl: readString(value.dataUrl),
+      textContent: readString(value.textContent),
       size: Number.isFinite(value.size) ? Number(value.size) : 0,
       updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now()
     };
@@ -391,16 +410,64 @@
 
   // src/content/text.ts
   function cleanText(value) {
-    return (value ?? "").replace(/\s+/g, " ").trim();
+    if (!value) {
+      return "";
+    }
+    return value.replace(/\s+/g, " ").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
   }
   function truncateText(value, max) {
-    return value.length <= max ? value : `${value.slice(0, max - 3).trim()}...`;
+    if (!value) {
+      return "";
+    }
+    if (value.length <= max) {
+      return value;
+    }
+    const truncated = value.slice(0, max - 3);
+    const lastSpace = truncated.lastIndexOf(" ");
+    if (lastSpace > max * 0.7) {
+      return `${truncated.slice(0, lastSpace).trim()}...`;
+    }
+    return `${truncated.trim()}...`;
   }
   function normalizeChoiceText(value) {
+    if (!value) {
+      return "";
+    }
     return value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
   }
   function cssEscape(value) {
-    return typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
+    if (!value) {
+      return "";
+    }
+    if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+      return CSS.escape(value);
+    }
+    return value.replace(/["'\\#.:[\]()>+~=^$*|]/g, "\\$&");
+  }
+  function textSimilarity(a, b) {
+    if (!a || !b) {
+      return 0;
+    }
+    const normalA = normalizeChoiceText(a);
+    const normalB = normalizeChoiceText(b);
+    if (normalA === normalB) {
+      return 1;
+    }
+    if (normalA.includes(normalB) || normalB.includes(normalA)) {
+      return 0.8;
+    }
+    const wordsA = new Set(normalA.split(" ").filter(Boolean));
+    const wordsB = new Set(normalB.split(" ").filter(Boolean));
+    if (wordsA.size === 0 || wordsB.size === 0) {
+      return 0;
+    }
+    let overlap = 0;
+    for (const word of wordsA) {
+      if (wordsB.has(word)) {
+        overlap++;
+      }
+    }
+    return overlap / Math.max(wordsA.size, wordsB.size);
   }
 
   // src/content/dom.ts
@@ -414,13 +481,21 @@
     ].find((value) => value && value.trim().length > 0)?.trim() ?? "";
   }
   function getClickableApplyElement(el) {
-    const shadowTarget = el.shadowRoot?.querySelector(
-      "a[href], button, input[type='submit'], input[type='button'], [role='button']"
-    );
+    if (el.shadowRoot) {
+      const shadowTarget = el.shadowRoot.querySelector(
+        "a[href], button, input[type='submit'], input[type='button'], [role='button']"
+      );
+      if (shadowTarget && isElementVisible(shadowTarget)) {
+        return shadowTarget;
+      }
+    }
     const childTarget = el.querySelector(
       "a[href], button, input[type='submit'], input[type='button'], [role='button']"
     );
-    return shadowTarget ?? childTarget ?? el;
+    if (childTarget && isElementVisible(childTarget)) {
+      return childTarget;
+    }
+    return el;
   }
   function getNavigationUrl(el) {
     if (el instanceof HTMLAnchorElement && el.href) {
@@ -436,9 +511,30 @@
     if (el instanceof HTMLInputElement && el.formAction && el.formAction !== window.location.href) {
       return normalizeUrl(el.formAction);
     }
-    const dataUrl = el.getAttribute("data-href") ?? el.getAttribute("data-url") ?? el.getAttribute("data-apply-url") ?? el.getAttribute("data-apply-href") ?? el.getAttribute("data-link") ?? el.getAttribute("data-link-to") ?? el.getAttribute("data-target-url") ?? el.getAttribute("data-job-url") ?? el.getAttribute("data-destination");
-    if (dataUrl) {
-      return normalizeUrl(dataUrl);
+    const dataUrlAttributes = [
+      "data-href",
+      "data-url",
+      "data-apply-url",
+      "data-apply-href",
+      "data-link",
+      "data-link-to",
+      "data-target-url",
+      "data-job-url",
+      "data-destination",
+      "data-redirect",
+      "data-action-url",
+      "data-navigate",
+      "data-external-url",
+      "data-company-url"
+    ];
+    for (const attr of dataUrlAttributes) {
+      const value = el.getAttribute(attr);
+      if (value) {
+        const normalized = normalizeUrl(value);
+        if (normalized) {
+          return normalized;
+        }
+      }
     }
     for (const attribute of Array.from(el.attributes)) {
       const name = attribute.name.toLowerCase();
@@ -446,7 +542,25 @@
       if (!value) {
         continue;
       }
-      if (!/(href|url|link|target|dest|redirect)/i.test(name)) {
+      if ([
+        "class",
+        "id",
+        "style",
+        "type",
+        "name",
+        "value",
+        "placeholder",
+        "aria-label",
+        "aria-labelledby",
+        "aria-describedby",
+        "role",
+        "tabindex",
+        "disabled",
+        "readonly"
+      ].includes(name)) {
+        continue;
+      }
+      if (!/(href|url|link|target|dest|redirect|navigate|action)/i.test(name)) {
         continue;
       }
       const normalized = normalizeUrl(value);
@@ -458,16 +572,23 @@
     if (onclick) {
       const match = onclick.match(
         /(?:window\.open|window\.location(?:\.href)?|document\.location(?:\.href)?)\s*\(?\s*['"]([^'"]+)['"]/i
-      ) ?? onclick.match(/location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/i);
+      ) ?? onclick.match(/location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/i) ?? onclick.match(/navigate\s*\(\s*['"]([^'"]+)['"]/i);
       if (match?.[1]) {
         return normalizeUrl(match[1]);
       }
+    }
+    const innerAnchor = el.querySelector("a[href]");
+    if (innerAnchor?.href) {
+      return normalizeUrl(innerAnchor.href);
     }
     return null;
   }
   function normalizeUrl(url) {
     if (!url || url.startsWith("javascript:") || url === "#") {
       return null;
+    }
+    if (url.startsWith("//")) {
+      url = window.location.protocol + url;
     }
     try {
       const normalized = new URL(url, window.location.href);
@@ -479,51 +600,185 @@
   }
   function isExternalUrl(url) {
     try {
-      return new URL(url).hostname.toLowerCase() !== window.location.hostname.toLowerCase();
+      const urlHost = new URL(url).hostname.toLowerCase();
+      const currentHost = window.location.hostname.toLowerCase();
+      if (urlHost === currentHost) {
+        return false;
+      }
+      if (urlHost.endsWith(`.${currentHost}`) || currentHost.endsWith(`.${urlHost}`)) {
+        return false;
+      }
+      const assetDomains = [
+        "cloudfront.net",
+        "amazonaws.com",
+        "cloudflare.com",
+        "akamaized.net",
+        "fastly.net"
+      ];
+      if (assetDomains.some((domain) => urlHost.endsWith(domain))) {
+        return false;
+      }
+      return true;
     } catch {
       return false;
     }
   }
   function isElementVisible(el) {
+    if (!el || !el.isConnected) {
+      return false;
+    }
     const styles = window.getComputedStyle(el);
+    if (styles.visibility === "hidden" || styles.display === "none" || styles.opacity === "0") {
+      return false;
+    }
     const rect = el.getBoundingClientRect();
-    return styles.visibility !== "hidden" && styles.display !== "none" && rect.width > 0 && rect.height > 0;
+    if (rect.width <= 0 || rect.height <= 0) {
+      return false;
+    }
+    if (rect.bottom < 0 || rect.right < 0 || rect.top > window.innerHeight + 1e3 || rect.left > window.innerWidth + 1e3) {
+      let parent = el.parentElement;
+      let hasScrollableParent = false;
+      while (parent) {
+        const parentStyles = window.getComputedStyle(parent);
+        if (parentStyles.overflow === "scroll" || parentStyles.overflow === "auto" || parentStyles.overflowX === "scroll" || parentStyles.overflowX === "auto" || parentStyles.overflowY === "scroll" || parentStyles.overflowY === "auto") {
+          hasScrollableParent = true;
+          break;
+        }
+        parent = parent.parentElement;
+      }
+      if (!hasScrollableParent) {
+        return false;
+      }
+    }
+    return true;
   }
   function findFirstVisibleElement(selectors) {
     for (const selector of selectors) {
-      for (const element of Array.from(document.querySelectorAll(selector))) {
-        if (isElementVisible(element)) {
-          return element;
+      try {
+        for (const element of Array.from(document.querySelectorAll(selector))) {
+          if (isElementVisible(element)) {
+            return element;
+          }
         }
+      } catch {
+        continue;
       }
     }
     return null;
   }
   function performClickAction(element) {
-    element.focus?.();
-    for (const eventType of [
+    try {
+      element.focus();
+    } catch {
+    }
+    const eventOptions = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      button: 0,
+      buttons: 1,
+      clientX: 0,
+      clientY: 0
+    };
+    try {
+      const rect = element.getBoundingClientRect();
+      eventOptions.clientX = rect.left + rect.width / 2;
+      eventOptions.clientY = rect.top + rect.height / 2;
+    } catch {
+    }
+    const events = [
+      "pointerover",
+      "pointerenter",
       "pointerdown",
       "mousedown",
       "pointerup",
       "mouseup",
       "click"
-    ]) {
+    ];
+    for (const eventType of events) {
       try {
-        element.dispatchEvent(
-          new MouseEvent(eventType, {
-            bubbles: true,
-            cancelable: true,
-            composed: true,
-            view: window
-          })
-        );
+        if (eventType.startsWith("pointer")) {
+          element.dispatchEvent(new PointerEvent(eventType, eventOptions));
+        } else {
+          element.dispatchEvent(new MouseEvent(eventType, eventOptions));
+        }
       } catch {
       }
     }
-    element.click();
+    try {
+      element.click();
+    } catch {
+    }
+  }
+  function isElementInteractive(el) {
+    if (!isElementVisible(el)) {
+      return false;
+    }
+    if (el.hasAttribute("disabled") || el.disabled) {
+      return false;
+    }
+    if (el.getAttribute("aria-disabled") === "true") {
+      return false;
+    }
+    const styles = window.getComputedStyle(el);
+    if (styles.pointerEvents === "none") {
+      return false;
+    }
+    return true;
   }
 
   // src/content/jobSearch.ts
+  var JOB_DETAIL_QUERY_PARAMS = [
+    "gh_jid",
+    "jid",
+    "jobid",
+    "job_id",
+    "posting_id",
+    "reqid",
+    "req_id",
+    "requisitionid",
+    "requisition_id",
+    "ashby_jid",
+    "lever-source"
+  ];
+  var GENERIC_ROLE_CTA_TEXTS = [
+    "apply",
+    "apply now",
+    "apply here",
+    "learn more",
+    "read more",
+    "details",
+    "job details",
+    "more details",
+    "view details",
+    "view role",
+    "see role",
+    "view position",
+    "see position",
+    "view opening",
+    "see opening"
+  ];
+  var CAREER_LISTING_CTA_TEXTS = [
+    "open jobs",
+    "open positions",
+    "open roles",
+    "current openings",
+    "current positions",
+    "search jobs",
+    "search roles",
+    "see open jobs",
+    "see open positions",
+    "see all jobs",
+    "see all openings",
+    "see our jobs",
+    "view jobs",
+    "view all jobs",
+    "view open roles",
+    "browse jobs",
+    "browse roles",
+    "job board"
+  ];
   function collectJobDetailCandidates(site) {
     switch (site) {
       case "indeed":
@@ -620,6 +875,16 @@
               "[class*='JobResult']",
               "[class*='search-result']",
               "[class*='card-content']",
+              "[class*='results-card']",
+              "[class*='job-cardstyle']",
+              "[class*='JobCardStyle']",
+              "[class*='flip-card']",
+              "[class*='job-search-resultsstyle']",
+              // FIX: Additional Monster container patterns
+              "[class*='job-search-result']",
+              "[class*='JobSearchResult']",
+              "[class*='job-list-item']",
+              "[class*='JobListItem']",
               "article",
               "section",
               "li"
@@ -628,7 +893,8 @@
               "a[href*='/job-openings/']",
               "a[href*='/job-opening/']",
               "a[href*='monster.com/job/']",
-              "a[href*='/jobs/search/']",
+              "a[href*='monster.com/jobs/']",
+              "a[href*='/job-detail/']",
               "a[href*='/jobs/l-']",
               "a[href*='/jobs/q-']",
               "a[href*='job-openings.monster.com']",
@@ -637,7 +903,12 @@
               "a[data-testid='jobTitle']",
               "a[data-testid='job-title']",
               "a[class*='job']",
-              "a[class*='title']"
+              "a[class*='title']",
+              "a[data-bypass]",
+              "a[href*='?jobid=']",
+              // FIX: Additional Monster anchor patterns
+              "a[href*='job_id=']",
+              "a[href*='monster'][href*='/job']"
             ],
             [
               "h1",
@@ -649,20 +920,26 @@
               "[data-testid*='title']",
               "[class*='title']",
               "[class*='job-title']",
-              "[class*='jobTitle']"
+              "[class*='jobTitle']",
+              "[class*='job-name']",
+              "[class*='JobName']"
             ]
           ),
           ...collectCandidatesFromAnchors([
             "a[href*='/job-openings/']",
             "a[href*='/job-opening/']",
             "a[href*='monster.com/job/']",
+            "a[href*='monster.com/jobs/']",
+            "a[href*='/job-detail/']",
             "a[href*='/jobs/l-']",
             "a[href*='/jobs/q-']",
             "a[href*='job-openings.monster.com']",
             "a[href*='jobview.monster.com']",
             "a[data-testid*='job']",
             "a[data-testid='jobTitle']",
-            "a[data-testid='job-title']"
+            "a[data-testid='job-title']",
+            "a[href*='?jobid=']",
+            "a[href*='job_id=']"
           ]),
           ...collectMonsterFallbackCandidates()
         ]);
@@ -678,6 +955,15 @@
               "[class*='position']",
               "[class*='opening']",
               "[class*='posting']",
+              "[class*='role']",
+              "[class*='vacancy']",
+              "[class*='listing']",
+              "[class*='opportunity']",
+              // FIX: Additional career site container patterns
+              "[class*='career']",
+              "[class*='Career']",
+              "[class*='openings']",
+              "[class*='Openings']",
               "article",
               "section",
               "li"
@@ -713,7 +999,11 @@
               "a[href*='myworkdayjobs.com']",
               "a[href*='workdayjobs.com']",
               "a[href*='icims.com/jobs/']",
-              "a[href*='smartrecruiters.com']"
+              "a[href*='smartrecruiters.com']",
+              "a[href*='applytojob.com']",
+              "a[href*='recruitee.com']",
+              "a[href*='breezy.hr']",
+              "a[href*='bamboohr.com']"
             ],
             ["h1", "h2", "h3", "h4", "[data-testid*='title']", "[class*='title']"]
           ),
@@ -748,7 +1038,11 @@
             "a[href*='myworkdayjobs.com']",
             "a[href*='workdayjobs.com']",
             "a[href*='icims.com/jobs/']",
-            "a[href*='smartrecruiters.com']"
+            "a[href*='smartrecruiters.com']",
+            "a[href*='applytojob.com']",
+            "a[href*='recruitee.com']",
+            "a[href*='breezy.hr']",
+            "a[href*='bamboohr.com']"
           ]),
           ...collectFallbackJobCandidates()
         ]);
@@ -756,20 +1050,25 @@
         return [];
     }
   }
-  function pickRelevantJobUrls(candidates, site, resumeKind) {
+  function pickRelevantJobUrls(candidates, site, resumeKind, datePostedWindow = "any") {
     const valid = candidates.filter(
       (candidate) => isLikelyJobDetailUrl(site, candidate.url, candidate.title, candidate.contextText)
     );
+    const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
+    const eligible = datePostedWindow === "any" ? valid : recencyFiltered;
     if (!resumeKind) {
-      return valid.map((candidate) => candidate.url);
+      return sortCandidatesByRecency(eligible, datePostedWindow).map((candidate) => candidate.url);
     }
-    const scored = valid.map((candidate, index) => ({
+    const scored = eligible.map((candidate, index) => ({
       candidate,
       index,
-      score: scoreJobTitleForResume(candidate.title, resumeKind)
+      score: scoreJobTitleForResume(candidate.title, resumeKind),
+      ageHours: extractPostedAgeHours(candidate.contextText)
     }));
-    const preferred = scored.filter((entry) => entry.score > 0).sort((a, b) => b.score - a.score || a.index - b.index).map((entry) => entry.candidate.url);
-    return preferred.length > 0 ? preferred : valid.map((candidate) => candidate.url);
+    const preferred = scored.filter((entry) => entry.score > 0).sort(
+      (a, b) => b.score - a.score || comparePostedAgeHours(a.ageHours, b.ageHours, datePostedWindow) || a.index - b.index
+    ).map((entry) => entry.candidate.url);
+    return preferred.length > 0 ? preferred : sortCandidatesByRecency(eligible, datePostedWindow).map((candidate) => candidate.url);
   }
   function isLikelyJobDetailUrl(site, url, text, contextText = "") {
     if (!site) {
@@ -801,13 +1100,36 @@
         return lowerUrl.includes("?jid=") || lowerUrl.includes("/job-details/") || lowerUrl.includes("/k/") || lowerUrl.includes("/c/") && lowerUrl.includes("/job/");
       case "dice":
         return lowerUrl.includes("/job-detail/") || lowerUrl.includes("/jobs/detail/");
-      case "monster":
-        return lowerUrl.includes("/job-openings/") || lowerUrl.includes("/job-opening/") || lowerUrl.includes("monster.com/job/") || lowerUrl.includes("monster.com/jobs/") && !lowerUrl.endsWith("/jobs/") && !lowerUrl.includes("/jobs/search") || lowerUrl.includes("job-openings.monster.com/") || lowerUrl.includes("jobview.monster.com") || lowerUrl.includes("m=portal&a=details");
-      case "startup":
-      case "other_sites": {
-        if (isListingOrCategoryUrl(lowerUrl)) {
+      case "monster": {
+        if (/\/jobs\/?$/i.test(lowerUrl) || lowerUrl.includes("/jobs/search") || lowerUrl.includes("/jobs/browse") || lowerUrl.includes("/salary/") || lowerUrl.includes("/career-advice/") || lowerUrl.includes("/company/") || lowerUrl.includes("/profile/") || lowerUrl.includes("/account/")) {
           return false;
         }
+        if (lowerUrl.includes("/job-openings/") || lowerUrl.includes("/job-opening/") || lowerUrl.includes("/job-detail/") || lowerUrl.includes("job-openings.monster.com/") || lowerUrl.includes("jobview.monster.com") || lowerUrl.includes("m=portal&a=details") || /[?&]jobid=/i.test(lowerUrl) || /[?&]job_id=/i.test(lowerUrl)) {
+          return true;
+        }
+        if (/monster\.[a-z.]+\/job\/[^/?#]+/i.test(lowerUrl)) {
+          return true;
+        }
+        if (/monster\.[a-z.]+\/jobs\/[^/?#]+/i.test(lowerUrl)) {
+          if (lowerUrl.includes("/jobs/search") || lowerUrl.includes("/jobs/browse") || lowerUrl.includes("/jobs/q-") || lowerUrl.includes("/jobs/l-")) {
+            return false;
+          }
+          try {
+            const parsed = new URL(lowerUrl);
+            const pathParts = parsed.pathname.split("/").filter(Boolean);
+            if (pathParts.length >= 2 && pathParts[1].length > 3) {
+              return true;
+            }
+          } catch {
+          }
+        }
+        if (/monster\.[a-z.]+\/.*\/[a-f0-9-]{8,}/i.test(lowerUrl)) {
+          return true;
+        }
+        return false;
+      }
+      case "startup":
+      case "other_sites": {
         const atsSignals = [
           "gh_jid=",
           "lever.co",
@@ -832,6 +1154,16 @@
         if (atsSignals.some((token) => lowerUrl.includes(token))) {
           return true;
         }
+        try {
+          const parsed = new URL(lowerUrl);
+          if (hasJobIdentifyingSearchParam(parsed)) {
+            return true;
+          }
+        } catch {
+        }
+        if (isListingOrCategoryUrl(lowerUrl)) {
+          return false;
+        }
         const pathSignals = [
           "/jobs/",
           "/job/",
@@ -849,7 +1181,25 @@
           "/req/"
         ];
         if (pathSignals.some((token) => lowerUrl.includes(token))) {
-          return true;
+          try {
+            const parsed = new URL(lowerUrl);
+            const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+            const segments = path.split("/").filter(Boolean);
+            const lastSegment = segments[segments.length - 1] ?? "";
+            for (const signal of pathSignals) {
+              const trimmedSignal = signal.replace(/\//g, "");
+              const signalIndex = segments.indexOf(trimmedSignal);
+              if (signalIndex >= 0 && signalIndex < segments.length - 1 && !isGenericListingSegment(lastSegment)) {
+                return true;
+              }
+            }
+            if (hasJobIdentifyingSearchParam(parsed)) {
+              return true;
+            }
+            return !isGenericListingSegment(lastSegment) && looksLikeTechnicalRoleTitle(text);
+          } catch {
+          }
+          return !isListingOrCategoryUrl(lowerUrl) && looksLikeTechnicalRoleTitle(text);
         }
         const hasCareerPath = lowerUrl.includes("/careers/") || lowerUrl.includes("/career/");
         if (hasCareerPath) {
@@ -857,7 +1207,8 @@
             const parsed = new URL(lowerUrl);
             const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
             const segments = path.split("/").filter(Boolean);
-            if (segments.length >= 2) {
+            const lastSegment = segments[segments.length - 1] ?? "";
+            if (segments.length >= 2 && !isGenericListingSegment(lastSegment)) {
               return true;
             }
           } catch {
@@ -906,7 +1257,28 @@
       "infrastructure",
       "cloud",
       "data engineer",
-      "machine learning"
+      "machine learning",
+      "mobile",
+      "ios",
+      "android",
+      "security",
+      "architect",
+      "systems",
+      "embedded",
+      "firmware",
+      "network",
+      // FIX: Additional role title keywords
+      "product engineer",
+      "staff engineer",
+      "senior engineer",
+      "principal engineer",
+      "lead engineer",
+      "engineering manager",
+      "tech lead",
+      "technical lead",
+      "software development",
+      "sdet",
+      "automation engineer"
     ].some((keyword) => normalized.includes(normalizeChoiceText(keyword)));
   }
   function isAppliedJobText(text) {
@@ -941,32 +1313,92 @@
   }
   function collectCandidatesFromContainers(containerSelectors, linkSelectors, titleSelectors) {
     const candidates = [];
-    for (const container of Array.from(
-      document.querySelectorAll(containerSelectors.join(","))
-    )) {
-      const anchor = container.querySelector(linkSelectors.join(","));
-      const title = cleanText(container.querySelector(titleSelectors.join(","))?.textContent) || cleanText(anchor?.textContent) || cleanText(container.getAttribute("data-testid")) || "";
+    const containers = [];
+    for (const selector of containerSelectors) {
+      try {
+        for (const el of Array.from(document.querySelectorAll(selector))) {
+          containers.push(el);
+        }
+      } catch {
+      }
+    }
+    let joinedLinkSelectors = "";
+    const validLinkSelectors = [];
+    for (const sel of linkSelectors) {
+      try {
+        document.querySelector(sel);
+        validLinkSelectors.push(sel);
+      } catch {
+      }
+    }
+    joinedLinkSelectors = validLinkSelectors.join(",");
+    let joinedTitleSelectors = "";
+    const validTitleSelectors = [];
+    for (const sel of titleSelectors) {
+      try {
+        document.querySelector(sel);
+        validTitleSelectors.push(sel);
+      } catch {
+      }
+    }
+    joinedTitleSelectors = validTitleSelectors.join(",");
+    for (const container of containers) {
+      let anchor = null;
+      try {
+        if (joinedLinkSelectors) {
+          anchor = container.querySelector(joinedLinkSelectors);
+        }
+      } catch {
+      }
+      let titleText = "";
+      try {
+        if (joinedTitleSelectors) {
+          titleText = cleanText(container.querySelector(joinedTitleSelectors)?.textContent) || cleanText(anchor?.textContent) || cleanText(container.getAttribute("data-testid")) || "";
+        } else {
+          titleText = cleanText(anchor?.textContent) || "";
+        }
+      } catch {
+        titleText = cleanText(anchor?.textContent) || "";
+      }
       const contextText = cleanText(container.innerText || container.textContent || "");
       if (!anchor) {
         const dataJk = container.getAttribute("data-jk");
         if (dataJk) {
-          addJobCandidate(candidates, `/viewjob?jk=${dataJk}`, title, contextText);
+          addJobCandidate(candidates, `/viewjob?jk=${dataJk}`, titleText, contextText);
         }
         continue;
       }
-      addJobCandidate(candidates, anchor.href, title, contextText);
+      if (!titleText || isGenericRoleCtaText(titleText) || isCareerListingCtaText(titleText)) {
+        titleText = resolveAnchorCandidateTitle(anchor, contextText);
+      }
+      if (isCareerListingCtaText(titleText)) {
+        continue;
+      }
+      addJobCandidate(candidates, anchor.href, titleText, contextText);
     }
     return candidates;
   }
   function collectCandidatesFromAnchors(selectors) {
     const candidates = [];
-    for (const anchor of Array.from(document.querySelectorAll(selectors.join(",")))) {
-      addJobCandidate(
-        candidates,
-        anchor.href,
-        cleanText(anchor.textContent),
-        cleanText(anchor.closest("article, li, section, div")?.textContent || anchor.textContent || "")
-      );
+    for (const selector of selectors) {
+      try {
+        for (const anchor of Array.from(document.querySelectorAll(selector))) {
+          const contextText = cleanText(
+            anchor.closest("article, li, section, div")?.textContent || anchor.textContent || ""
+          );
+          const title = resolveAnchorCandidateTitle(anchor, contextText);
+          if (isCareerListingCtaText(title)) {
+            continue;
+          }
+          addJobCandidate(
+            candidates,
+            anchor.href,
+            title,
+            contextText
+          );
+        }
+      } catch {
+      }
     }
     return candidates;
   }
@@ -978,7 +1410,10 @@
     }
     for (const anchor of Array.from(document.querySelectorAll("a[href]"))) {
       const href = anchor.href?.toLowerCase() ?? "";
-      const text = cleanText(anchor.textContent);
+      const contextText = cleanText(
+        anchor.closest("article, li, section, div")?.textContent || anchor.textContent || ""
+      );
+      const text = resolveAnchorCandidateTitle(anchor, contextText);
       if (!text || text.length < 3 || text.length > 200) {
         continue;
       }
@@ -989,11 +1424,20 @@
         "salary",
         "privacy",
         "terms",
-        "cookie"
+        "cookie",
+        "help",
+        "about",
+        "contact",
+        "blog",
+        "log in",
+        "register",
+        "create account"
       ].some((skip) => text.toLowerCase().includes(skip))) {
         continue;
       }
-      const isJobUrl = href.includes("/job-opening") || href.includes("/job/") || href.includes("job-openings.monster") || href.includes("jobview.monster") || href.includes("monster.com") && href.includes("/jobs/") && !href.endsWith("/jobs/") && !href.includes("/jobs/search");
+      const isJobUrl = href.includes("/job-opening") || href.includes("/job/") || href.includes("/job-detail/") || href.includes("job-openings.monster") || href.includes("jobview.monster") || /[?&]jobid=/i.test(href) || /[?&]job_id=/i.test(href) || // FIX: Match /jobs/ with an actual slug (not just /jobs/ or /jobs/search)
+      href.includes("monster.") && /\/jobs\/[^/?#]{4,}/.test(href) && !href.includes("/jobs/search") && !href.includes("/jobs/browse") && !href.includes("/jobs/q-") && !href.includes("/jobs/l-") || // FIX: Match Monster URLs with UUID-like IDs
+      href.includes("monster.") && /\/[a-f0-9-]{8,}(?:[?#]|$)/i.test(href);
       if (!isJobUrl) {
         continue;
       }
@@ -1001,7 +1445,7 @@
         candidates,
         anchor.href,
         text,
-        cleanText(anchor.closest("article, li, section, div")?.textContent || text)
+        contextText
       );
     }
     return candidates;
@@ -1011,7 +1455,10 @@
     const currentHost = window.location.hostname.toLowerCase();
     for (const anchor of Array.from(document.querySelectorAll("a[href]"))) {
       const href = anchor.href?.toLowerCase() ?? "";
-      const text = cleanText(anchor.textContent);
+      const contextText = cleanText(
+        anchor.closest("article, li, section, div")?.textContent || anchor.textContent || ""
+      );
+      const text = resolveAnchorCandidateTitle(anchor, contextText);
       if (!text || text.length < 4 || text.length > 240) {
         continue;
       }
@@ -1060,6 +1507,9 @@
       if (!isSameDomain && !isKnownAts) {
         continue;
       }
+      if (isListingOrCategoryUrl(href) || isCareerListingCtaText(text)) {
+        continue;
+      }
       const pathSignals = [
         "/jobs/",
         "/job/",
@@ -1083,7 +1533,7 @@
         candidates,
         anchor.href,
         text,
-        cleanText(anchor.closest("article, li, section, div")?.textContent || text)
+        contextText
       );
     }
     return candidates;
@@ -1117,9 +1567,14 @@
   function isListingOrCategoryUrl(lowerUrl) {
     try {
       const parsed = new URL(lowerUrl);
+      if (hasJobIdentifyingSearchParam(parsed)) {
+        return false;
+      }
       const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+      const segments = path.split("/").filter(Boolean);
       const excludedPaths = [
         "/careers",
+        "/career",
         "/jobs",
         "/jobs/search",
         "/openings",
@@ -1135,10 +1590,233 @@
         "/values",
         "/diversity"
       ];
-      return excludedPaths.includes(path);
+      if (excludedPaths.includes(path)) {
+        return true;
+      }
+      if (segments.length === 0) {
+        return false;
+      }
+      if (segments.some((segment) => segment === "search" || segment === "browse") || path.includes("/jobs/search") || path.includes("/jobs/browse")) {
+        return true;
+      }
+      if (segments[0] === "jobs" && ["remote", "hybrid", "in-office"].includes(segments[1] ?? "")) {
+        return true;
+      }
+      if (["jobs", "career", "careers", "roles", "positions", "openings", "opportunities"].includes(
+        segments[0]
+      ) && segments.length > 1 && segments.slice(1).every((segment) => isGenericListingSegment(segment))) {
+        return true;
+      }
+      return false;
     } catch {
       return false;
     }
+  }
+  function hasJobIdentifyingSearchParam(parsed) {
+    return JOB_DETAIL_QUERY_PARAMS.some((name) => {
+      const value = parsed.searchParams.get(name);
+      return Boolean(value && value.trim().length > 0);
+    });
+  }
+  function isGenericRoleCtaText(text) {
+    const normalized = normalizeChoiceText(text);
+    if (!normalized) {
+      return false;
+    }
+    return GENERIC_ROLE_CTA_TEXTS.some((label) => normalized === normalizeChoiceText(label));
+  }
+  function isCareerListingCtaText(text) {
+    const normalized = normalizeChoiceText(text);
+    if (!normalized) {
+      return false;
+    }
+    return CAREER_LISTING_CTA_TEXTS.some((label) => normalized.includes(normalizeChoiceText(label)));
+  }
+  function resolveAnchorCandidateTitle(anchor, contextText) {
+    const directText = cleanText(
+      anchor.textContent || anchor.getAttribute("aria-label") || anchor.getAttribute("title") || ""
+    );
+    if (directText && !isGenericRoleCtaText(directText) && !isCareerListingCtaText(directText)) {
+      return directText;
+    }
+    const container = anchor.closest("article, li, section, div");
+    if (container) {
+      const heading = container.querySelector(
+        "h1, h2, h3, h4, [data-testid*='title'], [class*='title'], [class*='job-title'], [class*='role-title']"
+      );
+      const headingText = cleanText(heading?.textContent || "");
+      if (headingText && !isCareerListingCtaText(headingText)) {
+        return headingText;
+      }
+    }
+    for (const line of extractContextLines(contextText)) {
+      if (isCareerListingCtaText(line) || isGenericRoleCtaText(line)) {
+        continue;
+      }
+      if (looksLikeTechnicalRoleTitle(line)) {
+        return line;
+      }
+    }
+    return directText;
+  }
+  function extractContextLines(text) {
+    return text.split(/\r?\n+/).map((line) => cleanText(line)).filter((line) => line.length >= 4 && line.length <= 180);
+  }
+  function isGenericListingSegment(segment) {
+    return (/* @__PURE__ */ new Set([
+      "all",
+      "browse",
+      "career",
+      "careers",
+      "department",
+      "departments",
+      "design",
+      "dev-engineering",
+      "engineering",
+      "europe",
+      "eu",
+      "finance",
+      "front-end",
+      "frontend",
+      "full-stack",
+      "fullstack",
+      "hybrid",
+      "in-office",
+      "job",
+      "job-board",
+      "jobs",
+      "location",
+      "locations",
+      "marketing",
+      "open-jobs",
+      "open-positions",
+      "open-roles",
+      "opening",
+      "openings",
+      "opportunities",
+      "opportunity",
+      "people",
+      "position",
+      "positions",
+      "product",
+      "remote",
+      "role",
+      "roles",
+      "sales",
+      "search",
+      "support",
+      "team",
+      "teams",
+      "uk",
+      "united-kingdom",
+      "united-states",
+      "us",
+      "usa",
+      "vacancies"
+    ])).has(segment);
+  }
+  function filterCandidatesByDatePostedWindow(candidates, datePostedWindow) {
+    const maxAgeHours = getMaxPostedAgeHours(datePostedWindow);
+    if (maxAgeHours === null) {
+      return candidates;
+    }
+    return candidates.filter((candidate) => {
+      const ageHours = extractPostedAgeHours(candidate.contextText);
+      return ageHours !== null && ageHours <= maxAgeHours;
+    });
+  }
+  function sortCandidatesByRecency(candidates, datePostedWindow) {
+    if (datePostedWindow === "any") {
+      return candidates;
+    }
+    return [...candidates].sort(
+      (a, b) => comparePostedAgeHours(
+        extractPostedAgeHours(a.contextText),
+        extractPostedAgeHours(b.contextText),
+        datePostedWindow
+      )
+    );
+  }
+  function comparePostedAgeHours(left, right, datePostedWindow) {
+    if (datePostedWindow === "any") {
+      return 0;
+    }
+    if (left === null && right === null) {
+      return 0;
+    }
+    if (left === null) {
+      return 1;
+    }
+    if (right === null) {
+      return -1;
+    }
+    return left - right;
+  }
+  function getMaxPostedAgeHours(datePostedWindow) {
+    switch (datePostedWindow) {
+      case "24h":
+        return 24;
+      case "3d":
+        return 24 * 3;
+      case "1w":
+        return 24 * 7;
+      case "any":
+        return null;
+    }
+  }
+  function extractPostedAgeHours(text) {
+    const normalized = normalizeChoiceText(text).replace(/\s+/g, " ");
+    if (!normalized) {
+      return null;
+    }
+    if (/\bjust posted\b/.test(normalized)) {
+      return 0;
+    }
+    if (/\b(?:posted|active|updated|listed)\s+today\b/.test(normalized) || /\bnew today\b/.test(normalized)) {
+      return 12;
+    }
+    if (/\b(?:posted|active|updated|listed)\s+yesterday\b/.test(normalized)) {
+      return 24;
+    }
+    const explicitAgoMatch = normalized.match(
+      /\b(?:(?:posted|active|updated|listed)\s+)?(\d+)\+?\s*(hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\s+ago\b/
+    );
+    if (explicitAgoMatch) {
+      return convertAgeValueToHours(explicitAgoMatch[1], explicitAgoMatch[2]);
+    }
+    const postedWithinMatch = normalized.match(
+      /\b(?:posted|active|updated|listed)\s+(\d+)\+?\s*(hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\b/
+    );
+    if (postedWithinMatch) {
+      return convertAgeValueToHours(postedWithinMatch[1], postedWithinMatch[2]);
+    }
+    if (/\btoday\b/.test(normalized)) {
+      return 12;
+    }
+    if (/\byesterday\b/.test(normalized)) {
+      return 24;
+    }
+    return null;
+  }
+  function convertAgeValueToHours(rawValue, rawUnit) {
+    const value = Number.parseInt(rawValue, 10);
+    if (!Number.isFinite(value) || value < 0) {
+      return null;
+    }
+    const unit = rawUnit.toLowerCase();
+    if (unit === "h" || unit === "hr" || unit === "hrs" || unit === "hour" || unit === "hours") {
+      return value;
+    }
+    if (unit === "d" || unit === "day" || unit === "days") {
+      return value * 24;
+    }
+    if (unit === "w" || unit === "week" || unit === "weeks") {
+      return value * 24 * 7;
+    }
+    if (unit === "mo" || unit === "mos" || unit === "month" || unit === "months") {
+      return value * 24 * 30;
+    }
+    return null;
   }
   function scoreJobTitleForResume(title, resumeKind) {
     const normalizedTitle = title.toLowerCase();
@@ -1207,7 +1885,6 @@
     "employer's website",
     "company career",
     "employer career",
-    // FIX: Additional tokens for Monster and other sites
     "apply on company's site",
     "apply on the employer",
     "apply at company",
@@ -1218,7 +1895,17 @@
     "apply directly",
     "direct application",
     "original posting",
-    "original job posting"
+    "original job posting",
+    // FIX: Additional tokens for various sites
+    "apply on external site",
+    "apply on their site",
+    "apply on their website",
+    "view original posting",
+    "view original job",
+    "external job",
+    "external link",
+    "view application",
+    "apply through"
   ];
   function findCompanySiteAction() {
     const pageText = cleanText(document.body?.innerText || "").toLowerCase().slice(0, 6e3);
@@ -1260,7 +1947,12 @@
         "dismiss",
         "close",
         "back to search",
-        "back to results"
+        "back to results",
+        "log in",
+        "register",
+        "create account",
+        "job alert",
+        "subscribe"
       ].some((blocked) => lower.includes(blocked))) {
         continue;
       }
@@ -1271,12 +1963,16 @@
         score += 105;
       } else if (lower.includes("apply externally") || lower.includes("apply directly")) {
         score += 102;
+      } else if (lower.includes("apply on external") || lower.includes("apply through")) {
+        score += 100;
       } else if (lower.includes("company site") || lower.includes("company website")) {
         score += 96;
       } else if (lower.includes("visit company") || lower.includes("visit employer") || lower.includes("go to company") || lower.includes("go to employer")) {
         score += 90;
       } else if (lower.includes("external application") || lower.includes("direct application")) {
         score += 85;
+      } else if (lower.includes("view original") || lower.includes("original posting")) {
+        score += 82;
       } else if (lower.includes("apply now") || lower.includes("apply for this") || lower.includes("continue")) {
         score += 62;
       } else if (lower.includes("visit") && lower.includes("site")) {
@@ -1299,7 +1995,7 @@
       if (hasGateText) {
         score += 18;
       }
-      const threshold = hasGateText ? 40 : 75;
+      const threshold = hasGateText ? 35 : 70;
       if (score < threshold) {
         continue;
       }
@@ -1403,7 +2099,6 @@
       "a[class*='apply' i]",
       "button[class*='Apply']",
       "a[class*='Apply']",
-      // FIX: Additional Monster selectors
       "[class*='applyBtn']",
       "[class*='apply-btn']",
       "[class*='apply_btn']",
@@ -1411,10 +2106,21 @@
       "[id*='apply-btn']",
       "[id*='apply_btn']",
       "a[href*='apply.monster']",
-      "a[href*='/apply']"
+      "a[href*='/apply']",
+      // FIX: Additional Monster selectors
+      "[class*='ApplyButton']",
+      "[class*='apply-button']",
+      "[data-testid*='Apply']",
+      "a[href*='job-openings'][href*='apply']"
     ];
     for (const selector of monsterSelectors) {
-      for (const element of Array.from(document.querySelectorAll(selector))) {
+      let elements;
+      try {
+        elements = Array.from(document.querySelectorAll(selector));
+      } catch {
+        continue;
+      }
+      for (const element of elements) {
         if (!isElementVisible(element)) {
           continue;
         }
@@ -1446,7 +2152,7 @@
         continue;
       }
       const text = getActionText(element).toLowerCase().trim();
-      if (!text || text.includes("save") || text.includes("share") || text.includes("alert") || text.includes("sign")) {
+      if (!text || text.includes("save") || text.includes("share") || text.includes("alert") || text.includes("sign") || text.includes("report") || text.includes("dismiss") || text.includes("close")) {
         continue;
       }
       let score = 0;
@@ -1458,6 +2164,9 @@
       }
       if (text === "apply" || text === "apply now") {
         score += 40;
+      }
+      if (/\bapply\b/.test(text)) {
+        score += 15;
       }
       const url = getNavigationUrl(element);
       if (url && shouldPreferApplyNavigation(url, text, "monster")) {
@@ -1508,7 +2217,13 @@
       "a[href*='zipapply']"
     ];
     for (const selector of selectors) {
-      for (const element of Array.from(document.querySelectorAll(selector))) {
+      let elements;
+      try {
+        elements = Array.from(document.querySelectorAll(selector));
+      } catch {
+        continue;
+      }
+      for (const element of elements) {
         if (!isElementVisible(element)) {
           continue;
         }
@@ -1660,8 +2375,11 @@
     const selectors = getApplyCandidateSelectors(site);
     const elements = /* @__PURE__ */ new Set();
     for (const selector of selectors) {
-      for (const element of Array.from(document.querySelectorAll(selector))) {
-        elements.add(element);
+      try {
+        for (const element of Array.from(document.querySelectorAll(selector))) {
+          elements.add(element);
+        }
+      } catch {
       }
     }
     let best;
@@ -1888,6 +2606,8 @@
     if (lower.includes("company website to apply")) score += 86;
     if (lower.includes("apply directly")) score += 86;
     if (lower.includes("apply on the company")) score += 85;
+    if (lower.includes("apply on external")) score += 84;
+    if (lower.includes("apply through")) score += 82;
     if (lower.includes("apply now")) score += 80;
     if (lower.includes("start application")) score += 72;
     if (lower.includes("begin application")) score += 72;
@@ -1987,13 +2707,16 @@
           "[class*='apply']",
           "button[class*='Apply']",
           "a[class*='Apply']",
-          // FIX: Additional Monster-specific selectors
           "[class*='applyBtn']",
           "[class*='apply-btn']",
+          "[class*='ApplyButton']",
+          "[class*='apply-button']",
           "[id*='applyBtn']",
           "[id*='apply-btn']",
+          "[data-testid*='Apply']",
           "a[href*='/apply']",
           "a[href*='apply.monster']",
+          "a[href*='job-openings'][href*='apply']",
           ...generic
         ];
       case "startup":
@@ -2040,7 +2763,7 @@
   }
   function shouldPreferApplyNavigation(url, text, site) {
     const lowerText = text.toLowerCase();
-    if (lowerText.includes("company site") || lowerText.includes("employer site") || lowerText.includes("apply externally") || lowerText.includes("apply directly")) {
+    if (lowerText.includes("company site") || lowerText.includes("employer site") || lowerText.includes("apply externally") || lowerText.includes("apply directly") || lowerText.includes("apply on external") || lowerText.includes("apply through")) {
       return true;
     }
     if (isExternalUrl(url)) {
@@ -2072,7 +2795,7 @@
   // src/content.ts
   var MAX_AUTOFILL_STEPS = 15;
   var OVERLAY_AUTO_HIDE_MS = 1e4;
-  var MAX_STAGE_DEPTH = 5;
+  var MAX_STAGE_DEPTH = 10;
   function createEmptyAutofillResult() {
     return {
       filledFields: 0,
@@ -2103,6 +2826,7 @@
   var overlayHideTimerId = null;
   var childApplicationTabOpened = false;
   var stageDepth = 0;
+  var lastNavigationUrl = "";
   var pendingAnswers = /* @__PURE__ */ new Map();
   var overlay = {
     host: null,
@@ -2130,6 +2854,7 @@
       if (message.type === "start-automation") {
         childApplicationTabOpened = false;
         stageDepth = 0;
+        lastNavigationUrl = window.location.href;
         if (message.session) {
           status = message.session;
           currentStage = message.session.stage;
@@ -2163,7 +2888,9 @@
     const detectedSite = detectSiteFromUrl(window.location.href);
     childApplicationTabOpened = false;
     stageDepth = 0;
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    lastNavigationUrl = window.location.href;
+    const maxAttempts = detectedSite ? 30 : 18;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       let response = null;
       try {
         response = await chrome.runtime.sendMessage({
@@ -2186,11 +2913,7 @@
         }
         return;
       }
-      if (detectedSite) {
-        if (attempt === 19) return;
-      } else {
-        if (attempt >= 9) return;
-      }
+      if (attempt >= maxAttempts - 1) return;
       await sleep(400);
     }
   }
@@ -2273,19 +2996,26 @@
   async function runCollectResultsStage(site) {
     const settings = await readAutomationSettings();
     const labelPrefix = currentLabel ? `${currentLabel} ` : "";
+    const postedWindowDescription = getPostedWindowDescription(
+      settings.datePostedWindow
+    );
     updateStatus(
       "running",
-      `Scanning ${labelPrefix}${getSiteLabel(site)} results for job pages...`,
+      `Scanning ${labelPrefix}${getSiteLabel(site)} results for job pages${postedWindowDescription}...`,
       true,
       "collect-results"
     );
     await waitForHumanVerificationToClear();
-    await sleep(site === "startup" || site === "other_sites" ? 3e3 : 1500);
-    const jobUrls = await waitForJobDetailUrls(site);
+    const renderWaitMs = site === "startup" || site === "other_sites" ? 5e3 : site === "monster" ? 5e3 : 2500;
+    await sleep(renderWaitMs);
+    if (site === "startup" || site === "other_sites") {
+      await scrollPageForLazyContent();
+    }
+    const jobUrls = await waitForJobDetailUrls(site, settings.datePostedWindow);
     if (jobUrls.length === 0) {
       updateStatus(
         "completed",
-        `No job pages found on this ${labelPrefix}${getSiteLabel(site)} results page.`,
+        `No job pages found on this ${labelPrefix}${getSiteLabel(site)} results page${postedWindowDescription}.`,
         false,
         "collect-results"
       );
@@ -2333,10 +3063,11 @@
     }
     const items = approvedUrls.map((url) => {
       let itemResumeKind = currentResumeKind;
-      if (site === "startup" || site === "other_sites") {
-        const jobTitle = titleMap.get(getJobDedupKey(url)) ?? "";
-        if (jobTitle) {
-          itemResumeKind = inferResumeKindFromTitle(jobTitle);
+      const jobTitle = titleMap.get(getJobDedupKey(url)) ?? "";
+      if (jobTitle) {
+        const inferred = inferResumeKindFromTitle(jobTitle);
+        if (inferred !== "full_stack" || !itemResumeKind) {
+          itemResumeKind = inferred;
         }
       }
       if (isLikelyApplyUrl(url, site)) {
@@ -2370,6 +3101,18 @@
     );
     await closeCurrentTab();
   }
+  async function scrollPageForLazyContent() {
+    const totalHeight = document.body.scrollHeight;
+    const viewportHeight = window.innerHeight;
+    const steps = Math.min(8, Math.ceil(totalHeight / viewportHeight));
+    for (let i = 1; i <= steps; i++) {
+      const target = Math.min(totalHeight, totalHeight / steps * i);
+      window.scrollTo({ top: target, behavior: "smooth" });
+      await sleep(800);
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    await sleep(500);
+  }
   async function runOpenApplyStage(site) {
     childApplicationTabOpened = false;
     stageDepth += 1;
@@ -2382,6 +3125,7 @@
       );
       return;
     }
+    const urlAtStart = window.location.href;
     if (isCurrentPageAppliedJob()) {
       updateStatus(
         "completed",
@@ -2411,13 +3155,12 @@
       "open-apply"
     );
     await waitForHumanVerificationToClear();
-    await sleep(2e3);
-    const urlBeforeSearch = window.location.href;
+    await sleep(2500);
     let action = null;
-    const scrollPositions = [0, 300, -1, -2, 0, -3];
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      if (window.location.href !== urlBeforeSearch) {
-        await sleep(2e3);
+    const scrollPositions = [0, 300, 600, -1, -2, 0, -3, 200];
+    for (let attempt = 0; attempt < 35; attempt += 1) {
+      if (window.location.href !== urlAtStart) {
+        await sleep(2500);
         await waitForHumanVerificationToClear();
         if (hasLikelyApplicationForm() || hasLikelyApplicationSurface(site)) {
           currentStage = "autofill-form";
@@ -2479,13 +3222,13 @@
             behavior: "smooth"
           });
         else window.scrollTo({ top: pos, behavior: "smooth" });
-      } else if (attempt % 5 === 0) {
+      } else if (attempt % 4 === 0) {
         window.scrollTo({
           top: document.body.scrollHeight * Math.random(),
           behavior: "smooth"
         });
       }
-      await sleep(800);
+      await sleep(700);
     }
     if (!action) {
       if (hasLikelyApplicationForm()) {
@@ -2514,7 +3257,6 @@
         "running",
         `Navigating to ${action.description}...`,
         true,
-        // FIX: Keep stage as open-apply so we can find the apply button on company page
         "open-apply"
       );
       navigateCurrentTab(action.url);
@@ -2569,7 +3311,6 @@
           "running",
           `Navigating to ${action.description}...`,
           true,
-          // FIX: Use open-apply stage so post-navigation picks up correctly
           "open-apply"
         );
         navigateCurrentTab(href);
@@ -2577,11 +3318,11 @@
       }
     }
     performClickAction(action.element);
-    for (let wait = 0; wait < 15; wait += 1) {
-      await sleep(800);
+    for (let wait = 0; wait < 20; wait += 1) {
+      await sleep(700);
       if (childApplicationTabOpened) return;
       if (window.location.href !== urlBeforeClick) {
-        await sleep(2e3);
+        await sleep(2500);
         await waitForHumanVerificationToClear();
         if (hasLikelyApplicationSurface(site)) {
           await waitForLikelyApplicationSurface(site);
@@ -2664,7 +3405,12 @@
         return;
       }
     }
-    const retryAction = findApplyAction(site, "job-page");
+    let retryAction = null;
+    if (site === "monster") {
+      retryAction = findMonsterApplyAction();
+    } else {
+      retryAction = findApplyAction(site, "job-page");
+    }
     if (retryAction && retryAction.type === "click" && retryAction.element !== action.element) {
       updateStatus(
         "running",
@@ -2749,7 +3495,7 @@
       mergeAutofillResult(combinedResult, result);
       if (result.filledFields > 0 || result.uploadedResume) {
         noProgressCount = 0;
-        await sleep(result.uploadedResume ? 3e3 : 1500);
+        await sleep(result.uploadedResume ? 3500 : 1800);
         continue;
       }
       const progression = findProgressionAction();
@@ -2772,7 +3518,17 @@
         });
         await sleep(400);
         performClickAction(progression.element);
-        await sleep(2500);
+        await sleep(2800);
+        if (window.location.href !== previousUrl) {
+          await waitForHumanVerificationToClear();
+          if (hasLikelyApplicationSurface(site)) {
+            await waitForLikelyApplicationSurface(site);
+            continue;
+          }
+          currentStage = "open-apply";
+          await runOpenApplyStage(site);
+          return;
+        }
         await waitForFormContentChange(site);
         await waitForLikelyApplicationSurface(site);
         continue;
@@ -2784,7 +3540,6 @@
           "running",
           `Continuing to ${companySiteAction.description}...`,
           true,
-          // FIX: Use open-apply stage so the recursive handler works
           "open-apply"
         );
         previousUrl = window.location.href;
@@ -2798,9 +3553,10 @@
         });
         await sleep(400);
         performClickAction(companySiteAction.element);
-        await sleep(2500);
+        await sleep(2800);
         if (window.location.href !== previousUrl) {
           await waitForHumanVerificationToClear();
+          currentStage = "open-apply";
           await runOpenApplyStage(site);
           return;
         }
@@ -2827,13 +3583,14 @@
         });
         await sleep(400);
         performClickAction(followUp.element);
-        await sleep(2500);
+        await sleep(2800);
         if (window.location.href !== previousUrl) {
           await waitForHumanVerificationToClear();
           if (hasLikelyApplicationSurface(site)) {
             await waitForLikelyApplicationSurface(site);
             continue;
           }
+          currentStage = "open-apply";
           await runOpenApplyStage(site);
           return;
         }
@@ -2841,8 +3598,8 @@
         continue;
       }
       noProgressCount += 1;
-      if (noProgressCount >= 3) break;
-      await sleep(1e3);
+      if (noProgressCount >= 4) break;
+      await sleep(1200);
     }
     const finalSettings = await readAutomationSettings();
     const finalResult = await autofillVisibleApplication(finalSettings);
@@ -2874,8 +3631,8 @@
   }
   async function waitForFormContentChange(_site) {
     const initial = collectAutofillFields().length;
-    for (let i = 0; i < 10; i++) {
-      await sleep(600);
+    for (let i = 0; i < 12; i++) {
+      await sleep(500);
       const current = collectAutofillFields().length;
       if (current !== initial) return;
       const blanks = collectAutofillFields().filter(
@@ -2919,54 +3676,264 @@
       "Verification cleared. Continuing...",
       true
     );
-    await sleep(1e3);
+    await sleep(1500);
   }
-  async function waitForJobDetailUrls(site) {
+  async function waitForJobDetailUrls(site, datePostedWindow) {
     const isCareerSite = site === "startup" || site === "other_sites";
-    for (let attempt = 0; attempt < 30; attempt++) {
+    let careerSurfaceAttempts = 0;
+    const maxAttempts = isCareerSite ? 50 : 35;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const candidates = collectJobDetailCandidates(site);
       const urls = pickRelevantJobUrls(
         candidates,
         status.site === "unsupported" ? null : status.site,
-        currentResumeKind
+        currentResumeKind,
+        datePostedWindow
       );
       if (urls.length > 0) return urls;
       if (isCareerSite) {
-        if (attempt % 3 === 0) {
+        if (careerSurfaceAttempts < 2 && (attempt === 8 || attempt === 18)) {
+          careerSurfaceAttempts += 1;
+          const openedCareerSurface = await tryOpenCareerListingsSurface(
+            site,
+            datePostedWindow
+          );
+          if (openedCareerSurface) {
+            await sleep(2200);
+          }
+        }
+        if (attempt % 5 === 0) {
           window.scrollTo({
             top: document.body.scrollHeight,
             behavior: "smooth"
           });
-        } else if (attempt % 3 === 1) {
+        } else if (attempt % 5 === 1) {
           window.scrollTo({
             top: document.body.scrollHeight / 2,
             behavior: "smooth"
           });
-        } else {
+        } else if (attempt % 5 === 2) {
           window.scrollTo({ top: 0, behavior: "smooth" });
+        } else if (attempt % 5 === 3) {
+          window.scrollTo({
+            top: document.body.scrollHeight / 3,
+            behavior: "smooth"
+          });
+        } else {
+          window.scrollTo({
+            top: document.body.scrollHeight * 2 / 3,
+            behavior: "smooth"
+          });
+        }
+        if (attempt === 10 || attempt === 20 || attempt === 30) {
+          tryClickLoadMoreButton();
         }
       } else {
-        if (attempt === 5 || attempt === 10 || attempt === 15 || attempt === 20) {
+        if (attempt === 5 || attempt === 10 || attempt === 15 || attempt === 20 || attempt === 25) {
           window.scrollTo({
             top: document.body.scrollHeight,
             behavior: "smooth"
           });
         }
       }
-      await sleep(1e3);
+      await sleep(800);
     }
     return [];
   }
+  var CAREER_LISTING_TEXT_PATTERNS = [
+    "open jobs",
+    "open positions",
+    "open roles",
+    "current openings",
+    "current positions",
+    "see open jobs",
+    "see open positions",
+    "view all jobs",
+    "view jobs",
+    "search jobs",
+    "search roles",
+    "job board",
+    "browse jobs",
+    "browse roles"
+  ];
+  var CAREER_LISTING_URL_PATTERNS = [
+    "/jobs",
+    "/job-board",
+    "/openings",
+    "/positions",
+    "/roles",
+    "boards.greenhouse.io",
+    "job-boards.greenhouse.io",
+    "jobs.lever.co",
+    "ashbyhq.com",
+    "workdayjobs.com",
+    "myworkdayjobs.com",
+    "workable.com",
+    "jobvite.com",
+    "smartrecruiters.com",
+    "recruitee.com",
+    "bamboohr.com"
+  ];
+  async function tryOpenCareerListingsSurface(site, datePostedWindow) {
+    const iframeUrl = findCareerListingsIframeUrl();
+    const currentUrl = normalizeUrl(window.location.href);
+    const labelPrefix = currentLabel ? `${currentLabel} ` : "";
+    if (iframeUrl && iframeUrl !== currentUrl) {
+      updateStatus(
+        "running",
+        `Opening ${labelPrefix}${getSiteLabel(site)} jobs list...`,
+        true,
+        "collect-results"
+      );
+      window.location.assign(iframeUrl);
+      return true;
+    }
+    const actions = collectCareerListingActions();
+    for (const action of actions) {
+      const beforeUrl = normalizeUrl(window.location.href);
+      updateStatus(
+        "running",
+        `Opening ${labelPrefix}${getSiteLabel(site)} jobs list...`,
+        true,
+        "collect-results"
+      );
+      if (action.navUrl && action.navUrl !== beforeUrl) {
+        window.location.assign(action.navUrl);
+        return true;
+      }
+      if (!isElementInteractive(action.element)) {
+        continue;
+      }
+      performClickAction(action.element);
+      await sleep(1500);
+      if (normalizeUrl(window.location.href) !== beforeUrl) {
+        return true;
+      }
+      const updatedCandidates = collectJobDetailCandidates(site);
+      const updatedUrls = pickRelevantJobUrls(
+        updatedCandidates,
+        status.site === "unsupported" ? null : status.site,
+        currentResumeKind,
+        datePostedWindow
+      );
+      if (updatedUrls.length > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function getPostedWindowDescription(datePostedWindow) {
+    if (datePostedWindow === "any") {
+      return "";
+    }
+    const label = DATE_POSTED_WINDOW_LABELS[datePostedWindow].toLowerCase();
+    return ` posted within ${label.replace(/^past /, "the last ")}`;
+  }
+  function findCareerListingsIframeUrl() {
+    for (const frame of Array.from(document.querySelectorAll("iframe[src]"))) {
+      if (!isElementVisible(frame)) {
+        continue;
+      }
+      const src = normalizeUrl(frame.src || frame.getAttribute("src") || "");
+      if (!src) {
+        continue;
+      }
+      const lowerSrc = src.toLowerCase();
+      const title = cleanText(
+        frame.getAttribute("title") || frame.getAttribute("aria-label") || ""
+      ).toLowerCase();
+      if (CAREER_LISTING_URL_PATTERNS.some((token) => lowerSrc.includes(token)) || title.includes("job") || title.includes("career")) {
+        return src;
+      }
+    }
+    return null;
+  }
+  function collectCareerListingActions() {
+    const actions = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const element of Array.from(
+      document.querySelectorAll(
+        "a[href], button, [role='button'], [data-href], [data-url], [data-link]"
+      )
+    )) {
+      if (!isElementVisible(element)) {
+        continue;
+      }
+      const text = cleanText(getActionText(element)).toLowerCase();
+      const navUrl = getNavigationUrl(element);
+      const lowerNavUrl = navUrl?.toLowerCase() ?? "";
+      const hasTextSignal = CAREER_LISTING_TEXT_PATTERNS.some((token) => text.includes(token));
+      const hasUrlSignal = CAREER_LISTING_URL_PATTERNS.some((token) => lowerNavUrl.includes(token));
+      if (!hasTextSignal && !hasUrlSignal) {
+        continue;
+      }
+      if (["sign in", "job alert", "talent network", "saved jobs"].some(
+        (token) => text.includes(token) || lowerNavUrl.includes(token)
+      )) {
+        continue;
+      }
+      const dedupKey = `${navUrl ?? ""}::${text}`;
+      if (seen.has(dedupKey)) {
+        continue;
+      }
+      seen.add(dedupKey);
+      let score = 0;
+      if (hasTextSignal) score += 4;
+      if (hasUrlSignal) score += 3;
+      if (["open jobs", "open positions", "open roles", "current openings"].some(
+        (token) => text.includes(token)
+      )) {
+        score += 3;
+      }
+      if ([
+        "boards.greenhouse.io",
+        "job-boards.greenhouse.io",
+        "jobs.lever.co",
+        "ashbyhq.com",
+        "workdayjobs.com",
+        "myworkdayjobs.com"
+      ].some((token) => lowerNavUrl.includes(token))) {
+        score += 5;
+      }
+      actions.push({
+        element,
+        navUrl,
+        score
+      });
+    }
+    return actions.sort((a, b) => b.score - a.score);
+  }
+  function tryClickLoadMoreButton() {
+    const loadMoreSelectors = [
+      "button",
+      "a[role='button']",
+      "[role='button']"
+    ];
+    for (const selector of loadMoreSelectors) {
+      try {
+        const elements = Array.from(document.querySelectorAll(selector));
+        for (const el of elements) {
+          if (!isElementVisible(el)) continue;
+          const text = cleanText(el.textContent || "").toLowerCase();
+          if (text.includes("load more") || text.includes("show more") || text.includes("view more") || text.includes("see more") || text.includes("more jobs") || text.includes("more positions") || text.includes("more openings") || text.includes("view all") || text.includes("see all") || text.includes("show all")) {
+            performClickAction(el);
+            return;
+          }
+        }
+      } catch {
+      }
+    }
+  }
   async function waitForLikelyApplicationSurface(site) {
-    for (let attempt = 0; attempt < 25; attempt++) {
+    for (let attempt = 0; attempt < 30; attempt++) {
       if (hasLikelyApplicationSurface(site)) return;
-      if (attempt === 5 || attempt === 10 || attempt === 15) {
+      if (attempt === 5 || attempt === 10 || attempt === 15 || attempt === 20) {
         window.scrollTo({
           top: document.body.scrollHeight / 2,
           behavior: "smooth"
         });
       }
-      await sleep(800);
+      await sleep(700);
     }
   }
   async function runGenerateAiAnswerStage() {
@@ -2985,19 +3952,19 @@
       "generate-ai-answer"
     );
     try {
+      const settings = await readAutomationSettings();
       await waitForHumanVerificationToClear();
       const composer = await waitForChatGptComposer();
       if (!composer)
         throw new Error(
           "ChatGPT composer not found. Are you signed in?"
         );
-      if (request.resume)
-        await uploadResumeToChatGpt(request.resume);
-      setComposerValue(composer, buildChatGptPrompt(request));
-      const sendBtn = await waitForChatGptSendButton();
-      if (!sendBtn)
-        throw new Error("ChatGPT send button not found.");
-      sendBtn.click();
+      const prompt = buildChatGptPrompt(request, settings);
+      const promptInserted = await setComposerValue(composer, prompt);
+      if (!promptInserted) {
+        throw new Error("Could not enter the prompt into ChatGPT.");
+      }
+      await submitChatGptPrompt(composer, prompt);
       const answer = await waitForChatGptAnswerText();
       if (!answer)
         throw new Error(
@@ -3030,23 +3997,25 @@
     }
   }
   async function waitForChatGptComposer() {
-    for (let i = 0; i < 45; i++) {
+    for (let i = 0; i < 50; i++) {
       const c = findFirstVisibleElement([
         "#prompt-textarea",
         "textarea[data-testid*='prompt']",
         "form textarea",
-        "div[contenteditable='true'][role='textbox']"
+        "div[contenteditable='true'][role='textbox']",
+        "[contenteditable='true'][data-placeholder]"
       ]);
       if (c) return c;
-      await sleep(1e3);
+      await sleep(800);
     }
     return null;
   }
   async function waitForChatGptSendButton() {
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 35; i++) {
       const btn = findFirstVisibleElement([
         "button[data-testid='send-button']",
-        "button[data-testid*='send']"
+        "button[data-testid*='send']",
+        "button[aria-label*='Send']"
       ]) ?? Array.from(
         document.querySelectorAll("button")
       ).find((b) => {
@@ -3056,74 +4025,130 @@
         return !b.disabled && isElementVisible(b) && label.includes("send") && !label.includes("stop");
       });
       if (btn) return btn;
-      await sleep(1e3);
+      await sleep(800);
     }
     return null;
   }
-  async function uploadResumeToChatGpt(resume) {
-    let input = await waitForChatGptFileInput(800);
-    if (input) {
-      await setFileInputValue(input, resume);
-      return;
-    }
-    const attachBtn = Array.from(
-      document.querySelectorAll(
-        "button, [role='button']"
-      )
-    ).find((el) => {
-      const l = cleanText(
-        [el.getAttribute("aria-label"), el.textContent].join(" ")
-      ).toLowerCase();
-      return l.includes("attach") || l.includes("upload") || l.includes("file");
-    });
-    attachBtn?.click();
-    input = await waitForChatGptFileInput(5e3);
-    if (input) await setFileInputValue(input, resume);
-  }
-  async function waitForChatGptFileInput(timeoutMs) {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      const input = Array.from(
-        document.querySelectorAll(
-          "input[type='file']"
-        )
-      ).find((i) => !i.disabled);
-      if (input) return input;
-      await sleep(250);
-    }
-    return null;
-  }
-  function setComposerValue(composer, prompt) {
+  async function setComposerValue(composer, prompt) {
     if (composer instanceof HTMLTextAreaElement) {
       setFieldValue(composer, prompt);
+      return waitForChatGptComposerText(composer, prompt, 1500);
+    }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      composer.focus();
+      clearChatGptComposer(composer);
+      const insertedWithCommand = tryInsertComposerTextWithCommand(
+        composer,
+        prompt
+      );
+      if (!insertedWithCommand) {
+        writeComposerTextFallback(composer, prompt);
+      }
+      composer.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          data: prompt,
+          inputType: "insertFromPaste"
+        })
+      );
+      if (await waitForChatGptComposerText(
+        composer,
+        prompt,
+        1200
+      )) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function clearChatGptComposer(composer) {
+    if (composer instanceof HTMLTextAreaElement) {
+      setFieldValue(composer, "");
       return;
     }
     composer.focus();
-    const sel = window.getSelection();
-    if (sel) {
-      const r = document.createRange();
-      r.selectNodeContents(composer);
-      sel.removeAllRanges();
-      sel.addRange(r);
+    const selection = window.getSelection();
+    if (selection) {
+      const range = document.createRange();
+      range.selectNodeContents(composer);
+      selection.removeAllRanges();
+      selection.addRange(range);
     }
     try {
       document.execCommand("selectAll", false);
-      document.execCommand("insertText", false, prompt);
+      document.execCommand("delete", false);
     } catch {
     }
-    if (cleanText(composer.textContent) !== cleanText(prompt))
-      composer.replaceChildren(document.createTextNode(prompt));
+    composer.replaceChildren();
     composer.dispatchEvent(
       new InputEvent("input", {
         bubbles: true,
-        data: prompt,
-        inputType: "insertText"
+        data: "",
+        inputType: "deleteContentBackward"
       })
     );
   }
-  function buildChatGptPrompt(request) {
-    const resumeNote = request.resume ? `Resume attached as "${request.resume.name}".` : "No resume attached.";
+  function tryInsertComposerTextWithCommand(composer, prompt) {
+    composer.focus();
+    try {
+      return document.execCommand("insertText", false, prompt);
+    } catch {
+      return false;
+    }
+  }
+  function writeComposerTextFallback(composer, prompt) {
+    const fragment = document.createDocumentFragment();
+    const lines = prompt.split("\n");
+    if (lines.length <= 1) {
+      composer.replaceChildren(document.createTextNode(prompt));
+      return;
+    }
+    for (const line of lines) {
+      const paragraph = document.createElement("p");
+      if (line) {
+        paragraph.textContent = line;
+      } else {
+        paragraph.append(document.createElement("br"));
+      }
+      fragment.append(paragraph);
+    }
+    composer.replaceChildren(fragment);
+  }
+  async function waitForChatGptComposerText(composer, prompt, timeoutMs) {
+    const expected = normalizeChoiceText(prompt).slice(0, 120);
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const actual = normalizeChoiceText(
+        composer instanceof HTMLTextAreaElement ? composer.value : cleanText(composer.innerText || composer.textContent || "")
+      );
+      if (actual && (actual.includes(expected) || expected.includes(actual.slice(0, 60)))) {
+        return true;
+      }
+      await sleep(120);
+    }
+    return false;
+  }
+  function buildChatGptPrompt(request, settings) {
+    const resumeKindNote = request.resumeKind ? `Selected resume track: ${getResumeKindLabel(request.resumeKind)}.` : "Selected resume track: Not specified.";
+    const resumeNote = request.resume?.textContent ? "Resume context below was extracted locally from the selected resume file. Use that text as the primary source of candidate history and skills." : request.resume ? "A resume file was selected locally, but no extracted resume text is available. Use the candidate profile and job description only." : "No resume file is attached.";
+    const rememberedAnswers = getRelevantSavedAnswersForPrompt(
+      request.job.question,
+      getAvailableAnswers(settings)
+    );
+    const resumeTextBlock = request.resume?.textContent ? [
+      "",
+      "Resume text:",
+      truncateText(request.resume.textContent, 12e3)
+    ] : [];
     const co = request.job.company ? `Company: ${request.job.company}` : "Company: Unknown";
+    const rememberedAnswerBlock = rememberedAnswers.length > 0 ? [
+      "",
+      "Remembered candidate answers:",
+      ...rememberedAnswers.map(
+        (answer) => `- ${truncateText(answer.question, 90)}: ${truncateText(answer.value, 220)}`
+      ),
+      "Reuse any matching remembered answer when it directly fits the question."
+    ] : [];
     return [
       "Write a polished, job-application-ready answer.",
       "Return only final answer text, no preface, no placeholders.",
@@ -3146,7 +4171,10 @@
       `Sponsorship: ${request.candidate.needsSponsorship || "N/A"}`,
       `Relocate: ${request.candidate.willingToRelocate || "N/A"}`,
       "",
+      resumeKindNote,
       resumeNote,
+      ...resumeTextBlock,
+      ...rememberedAnswerBlock,
       "",
       "Job description:",
       request.job.description || "No description found.",
@@ -3154,9 +4182,95 @@
       "Keep concise, specific to this role, ready to paste."
     ].join("\n");
   }
+  function getRelevantSavedAnswersForPrompt(question, answers) {
+    const normalizedQuestion = normalizeQuestionKey(question);
+    if (!normalizedQuestion) {
+      return [];
+    }
+    return Object.values(answers).map((answer) => {
+      const normalizedSavedQuestion = normalizeQuestionKey(
+        answer.question
+      );
+      let score = textSimilarity(
+        normalizedQuestion,
+        normalizedSavedQuestion
+      );
+      if (normalizedQuestion.includes(normalizedSavedQuestion) || normalizedSavedQuestion.includes(normalizedQuestion)) {
+        score = Math.max(score, 0.9);
+      }
+      return { answer, score };
+    }).filter((entry) => entry.score >= 0.4).sort(
+      (a, b) => b.score - a.score || b.answer.updatedAt - a.answer.updatedAt
+    ).slice(0, 5).map((entry) => entry.answer);
+  }
+  async function submitChatGptPrompt(composer, prompt) {
+    const priorUserText = getLatestChatGptUserText();
+    const sendBtn = await waitForChatGptSendButton();
+    if (sendBtn && !sendBtn.disabled) {
+      sendBtn.click();
+      if (await waitForChatGptPromptAcceptance(
+        prompt,
+        priorUserText,
+        6e3
+      )) {
+        return;
+      }
+    }
+    const form = composer.closest("form");
+    if (form?.requestSubmit) {
+      form.requestSubmit();
+      if (await waitForChatGptPromptAcceptance(
+        prompt,
+        priorUserText,
+        5e3
+      )) {
+        return;
+      }
+    }
+    composer.focus();
+    for (const eventType of ["keydown", "keypress", "keyup"]) {
+      composer.dispatchEvent(
+        new KeyboardEvent(eventType, {
+          key: "Enter",
+          code: "Enter",
+          keyCode: 13,
+          which: 13,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    }
+    if (await waitForChatGptPromptAcceptance(
+      prompt,
+      priorUserText,
+      5e3
+    )) {
+      return;
+    }
+    throw new Error("ChatGPT prompt was not submitted.");
+  }
+  async function waitForChatGptPromptAcceptance(prompt, priorUserText, timeoutMs) {
+    const expected = normalizeChoiceText(prompt);
+    const expectedPrefix = expected.slice(0, 120);
+    const prior = normalizeChoiceText(priorUserText);
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (hasActiveChatGptGeneration()) {
+        return true;
+      }
+      const latestUserText = normalizeChoiceText(
+        getLatestChatGptUserText()
+      );
+      if (latestUserText && latestUserText !== prior && (latestUserText.includes(expectedPrefix) || expectedPrefix.includes(latestUserText.slice(0, 60)))) {
+        return true;
+      }
+      await sleep(250);
+    }
+    return false;
+  }
   async function waitForChatGptAnswerText() {
     let lastText = "", stableCount = 0;
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < 150; i++) {
       const text = getLatestChatGptAssistantText();
       const generating = hasActiveChatGptGeneration();
       if (text && text === lastText) stableCount++;
@@ -3164,10 +4278,37 @@
         lastText = text;
         stableCount = 1;
       }
-      if (text && !generating && stableCount >= 3) return text;
-      await sleep(1500);
+      if (text && !generating && stableCount >= 4) return text;
+      await sleep(1200);
     }
     return lastText || null;
+  }
+  function getLatestChatGptUserText() {
+    const msgs = Array.from(
+      document.querySelectorAll(
+        "[data-message-author-role='user']"
+      )
+    );
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const t = readChatGptMsgText(msgs[i]);
+      if (t.length > 10) return t;
+    }
+    const turns = Array.from(
+      document.querySelectorAll(
+        "article, [data-testid*='conversation-turn']"
+      )
+    );
+    for (let i = turns.length - 1; i >= 0; i--) {
+      const el = turns[i];
+      const author = cleanText(
+        el.getAttribute("data-message-author-role") || el.querySelector(
+          "[data-message-author-role]"
+        )?.getAttribute("data-message-author-role") || ""
+      ).toLowerCase();
+      const t = readChatGptMsgText(el);
+      if (author === "user" && t.length > 10) return t;
+    }
+    return "";
   }
   function getLatestChatGptAssistantText() {
     const msgs = Array.from(
@@ -3211,7 +4352,7 @@
           el.textContent
         ].join(" ")
       ).toLowerCase();
-      return l.includes("stop generating") || l.includes("stop streaming") || l.includes("stop response");
+      return l.includes("stop generating") || l.includes("stop streaming") || l.includes("stop response") || l.includes("stop");
     });
   }
   function readChatGptMsgText(container) {
@@ -3249,12 +4390,15 @@
     const roots = [document];
     while (roots.length > 0) {
       const root = roots.shift();
-      for (const element of Array.from(
-        root.querySelectorAll(selector)
-      )) {
-        if (seen.has(element)) continue;
-        seen.add(element);
-        results.push(element);
+      try {
+        for (const element of Array.from(
+          root.querySelectorAll(selector)
+        )) {
+          if (seen.has(element)) continue;
+          seen.add(element);
+          results.push(element);
+        }
+      } catch {
       }
       for (const host of Array.from(
         root.querySelectorAll("*")
@@ -3289,7 +4433,7 @@
         candidate,
         settings
       );
-      if (generated?.answer && applyAnswerToField(candidate.field, generated.answer)) {
+      if (generated?.answer && applyGeneratedEssayAnswer(candidate.field, generated.answer)) {
         result.filledFields += 1;
         result.generatedAiAnswers += 1;
         if (generated.copiedToClipboard) result.copiedAiAnswers += 1;
@@ -3344,17 +4488,21 @@
   }
   async function setFileInputValue(input, asset) {
     if (input.disabled) return false;
-    const resp = await fetch(asset.dataUrl);
-    const blob = await resp.blob();
-    const file = new File([blob], asset.name, {
-      type: asset.type || blob.type || "application/octet-stream"
-    });
-    const transfer = new DataTransfer();
-    transfer.items.add(file);
-    input.files = transfer.files;
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-    return true;
+    try {
+      const resp = await fetch(asset.dataUrl);
+      const blob = await resp.blob();
+      const file = new File([blob], asset.name, {
+        type: asset.type || blob.type || "application/octet-stream"
+      });
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    } catch {
+      return false;
+    }
   }
   function shouldUseFileInputForResume(input, count) {
     const ctx = getFieldDescriptor(input, getQuestionText(input));
@@ -3391,7 +4539,9 @@
       "motivation",
       "interest in this role",
       "additional information",
-      "anything else"
+      "anything else",
+      "describe your experience",
+      "what makes you"
     ];
     if (signals.some((s) => desc.includes(normalizeChoiceText(s))))
       return true;
@@ -3403,7 +4553,8 @@
       "phone",
       "email",
       "linkedin",
-      "portfolio"
+      "portfolio",
+      "name"
     ]);
   }
   async function generateAiAnswerForField(candidate, settings) {
@@ -3417,6 +4568,7 @@
       job: captureJobContextSnapshot(candidate.question)
     };
     try {
+      await flushPendingAnswers();
       await deleteAiAnswerResponse(requestId);
       await writeAiAnswerRequest(request);
       updateStatus(
@@ -3467,18 +4619,19 @@
   function captureJobContextSnapshot(question) {
     const title = cleanText(
       document.querySelector(
-        "h1, [data-testid*='job-title'], [class*='job-title']"
+        "h1, [data-testid*='job-title'], [class*='job-title'], [class*='jobTitle']"
       )?.textContent
     ) || cleanText(document.title);
     const company = cleanText(
       document.querySelector(
-        "[data-testid*='company'], [class*='company'], .company"
+        "[data-testid*='company'], [class*='company'], .company, [class*='employer']"
       )?.textContent
     ) || "";
     let description = "";
     for (const sel of [
       "[class*='description']",
       "[class*='job-description']",
+      "[class*='jobDescription']",
       "main",
       "article"
     ]) {
@@ -3502,78 +4655,166 @@
   }
   function getAnswerForField(field, settings) {
     const question = getQuestionText(field);
+    const descriptor = getFieldDescriptor(field, question);
+    const availableAnswers = getAvailableAnswers(settings);
     const normalized = normalizeQuestionKey(question);
     if (normalized) {
-      const saved = settings.answers[normalized];
+      const saved = availableAnswers[normalized];
       if (saved?.value)
         return { value: saved.value, source: "saved" };
     }
+    const fuzzySaved = findBestSavedAnswerMatch(
+      question,
+      descriptor,
+      availableAnswers
+    );
+    if (fuzzySaved?.value)
+      return { value: fuzzySaved.value, source: "saved" };
     const profile = deriveProfileAnswer(field, question, settings);
     return profile ? { value: profile, source: "profile" } : null;
+  }
+  function getAvailableAnswers(settings) {
+    if (pendingAnswers.size === 0) {
+      return settings.answers;
+    }
+    const mergedAnswers = { ...settings.answers };
+    for (const [key, value] of pendingAnswers.entries()) {
+      mergedAnswers[key] = value;
+    }
+    return mergedAnswers;
+  }
+  function findBestSavedAnswerMatch(question, descriptor, answers) {
+    const normalizedQuestion = normalizeQuestionKey(question);
+    if (!normalizedQuestion) {
+      return null;
+    }
+    let best = null;
+    for (const [key, answer] of Object.entries(answers)) {
+      const normalizedSavedQuestion = normalizeQuestionKey(
+        answer.question || key
+      );
+      if (!normalizedSavedQuestion) {
+        continue;
+      }
+      let score = Math.max(
+        textSimilarity(normalizedQuestion, normalizedSavedQuestion),
+        textSimilarity(descriptor, normalizedSavedQuestion)
+      );
+      if (normalizedQuestion.includes(normalizedSavedQuestion) || normalizedSavedQuestion.includes(normalizedQuestion)) {
+        score = Math.max(score, 0.9);
+      }
+      if (!best || score > best.score) {
+        best = { answer, score };
+      }
+    }
+    return best && best.score >= 0.72 ? best.answer : null;
   }
   function deriveProfileAnswer(field, question, settings) {
     const p = settings.candidate;
     const d = getFieldDescriptor(field, question);
     const parts = p.fullName.trim().split(/\s+/).filter(Boolean);
     const first = parts[0] ?? "", last = parts.slice(1).join(" ");
-    if (matchesDescriptor(d, ["first name", "given name"]) || field.autocomplete === "given-name")
+    const autocomplete = (field.getAttribute("autocomplete") || "").toLowerCase().trim();
+    if (autocomplete === "given-name") return first || null;
+    if (autocomplete === "family-name") return last || null;
+    if (autocomplete === "name") return p.fullName || null;
+    if (autocomplete === "email") return p.email || null;
+    if (autocomplete === "tel") return p.phone || null;
+    if (autocomplete === "address-level2") return p.city || null;
+    if (autocomplete === "address-level1") return p.state || null;
+    if (autocomplete === "country-name" || autocomplete === "country") return p.country || null;
+    if (autocomplete === "organization") return p.currentCompany || null;
+    if (autocomplete === "url") return p.portfolioUrl || null;
+    if (matchesDescriptor(d, ["first name", "given name", "firstname", "givenname"]))
       return first || null;
     if (matchesDescriptor(d, [
       "last name",
       "family name",
-      "surname"
-    ]) || field.autocomplete === "family-name")
+      "surname",
+      "lastname",
+      "familyname"
+    ]))
       return last || null;
-    if ((matchesDescriptor(d, ["full name"]) || matchesDescriptor(d, ["your name"])) && p.fullName)
+    if (matchesDescriptor(d, ["full name", "fullname", "your name", "legal name"]) && p.fullName)
       return p.fullName;
-    if (field instanceof HTMLInputElement && field.type === "email" || matchesDescriptor(d, ["email", "e mail"]))
+    if (field instanceof HTMLInputElement && field.type === "email" || matchesDescriptor(d, ["email", "e mail", "email address", "e-mail"]))
       return p.email || null;
-    if (field instanceof HTMLInputElement && field.type === "tel" || matchesDescriptor(d, ["phone", "mobile", "telephone"]))
+    if (field instanceof HTMLInputElement && field.type === "tel" || matchesDescriptor(d, ["phone", "mobile", "telephone", "phone number", "cell", "contact number"]))
       return p.phone || null;
-    if (matchesDescriptor(d, ["linkedin"]))
+    if (matchesDescriptor(d, ["linkedin", "linked in", "linkedin url", "linkedin profile"]))
       return p.linkedinUrl || null;
     if (matchesDescriptor(d, [
       "portfolio",
       "website",
       "personal site",
       "github",
-      "web site"
+      "web site",
+      "personal url",
+      "personal website",
+      "portfolio url",
+      "website url"
     ]))
       return p.portfolioUrl || null;
     if (matchesDescriptor(d, ["city", "town"]))
       return p.city || null;
     if (matchesDescriptor(d, ["state", "province", "region"]))
       return p.state || null;
-    if (matchesDescriptor(d, ["country"]))
+    if (matchesDescriptor(d, ["country", "nation"]))
       return p.country || null;
     if (matchesDescriptor(d, [
       "current company",
       "current employer",
-      "employer"
+      "employer",
+      "company name",
+      "organization",
+      "current organization"
     ]))
       return p.currentCompany || null;
     if (matchesDescriptor(d, [
       "years of experience",
       "year of experience",
       "total experience",
-      "overall experience"
+      "overall experience",
+      "experience years",
+      "how many years",
+      "years experience"
     ]))
       return p.yearsExperience || null;
     if (matchesDescriptor(d, [
       "authorized to work",
       "work authorization",
       "eligible to work",
-      "legally authorized"
+      "legally authorized",
+      "authorization status",
+      "work eligibility",
+      "authorized",
+      "legally eligible"
     ]))
       return p.workAuthorization || null;
-    if (matchesDescriptor(d, ["sponsorship", "visa"]))
+    if (matchesDescriptor(d, [
+      "sponsorship",
+      "visa",
+      "require sponsorship",
+      "need sponsorship",
+      "visa sponsorship",
+      "immigration sponsorship"
+    ]))
       return p.needsSponsorship || null;
-    if (matchesDescriptor(d, ["relocate", "relocation"]))
+    if (matchesDescriptor(d, [
+      "relocate",
+      "relocation",
+      "willing to relocate",
+      "open to relocation",
+      "open to relocate"
+    ]))
       return p.willingToRelocate || null;
     if (matchesDescriptor(d, ["name"]) && !matchesDescriptor(d, [
       "company name",
       "manager name",
-      "reference name"
+      "reference name",
+      "school name",
+      "university name",
+      "organization name"
     ]))
       return p.fullName || null;
     return null;
@@ -3602,6 +4843,17 @@
       return true;
     }
     return false;
+  }
+  function applyGeneratedEssayAnswer(field, answer) {
+    if (!answer.trim()) {
+      return false;
+    }
+    field.focus();
+    setFieldValue(field, answer);
+    const appliedValue = cleanText(
+      field instanceof HTMLTextAreaElement ? field.value : field.value
+    );
+    return appliedValue === cleanText(answer) || appliedValue.length >= Math.min(cleanText(answer).length, 40);
   }
   function applyAnswerToRadioGroup(field, answer) {
     const radios = getGroupedInputs(field, "radio");
@@ -3684,11 +4936,15 @@
   }
   function getGroupedInputs(field, type) {
     if (!field.name) return [field];
-    return Array.from(
-      (field.form ?? document).querySelectorAll(
-        `input[type='${type}'][name='${cssEscape(field.name)}']`
-      )
-    );
+    try {
+      return Array.from(
+        (field.form ?? document).querySelectorAll(
+          `input[type='${type}'][name='${cssEscape(field.name)}']`
+        )
+      );
+    } catch {
+      return [field];
+    }
   }
   function hasLikelyApplicationForm() {
     const relevantFields = collectAutofillFields().filter(
@@ -3702,23 +4958,43 @@
   function hasLikelyApplicationFrame() {
     return Boolean(
       document.querySelector(
-        "iframe[src*='apply'], iframe[src*='application'], iframe[id*='apply'], iframe[class*='apply']"
+        "iframe[src*='apply'], iframe[src*='application'], iframe[id*='apply'], iframe[class*='apply'], iframe[src*='greenhouse'], iframe[src*='lever'], iframe[src*='workday']"
       )
     );
   }
   function hasLikelyApplicationPageContent() {
-    const bodyText = cleanText(document.body?.innerText || "").toLowerCase().slice(0, 4e3);
+    const bodyText = cleanText(document.body?.innerText || "").toLowerCase().slice(0, 5e3);
     if (!bodyText) return false;
-    return [
-      "application",
+    const strongSignals = [
       "upload resume",
+      "upload your resume",
+      "upload cv",
+      "attach resume",
+      "attach your resume",
+      "submit application",
+      "apply for this",
+      "application form",
+      "submit your application"
+    ];
+    if (strongSignals.some((token) => bodyText.includes(token))) {
+      return true;
+    }
+    const weakSignals = [
+      "application",
       "resume",
       "cover letter",
       "work authorization",
       "years of experience",
       "phone number",
-      "email address"
-    ].some((token) => bodyText.includes(token));
+      "email address",
+      "linkedin",
+      "portfolio",
+      "salary",
+      "start date",
+      "notice period"
+    ];
+    const matchCount = weakSignals.filter((token) => bodyText.includes(token)).length;
+    return matchCount >= 3;
   }
   function hasLikelyApplicationSurface(site) {
     const onApplyLikeUrl = isAlreadyOnApplyPage(
@@ -3746,10 +5022,12 @@
       "job search",
       "search by keyword",
       "enter location",
-      "search location"
+      "search location",
+      "filter",
+      "sort by"
     ]))
       return false;
-    if (descriptor === "what" || descriptor === "where" || descriptor === "search")
+    if (descriptor === "what" || descriptor === "where" || descriptor === "search" || descriptor === "q")
       return false;
     if (field instanceof HTMLInputElement) {
       const type = field.type.toLowerCase();
@@ -3760,11 +5038,12 @@
           "cv",
           "cover letter",
           "attachment",
-          "upload"
+          "upload",
+          "document"
         ]);
       }
     }
-    const autocomplete = (field.getAttribute("autocomplete") || "").toLowerCase().trim();
+    const fieldAutocomplete = (field.getAttribute("autocomplete") || "").toLowerCase().trim();
     if ([
       "name",
       "given-name",
@@ -3782,7 +5061,7 @@
       "organization",
       "organization-title",
       "url"
-    ].includes(autocomplete)) {
+    ].includes(fieldAutocomplete)) {
       return true;
     }
     if (matchesDescriptor(descriptor, [
@@ -3844,7 +5123,7 @@
       "form, fieldset, [role='dialog'], article, section, main, aside, div"
     );
     const containerText = normalizeChoiceText(
-      cleanText(container?.textContent).slice(0, 500)
+      cleanText(container?.textContent).slice(0, 600)
     );
     if (!containerText) return false;
     if ([
@@ -3853,7 +5132,8 @@
       "search jobs",
       "find jobs",
       "company reviews",
-      "find salaries"
+      "find salaries",
+      "post a job"
     ].some(
       (term) => containerText.includes(normalizeChoiceText(term))
     )) {
@@ -3899,9 +5179,9 @@
       "search by keyword"
     ]))
       return false;
-    if (d === "what" || d === "where" || d === "search")
+    if (d === "what" || d === "where" || d === "search" || d === "q")
       return false;
-    if (d.includes("captcha") || d.includes("social security") || d.includes("ssn") || d.includes("password"))
+    if (d.includes("captcha") || d.includes("social security") || d.includes("ssn") || d.includes("password") || d.includes("credit card") || d.includes("card number"))
       return false;
     if (!ignoreBlankCheck && field instanceof HTMLSelectElement)
       return isSelectBlank(field);
@@ -3921,7 +5201,7 @@
     ].includes(f.type.toLowerCase());
   }
   function isSelectBlank(s) {
-    return !s.value || /^select\b|^choose\b|please select/i.test(
+    return !s.value || s.selectedIndex <= 0 || /^select\b|^choose\b|please select|^--/i.test(
       s.selectedOptions[0]?.textContent || ""
     );
   }
@@ -3934,15 +5214,20 @@
     else field.value = value;
     field.dispatchEvent(new Event("input", { bubbles: true }));
     field.dispatchEvent(new Event("change", { bubbles: true }));
+    field.dispatchEvent(new Event("blur", { bubbles: true }));
   }
   function getFieldLookupRoot(field) {
     const root = field.getRootNode();
     return root instanceof ShadowRoot ? root : document;
   }
   function findByIdNearField(field, id) {
-    const selector = `#${cssEscape(id)}`;
-    const root = getFieldLookupRoot(field);
-    return root.querySelector(selector) ?? document.querySelector(selector);
+    try {
+      const selector = `#${cssEscape(id)}`;
+      const root = getFieldLookupRoot(field);
+      return root.querySelector(selector) ?? document.querySelector(selector);
+    } catch {
+      return null;
+    }
   }
   function isFieldContextVisible(field) {
     if (isElementVisible(field)) return true;
@@ -3978,9 +5263,9 @@
     if (label) return label;
     const wrapper = cleanText(
       field.closest(
-        "label, [role='group'], .field, .form-field, .question, .application-question"
+        "label, [role='group'], .field, .form-field, .question, .application-question, [class*='form-group'], [class*='field-wrapper']"
       )?.querySelector(
-        "label, .label, .question, .prompt, .title"
+        "label, .label, .question, .prompt, .title, span"
       )?.textContent
     );
     if (wrapper) return wrapper;
@@ -3989,15 +5274,18 @@
   function getAssociatedLabelText(field) {
     const id = field.getAttribute("id");
     if (id) {
-      const root = getFieldLookupRoot(field);
-      const l = cleanText(
-        root.querySelector(
-          `label[for='${cssEscape(id)}']`
-        )?.textContent || document.querySelector(
-          `label[for='${cssEscape(id)}']`
-        )?.textContent
-      );
-      if (l) return l;
+      try {
+        const root = getFieldLookupRoot(field);
+        const l = cleanText(
+          root.querySelector(
+            `label[for='${cssEscape(id)}']`
+          )?.textContent || document.querySelector(
+            `label[for='${cssEscape(id)}']`
+          )?.textContent
+        );
+        if (l) return l;
+      } catch {
+      }
     }
     return cleanText(field.closest("label")?.textContent);
   }
@@ -4029,11 +5317,11 @@
       return 70;
     const bool = normalizeBooleanAnswer(answer);
     if (bool !== null) {
-      if (bool && ["yes", "true", "authorized", "eligible"].some(
+      if (bool && ["yes", "true", "authorized", "eligible", "i am", "i do", "i have", "i will"].some(
         (w) => candidate.includes(w)
       ))
         return 80;
-      if (!bool && ["no", "false", "not authorized"].some(
+      if (!bool && ["no", "false", "not authorized", "i am not", "i do not", "i don t"].some(
         (w) => candidate.includes(w)
       ))
         return 80;
@@ -4042,11 +5330,11 @@
   }
   function normalizeBooleanAnswer(a) {
     const n = normalizeChoiceText(a);
-    if (["yes", "y", "true", "authorized", "eligible"].includes(
+    if (["yes", "y", "true", "authorized", "eligible", "1"].includes(
       n
     ))
       return true;
-    if (["no", "n", "false", "not authorized"].includes(n))
+    if (["no", "n", "false", "not authorized", "0"].includes(n))
       return false;
     return null;
   }
@@ -4057,7 +5345,10 @@
       "terms",
       "agree",
       "consent",
-      "policy"
+      "policy",
+      "acknowledge",
+      "accept",
+      "gdpr"
     ].some((e) => d.includes(e));
   }
   async function spawnTabs(items, maxJobPages) {
@@ -4110,6 +5401,7 @@
   function navigateCurrentTab(url) {
     const n = normalizeUrl(url);
     if (!n) throw new Error("Invalid URL.");
+    lastNavigationUrl = n;
     window.location.assign(n);
   }
   function distributeJobSlots(totalSlots, targetCount) {
@@ -4216,7 +5508,7 @@
       window.clearTimeout(answerFlushTimerId);
     answerFlushTimerId = window.setTimeout(
       () => void flushPendingAnswers(),
-      400
+      500
     );
   }
   function shouldRememberField(field) {
@@ -4224,7 +5516,7 @@
       field,
       getQuestionText(field)
     );
-    if (d.includes("password") || d.includes("social security") || d.includes("ssn") || d.includes("date of birth") || d.includes("dob") || d.includes("resume"))
+    if (d.includes("password") || d.includes("social security") || d.includes("ssn") || d.includes("date of birth") || d.includes("dob") || d.includes("resume") || d.includes("credit card") || d.includes("card number") || d.includes("cvv") || d.includes("expiry"))
       return false;
     if (matchesDescriptor(d, [
       "full name",

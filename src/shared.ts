@@ -13,6 +13,7 @@ export type JobBoardSite = Exclude<SiteKey, "startup" | "other_sites" | "chatgpt
 export type ResumeKind = "front_end" | "back_end" | "full_stack";
 export type SearchMode = "job_board" | "startup_careers" | "other_job_sites";
 export type StartupRegion = "auto" | "us" | "uk" | "eu";
+export type DatePostedWindow = "any" | "24h" | "3d" | "1w";
 export type AutomationStage =
   | "bootstrap"
   | "collect-results"
@@ -92,6 +93,7 @@ export interface ResumeAsset {
   name: string;
   type: string;
   dataUrl: string;
+  textContent: string;
   size: number;
   updatedAt: number;
 }
@@ -140,6 +142,7 @@ export interface AutomationSettings {
   autoUploadResumes: boolean;
   searchMode: SearchMode;
   startupRegion: StartupRegion;
+  datePostedWindow: DatePostedWindow;
   candidate: CandidateProfile;
   resumes: Partial<Record<ResumeKind, ResumeAsset>>;
   answers: Record<string, SavedAnswer>;
@@ -168,6 +171,13 @@ export const STARTUP_REGION_LABELS: Record<StartupRegion, string> = {
   eu: "EU",
 };
 
+export const DATE_POSTED_WINDOW_LABELS: Record<DatePostedWindow, string> = {
+  any: "Any time",
+  "24h": "Past 24 hours",
+  "3d": "Past 3 days",
+  "1w": "Past week",
+};
+
 export const RESUME_KIND_LABELS: Record<ResumeKind, string> = {
   front_end: "Front End",
   back_end: "Back End",
@@ -185,12 +195,16 @@ export const SEARCH_DEFINITIONS: SearchDefinition[] = [
 ];
 
 export const STARTUP_COMPANIES: StartupCompany[] = [
-  { name: "Ramp", careersUrl: "https://ramp.com/careers", regions: ["us"] },
+  { name: "Ramp", careersUrl: "https://jobs.ashbyhq.com/ramp", regions: ["us"] },
   { name: "Vercel", careersUrl: "https://vercel.com/careers", regions: ["us"] },
   { name: "Plaid", careersUrl: "https://plaid.com/careers/", regions: ["us"] },
   { name: "Figma", careersUrl: "https://www.figma.com/careers/", regions: ["us"] },
   { name: "Notion", careersUrl: "https://www.notion.so/careers", regions: ["us"] },
-  { name: "Monzo", careersUrl: "https://monzo.com/careers/", regions: ["uk"] },
+  {
+    name: "Monzo",
+    careersUrl: "https://boards.greenhouse.io/embed/job_board?for=monzo",
+    regions: ["uk"],
+  },
   { name: "Wise", careersUrl: "https://wise.jobs/", regions: ["uk"] },
   { name: "Synthesia", careersUrl: "https://synthesia.io/careers", regions: ["uk"] },
   { name: "Snyk", careersUrl: "https://snyk.io/careers/", regions: ["uk"] },
@@ -205,19 +219,19 @@ export const STARTUP_COMPANIES: StartupCompany[] = [
 export const OTHER_JOB_SITE_TARGETS: CuratedJobSiteTarget[] = [
   {
     label: "Built In Front End",
-    url: "https://builtin.com/jobs/search?search=front%20end%20developer",
+    url: "https://builtin.com/jobs/remote/dev-engineering/front-end",
     resumeKind: "front_end",
     regions: ["us"],
   },
   {
     label: "Built In Back End",
-    url: "https://builtin.com/jobs/search?search=back%20end%20developer",
+    url: "https://builtin.com/jobs/remote/dev-engineering/search/back-end-engineer",
     resumeKind: "back_end",
     regions: ["us"],
   },
   {
     label: "Built In Full Stack",
-    url: "https://builtin.com/jobs/search?search=full%20stack%20developer",
+    url: "https://builtin.com/jobs/remote/dev-engineering/search/full-stack-engineer",
     resumeKind: "full_stack",
     regions: ["us"],
   },
@@ -363,6 +377,7 @@ export const DEFAULT_SETTINGS: AutomationSettings = {
   autoUploadResumes: true,
   searchMode: "job_board",
   startupRegion: "auto",
+  datePostedWindow: "any",
   candidate: {
     fullName: "",
     email: "",
@@ -661,7 +676,15 @@ export function inferResumeKindFromTitle(title: string): ResumeKind {
   return "full_stack";
 }
 
-// FIX: Monster search — use the working URL format with path-based query
+function slugifyMonsterQuery(query: string): string {
+  return query
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-+/g, "-");
+}
+
+// FIX: Monster search — use the current path-based result URL shape
 function buildSingleSearchUrl(
   site: JobBoardSite,
   _origin: string,
@@ -689,14 +712,8 @@ function buildSingleSearchUrl(
       return url.toString();
     }
     case "monster": {
-      // FIX: Monster's search works better with q= containing the full query
-      // and where= set to "Remote" or left empty. The old approach of appending
-      // "remote" to the query string was unreliable.
-      // Monster's current search URL format: /jobs/search?q=...&where=...
-      const url = new URL("/jobs/search", baseOrigin);
-      url.searchParams.set("q", query);
-      url.searchParams.set("where", "Remote");
-      return url.toString();
+      const slug = slugifyMonsterQuery(query);
+      return new URL(`/jobs/q-${slug}-jobs`, baseOrigin).toString();
     }
   }
 }
@@ -816,6 +833,7 @@ export function sanitizeAutomationSettings(raw: unknown): AutomationSettings {
       name: readString(asset.name),
       type: readString(asset.type),
       dataUrl: readString(asset.dataUrl),
+      textContent: readString(asset.textContent),
       size: Number.isFinite(asset.size) ? Number(asset.size) : 0,
       updatedAt: Number.isFinite(asset.updatedAt) ? Number(asset.updatedAt) : Date.now(),
     };
@@ -847,6 +865,7 @@ export function sanitizeAutomationSettings(raw: unknown): AutomationSettings {
         : DEFAULT_SETTINGS.autoUploadResumes,
     searchMode: sanitizeSearchMode(source.searchMode),
     startupRegion: sanitizeStartupRegion(source.startupRegion),
+    datePostedWindow: sanitizeDatePostedWindow(source.datePostedWindow),
     candidate,
     resumes,
     answers,
@@ -877,6 +896,12 @@ function sanitizeStartupRegion(value: unknown): StartupRegion {
   return value === "us" || value === "uk" || value === "eu" || value === "auto"
     ? value
     : DEFAULT_SETTINGS.startupRegion;
+}
+
+function sanitizeDatePostedWindow(value: unknown): DatePostedWindow {
+  return value === "24h" || value === "3d" || value === "1w" || value === "any"
+    ? value
+    : DEFAULT_SETTINGS.datePostedWindow;
 }
 
 function sanitizeAiAnswerRequest(value: Record<string, unknown>): AiAnswerRequest {
@@ -917,6 +942,7 @@ function sanitizeResumeAsset(value: unknown): ResumeAsset | undefined {
     name: readString(value.name),
     type: readString(value.type),
     dataUrl: readString(value.dataUrl),
+    textContent: readString(value.textContent),
     size: Number.isFinite(value.size) ? Number(value.size) : 0,
     updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now(),
   };
