@@ -130,6 +130,10 @@ import {
   scrollPageForLazyContent as scrollSearchResultsPage,
   waitForJobDetailUrls as collectJobDetailUrls,
 } from "./content/searchResults";
+import {
+  createStageRetryState,
+  getNextStageRetryState,
+} from "./content/stageFlow";
 import { hasPendingResumeUploadSurface } from "./content/resumeStep";
 import {
   hasPendingRequiredAutofillFields,
@@ -200,7 +204,7 @@ let activeRun: Promise<void> | null = null;
 let answerFlushPromise: Promise<void> = Promise.resolve();
 let overlayHideTimerId: number | null = null;
 let childApplicationTabOpened = false;
-let stageDepth = 0;
+let stageRetryState = createStageRetryState();
 let manualReviewPauseUntil = 0;
 const pendingAnswers = new Map<string, SavedAnswer>();
 const recentResumeUploadAttempts = new WeakMap<
@@ -298,7 +302,7 @@ function throwIfRateLimited(site: SiteKey): void {
 
   if (brokenReason === "bad_gateway") {
     throw new Error(
-      `${getSiteLabel(site)} returned a bad gateway error page. Skipping this job.`
+      `${getSiteLabel(site)} returned a server error page. Skipping this job.`
     );
   }
 
@@ -365,6 +369,15 @@ function hasLikelyApplicationPageContent(): boolean {
 
 function hasLikelyApplicationSurface(site: SiteKey): boolean {
   return detectLikelyApplicationSurface(site, applicationSurfaceCollectors);
+}
+
+function enterStageRetryScope(stage: AutomationStage): number {
+  stageRetryState = getNextStageRetryState(
+    stageRetryState,
+    stage,
+    window.location.href
+  );
+  return stageRetryState.depth;
 }
 
 function looksLikeCurrentFrameApplicationSurface(
@@ -449,7 +462,7 @@ function describeBrokenApplicationTarget(
     case "access_denied":
       return `${description} returned an access-denied error page. Skipping this job.`;
     case "bad_gateway":
-      return `${description} returned a bad gateway error page. Skipping this job.`;
+      return `${description} returned a server error page. Skipping this job.`;
     case "not_found":
       return `${description} returned a page-not-found error. Skipping this job.`;
     case "unreachable":
@@ -560,7 +573,7 @@ chrome.runtime.onMessage.addListener(
       }
 
       childApplicationTabOpened = false;
-      stageDepth = 0;
+      stageRetryState = createStageRetryState();
       if (message.session) {
         status = message.session;
         currentStage = message.session.stage;
@@ -615,7 +628,7 @@ renderOverlay();
 async function resumeAutomationIfNeeded(): Promise<void> {
   const detectedSite = detectSiteFromUrl(window.location.href);
   childApplicationTabOpened = false;
-  stageDepth = 0;
+  stageRetryState = createStageRetryState();
 
   const maxAttempts = detectedSite ? 30 : 18;
 
@@ -1074,8 +1087,7 @@ async function continueCollectResultsOnNextPage(options: {
 async function runOpenApplyStage(site: SiteKey): Promise<void> {
   childApplicationTabOpened = false;
 
-  stageDepth += 1;
-  if (stageDepth > MAX_STAGE_DEPTH) {
+  if (enterStageRetryScope("open-apply") > MAX_STAGE_DEPTH) {
     updateStatus(
       "completed",
       "Job page opened. Review and apply manually.",
@@ -1654,8 +1666,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 async function runAutofillStage(site: SiteKey): Promise<void> {
   if (childApplicationTabOpened) return;
 
-  stageDepth += 1;
-  if (stageDepth > MAX_STAGE_DEPTH) {
+  if (enterStageRetryScope("autofill-form") > MAX_STAGE_DEPTH) {
     updateStatus(
       "completed",
       "Application page opened. Review and complete manually.",
@@ -2019,7 +2030,7 @@ async function waitForHumanVerificationToClear(): Promise<void> {
   }
   if (brokenReason === "bad_gateway") {
     throw new Error(
-      `The page returned a bad gateway error instead of a usable application page.`
+      `The page returned a server error instead of a usable application page.`
     );
   }
   if (brokenReason === "not_found") {
@@ -2060,7 +2071,7 @@ async function waitForHumanVerificationToClear(): Promise<void> {
     }
     if (pendingBrokenReason === "bad_gateway") {
       throw new Error(
-        `The page returned a bad gateway error instead of a usable application page.`
+        `The page returned a server error instead of a usable application page.`
       );
     }
     if (pendingBrokenReason === "not_found") {

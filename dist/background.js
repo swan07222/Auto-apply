@@ -774,8 +774,114 @@
         target: { tabId },
         world: "MAIN",
         func: () => {
-          const searchResults = window.searchResults;
-          return Array.isArray(searchResults?.jobResults) ? searchResults.jobResults : [];
+          const preferredKeys = [
+            "jobResults",
+            "jobs",
+            "results",
+            "items",
+            "searchResults",
+            "jobSearchResults",
+            "pageProps",
+            "data"
+          ];
+          let visitedCount = 0;
+          const looksLikeMonsterJobRecord = (value) => {
+            if (!value || typeof value !== "object") {
+              return false;
+            }
+            const record = value;
+            const urls = [
+              record.normalizedJobPosting?.url,
+              record.jobPosting?.url,
+              record.enrichments?.localizedMonsterUrls?.[0]?.url,
+              record.canonicalUrl,
+              record.url
+            ];
+            const titles = [
+              record.normalizedJobPosting?.title,
+              record.jobPosting?.title,
+              record.title
+            ];
+            return urls.some(
+              (url) => typeof url === "string" && /monster\.|\/job(?:-openings)?\/|\/jobs\/[^/?#]{4,}/i.test(url)
+            ) || titles.some(
+              (title) => typeof title === "string" && title.trim().length >= 3
+            );
+          };
+          const scoreCandidateArray = (value) => {
+            let score = 0;
+            for (const entry of value.slice(0, 25)) {
+              if (looksLikeMonsterJobRecord(entry)) {
+                score += 1;
+              }
+            }
+            return score;
+          };
+          const parsedJsonScripts = Array.from(
+            document.querySelectorAll(
+              "script#__NEXT_DATA__, script[type='application/ld+json']"
+            )
+          ).map((script) => script.textContent || "").map((text) => {
+            try {
+              return JSON.parse(text);
+            } catch {
+              return null;
+            }
+          }).filter(Boolean);
+          const roots = [
+            window.searchResults,
+            window.__NEXT_DATA__,
+            window.__INITIAL_STATE__,
+            window.__PRELOADED_STATE__,
+            window.__APOLLO_STATE__,
+            window.__NUXT__,
+            ...parsedJsonScripts
+          ].filter((value) => value !== void 0 && value !== null);
+          const visited = /* @__PURE__ */ new WeakSet();
+          const candidateArrays = [];
+          const visit = (value, depth) => {
+            if (depth > 6 || visitedCount > 800) {
+              return;
+            }
+            if (Array.isArray(value)) {
+              visitedCount += 1;
+              if (scoreCandidateArray(value) > 0) {
+                candidateArrays.push(value);
+                return;
+              }
+              for (const entry of value.slice(0, 25)) {
+                visit(entry, depth + 1);
+              }
+              return;
+            }
+            if (!value || typeof value !== "object") {
+              return;
+            }
+            const obj = value;
+            if (visited.has(obj)) {
+              return;
+            }
+            visited.add(obj);
+            visitedCount += 1;
+            for (const key of preferredKeys) {
+              if (key in obj) {
+                visit(obj[key], depth + 1);
+              }
+            }
+            for (const [key, nested] of Object.entries(obj)) {
+              if (preferredKeys.includes(key)) {
+                continue;
+              }
+              visit(nested, depth + 1);
+            }
+          };
+          for (const root of roots) {
+            visit(root, 0);
+          }
+          candidateArrays.sort(
+            (left, right) => scoreCandidateArray(right) - scoreCandidateArray(left) || right.length - left.length
+          );
+          return candidateArrays[0] ?? [];
         }
       });
       const jobResults = Array.isArray(results[0]?.result) ? results[0].result : [];
@@ -1414,7 +1520,7 @@
       if (bodyText.includes("access denied") || bodyText.includes("accessdenied")) {
         return { reason: "access_denied" };
       }
-      if (bodyText.includes("bad gateway") || bodyText.includes("error reference number: 502") || bodyText.includes("web server reported a bad gateway error")) {
+      if (bodyText.includes("bad gateway") || bodyText.includes("error reference number: 502") || bodyText.includes("web server reported a bad gateway error") || bodyText.includes("gateway time-out") || bodyText.includes("gateway timeout") || bodyText.includes("error reference number: 504") || bodyText.includes("web server reported a gateway time-out error") || bodyText.includes("web server reported a gateway timeout error")) {
         return { reason: "bad_gateway" };
       }
       if ([
@@ -2138,7 +2244,15 @@
     return candidates.find((tab) => isWebPageTab(tab)) ?? candidates[0] ?? null;
   }
   function getTabUrl(tab) {
-    return tab?.url ?? tab?.pendingUrl ?? "";
+    const currentUrl = tab?.url ?? "";
+    const pendingUrl = tab?.pendingUrl ?? "";
+    if (!currentUrl) {
+      return pendingUrl;
+    }
+    if (pendingUrl && (detectSiteFromUrl(pendingUrl) !== null || isHttpUrl(pendingUrl)) && (detectSiteFromUrl(currentUrl) === null || !isHttpUrl(currentUrl))) {
+      return pendingUrl;
+    }
+    return currentUrl;
   }
   function isJobBoardTab(tab) {
     return isWebPageTab(tab) && isJobBoardSite(detectSiteFromUrl(getTabUrl(tab)));
@@ -2151,6 +2265,9 @@
   }
   function isWebPageTab(tab) {
     const url = getTabUrl(tab);
+    return isHttpUrl(url);
+  }
+  function isHttpUrl(url) {
     return url.startsWith("https://") || url.startsWith("http://");
   }
   function reserveExtensionSpawnSlots(tabId, count) {

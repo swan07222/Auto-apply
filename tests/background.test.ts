@@ -9,12 +9,33 @@ type BackgroundMessageListener = (
   sendResponse: (response: unknown) => void
 ) => boolean | void;
 
+type TabUpdatedListener = (
+  tabId: number,
+  changeInfo: {
+    status?: string;
+  },
+  tab: chrome.tabs.Tab
+) => void;
+
+type TabRemovedListener = (
+  tabId: number,
+  removeInfo?: chrome.tabs.TabRemoveInfo
+) => void;
+
 function createBackgroundChrome(
   initialState: Record<string, unknown>,
   createTabMock: ReturnType<typeof vi.fn>
 ) {
   let messageListener: BackgroundMessageListener | null = null;
   const local = createMockChromeStorageLocal(initialState);
+  const tabUpdatedListeners = new Set<TabUpdatedListener>();
+  const tabRemovedListeners = new Set<TabRemovedListener>();
+  const reloadMock = vi.fn(async (tabId: number) => {
+    const tab = await chrome.tabs.get(tabId).catch(() => ({ id: tabId }));
+    for (const listener of Array.from(tabUpdatedListeners)) {
+      listener(tabId, { status: "complete" }, tab);
+    }
+  });
 
   Object.defineProperty(globalThis, "chrome", {
     configurable: true,
@@ -37,10 +58,24 @@ function createBackgroundChrome(
         create: createTabMock,
         get: vi.fn(),
         query: vi.fn(),
+        reload: reloadMock,
         remove: vi.fn(),
         sendMessage: vi.fn(),
+        onUpdated: {
+          addListener(listener: TabUpdatedListener) {
+            tabUpdatedListeners.add(listener);
+          },
+          removeListener(listener: TabUpdatedListener) {
+            tabUpdatedListeners.delete(listener);
+          },
+        },
         onRemoved: {
-          addListener: vi.fn(),
+          addListener(listener: TabRemovedListener) {
+            tabRemovedListeners.add(listener);
+          },
+          removeListener(listener: TabRemovedListener) {
+            tabRemovedListeners.delete(listener);
+          },
         },
         onCreated: {
           addListener: vi.fn(),
@@ -63,6 +98,12 @@ function createBackgroundChrome(
 
   return {
     local,
+    reloadMock,
+    dispatchTabRemoved(tabId: number, removeInfo?: chrome.tabs.TabRemoveInfo) {
+      for (const listener of Array.from(tabRemovedListeners)) {
+        listener(tabId, removeInfo);
+      }
+    },
     getMessageListener() {
       if (!messageListener) {
         throw new Error("Background message listener was not registered.");
@@ -151,6 +192,64 @@ describe("background spawn quota handling", () => {
       expect.objectContaining({
         openedJobPages: 1,
         openedJobKeys: [getJobDedupKey(firstUrl)],
+      })
+    );
+  });
+
+  it("starts automation from a loading job-board tab by using the pending URL", async () => {
+    const loadingTab = {
+      id: 42,
+      index: 0,
+      windowId: 7,
+      url: "chrome://newtab/",
+      pendingUrl: "https://www.indeed.com/jobs?q=software+engineer",
+    };
+    const chromeMock = createBackgroundChrome(
+      {
+        "remote-job-search-settings": {
+          ...DEFAULT_SETTINGS,
+          searchKeywords: "software engineer",
+        },
+      },
+      vi.fn()
+    );
+
+    chrome.tabs.get = vi.fn().mockResolvedValue(loadingTab);
+    chrome.tabs.query = vi.fn().mockResolvedValue([loadingTab]);
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "start-automation",
+        tabId: 42,
+      },
+      {
+        tab: loadingTab,
+      }
+    );
+
+    expect(response).toEqual(
+      expect.objectContaining({
+        ok: true,
+        session: expect.objectContaining({
+          tabId: 42,
+          site: "indeed",
+          phase: "running",
+          stage: "bootstrap",
+          shouldResume: true,
+          profileId: DEFAULT_SETTINGS.activeProfileId,
+        }),
+      })
+    );
+    expect(chrome.tabs.reload).toHaveBeenCalledWith(42);
+    expect(chromeMock.local.state["remote-job-search-session:42"]).toEqual(
+      expect.objectContaining({
+        tabId: 42,
+        site: "indeed",
+        stage: "bootstrap",
+        profileId: DEFAULT_SETTINGS.activeProfileId,
       })
     );
   });
@@ -254,6 +353,98 @@ describe("background spawn quota handling", () => {
       ok: true,
       reachable: false,
       reason: "not_found",
+    });
+  });
+
+  it("reports gateway timeout error pages from application target probes", async () => {
+    const chromeMock = createBackgroundChrome({}, vi.fn());
+
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: vi.fn().mockResolvedValue({
+        status: 200,
+        headers: {
+          get: vi.fn().mockReturnValue("text/html"),
+        },
+        url: "https://company.example.com/careers/apply",
+        text: vi.fn().mockResolvedValue(
+          [
+            "Gateway time-out",
+            "The web server reported a gateway time-out error.",
+            "Error reference number: 504",
+            "Ray ID: 9df77ea40866c0be",
+            "Cloudflare Location: Los Angeles",
+          ].join(" ")
+        ),
+      }),
+    });
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "probe-application-target",
+        url: "https://company.example.com/careers/apply",
+      },
+      {}
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      reachable: false,
+      reason: "bad_gateway",
+    });
+  });
+
+  it("extracts Monster search results from alternate embedded page state", async () => {
+    const chromeMock = createBackgroundChrome({}, vi.fn());
+    const monsterResults = [
+      {
+        canonicalUrl:
+          "https://www.monster.com/job-openings/frontend-engineer-remote--alpha123",
+        normalizedJobPosting: {
+          title: "Frontend Engineer",
+        },
+      },
+    ];
+
+    chrome.scripting.executeScript = vi.fn().mockImplementation(({ func }) => {
+      (window as Window & { __NEXT_DATA__?: unknown }).__NEXT_DATA__ = {
+        props: {
+          pageProps: {
+            searchResults: {
+              jobResults: monsterResults,
+            },
+          },
+        },
+      };
+
+      try {
+        return Promise.resolve([{ result: func() }]);
+      } finally {
+        delete (window as Window & { __NEXT_DATA__?: unknown }).__NEXT_DATA__;
+      }
+    });
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "extract-monster-search-results",
+      },
+      {
+        tab: {
+          id: 42,
+        },
+      }
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      jobResults: monsterResults,
     });
   });
 

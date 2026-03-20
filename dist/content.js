@@ -350,8 +350,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return "access_denied";
     }
     const hasBadGatewaySignal = text.includes("bad gateway") || text.includes("web server reported a bad gateway error") || text.includes("error reference number: 502") || text.includes("502 bad gateway");
+    const hasGatewayTimeoutSignal = text.includes("gateway time-out") || text.includes("gateway timeout") || text.includes("web server reported a gateway time-out error") || text.includes("web server reported a gateway timeout error") || text.includes("error reference number: 504") || text.includes("504 gateway time-out") || text.includes("504 gateway timeout");
     const hasCloudflareGatewaySignal = text.includes("cloudflare location") || text.includes("ray id:");
-    if (hasBadGatewaySignal && hasCloudflareGatewaySignal) {
+    if ((hasBadGatewaySignal || hasGatewayTimeoutSignal) && hasCloudflareGatewaySignal) {
       return "bad_gateway";
     }
     const hasNotFoundUrlSignal = [
@@ -2503,7 +2504,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             "[data-jk] a[href]"
           ])
         ]);
-      case "ziprecruiter":
+      case "ziprecruiter": {
+        const appliedKeys = collectZipRecruiterAppliedDedupKeys();
         return dedupeJobCandidates([
           ...collectCandidatesFromContainers(
             [
@@ -2556,9 +2558,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             "a[href*='/t-']"
           ]),
           ...collectZipRecruiterCardCandidates(),
-          // FIX: Also collect from data attributes that contain job IDs
           ...collectZipRecruiterDataAttributeCandidates()
-        ]);
+        ]).filter((candidate) => {
+          const key = getZipRecruiterCandidateKey(candidate.url);
+          return !key || !appliedKeys.has(key);
+        });
+      }
       case "dice":
         return filterDiceViewedOrAppliedCandidates(
           dedupeJobCandidates([
@@ -2779,8 +2784,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         continue;
       }
       const record = jobResult;
-      const url = stringOrEmpty(record.normalizedJobPosting?.url) || stringOrEmpty(record.jobPosting?.url) || stringOrEmpty(record.enrichments?.localizedMonsterUrls?.[0]?.url) || stringOrEmpty(record.canonicalUrl);
-      const title = stringOrEmpty(record.normalizedJobPosting?.title) || stringOrEmpty(record.jobPosting?.title);
+      const url = stringOrEmpty(record.normalizedJobPosting?.url) || stringOrEmpty(record.jobPosting?.url) || stringOrEmpty(record.enrichments?.localizedMonsterUrls?.[0]?.url) || stringOrEmpty(record.canonicalUrl) || stringOrEmpty(jobResult.url);
+      const title = stringOrEmpty(record.normalizedJobPosting?.title) || stringOrEmpty(record.jobPosting?.title) || stringOrEmpty(jobResult.title);
       const appliedSignal = extractMonsterEmbeddedAppliedSignal(
         jobResult
       );
@@ -2790,6 +2795,11 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           stringOrEmpty(record.location?.displayText) || stringOrEmpty(record.location?.displayTextJobCard),
           stringOrEmpty(record.dateRecency),
           stringOrEmpty(record.enrichments?.processedDescriptions?.shortDescription),
+          stringOrEmpty(
+            jobResult.hiringOrganization?.name
+          ),
+          stringOrEmpty(jobResult.datePosted),
+          stringOrEmpty(jobResult.description),
           appliedSignal ? "already applied" : ""
         ].filter(Boolean).join(" ")
       );
@@ -3233,9 +3243,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       /\bapplied\s+\d+\s+(minute|hour|day|week|month)s?\s+ago\b/,
       /\bstatus:\s*applied\b/,
       /\bapplied\b(?=\s*(?:[|,.:;)\]]|$))/,
-      // FIX: ZipRecruiter badge patterns
-      /\bapplied\s*✓/i,
-      /✓\s*applied\b/i,
+      /\bapplied\s*[\u2713\u2714\u2611](?:\s|$)/i,
+      /(?:^|\s)[\u2713\u2714\u2611]\s*applied\b/i,
       /\bapplication\s+complete\b/i,
       /\byour application was sent\b/i,
       /\bapplication received\b/i,
@@ -3271,6 +3280,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       /\bapplied on \d/,
       /\bapplied\s+\d+\s+(minute|hour|day|week|month)s?\s+ago\b/,
       /\bstatus:\s*applied\b/,
+      /\bapplied\s*[\u2713\u2714\u2611](?:\s|$)/i,
+      /(?:^|\s)[\u2713\u2714\u2611]\s*applied\b/i,
       /\bapplication\s+complete\b/i,
       /\byour application was sent\b/i,
       /\bapplication received\b/i,
@@ -3675,6 +3686,77 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return true;
     });
   }
+  function collectZipRecruiterAppliedDedupKeys() {
+    const keys = /* @__PURE__ */ new Set();
+    const addKey = (rawUrl) => {
+      if (!rawUrl) {
+        return;
+      }
+      const key = getZipRecruiterCandidateKey(rawUrl);
+      if (key) {
+        keys.add(key);
+      }
+    };
+    for (const card of Array.from(document.querySelectorAll("[id^='job-card-']"))) {
+      const rawId = card.id || "";
+      const lk = rawId.startsWith("job-card-") ? rawId.slice("job-card-".length) : "";
+      if (!lk) {
+        continue;
+      }
+      const contextText = buildZipRecruiterCandidateContext(card);
+      if (!isAppliedJobText(contextText)) {
+        continue;
+      }
+      const detailUrl = new URL(window.location.href);
+      detailUrl.searchParams.delete("jid");
+      detailUrl.searchParams.set("lk", lk);
+      addKey(detailUrl.toString());
+      for (const anchor of Array.from(card.querySelectorAll("a[href]"))) {
+        addKey(anchor.href);
+      }
+    }
+    const dataAttributeElements = Array.from(
+      document.querySelectorAll(
+        "[data-job-id], [data-jid], [data-jobid], [data-job]"
+      )
+    );
+    for (const el of dataAttributeElements) {
+      const jobId = el.getAttribute("data-job-id") || el.getAttribute("data-jid") || el.getAttribute("data-jobid") || el.getAttribute("data-job") || "";
+      if (!jobId || jobId.length < 3) {
+        continue;
+      }
+      const anchor = el.querySelector("a[href]");
+      const contextText = buildZipRecruiterCandidateContext(el, anchor);
+      if (!isAppliedJobText(contextText)) {
+        continue;
+      }
+      addKey(anchor?.href);
+      const detailUrl = new URL(window.location.href);
+      detailUrl.searchParams.delete("lk");
+      detailUrl.searchParams.set("jid", jobId);
+      addKey(detailUrl.toString());
+    }
+    return keys;
+  }
+  function getZipRecruiterCandidateKey(rawUrl) {
+    try {
+      const parsed = new URL(rawUrl, window.location.href);
+      const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+      const jid = parsed.searchParams.get("jid");
+      if (jid) {
+        return `ziprecruiter:jid:${jid.toLowerCase()}`;
+      }
+      const lk = parsed.searchParams.get("lk");
+      if (lk) {
+        return `ziprecruiter:lk:${lk.toLowerCase()}`;
+      }
+      if (path.startsWith("/c/") || path.startsWith("/k/") || path.includes("/job-details/") || /\/jobs\/[^/?#]{4,}/i.test(path) || /\/t-[^/?#]+/i.test(path)) {
+        return `ziprecruiter:path:${path}`;
+      }
+    } catch {
+    }
+    return getJobDedupKey(rawUrl);
+  }
   function collectZipRecruiterDataAttributeCandidates() {
     const candidates = [];
     const elements = Array.from(
@@ -3692,7 +3774,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             "h1, h2, h3, [data-testid*='job-title'], [class*='job_title'], [class*='job-title'], [class*='jobTitle']"
           )?.textContent || anchor.textContent || ""
         );
-        const contextText2 = cleanText(el.innerText || el.textContent || "");
+        const contextText2 = buildZipRecruiterCandidateContext(el, anchor);
         if (title2) {
           addJobCandidate(candidates, anchor.href, title2, contextText2);
         }
@@ -3703,7 +3785,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           "h1, h2, h3, [data-testid*='job-title'], [class*='job_title'], [class*='job-title']"
         )?.textContent || ""
       );
-      const contextText = cleanText(el.innerText || el.textContent || "");
+      const contextText = buildZipRecruiterCandidateContext(el);
       if (title) {
         const detailUrl = new URL(window.location.href);
         detailUrl.searchParams.delete("lk");
@@ -3774,7 +3856,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           "h1, h2, h3, [data-testid*='job-title'], [class*='job_title'], [class*='jobTitle'], [class*='job-title']"
         )?.textContent
       ) || cleanText(titleButton?.getAttribute("aria-label")?.replace(/^View\s+/i, "") || "");
-      const contextText = cleanText(card.innerText || card.textContent || "");
+      const contextText = buildZipRecruiterCandidateContext(card);
       if (!title) {
         continue;
       }
@@ -3880,6 +3962,67 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       title,
       contextText
     });
+  }
+  function buildZipRecruiterCandidateContext(container, anchor) {
+    const contexts = /* @__PURE__ */ new Set();
+    const addContext = (value) => {
+      const text = cleanText(value);
+      if (text) {
+        contexts.add(text);
+      }
+    };
+    addContext(buildCandidateContextText(container, anchor));
+    const metadataSelectors = [
+      "[data-status]",
+      "[aria-label]",
+      "[title]",
+      "[data-testid]",
+      "[data-qa]",
+      "[data-cy]",
+      "[class*='applied']",
+      "[id*='applied']"
+    ];
+    const metadataNodes = /* @__PURE__ */ new Set([container]);
+    for (const node of Array.from(
+      container.querySelectorAll(metadataSelectors.join(", "))
+    ).slice(0, 32)) {
+      metadataNodes.add(node);
+    }
+    for (const node of metadataNodes) {
+      addContext(
+        extractZipRecruiterAppliedMetadataText(
+          node.innerText || node.textContent || "",
+          node.getAttribute("data-status"),
+          node.getAttribute("aria-label"),
+          node.getAttribute("title"),
+          node.getAttribute("data-testid"),
+          node.getAttribute("data-qa"),
+          node.getAttribute("data-cy"),
+          typeof node.className === "string" ? node.className : "",
+          node.id
+        )
+      );
+    }
+    return cleanText(Array.from(contexts).join(" "));
+  }
+  function extractZipRecruiterAppliedMetadataText(...values) {
+    const signals = /* @__PURE__ */ new Set();
+    for (const value of values) {
+      const normalized = normalizeChoiceText(value || "");
+      if (!normalized || /\b(not applied|apply now|ready to apply|applied scientist|applied research|applied machine|applied deep|applied data)\b/.test(
+        normalized
+      )) {
+        continue;
+      }
+      if (normalized.includes("already applied") || normalized.includes("previously applied") || normalized.includes("you applied") || normalized.includes("you ve applied") || normalized.includes("you have applied") || /\bapplied\b/.test(normalized)) {
+        signals.add("Applied");
+        continue;
+      }
+      if (normalized.includes("application submitted") || normalized.includes("application sent") || normalized.includes("already submitted") || normalized.includes("application complete") || normalized.includes("application received")) {
+        signals.add("Application submitted");
+      }
+    }
+    return Array.from(signals).join(" ");
   }
   function getCanonicalIndeedCandidateUrl(element) {
     if (!isElementLike2(element)) {
@@ -6921,6 +7064,28 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return [currentUrl, pageMarkers, candidateMarkers].join("::");
   }
 
+  // src/content/stageFlow.ts
+  function createStageRetryState() {
+    return {
+      depth: 0,
+      scope: null
+    };
+  }
+  function getNextStageRetryState(state, stage, url) {
+    const normalizedUrl = url.trim();
+    const scope = `${stage}:${normalizedUrl}`;
+    if (!normalizedUrl || state.scope !== scope) {
+      return {
+        depth: 1,
+        scope
+      };
+    }
+    return {
+      depth: state.depth + 1,
+      scope
+    };
+  }
+
   // src/content/resumeStep.ts
   function hasSelectedResumeUpload(input) {
     return Boolean(input.files?.length) || Boolean(getSelectedFileName(input));
@@ -7144,7 +7309,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   var answerFlushPromise = Promise.resolve();
   var overlayHideTimerId = null;
   var childApplicationTabOpened = false;
-  var stageDepth = 0;
+  var stageRetryState = createStageRetryState();
   var manualReviewPauseUntil = 0;
   var pendingAnswers = /* @__PURE__ */ new Map();
   var recentResumeUploadAttempts = /* @__PURE__ */ new WeakMap();
@@ -7212,7 +7377,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     if (brokenReason === "bad_gateway") {
       throw new Error(
-        `${getSiteLabel(site)} returned a bad gateway error page. Skipping this job.`
+        `${getSiteLabel(site)} returned a server error page. Skipping this job.`
       );
     }
     if (brokenReason === "not_found") {
@@ -7263,6 +7428,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function hasLikelyApplicationSurface2(site) {
     return hasLikelyApplicationSurface(site, applicationSurfaceCollectors);
+  }
+  function enterStageRetryScope(stage) {
+    stageRetryState = getNextStageRetryState(
+      stageRetryState,
+      stage,
+      window.location.href
+    );
+    return stageRetryState.depth;
   }
   function looksLikeCurrentFrameApplicationSurface(site) {
     if (site && site !== "unsupported" && isLikelyApplyUrl(window.location.href, site)) {
@@ -7326,7 +7499,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       case "access_denied":
         return `${description} returned an access-denied error page. Skipping this job.`;
       case "bad_gateway":
-        return `${description} returned a bad gateway error page. Skipping this job.`;
+        return `${description} returned a server error page. Skipping this job.`;
       case "not_found":
         return `${description} returned a page-not-found error. Skipping this job.`;
       case "unreachable":
@@ -7411,7 +7584,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           return false;
         }
         childApplicationTabOpened = false;
-        stageDepth = 0;
+        stageRetryState = createStageRetryState();
         if (message.session) {
           status = message.session;
           currentStage = message.session.stage;
@@ -7454,7 +7627,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   async function resumeAutomationIfNeeded() {
     const detectedSite = detectSiteFromUrl(window.location.href);
     childApplicationTabOpened = false;
-    stageDepth = 0;
+    stageRetryState = createStageRetryState();
     const maxAttempts = detectedSite ? 30 : 18;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       let response = null;
@@ -7796,8 +7969,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   async function runOpenApplyStage(site) {
     childApplicationTabOpened = false;
-    stageDepth += 1;
-    if (stageDepth > MAX_STAGE_DEPTH) {
+    if (enterStageRetryScope("open-apply") > MAX_STAGE_DEPTH) {
       updateStatus(
         "completed",
         "Job page opened. Review and apply manually.",
@@ -8281,8 +8453,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   async function runAutofillStage(site) {
     if (childApplicationTabOpened) return;
-    stageDepth += 1;
-    if (stageDepth > MAX_STAGE_DEPTH) {
+    if (enterStageRetryScope("autofill-form") > MAX_STAGE_DEPTH) {
       updateStatus(
         "completed",
         "Application page opened. Review and complete manually.",
@@ -8576,7 +8747,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     if (brokenReason === "bad_gateway") {
       throw new Error(
-        `The page returned a bad gateway error instead of a usable application page.`
+        `The page returned a server error instead of a usable application page.`
       );
     }
     if (brokenReason === "not_found") {
@@ -8610,7 +8781,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
       if (pendingBrokenReason === "bad_gateway") {
         throw new Error(
-          `The page returned a bad gateway error instead of a usable application page.`
+          `The page returned a server error instead of a usable application page.`
         );
       }
       if (pendingBrokenReason === "not_found") {

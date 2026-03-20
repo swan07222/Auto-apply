@@ -922,11 +922,22 @@ export function detectBrokenPageReason(doc: Document): BrokenPageReason | null {
     text.includes("web server reported a bad gateway error") ||
     text.includes("error reference number: 502") ||
     text.includes("502 bad gateway");
+  const hasGatewayTimeoutSignal =
+    text.includes("gateway time-out") ||
+    text.includes("gateway timeout") ||
+    text.includes("web server reported a gateway time-out error") ||
+    text.includes("web server reported a gateway timeout error") ||
+    text.includes("error reference number: 504") ||
+    text.includes("504 gateway time-out") ||
+    text.includes("504 gateway timeout");
   const hasCloudflareGatewaySignal =
     text.includes("cloudflare location") ||
     text.includes("ray id:");
 
-  if (hasBadGatewaySignal && hasCloudflareGatewaySignal) {
+  if (
+    (hasBadGatewaySignal || hasGatewayTimeoutSignal) &&
+    hasCloudflareGatewaySignal
+  ) {
     return "bad_gateway";
   }
 

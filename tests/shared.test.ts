@@ -414,6 +414,22 @@ describe("shared automation target logic", () => {
     expect(isProbablyHumanVerificationPage(document)).toBe(false);
   });
 
+  it("detects Cloudflare gateway timeout pages and does not treat them as verification", () => {
+    document.title = "Gateway time-out";
+    document.body.innerHTML = `
+      <main>
+        <h1>Gateway time-out</h1>
+        <p>The web server reported a gateway time-out error.</p>
+        <p>Ray ID: 9df77ea40866c0be</p>
+        <p>Error reference number: 504</p>
+        <p>Cloudflare Location: Los Angeles</p>
+      </main>
+    `;
+
+    expect(detectBrokenPageReason(document)).toBe("bad_gateway");
+    expect(isProbablyHumanVerificationPage(document)).toBe(false);
+  });
+
   it("detects page-not-found error pages and does not treat them as verification", () => {
     window.history.replaceState({}, "", "/careers/page-not-found");
     document.title = "404 Page Not Found";

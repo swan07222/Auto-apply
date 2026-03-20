@@ -124,7 +124,9 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
         ]),
       ]);
 
-    case "ziprecruiter":
+    case "ziprecruiter": {
+      const appliedKeys = collectZipRecruiterAppliedDedupKeys();
+
       return dedupeJobCandidates([
         ...collectCandidatesFromContainers(
           [
@@ -177,9 +179,12 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
           "a[href*='/t-']",
         ]),
         ...collectZipRecruiterCardCandidates(),
-        // FIX: Also collect from data attributes that contain job IDs
         ...collectZipRecruiterDataAttributeCandidates(),
-      ]);
+      ]).filter((candidate) => {
+        const key = getZipRecruiterCandidateKey(candidate.url);
+        return !key || !appliedKeys.has(key);
+      });
+    }
 
     case "dice":
       return filterDiceViewedOrAppliedCandidates(
@@ -440,10 +445,12 @@ export function collectMonsterEmbeddedCandidates(source: unknown): JobCandidate[
       stringOrEmpty(record.normalizedJobPosting?.url) ||
       stringOrEmpty(record.jobPosting?.url) ||
       stringOrEmpty(record.enrichments?.localizedMonsterUrls?.[0]?.url) ||
-      stringOrEmpty(record.canonicalUrl);
+      stringOrEmpty(record.canonicalUrl) ||
+      stringOrEmpty((jobResult as { url?: unknown }).url);
     const title =
       stringOrEmpty(record.normalizedJobPosting?.title) ||
-      stringOrEmpty(record.jobPosting?.title);
+      stringOrEmpty(record.jobPosting?.title) ||
+      stringOrEmpty((jobResult as { title?: unknown }).title);
     const appliedSignal = extractMonsterEmbeddedAppliedSignal(
       jobResult as Record<string, unknown>
     );
@@ -455,6 +462,11 @@ export function collectMonsterEmbeddedCandidates(source: unknown): JobCandidate[
           stringOrEmpty(record.location?.displayTextJobCard),
         stringOrEmpty(record.dateRecency),
         stringOrEmpty(record.enrichments?.processedDescriptions?.shortDescription),
+        stringOrEmpty(
+          (jobResult as { hiringOrganization?: { name?: unknown } }).hiringOrganization?.name
+        ),
+        stringOrEmpty((jobResult as { datePosted?: unknown }).datePosted),
+        stringOrEmpty((jobResult as { description?: unknown }).description),
         appliedSignal ? "already applied" : "",
       ]
         .filter(Boolean)
@@ -1138,9 +1150,8 @@ export function isAppliedJobText(text: string): boolean {
     /\bapplied\s+\d+\s+(minute|hour|day|week|month)s?\s+ago\b/,
     /\bstatus:\s*applied\b/,
     /\bapplied\b(?=\s*(?:[|,.:;)\]]|$))/,
-    // FIX: ZipRecruiter badge patterns
-    /\bapplied\s*✓/i,
-    /✓\s*applied\b/i,
+    /\bapplied\s*[\u2713\u2714\u2611](?:\s|$)/i,
+    /(?:^|\s)[\u2713\u2714\u2611]\s*applied\b/i,
     /\bapplication\s+complete\b/i,
     /\byour application was sent\b/i,
     /\bapplication received\b/i,
@@ -1181,6 +1192,8 @@ export function isStrongAppliedJobText(text: string): boolean {
     /\bapplied on \d/,
     /\bapplied\s+\d+\s+(minute|hour|day|week|month)s?\s+ago\b/,
     /\bstatus:\s*applied\b/,
+    /\bapplied\s*[\u2713\u2714\u2611](?:\s|$)/i,
+    /(?:^|\s)[\u2713\u2714\u2611]\s*applied\b/i,
     /\bapplication\s+complete\b/i,
     /\byour application was sent\b/i,
     /\bapplication received\b/i,
@@ -1739,6 +1752,105 @@ function filterDiceViewedOrAppliedCandidates(
   });
 }
 
+function collectZipRecruiterAppliedDedupKeys(): Set<string> {
+  const keys = new Set<string>();
+  const addKey = (rawUrl: string | null | undefined) => {
+    if (!rawUrl) {
+      return;
+    }
+
+    const key = getZipRecruiterCandidateKey(rawUrl);
+    if (key) {
+      keys.add(key);
+    }
+  };
+
+  for (const card of Array.from(document.querySelectorAll<HTMLElement>("[id^='job-card-']"))) {
+    const rawId = card.id || "";
+    const lk = rawId.startsWith("job-card-") ? rawId.slice("job-card-".length) : "";
+    if (!lk) {
+      continue;
+    }
+
+    const contextText = buildZipRecruiterCandidateContext(card);
+    if (!isAppliedJobText(contextText)) {
+      continue;
+    }
+
+    const detailUrl = new URL(window.location.href);
+    detailUrl.searchParams.delete("jid");
+    detailUrl.searchParams.set("lk", lk);
+    addKey(detailUrl.toString());
+
+    for (const anchor of Array.from(card.querySelectorAll<HTMLAnchorElement>("a[href]"))) {
+      addKey(anchor.href);
+    }
+  }
+
+  const dataAttributeElements = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "[data-job-id], [data-jid], [data-jobid], [data-job]"
+    )
+  );
+
+  for (const el of dataAttributeElements) {
+    const jobId =
+      el.getAttribute("data-job-id") ||
+      el.getAttribute("data-jid") ||
+      el.getAttribute("data-jobid") ||
+      el.getAttribute("data-job") ||
+      "";
+    if (!jobId || jobId.length < 3) {
+      continue;
+    }
+
+    const anchor = el.querySelector<HTMLAnchorElement>("a[href]");
+    const contextText = buildZipRecruiterCandidateContext(el, anchor);
+    if (!isAppliedJobText(contextText)) {
+      continue;
+    }
+
+    addKey(anchor?.href);
+
+    const detailUrl = new URL(window.location.href);
+    detailUrl.searchParams.delete("lk");
+    detailUrl.searchParams.set("jid", jobId);
+    addKey(detailUrl.toString());
+  }
+
+  return keys;
+}
+
+function getZipRecruiterCandidateKey(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl, window.location.href);
+    const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+    const jid = parsed.searchParams.get("jid");
+    if (jid) {
+      return `ziprecruiter:jid:${jid.toLowerCase()}`;
+    }
+
+    const lk = parsed.searchParams.get("lk");
+    if (lk) {
+      return `ziprecruiter:lk:${lk.toLowerCase()}`;
+    }
+
+    if (
+      path.startsWith("/c/") ||
+      path.startsWith("/k/") ||
+      path.includes("/job-details/") ||
+      /\/jobs\/[^/?#]{4,}/i.test(path) ||
+      /\/t-[^/?#]+/i.test(path)
+    ) {
+      return `ziprecruiter:path:${path}`;
+    }
+  } catch {
+    // Fall back to the shared key normalizer below.
+  }
+
+  return getJobDedupKey(rawUrl);
+}
+
 // FIX: New collector for ZipRecruiter data-attribute based candidates
 function collectZipRecruiterDataAttributeCandidates(): JobCandidate[] {
   const candidates: JobCandidate[] = [];
@@ -1770,7 +1882,7 @@ function collectZipRecruiterDataAttributeCandidates(): JobCandidate[] {
         anchor.textContent ||
         ""
       );
-      const contextText = cleanText(el.innerText || el.textContent || "");
+      const contextText = buildZipRecruiterCandidateContext(el, anchor);
       if (title) {
         addJobCandidate(candidates, anchor.href, title, contextText);
       }
@@ -1783,7 +1895,7 @@ function collectZipRecruiterDataAttributeCandidates(): JobCandidate[] {
         "h1, h2, h3, [data-testid*='job-title'], [class*='job_title'], [class*='job-title']"
       )?.textContent || ""
     );
-    const contextText = cleanText(el.innerText || el.textContent || "");
+    const contextText = buildZipRecruiterCandidateContext(el);
 
     if (title) {
       const detailUrl = new URL(window.location.href);
@@ -1886,7 +1998,7 @@ function collectZipRecruiterCardCandidates(): JobCandidate[] {
         )?.textContent
       ) ||
       cleanText(titleButton?.getAttribute("aria-label")?.replace(/^View\s+/i, "") || "");
-    const contextText = cleanText(card.innerText || card.textContent || "");
+    const contextText = buildZipRecruiterCandidateContext(card);
 
     if (!title) {
       continue;
@@ -2027,6 +2139,99 @@ function addJobCandidate(
     title,
     contextText,
   });
+}
+
+function buildZipRecruiterCandidateContext(
+  container: HTMLElement,
+  anchor?: HTMLAnchorElement | null
+): string {
+  const contexts = new Set<string>();
+  const addContext = (value: string | null | undefined) => {
+    const text = cleanText(value);
+    if (text) {
+      contexts.add(text);
+    }
+  };
+
+  addContext(buildCandidateContextText(container, anchor));
+
+  const metadataSelectors = [
+    "[data-status]",
+    "[aria-label]",
+    "[title]",
+    "[data-testid]",
+    "[data-qa]",
+    "[data-cy]",
+    "[class*='applied']",
+    "[id*='applied']",
+  ];
+  const metadataNodes = new Set<HTMLElement>([container]);
+
+  for (const node of Array.from(
+    container.querySelectorAll<HTMLElement>(metadataSelectors.join(", "))
+  ).slice(0, 32)) {
+    metadataNodes.add(node);
+  }
+
+  for (const node of metadataNodes) {
+    addContext(
+      extractZipRecruiterAppliedMetadataText(
+        node.innerText || node.textContent || "",
+        node.getAttribute("data-status"),
+        node.getAttribute("aria-label"),
+        node.getAttribute("title"),
+        node.getAttribute("data-testid"),
+        node.getAttribute("data-qa"),
+        node.getAttribute("data-cy"),
+        typeof node.className === "string" ? node.className : "",
+        node.id
+      )
+    );
+  }
+
+  return cleanText(Array.from(contexts).join(" "));
+}
+
+function extractZipRecruiterAppliedMetadataText(
+  ...values: Array<string | null | undefined>
+): string {
+  const signals = new Set<string>();
+
+  for (const value of values) {
+    const normalized = normalizeChoiceText(value || "");
+    if (
+      !normalized ||
+      /\b(not applied|apply now|ready to apply|applied scientist|applied research|applied machine|applied deep|applied data)\b/.test(
+        normalized
+      )
+    ) {
+      continue;
+    }
+
+    if (
+      normalized.includes("already applied") ||
+      normalized.includes("previously applied") ||
+      normalized.includes("you applied") ||
+      normalized.includes("you ve applied") ||
+      normalized.includes("you have applied") ||
+      /\bapplied\b/.test(normalized)
+    ) {
+      signals.add("Applied");
+      continue;
+    }
+
+    if (
+      normalized.includes("application submitted") ||
+      normalized.includes("application sent") ||
+      normalized.includes("already submitted") ||
+      normalized.includes("application complete") ||
+      normalized.includes("application received")
+    ) {
+      signals.add("Application submitted");
+    }
+  }
+
+  return Array.from(signals).join(" ");
 }
 
 function getCanonicalIndeedCandidateUrl(

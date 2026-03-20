@@ -525,6 +525,39 @@ describe("job search candidate filtering", () => {
     expect(dataAttributeUrls.some((url) => url.includes("lk=stale-card"))).toBe(false);
   });
 
+  it("skips ZipRecruiter jobs that only expose applied state through badge metadata", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/jobs-search?search=front-end-developer&location=Remote"
+    );
+
+    document.body.innerHTML = `
+      <article id="job-card-card123">
+        <h2>Front End Engineer</h2>
+        <a href="https://www.ziprecruiter.com/jobs/front-end-engineer-1?jid=card123">View job</a>
+        <span data-testid="applied-badge"></span>
+      </article>
+      <article data-jid="job456">
+        <h2>Back End Engineer</h2>
+        <a href="https://www.ziprecruiter.com/jobs/back-end-engineer-2?jid=job456">View job</a>
+        <span aria-label="Applied"></span>
+      </article>
+      <article id="job-card-card789">
+        <h2>Platform Engineer</h2>
+      </article>
+    `;
+
+    const urls = pickRelevantJobUrls(
+      collectJobDetailCandidates("ziprecruiter"),
+      "ziprecruiter"
+    );
+
+    expect(urls).toEqual([
+      "https://example.com/jobs-search?search=front-end-developer&location=Remote&lk=card789",
+    ]);
+  });
+
   it("accepts Monster detail URLs and rejects listing URLs", () => {
     expect(
       isLikelyJobDetailUrl(
@@ -596,6 +629,27 @@ describe("job search candidate filtering", () => {
 
     expect(urls).toEqual([
       "https://www.monster.com/job-openings/back-end-java-developer-remote-fargo-nd--eabee747-01c9-4b2b-a94c-868b0d2b35d1",
+    ]);
+  });
+
+  it("collects Monster candidates from generic embedded job records", () => {
+    const urls = pickRelevantJobUrls(
+      collectMonsterEmbeddedCandidates([
+        {
+          title: "Frontend Engineer",
+          url: "https://www.monster.com/job-openings/frontend-engineer-remote--alpha123",
+          hiringOrganization: {
+            name: "Monster Labs",
+          },
+          description: "Remote frontend role using React.",
+          datePosted: "1 day ago",
+        },
+      ]),
+      "monster"
+    );
+
+    expect(urls).toEqual([
+      "https://www.monster.com/job-openings/frontend-engineer-remote--alpha123",
     ]);
   });
 
@@ -941,6 +995,8 @@ describe("job search candidate filtering", () => {
     ).toBe(true);
     expect(isAppliedJobText("Applied")).toBe(true);
     expect(isAppliedJobText("Previously applied")).toBe(true);
+    expect(isAppliedJobText("Applied \u2713")).toBe(true);
+    expect(isAppliedJobText("\u2713 Applied")).toBe(true);
     expect(isAppliedJobText("Applied Scientist, Search Ranking")).toBe(false);
   });
 
