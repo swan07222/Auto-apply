@@ -220,6 +220,15 @@
       const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
       let path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
       path = path.replace(/\/job-opening\//, "/job-openings/").replace(/\/jobs\/search$/, "/jobs").replace(/\/+/g, "/");
+      if (hostname.includes("indeed")) {
+        const indeedJobKey = parsed.searchParams.get("jk") ?? parsed.searchParams.get("vjk");
+        if (indeedJobKey) {
+          return `indeed:jk:${indeedJobKey.toLowerCase()}`;
+        }
+        if (path.includes("/viewjob") || path.includes("/rc/clk") || path.includes("/pagead/clk")) {
+          return `${hostname}${path}`;
+        }
+      }
       if (hostname.includes("ziprecruiter")) {
         const jid = parsed.searchParams.get("jid");
         if (jid) return `ziprecruiter:jid:${jid.toLowerCase()}`;
@@ -2789,7 +2798,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return dedupeJobCandidates(candidates);
   }
   function pickRelevantJobUrls(candidates, site, resumeKind, datePostedWindow = "any", searchKeywords = []) {
-    const valid = candidates.filter(
+    const valid = dedupeJobCandidates(candidates).filter(
       (candidate) => isLikelyJobDetailUrl(site, candidate.url, candidate.title, candidate.contextText)
     );
     const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
@@ -6717,33 +6726,199 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return actions.sort((a, b) => b.score - a.score);
   }
   function tryClickLoadMoreButton() {
-    const loadMoreSelectors = ["button", "a[role='button']", "[role='button']"];
-    for (const selector of loadMoreSelectors) {
-      try {
-        const elements = Array.from(
-          document.querySelectorAll(selector)
-        );
-        for (const el of elements) {
-          if (!isElementVisible(el)) continue;
-          const text = cleanText(el.textContent || "").toLowerCase();
-          const attrs = [
-            el.getAttribute("aria-label"),
-            el.getAttribute("title"),
-            el.getAttribute("data-testid"),
-            el.id,
-            el.className
-          ].join(" ").toLowerCase();
-          const insidePagination = Boolean(
-            el.closest("nav, [aria-label*='pagination' i], [class*='pagination']")
-          );
-          if (text.includes("load more") || text.includes("show more") || text.includes("view more") || text.includes("see more") || text.includes("more jobs") || text.includes("more positions") || text.includes("more openings") || text.includes("view all") || text.includes("see all") || text.includes("show all") || text.includes("next page") || text.includes("load next") || text.includes("show more jobs") || text.includes("more results") || attrs.includes("next page") || attrs.includes("next results") || attrs.includes("show more jobs") || attrs.includes("load more jobs") || attrs.includes("pagination-next") || text === "next" && insidePagination) {
-            performClickAction(el);
-            return;
-          }
-        }
-      } catch {
+    for (const el of collectDeepMatches(
+      "button, a[role='button'], [role='button']"
+    )) {
+      if (!isElementVisible(el) || !isElementInteractive(el)) {
+        continue;
+      }
+      const text = cleanText(getActionText(el)).toLowerCase();
+      const attrs = cleanText(
+        [
+          el.getAttribute("aria-label"),
+          el.getAttribute("title"),
+          el.getAttribute("data-testid"),
+          el.getAttribute("data-test"),
+          el.id,
+          el.className
+        ].filter(Boolean).join(" ")
+      ).toLowerCase();
+      if (text.includes("load more") || text.includes("show more") || text.includes("view more") || text.includes("see more") || text.includes("more jobs") || text.includes("more positions") || text.includes("more openings") || text.includes("view all") || text.includes("see all") || text.includes("show all") || text.includes("load next") || text.includes("show more jobs") || text.includes("more results") || attrs.includes("show more jobs") || attrs.includes("load more jobs")) {
+        performClickAction(el);
+        return;
       }
     }
+  }
+  function findNextResultsPageAction(site) {
+    let bestAction = null;
+    for (const element of collectDeepMatches(
+      "a[href], button, input[type='button'], input[type='submit'], [role='button']"
+    )) {
+      const candidate = scoreNextResultsPageAction(element, site);
+      if (!candidate) {
+        continue;
+      }
+      if (!bestAction || candidate.score > bestAction.score) {
+        bestAction = candidate;
+      }
+    }
+    if (!bestAction) {
+      return null;
+    }
+    return {
+      element: bestAction.element,
+      navUrl: bestAction.navUrl,
+      text: bestAction.text
+    };
+  }
+  async function advanceToNextResultsPage(site) {
+    const action = findNextResultsPageAction(site);
+    if (!action) {
+      return "none";
+    }
+    const beforeUrl = normalizeUrl(window.location.href);
+    const beforeSignature = getResultPageSignature(site);
+    if (action.navUrl && action.navUrl !== beforeUrl) {
+      window.location.assign(action.navUrl);
+      return "navigating";
+    }
+    performClickAction(action.element);
+    await waitForResultSurfaceSettle(site);
+    const afterUrl = normalizeUrl(window.location.href);
+    const afterSignature = getResultPageSignature(site);
+    if (afterUrl && afterUrl !== beforeUrl || afterSignature !== beforeSignature) {
+      return afterUrl && afterUrl !== beforeUrl ? "navigating" : "advanced";
+    }
+    return "none";
+  }
+  function scoreNextResultsPageAction(element, site) {
+    if (!isElementVisible(element) || !isElementInteractive(element)) {
+      return null;
+    }
+    if (isDisabledPaginationElement(element)) {
+      return null;
+    }
+    const text = cleanText(getActionText(element)).toLowerCase();
+    const navUrl = getNavigationUrl(element);
+    const lowerNavUrl = navUrl?.toLowerCase() ?? "";
+    const attrs = cleanText(
+      [
+        element.getAttribute("aria-label"),
+        element.getAttribute("title"),
+        element.getAttribute("data-testid"),
+        element.getAttribute("data-test"),
+        element.getAttribute("rel"),
+        element.id,
+        element.className
+      ].filter(Boolean).join(" ")
+    ).toLowerCase();
+    const insidePagination = isInsidePaginationContainer(element);
+    const hasPaginationContext = insidePagination || attrs.includes("pagination") || attrs.includes("paginator") || attrs.includes("pager") || lowerNavUrl.includes("page=") || lowerNavUrl.includes("offset=") || lowerNavUrl.includes("start=") || hasPaginationUrlSignal(navUrl);
+    if (/(?:^|\b)(previous|prev|back)(?:\b|$)/.test(text) || /(?:^|\b)(previous|prev|back)(?:\b|$)/.test(attrs)) {
+      return null;
+    }
+    if (element.getAttribute("aria-current") === "page" || element.getAttribute("aria-selected") === "true" || /^\d+$/.test(text)) {
+      return null;
+    }
+    const isExplicitNext = text.includes("next page") || text.includes("next results") || text.includes("next jobs") || text === "next" || attrs.includes("next page") || attrs.includes("next results") || attrs.includes("next jobs") || attrs.includes("pagination-next") || attrs.includes("pager-next") || attrs.includes("rel next");
+    const isArrowNext = insidePagination && ["\u203A", "\xBB", ">", "\u2192", "\u27E9", "\u276F", "next"].includes(text);
+    if (!isExplicitNext && !isArrowNext) {
+      return null;
+    }
+    if (!hasPaginationContext && !text.includes("next page") && !attrs.includes("next page")) {
+      return null;
+    }
+    let score = 0;
+    if (isExplicitNext) {
+      score += 60;
+    }
+    if (isArrowNext) {
+      score += 24;
+    }
+    if (insidePagination) {
+      score += 18;
+    }
+    if (hasPaginationUrlSignal(navUrl)) {
+      score += 16;
+    }
+    if (navUrl && navUrl !== normalizeUrl(window.location.href)) {
+      score += 12;
+    }
+    if (attrs.includes("pagination-next") || attrs.includes("pager-next")) {
+      score += 12;
+    }
+    if (site === "indeed" && (attrs.includes("pagination-page-next") || attrs.includes("next page"))) {
+      score += 16;
+    }
+    if (site === "dice" && (attrs.includes("pagination") || attrs.includes("pager"))) {
+      score += 10;
+    }
+    return {
+      element,
+      navUrl,
+      score,
+      text
+    };
+  }
+  function isInsidePaginationContainer(element) {
+    return Boolean(
+      element.closest(
+        "nav, [role='navigation'], [aria-label*='pagination' i], [class*='pagination'], [data-testid*='pagination' i], [data-test*='pagination' i], [class*='pager']"
+      )
+    );
+  }
+  function isDisabledPaginationElement(element) {
+    const attrs = cleanText(
+      [
+        element.getAttribute("aria-disabled"),
+        element.getAttribute("data-disabled"),
+        element.className
+      ].filter(Boolean).join(" ")
+    ).toLowerCase();
+    return Boolean(
+      element.matches("[disabled], [aria-disabled='true'], [data-disabled='true']") || /(?:^|\b)(disabled|is-disabled|pagination-disabled|pager-disabled)(?:\b|$)/.test(
+        attrs
+      )
+    );
+  }
+  function hasPaginationUrlSignal(url) {
+    if (!url) {
+      return false;
+    }
+    try {
+      const parsed = new URL(url, window.location.href);
+      const queryKeys = [
+        "page",
+        "p",
+        "pg",
+        "offset",
+        "start",
+        "fromage",
+        "pn",
+        "pageNum"
+      ];
+      if (queryKeys.some((key) => {
+        const value = parsed.searchParams.get(key);
+        return Boolean(value && value.trim().length > 0);
+      })) {
+        return true;
+      }
+      return /\/page\/\d+\b|\/p\/\d+\b|\/jobs\/page\/\d+\b/i.test(
+        parsed.pathname
+      );
+    } catch {
+      return false;
+    }
+  }
+  function getResultPageSignature(site) {
+    const currentUrl = normalizeUrl(window.location.href) ?? "";
+    const pageMarkers = Array.from(
+      document.querySelectorAll(
+        "[aria-current='page'], [aria-selected='true'], [data-current='true'], .selected, .active"
+      )
+    ).filter((element) => isElementVisible(element)).map((element) => cleanText(getActionText(element)).toLowerCase()).filter(Boolean).slice(0, 6).join("|");
+    const candidateMarkers = collectJobDetailCandidates(site).slice(0, 12).map((candidate) => normalizeUrl(candidate.url) ?? candidate.url).join("|");
+    return [currentUrl, pageMarkers, candidateMarkers].join("::");
   }
 
   // src/content/resumeStep.ts
@@ -7446,6 +7621,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       keywordHints
     );
     if (jobUrls.length === 0) {
+      if (await continueCollectResultsOnNextPage({
+        site,
+        remainingSlots: effectiveLimit,
+        progressMessage: `No job pages found on this ${labelPrefix}${getSiteLabel(site)} page yet. Checking the next results page...`,
+        fallbackMessage: `No job pages found on this ${labelPrefix}${getSiteLabel(site)} results page${postedWindowDescription}, and no later results pages were available.`
+      })) {
+        return;
+      }
       updateStatus(
         "completed",
         `No job pages found on this ${labelPrefix}${getSiteLabel(site)} results page${postedWindowDescription}.`,
@@ -7484,6 +7667,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return !isAppliedJobText(ctx) && !isAppliedJobText(title);
     });
     if (filteredJobUrls.length === 0) {
+      if (await continueCollectResultsOnNextPage({
+        site,
+        remainingSlots: effectiveLimit,
+        progressMessage: `All visible ${labelPrefix}${getSiteLabel(site)} jobs were already applied to. Checking the next results page...`,
+        fallbackMessage: `All ${jobUrls.length} jobs on this ${labelPrefix}${getSiteLabel(site)} page were already applied to, and no later results pages were available.`
+      })) {
+        return;
+      }
       updateStatus(
         "completed",
         `All ${jobUrls.length} jobs on this ${labelPrefix}${getSiteLabel(site)} page were already applied to.`,
@@ -7493,11 +7684,20 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       await closeCurrentTab();
       return;
     }
-    const approvedUrls = await claimJobOpenings(
+    const claimResult = await claimJobOpenings(
       filteredJobUrls,
       effectiveLimit
     );
+    const approvedUrls = claimResult.approvedUrls;
     if (approvedUrls.length === 0) {
+      if (await continueCollectResultsOnNextPage({
+        site,
+        remainingSlots: claimResult.remaining,
+        progressMessage: `No new ${labelPrefix}${getSiteLabel(site)} job pages were available on this page. Checking the next results page...`,
+        fallbackMessage: `No new ${labelPrefix}${getSiteLabel(site)} job pages were available after removing duplicates and applied roles.`
+      })) {
+        return;
+      }
       updateStatus(
         "completed",
         `No new ${labelPrefix}${getSiteLabel(site)} job pages were available after removing duplicates and applied roles.`,
@@ -7542,13 +7742,57 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     });
     const response = await spawnTabs(items, effectiveLimit);
     const extra = jobUrls.length > approvedUrls.length ? ` (opened ${approvedUrls.length} unique jobs from ${jobUrls.length} found)` : "";
+    const openedMessage = `Opened ${response.opened} job tabs from ${labelPrefix}${getSiteLabel(site)} search${extra}.`;
+    if (claimResult.remaining > 0) {
+      if (await continueCollectResultsOnNextPage({
+        site,
+        remainingSlots: claimResult.remaining,
+        progressMessage: `${openedMessage} Continuing to the next results page for ${claimResult.remaining} more job${claimResult.remaining === 1 ? "" : "s"}...`,
+        fallbackMessage: `${openedMessage} No additional results pages were available.`
+      })) {
+        return;
+      }
+    }
     updateStatus(
       "completed",
-      `Opened ${response.opened} job tabs from ${labelPrefix}${getSiteLabel(site)} search${extra}.`,
+      openedMessage,
       false,
       "collect-results"
     );
     await closeCurrentTab();
+  }
+  async function continueCollectResultsOnNextPage(options) {
+    const { site, remainingSlots, progressMessage, fallbackMessage } = options;
+    const safeRemainingSlots = Math.max(0, Math.floor(remainingSlots));
+    if (safeRemainingSlots <= 0) {
+      return false;
+    }
+    updateStatus(
+      "running",
+      progressMessage,
+      true,
+      "collect-results",
+      void 0,
+      safeRemainingSlots
+    );
+    const advanceResult = await advanceToNextResultsPage(site);
+    if (advanceResult === "advanced") {
+      await runCollectResultsStage(site);
+      return true;
+    }
+    if (advanceResult === "navigating") {
+      return true;
+    }
+    updateStatus(
+      "completed",
+      fallbackMessage,
+      false,
+      "collect-results",
+      void 0,
+      safeRemainingSlots
+    );
+    await closeCurrentTab();
+    return true;
   }
   async function runOpenApplyStage(site) {
     childApplicationTabOpened = false;
@@ -8885,8 +9129,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const candidates = Array.from(uniqueMap.entries()).map(
       ([key, url]) => ({ key, url })
     );
+    const safeRequested = Math.max(0, Math.floor(requested));
     if (candidates.length === 0) {
-      return [];
+      return {
+        approvedUrls: [],
+        remaining: safeRequested,
+        limit: safeRequested
+      };
     }
     try {
       const response = await chrome.runtime.sendMessage({
@@ -8895,11 +9144,23 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         candidates
       });
       if (response?.ok && Array.isArray(response.approvedUrls)) {
-        return response.approvedUrls;
+        return {
+          approvedUrls: response.approvedUrls,
+          remaining: Number.isFinite(Number(response.remaining)) ? Math.max(0, Math.floor(Number(response.remaining))) : Math.max(
+            0,
+            safeRequested - response.approvedUrls.length
+          ),
+          limit: Number.isFinite(Number(response.limit)) ? Math.max(0, Math.floor(Number(response.limit))) : safeRequested
+        };
       }
     } catch {
     }
-    return candidates.slice(0, Math.max(0, Math.floor(requested))).map((candidate) => candidate.url);
+    const approvedUrls = candidates.slice(0, safeRequested).map((candidate) => candidate.url);
+    return {
+      approvedUrls,
+      remaining: Math.max(0, safeRequested - approvedUrls.length),
+      limit: safeRequested
+    };
   }
   async function closeCurrentTab() {
     try {
@@ -9000,8 +9261,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     window.location.assign(n);
   }
-  function updateStatus(phase, message, shouldResume, nextStage = currentStage, completionKind) {
+  function updateStatus(phase, message, shouldResume, nextStage = currentStage, completionKind, jobSlots = currentJobSlots) {
     currentStage = nextStage;
+    currentJobSlots = jobSlots;
     status = createStatus(status.site, phase, message);
     renderOverlay();
     void chrome.runtime.sendMessage({
@@ -9012,6 +9274,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       label: currentLabel,
       resumeKind: currentResumeKind,
       profileId: currentProfileId,
+      jobSlots,
       completionKind
     }).catch(() => {
     });

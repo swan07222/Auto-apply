@@ -697,6 +697,23 @@ export function getJobDedupKey(url: string): string {
       .replace(/\/jobs\/search$/, "/jobs")
       .replace(/\/+/g, "/");
 
+    // Normalize Indeed tracking and detail URLs to the same job key.
+    if (hostname.includes("indeed")) {
+      const indeedJobKey =
+        parsed.searchParams.get("jk") ?? parsed.searchParams.get("vjk");
+      if (indeedJobKey) {
+        return `indeed:jk:${indeedJobKey.toLowerCase()}`;
+      }
+
+      if (
+        path.includes("/viewjob") ||
+        path.includes("/rc/clk") ||
+        path.includes("/pagead/clk")
+      ) {
+        return `${hostname}${path}`;
+      }
+    }
+
     // ── ZipRecruiter site-specific dedup ──
     // The same job can appear as /c/Company/Job/Title AND as ?lk=HASH
     // from card-based collection. We normalise both forms so they collapse

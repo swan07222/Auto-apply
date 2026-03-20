@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  findNextResultsPageAction,
   getJobResultCollectionTargetCount,
   waitForJobDetailUrls,
 } from "../src/content/searchResults";
@@ -76,5 +77,51 @@ describe("search result collection", () => {
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
       type: "extract-monster-search-results",
     });
+  });
+
+  it("finds Indeed next-page pagination controls without confusing generic next buttons", () => {
+    document.body.innerHTML = `
+      <section role="dialog" aria-modal="true">
+        <button type="button">Next</button>
+      </section>
+      <nav aria-label="pagination">
+        <a href="/jobs?q=software+engineer&start=0" aria-label="Previous Page">Previous</a>
+        <a href="/jobs?q=software+engineer&start=0" aria-current="page">1</a>
+        <a href="/jobs?q=software+engineer&start=10">2</a>
+        <a
+          href="/jobs?q=software+engineer&start=10"
+          aria-label="Next Page"
+          data-testid="pagination-page-next"
+        >
+          Next
+        </a>
+      </nav>
+    `;
+
+    const action = findNextResultsPageAction("indeed");
+
+    expect(action?.navUrl).toContain("start=10");
+  });
+
+  it("finds Dice next-page controls from pagination arrows", () => {
+    document.body.innerHTML = `
+      <nav class="pagination">
+        <button type="button" aria-label="Previous page" class="pagination-prev">Previous</button>
+        <button type="button" aria-current="page">1</button>
+        <a
+          href="https://www.dice.com/jobs?q=software%20engineer&page=2"
+          aria-label="Next page"
+          class="pagination-next"
+        >
+          >
+        </a>
+      </nav>
+    `;
+
+    const action = findNextResultsPageAction("dice");
+
+    expect(action?.navUrl).toBe(
+      "https://www.dice.com/jobs?q=software%20engineer&page=2"
+    );
   });
 });

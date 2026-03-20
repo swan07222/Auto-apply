@@ -474,7 +474,7 @@ export function pickRelevantJobUrls(
   datePostedWindow: DatePostedWindow = "any",
   searchKeywords: string[] = []
 ): string[] {
-  const valid = candidates.filter((candidate) =>
+  const valid = dedupeJobCandidates(candidates).filter((candidate) =>
     isLikelyJobDetailUrl(site, candidate.url, candidate.title, candidate.contextText)
   );
 

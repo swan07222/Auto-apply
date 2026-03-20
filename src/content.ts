@@ -124,6 +124,7 @@ import {
   waitForReadyProgressionAction as waitForReadyProgressionStep,
 } from "./content/progression";
 import {
+  advanceToNextResultsPage,
   getJobResultCollectionTargetCount,
   getPostedWindowDescription as describePostedWindow,
   scrollPageForLazyContent as scrollSearchResultsPage,
@@ -149,6 +150,12 @@ type ManagedSessionCompletionKind =
   | "successful"
   | "released"
   | "handoff";
+
+type ClaimedJobOpeningsResult = {
+  approvedUrls: string[];
+  remaining: number;
+  limit: number;
+};
 
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
 
@@ -846,6 +853,17 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   );
 
   if (jobUrls.length === 0) {
+    if (
+      await continueCollectResultsOnNextPage({
+        site,
+        remainingSlots: effectiveLimit,
+        progressMessage: `No job pages found on this ${labelPrefix}${getSiteLabel(site)} page yet. Checking the next results page...`,
+        fallbackMessage: `No job pages found on this ${labelPrefix}${getSiteLabel(site)} results page${postedWindowDescription}, and no later results pages were available.`,
+      })
+    ) {
+      return;
+    }
+
     updateStatus(
       "completed",
       `No job pages found on this ${labelPrefix}${getSiteLabel(site)} results page${postedWindowDescription}.`,
@@ -890,6 +908,17 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   });
 
   if (filteredJobUrls.length === 0) {
+    if (
+      await continueCollectResultsOnNextPage({
+        site,
+        remainingSlots: effectiveLimit,
+        progressMessage: `All visible ${labelPrefix}${getSiteLabel(site)} jobs were already applied to. Checking the next results page...`,
+        fallbackMessage: `All ${jobUrls.length} jobs on this ${labelPrefix}${getSiteLabel(site)} page were already applied to, and no later results pages were available.`,
+      })
+    ) {
+      return;
+    }
+
     updateStatus(
       "completed",
       `All ${jobUrls.length} jobs on this ${labelPrefix}${getSiteLabel(site)} page were already applied to.`,
@@ -900,12 +929,24 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     return;
   }
 
-  const approvedUrls = await claimJobOpenings(
+  const claimResult = await claimJobOpenings(
     filteredJobUrls,
     effectiveLimit
   );
+  const approvedUrls = claimResult.approvedUrls;
 
   if (approvedUrls.length === 0) {
+    if (
+      await continueCollectResultsOnNextPage({
+        site,
+        remainingSlots: claimResult.remaining,
+        progressMessage: `No new ${labelPrefix}${getSiteLabel(site)} job pages were available on this page. Checking the next results page...`,
+        fallbackMessage: `No new ${labelPrefix}${getSiteLabel(site)} job pages were available after removing duplicates and applied roles.`,
+      })
+    ) {
+      return;
+    }
+
     updateStatus(
       "completed",
       `No new ${labelPrefix}${getSiteLabel(site)} job pages were available after removing duplicates and applied roles.`,
@@ -957,15 +998,74 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     jobUrls.length > approvedUrls.length
       ? ` (opened ${approvedUrls.length} unique jobs from ${jobUrls.length} found)`
       : "";
+  const openedMessage = `Opened ${response.opened} job tabs from ${labelPrefix}${getSiteLabel(site)} search${extra}.`;
+
+  if (claimResult.remaining > 0) {
+    if (
+      await continueCollectResultsOnNextPage({
+        site,
+        remainingSlots: claimResult.remaining,
+        progressMessage: `${openedMessage} Continuing to the next results page for ${claimResult.remaining} more job${claimResult.remaining === 1 ? "" : "s"}...`,
+        fallbackMessage: `${openedMessage} No additional results pages were available.`,
+      })
+    ) {
+      return;
+    }
+  }
 
   updateStatus(
     "completed",
-    `Opened ${response.opened} job tabs from ${labelPrefix}${getSiteLabel(site)} search${extra}.`,
+    openedMessage,
     false,
     "collect-results"
   );
 
   await closeCurrentTab();
+}
+
+async function continueCollectResultsOnNextPage(options: {
+  site: SiteKey;
+  remainingSlots: number;
+  progressMessage: string;
+  fallbackMessage: string;
+}): Promise<boolean> {
+  const { site, remainingSlots, progressMessage, fallbackMessage } = options;
+  const safeRemainingSlots = Math.max(0, Math.floor(remainingSlots));
+
+  if (safeRemainingSlots <= 0) {
+    return false;
+  }
+
+  updateStatus(
+    "running",
+    progressMessage,
+    true,
+    "collect-results",
+    undefined,
+    safeRemainingSlots
+  );
+
+  const advanceResult = await advanceToNextResultsPage(site);
+
+  if (advanceResult === "advanced") {
+    await runCollectResultsStage(site);
+    return true;
+  }
+
+  if (advanceResult === "navigating") {
+    return true;
+  }
+
+  updateStatus(
+    "completed",
+    fallbackMessage,
+    false,
+    "collect-results",
+    undefined,
+    safeRemainingSlots
+  );
+  await closeCurrentTab();
+  return true;
 }
 
 
@@ -2684,7 +2784,7 @@ async function spawnTabs(
 async function claimJobOpenings(
   urls: string[],
   requested: number
-): Promise<string[]> {
+): Promise<ClaimedJobOpeningsResult> {
   const uniqueMap = new Map<string, string>();
   for (const url of urls) {
     const key = getJobDedupKey(url);
@@ -2696,9 +2796,14 @@ async function claimJobOpenings(
   const candidates = Array.from(uniqueMap.entries()).map(
     ([key, url]) => ({ key, url })
   );
+  const safeRequested = Math.max(0, Math.floor(requested));
 
   if (candidates.length === 0) {
-    return [];
+    return {
+      approvedUrls: [],
+      remaining: safeRequested,
+      limit: safeRequested,
+    };
   }
 
   try {
@@ -2712,15 +2817,32 @@ async function claimJobOpenings(
       response?.ok &&
       Array.isArray(response.approvedUrls)
     ) {
-      return response.approvedUrls as string[];
+      return {
+        approvedUrls: response.approvedUrls as string[],
+        remaining: Number.isFinite(Number(response.remaining))
+          ? Math.max(0, Math.floor(Number(response.remaining)))
+          : Math.max(
+              0,
+              safeRequested - (response.approvedUrls as string[]).length
+            ),
+        limit: Number.isFinite(Number(response.limit))
+          ? Math.max(0, Math.floor(Number(response.limit)))
+          : safeRequested,
+      };
     }
   } catch {
     // Fall back to local dedupe
   }
 
-  return candidates
-    .slice(0, Math.max(0, Math.floor(requested)))
+  const approvedUrls = candidates
+    .slice(0, safeRequested)
     .map((candidate) => candidate.url);
+
+  return {
+    approvedUrls,
+    remaining: Math.max(0, safeRequested - approvedUrls.length),
+    limit: safeRequested,
+  };
 }
 
 async function closeCurrentTab(): Promise<void> {
@@ -2871,9 +2993,11 @@ function updateStatus(
   message: string,
   shouldResume: boolean,
   nextStage: AutomationStage = currentStage,
-  completionKind?: ManagedSessionCompletionKind
+  completionKind?: ManagedSessionCompletionKind,
+  jobSlots: number | undefined = currentJobSlots
 ): void {
   currentStage = nextStage;
+  currentJobSlots = jobSlots;
   status = createStatus(status.site, phase, message);
   renderOverlay();
   void chrome.runtime
@@ -2888,6 +3012,7 @@ function updateStatus(
       label: currentLabel,
       resumeKind: currentResumeKind,
       profileId: currentProfileId,
+      jobSlots,
       completionKind,
     })
     .catch(() => { /* ignore */ });

@@ -330,6 +330,79 @@ describe("background spawn quota handling", () => {
     );
   });
 
+  it("does not claim duplicate Indeed tracking and detail URLs for the same job", async () => {
+    const runId = "run-claim-indeed-duplicate";
+    const senderTabId = 42;
+    const detailUrl = "https://www.indeed.com/viewjob?jk=alpha123";
+    const trackingUrl = "https://www.indeed.com/rc/clk?jk=alpha123&from=vj";
+    const distinctUrl = "https://www.indeed.com/viewjob?jk=beta456";
+    const runStateKey = `remote-job-search-run:${runId}`;
+    const sessionKey = `remote-job-search-session:${senderTabId}`;
+
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 3,
+          openedJobPages: 0,
+          openedJobKeys: [],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          updatedAt: 1,
+        },
+        [sessionKey]: {
+          tabId: senderTabId,
+          site: "indeed",
+          phase: "running",
+          message: "Collecting job pages...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "collect-results",
+          runId,
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "claim-job-openings",
+        requested: 3,
+        candidates: [
+          { url: detailUrl, key: getJobDedupKey(detailUrl)! },
+          { url: trackingUrl, key: getJobDedupKey(trackingUrl)! },
+          { url: distinctUrl, key: getJobDedupKey(distinctUrl)! },
+        ],
+      },
+      {
+        tab: {
+          id: senderTabId,
+          index: 0,
+        },
+      }
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      approved: 2,
+      approvedUrls: [detailUrl, distinctUrl],
+      remaining: 1,
+      limit: 3,
+    });
+    expect(chromeMock.local.state[runStateKey]).toEqual(
+      expect.objectContaining({
+        openedJobPages: 2,
+        openedJobKeys: [
+          getJobDedupKey(detailUrl),
+          getJobDedupKey(distinctUrl),
+        ],
+      })
+    );
+  });
+
   it("starts opened job tabs immediately when they are spawned from search results", async () => {
     const runId = "run-queue";
     const firstUrl = "https://www.indeed.com/viewjob?jk=alpha123";
@@ -1092,6 +1165,60 @@ describe("background spawn quota handling", () => {
       expect.objectContaining({
         openedJobPages: 1,
         openedJobKeys: [getJobDedupKey(existingJobUrl)],
+      })
+    );
+  });
+
+  it("updates stored search-tab job slots when continuing to a later results page", async () => {
+    const sessionKey = "remote-job-search-session:42";
+    const chromeMock = createBackgroundChrome(
+      {
+        [sessionKey]: {
+          tabId: 42,
+          site: "indeed",
+          phase: "running",
+          message: "Scanning Indeed results...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "collect-results",
+          runId: "run-pagination",
+          jobSlots: 5,
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "status-update",
+        status: {
+          site: "indeed",
+          phase: "running",
+          message: "Continuing to the next results page...",
+          updatedAt: 2,
+        },
+        shouldResume: true,
+        stage: "collect-results",
+        jobSlots: 2,
+      },
+      {
+        tab: {
+          id: 42,
+          url: "https://www.indeed.com/jobs?q=software+engineer",
+        },
+      }
+    );
+
+    expect(response).toEqual({ ok: true });
+    expect(chromeMock.local.state[sessionKey]).toEqual(
+      expect.objectContaining({
+        stage: "collect-results",
+        shouldResume: true,
+        jobSlots: 2,
+        message: "Continuing to the next results page...",
       })
     );
   });

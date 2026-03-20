@@ -9,6 +9,7 @@ import {
   sleep,
 } from "../shared";
 import {
+  collectDeepMatches,
   getActionText,
   getNavigationUrl,
   isElementInteractive,
@@ -30,6 +31,18 @@ import {
   includesAnyToken,
 } from "./sitePatterns";
 import { cleanText } from "./text";
+
+type SearchResultsPageAction = {
+  element: HTMLElement;
+  navUrl: string | null;
+  score: number;
+  text: string;
+};
+
+export type SearchResultsAdvanceResult =
+  | "advanced"
+  | "navigating"
+  | "none";
 
 type WaitForJobDetailUrlsOptions = {
   site: SiteKey;
@@ -529,57 +542,298 @@ function collectCareerListingActions(): Array<{
 }
 
 function tryClickLoadMoreButton(): void {
-  const loadMoreSelectors = ["button", "a[role='button']", "[role='button']"];
+  for (const el of collectDeepMatches<HTMLElement>(
+    "button, a[role='button'], [role='button']"
+  )) {
+    if (!isElementVisible(el) || !isElementInteractive(el)) {
+      continue;
+    }
 
-  for (const selector of loadMoreSelectors) {
-    try {
-      const elements = Array.from(
-        document.querySelectorAll<HTMLElement>(selector)
-      );
-      for (const el of elements) {
-        if (!isElementVisible(el)) continue;
-        const text = cleanText(el.textContent || "").toLowerCase();
-        const attrs = [
-          el.getAttribute("aria-label"),
-          el.getAttribute("title"),
-          el.getAttribute("data-testid"),
-          el.id,
-          el.className,
-        ]
-          .join(" ")
-          .toLowerCase();
-        const insidePagination = Boolean(
-          el.closest("nav, [aria-label*='pagination' i], [class*='pagination']")
-        );
+    const text = cleanText(getActionText(el)).toLowerCase();
+    const attrs = cleanText(
+      [
+        el.getAttribute("aria-label"),
+        el.getAttribute("title"),
+        el.getAttribute("data-testid"),
+        el.getAttribute("data-test"),
+        el.id,
+        el.className,
+      ]
+        .filter(Boolean)
+        .join(" ")
+    ).toLowerCase();
 
-        if (
-          text.includes("load more") ||
-          text.includes("show more") ||
-          text.includes("view more") ||
-          text.includes("see more") ||
-          text.includes("more jobs") ||
-          text.includes("more positions") ||
-          text.includes("more openings") ||
-          text.includes("view all") ||
-          text.includes("see all") ||
-          text.includes("show all") ||
-          text.includes("next page") ||
-          text.includes("load next") ||
-          text.includes("show more jobs") ||
-          text.includes("more results") ||
-          attrs.includes("next page") ||
-          attrs.includes("next results") ||
-          attrs.includes("show more jobs") ||
-          attrs.includes("load more jobs") ||
-          attrs.includes("pagination-next") ||
-          (text === "next" && insidePagination)
-        ) {
-          performClickAction(el);
-          return;
-        }
-      }
-    } catch {
-      // Skip
+    if (
+      text.includes("load more") ||
+      text.includes("show more") ||
+      text.includes("view more") ||
+      text.includes("see more") ||
+      text.includes("more jobs") ||
+      text.includes("more positions") ||
+      text.includes("more openings") ||
+      text.includes("view all") ||
+      text.includes("see all") ||
+      text.includes("show all") ||
+      text.includes("load next") ||
+      text.includes("show more jobs") ||
+      text.includes("more results") ||
+      attrs.includes("show more jobs") ||
+      attrs.includes("load more jobs")
+    ) {
+      performClickAction(el);
+      return;
     }
   }
+}
+
+export function findNextResultsPageAction(
+  site: SiteKey
+): Pick<SearchResultsPageAction, "element" | "navUrl" | "text"> | null {
+  let bestAction: SearchResultsPageAction | null = null;
+
+  for (const element of collectDeepMatches<HTMLElement>(
+    "a[href], button, input[type='button'], input[type='submit'], [role='button']"
+  )) {
+    const candidate = scoreNextResultsPageAction(element, site);
+    if (!candidate) {
+      continue;
+    }
+
+    if (!bestAction || candidate.score > bestAction.score) {
+      bestAction = candidate;
+    }
+  }
+
+  if (!bestAction) {
+    return null;
+  }
+
+  return {
+    element: bestAction.element,
+    navUrl: bestAction.navUrl,
+    text: bestAction.text,
+  };
+}
+
+export async function advanceToNextResultsPage(
+  site: SiteKey
+): Promise<SearchResultsAdvanceResult> {
+  const action = findNextResultsPageAction(site);
+  if (!action) {
+    return "none";
+  }
+
+  const beforeUrl = normalizeUrl(window.location.href);
+  const beforeSignature = getResultPageSignature(site);
+
+  if (action.navUrl && action.navUrl !== beforeUrl) {
+    window.location.assign(action.navUrl);
+    return "navigating";
+  }
+
+  performClickAction(action.element);
+  await waitForResultSurfaceSettle(site);
+
+  const afterUrl = normalizeUrl(window.location.href);
+  const afterSignature = getResultPageSignature(site);
+
+  if ((afterUrl && afterUrl !== beforeUrl) || afterSignature !== beforeSignature) {
+    return afterUrl && afterUrl !== beforeUrl ? "navigating" : "advanced";
+  }
+
+  return "none";
+}
+
+function scoreNextResultsPageAction(
+  element: HTMLElement,
+  site: SiteKey
+): SearchResultsPageAction | null {
+  if (!isElementVisible(element) || !isElementInteractive(element)) {
+    return null;
+  }
+
+  if (isDisabledPaginationElement(element)) {
+    return null;
+  }
+
+  const text = cleanText(getActionText(element)).toLowerCase();
+  const navUrl = getNavigationUrl(element);
+  const lowerNavUrl = navUrl?.toLowerCase() ?? "";
+  const attrs = cleanText(
+    [
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.getAttribute("data-testid"),
+      element.getAttribute("data-test"),
+      element.getAttribute("rel"),
+      element.id,
+      element.className,
+    ]
+      .filter(Boolean)
+      .join(" ")
+  ).toLowerCase();
+  const insidePagination = isInsidePaginationContainer(element);
+  const hasPaginationContext =
+    insidePagination ||
+    attrs.includes("pagination") ||
+    attrs.includes("paginator") ||
+    attrs.includes("pager") ||
+    lowerNavUrl.includes("page=") ||
+    lowerNavUrl.includes("offset=") ||
+    lowerNavUrl.includes("start=") ||
+    hasPaginationUrlSignal(navUrl);
+
+  if (
+    /(?:^|\b)(previous|prev|back)(?:\b|$)/.test(text) ||
+    /(?:^|\b)(previous|prev|back)(?:\b|$)/.test(attrs)
+  ) {
+    return null;
+  }
+
+  if (
+    element.getAttribute("aria-current") === "page" ||
+    element.getAttribute("aria-selected") === "true" ||
+    /^\d+$/.test(text)
+  ) {
+    return null;
+  }
+
+  const isExplicitNext =
+    text.includes("next page") ||
+    text.includes("next results") ||
+    text.includes("next jobs") ||
+    text === "next" ||
+    attrs.includes("next page") ||
+    attrs.includes("next results") ||
+    attrs.includes("next jobs") ||
+    attrs.includes("pagination-next") ||
+    attrs.includes("pager-next") ||
+    attrs.includes("rel next");
+  const isArrowNext =
+    insidePagination &&
+    ["›", "»", ">", "→", "⟩", "❯", "next"].includes(text);
+
+  if (!isExplicitNext && !isArrowNext) {
+    return null;
+  }
+
+  if (!hasPaginationContext && !text.includes("next page") && !attrs.includes("next page")) {
+    return null;
+  }
+
+  let score = 0;
+
+  if (isExplicitNext) {
+    score += 60;
+  }
+  if (isArrowNext) {
+    score += 24;
+  }
+  if (insidePagination) {
+    score += 18;
+  }
+  if (hasPaginationUrlSignal(navUrl)) {
+    score += 16;
+  }
+  if (navUrl && navUrl !== normalizeUrl(window.location.href)) {
+    score += 12;
+  }
+  if (attrs.includes("pagination-next") || attrs.includes("pager-next")) {
+    score += 12;
+  }
+  if (site === "indeed" && (attrs.includes("pagination-page-next") || attrs.includes("next page"))) {
+    score += 16;
+  }
+  if (site === "dice" && (attrs.includes("pagination") || attrs.includes("pager"))) {
+    score += 10;
+  }
+
+  return {
+    element,
+    navUrl,
+    score,
+    text,
+  };
+}
+
+function isInsidePaginationContainer(element: HTMLElement): boolean {
+  return Boolean(
+    element.closest(
+      "nav, [role='navigation'], [aria-label*='pagination' i], [class*='pagination'], [data-testid*='pagination' i], [data-test*='pagination' i], [class*='pager']"
+    )
+  );
+}
+
+function isDisabledPaginationElement(element: HTMLElement): boolean {
+  const attrs = cleanText(
+    [
+      element.getAttribute("aria-disabled"),
+      element.getAttribute("data-disabled"),
+      element.className,
+    ]
+      .filter(Boolean)
+      .join(" ")
+  ).toLowerCase();
+
+  return Boolean(
+    element.matches("[disabled], [aria-disabled='true'], [data-disabled='true']") ||
+      /(?:^|\b)(disabled|is-disabled|pagination-disabled|pager-disabled)(?:\b|$)/.test(
+        attrs
+      )
+  );
+}
+
+function hasPaginationUrlSignal(url: string | null): boolean {
+  if (!url) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(url, window.location.href);
+    const queryKeys = [
+      "page",
+      "p",
+      "pg",
+      "offset",
+      "start",
+      "fromage",
+      "pn",
+      "pageNum",
+    ];
+
+    if (
+      queryKeys.some((key) => {
+        const value = parsed.searchParams.get(key);
+        return Boolean(value && value.trim().length > 0);
+      })
+    ) {
+      return true;
+    }
+
+    return /\/page\/\d+\b|\/p\/\d+\b|\/jobs\/page\/\d+\b/i.test(
+      parsed.pathname
+    );
+  } catch {
+    return false;
+  }
+}
+
+function getResultPageSignature(site: SiteKey): string {
+  const currentUrl = normalizeUrl(window.location.href) ?? "";
+  const pageMarkers = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "[aria-current='page'], [aria-selected='true'], [data-current='true'], .selected, .active"
+    )
+  )
+    .filter((element) => isElementVisible(element))
+    .map((element) => cleanText(getActionText(element)).toLowerCase())
+    .filter(Boolean)
+    .slice(0, 6)
+    .join("|");
+  const candidateMarkers = collectJobDetailCandidates(site)
+    .slice(0, 12)
+    .map((candidate) => normalizeUrl(candidate.url) ?? candidate.url)
+    .join("|");
+
+  return [currentUrl, pageMarkers, candidateMarkers].join("::");
 }

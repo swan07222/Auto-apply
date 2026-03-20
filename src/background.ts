@@ -45,6 +45,7 @@ type BackgroundRequest =
       status: AutomationStatus;
       shouldResume?: boolean;
       stage?: AutomationStage;
+      jobSlots?: number;
       label?: string;
       resumeKind?: SpawnTabRequest["resumeKind"];
       profileId?: SpawnTabRequest["profileId"];
@@ -55,6 +56,7 @@ type BackgroundRequest =
       type: "finalize-session";
       status: AutomationStatus;
       stage?: AutomationStage;
+      jobSlots?: number;
       label?: string;
       resumeKind?: SpawnTabRequest["resumeKind"];
       profileId?: SpawnTabRequest["profileId"];
@@ -499,7 +501,10 @@ async function updateSessionFromMessage(
     shouldResume,
     stage: nextStage,
     runId: existingSession?.runId,
-    jobSlots: existingSession?.jobSlots,
+    jobSlots:
+      typeof message.jobSlots === "number" && Number.isFinite(message.jobSlots)
+        ? Math.max(0, Math.floor(message.jobSlots))
+        : existingSession?.jobSlots,
     label: message.label ?? existingSession?.label,
     resumeKind: message.resumeKind ?? existingSession?.resumeKind,
     profileId: message.profileId ?? existingSession?.profileId,

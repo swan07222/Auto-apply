@@ -389,6 +389,15 @@
       const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
       let path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
       path = path.replace(/\/job-opening\//, "/job-openings/").replace(/\/jobs\/search$/, "/jobs").replace(/\/+/g, "/");
+      if (hostname.includes("indeed")) {
+        const indeedJobKey = parsed.searchParams.get("jk") ?? parsed.searchParams.get("vjk");
+        if (indeedJobKey) {
+          return `indeed:jk:${indeedJobKey.toLowerCase()}`;
+        }
+        if (path.includes("/viewjob") || path.includes("/rc/clk") || path.includes("/pagead/clk")) {
+          return `${hostname}${path}`;
+        }
+      }
       if (hostname.includes("ziprecruiter")) {
         const jid = parsed.searchParams.get("jid");
         if (jid) return `ziprecruiter:jid:${jid.toLowerCase()}`;
@@ -999,7 +1008,7 @@
       shouldResume,
       stage: nextStage,
       runId: existingSession?.runId,
-      jobSlots: existingSession?.jobSlots,
+      jobSlots: typeof message.jobSlots === "number" && Number.isFinite(message.jobSlots) ? Math.max(0, Math.floor(message.jobSlots)) : existingSession?.jobSlots,
       label: message.label ?? existingSession?.label,
       resumeKind: message.resumeKind ?? existingSession?.resumeKind,
       profileId: message.profileId ?? existingSession?.profileId,

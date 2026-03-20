@@ -232,7 +232,16 @@ describe("shared automation target logic", () => {
     expect(workAtStartupTargets).toHaveLength(1);
   });
 
-  it("normalizes dedup keys for Monster, Glassdoor, and ATS job URLs", () => {
+  it("normalizes dedup keys for Indeed, Monster, Glassdoor, and ATS job URLs", () => {
+    expect(
+      getJobDedupKey("https://www.indeed.com/viewjob?jk=ABC123&from=serp")
+    ).toBe("indeed:jk:abc123");
+    expect(
+      getJobDedupKey("https://www.indeed.com/rc/clk?jk=ABC123&from=vj")
+    ).toBe("indeed:jk:abc123");
+    expect(
+      getJobDedupKey("https://www.indeed.com/pagead/clk?vjk=ABC123&from=mobRdr")
+    ).toBe("indeed:jk:abc123");
     expect(
       getJobDedupKey("https://www.monster.com/job-opening/frontend-engineer?jobid=ABC123")
     ).toBe("monster.com/job-openings/frontend-engineer?jobid=abc123");

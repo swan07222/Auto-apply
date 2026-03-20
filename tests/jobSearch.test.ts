@@ -213,6 +213,34 @@ describe("job search candidate filtering", () => {
     ]);
   });
 
+  it("dedupes equivalent Indeed tracking and canonical URLs for the same job", () => {
+    expect(
+      pickRelevantJobUrls(
+        [
+          {
+            url: "https://www.indeed.com/viewjob?jk=alpha123",
+            title: "Front End Engineer",
+            contextText: "Remote role. Posted today.",
+          },
+          {
+            url: "https://www.indeed.com/rc/clk?jk=alpha123&from=vj",
+            title: "Front End Engineer",
+            contextText: "Remote role. Posted today.",
+          },
+          {
+            url: "https://www.indeed.com/viewjob?jk=beta456",
+            title: "Platform Engineer",
+            contextText: "Remote role. Posted today.",
+          },
+        ],
+        "indeed"
+      )
+    ).toEqual([
+      "https://www.indeed.com/viewjob?jk=alpha123",
+      "https://www.indeed.com/viewjob?jk=beta456",
+    ]);
+  });
+
   it("keeps additional ZipRecruiter board results when only a few visible cards strongly match the keyword", () => {
     const candidates: JobCandidate[] = [
       {
