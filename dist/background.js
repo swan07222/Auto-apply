@@ -171,9 +171,6 @@
         }
       }
     }
-    if (bare === "chatgpt.com" || bare.endsWith(".chatgpt.com")) {
-      return "chatgpt";
-    }
     return null;
   }
   function createStatus(site, phase, message) {
@@ -693,7 +690,6 @@
   var RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1e3;
   var AUTOMATION_RUN_STORAGE_PREFIX = "remote-job-search-run:";
   var SESSION_STORAGE_PREFIX = "remote-job-search-session:";
-  var JOB_CONTEXT_STORAGE_PREFIX = "remote-job-search-job-context:";
   var ACTIVE_RUNS_STORAGE_KEY = "remote-job-search-active-runs";
   var runLocks = /* @__PURE__ */ new Map();
   var pendingExtensionTabSpawns = /* @__PURE__ */ new Map();
@@ -820,24 +816,6 @@
           ok: true,
           session: await getSession(message.tabId)
         };
-      case "remember-job-context": {
-        const tabId = sender.tab?.id;
-        if (tabId === void 0) {
-          return { ok: false };
-        }
-        await setJobContext(tabId, message.context);
-        return { ok: true };
-      }
-      case "get-job-context": {
-        const tabId = sender.tab?.id;
-        if (tabId === void 0) {
-          return { ok: false, context: null };
-        }
-        return {
-          ok: true,
-          context: await getJobContext(tabId)
-        };
-      }
       case "content-ready": {
         const tabId = sender.tab?.id;
         if (tabId === void 0) {
@@ -929,6 +907,9 @@
               item.profileId
             );
             session.jobSlots = item.jobSlots;
+            if (item.runId && isManagedJobStage(item.stage)) {
+              session.claimedJobKey = getJobDedupKey(item.url) || void 0;
+            }
             await setSession(session);
             if (shouldQueue && item.runId) {
               queuedRunIds.add(item.runId);
@@ -1002,7 +983,8 @@
       label: message.label ?? existingSession?.label,
       resumeKind: message.resumeKind ?? existingSession?.resumeKind,
       profileId: message.profileId ?? existingSession?.profileId,
-      controllerFrameId
+      controllerFrameId,
+      claimedJobKey: existingSession?.claimedJobKey
     };
     await setSession(nextSession);
     if (isFinal && nextSession.runId && isRateLimitedSession(nextSession)) {
@@ -1056,11 +1038,8 @@
       openerSession.profileId
     );
     childSession.jobSlots = openerSession.jobSlots;
+    childSession.claimedJobKey = openerSession.claimedJobKey;
     await setSession(childSession);
-    const rememberedJobContext = await getJobContext(openerTabId);
-    if (rememberedJobContext) {
-      await setJobContext(childTabId, rememberedJobContext);
-    }
     try {
       await chrome.tabs.sendMessage(openerTabId, {
         type: "automation-child-tab-opened"
@@ -1741,11 +1720,22 @@
       });
     });
   }
-  async function resolveManagedJobCompletionKey(tabId, fallbackUrl) {
-    const rememberedJobContext = await getJobContext(tabId);
-    return getJobDedupKey(
-      rememberedJobContext?.pageUrl ?? fallbackUrl ?? ""
-    );
+  async function resolveManagedJobCompletionKey(session, tabId, fallbackUrl) {
+    if (session?.claimedJobKey) {
+      return session.claimedJobKey;
+    }
+    if (fallbackUrl) {
+      const fallbackKey = getJobDedupKey(fallbackUrl);
+      if (fallbackKey) {
+        return fallbackKey;
+      }
+    }
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      return getJobDedupKey(getTabUrl(tab));
+    } catch {
+      return "";
+    }
   }
   async function recordSuccessfulJobCompletion(runId, tabId, fallbackUrl) {
     await withRunLock(runId, async () => {
@@ -1753,7 +1743,9 @@
       if (!runState) {
         return;
       }
+      const session = await getSession(tabId);
       const completionKey = await resolveManagedJobCompletionKey(
+        session,
         tabId,
         fallbackUrl
       );
@@ -1774,7 +1766,12 @@
     });
   }
   async function releaseManagedJobOpening(runId, tabId, fallbackUrl) {
-    const completionKey = await resolveManagedJobCompletionKey(tabId, fallbackUrl);
+    const session = await getSession(tabId);
+    const completionKey = await resolveManagedJobCompletionKey(
+      session,
+      tabId,
+      fallbackUrl
+    );
     if (!completionKey) {
       return;
     }
@@ -1848,25 +1845,9 @@
   async function removeSession(tabId) {
     const existingSession = await getSession(tabId);
     await chrome.storage.local.remove(getSessionStorageKey(tabId));
-    await removeJobContext(tabId);
     if (existingSession?.runId) {
       await removeRunStateIfUnused(existingSession.runId);
     }
-  }
-  async function getJobContext(tabId) {
-    const key = getJobContextStorageKey(tabId);
-    const stored = await chrome.storage.local.get(key);
-    return stored[key] ?? null;
-  }
-  async function setJobContext(tabId, context) {
-    const key = getJobContextStorageKey(tabId);
-    const existing = await getJobContext(tabId);
-    await chrome.storage.local.set({
-      [key]: mergeJobContexts(existing, context)
-    });
-  }
-  async function removeJobContext(tabId) {
-    await chrome.storage.local.remove(getJobContextStorageKey(tabId));
   }
   async function getRunState(runId) {
     const key = getAutomationRunStorageKey(runId);
@@ -1907,33 +1888,6 @@
   }
   function getAutomationRunStorageKey(runId) {
     return `${AUTOMATION_RUN_STORAGE_PREFIX}${runId}`;
-  }
-  function getJobContextStorageKey(tabId) {
-    return `${JOB_CONTEXT_STORAGE_PREFIX}${tabId}`;
-  }
-  function mergeJobContexts(existing, incoming) {
-    if (!existing) {
-      return incoming;
-    }
-    return {
-      title: pickPreferredText(existing.title, incoming.title),
-      company: pickPreferredText(existing.company, incoming.company),
-      description: pickPreferredText(
-        existing.description,
-        incoming.description
-      ),
-      question: incoming.question || existing.question,
-      pageUrl: incoming.pageUrl || existing.pageUrl
-    };
-  }
-  function pickPreferredText(current, next) {
-    if (!current) {
-      return next;
-    }
-    if (!next) {
-      return current;
-    }
-    return next.length >= current.length ? next : current;
   }
   function createRunId() {
     return typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -2202,8 +2156,6 @@
         return "Startup Careers";
       case "other_sites":
         return "Other Job Sites";
-      case "chatgpt":
-        return "ChatGPT";
       case "unsupported":
         return "Unsupported Site";
     }
@@ -2218,8 +2170,6 @@
         return "apply-page opener";
       case "autofill-form":
         return "application autofill";
-      case "generate-ai-answer":
-        return "ChatGPT answer generation";
     }
   }
   function delay(ms) {

@@ -43,7 +43,7 @@ For each run, the extension tracks progress across tabs, limits how many managed
 
 - Supports multiple named profiles with separate candidate data, resume, remembered answers, and custom preference answers
 - Uses saved keyword lists instead of hard-coded role presets
-- Stores one resume per profile for uploads and AI drafting
+- Stores one resume per profile for uploads
 - Stores candidate profile data for common application fields
 - Lets you choose a search region or derive it from the saved country
 - Limits how many job pages are actively processed in a run
@@ -53,7 +53,6 @@ For each run, the extension tracks progress across tabs, limits how many managed
 - Remembers answers typed into application questions and reuses them later
 - Lets you manage custom work-preference question and answer pairs directly in the popup
 - Skips jobs that already appear to be applied or submitted
-- Can open ChatGPT to draft longer written responses using job context and the selected resume
 - Pauses when a site presents human verification and resumes after the challenge is cleared
 
 ## How It Works
@@ -63,7 +62,7 @@ For each run, the extension tracks progress across tabs, limits how many managed
 3. The extension opens targeted search or career pages from the saved keywords.
 4. It collects job links, opens job pages or application pages, and tries to continue into the apply flow.
 5. On supported forms, it fills common fields, reuses remembered answers, and uploads the active profile resume.
-6. If a long-form question needs help, it can hand off context to ChatGPT and paste the generated answer back into the form.
+6. As you answer new application questions, the extension remembers them for reuse on later forms.
 
 ## Build
 
@@ -134,13 +133,12 @@ The extension stores its working data locally in Chrome extension storage, inclu
 
 - External career sites vary widely, so autofill behavior is heuristic and should always be reviewed manually.
 - Human verification, CAPTCHA, and anti-bot flows still require user intervention.
-- ChatGPT-assisted answer generation depends on being signed in to `chatgpt.com`, and UI changes there may require selector updates.
 - Broad host permissions are currently used so the content script can operate across job boards, startup career sites, and external application pages.
 
 ## Project Structure
 
 - `src/background.ts`: Background service worker and tab/session orchestration
-- `src/content.ts`: Search collection, apply-flow handling, autofill logic, answer memory, and ChatGPT handoff
+- `src/content.ts`: Search collection, apply-flow handling, autofill logic, and answer memory
 - `src/popup.ts`: Popup UI behavior and settings management
 - `src/shared.ts`: Shared types, settings, curated targets, and helper utilities
 - `scripts/build.mjs`: Build pipeline

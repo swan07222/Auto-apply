@@ -2,8 +2,6 @@
 // COMPLETE FILE — Part 1 of 3
 
 import {
-  AiAnswerRequest,
-  AiAnswerResponse,
   AutomationPhase,
   AutomationSession,
   AutomationSettings,
@@ -11,7 +9,6 @@ import {
   AutomationStatus,
   DatePostedWindow,
   JobBoardSite,
-  JobContextSnapshot,
   ResumeAsset,
   ResumeKind,
   SavedAnswer,
@@ -22,8 +19,6 @@ import {
   buildSearchTargets,
   createStatus,
   detectBrokenPageReason,
-  deleteAiAnswerRequest,
-  deleteAiAnswerResponse,
   getResumeKindLabel,
   getJobDedupKey,
   getSiteLabel,
@@ -33,13 +28,9 @@ import {
   isProbablyHumanVerificationPage,
   normalizeQuestionKey,
   parseSearchKeywords,
-  readAiAnswerRequest,
-  readAiAnswerResponse,
   readAutomationSettings,
   resolveAutomationSettingsForProfile,
   sleep,
-  writeAiAnswerRequest,
-  writeAiAnswerResponse,
   writeAutomationSettings,
   detectSiteFromUrl,
 } from "./shared";
@@ -47,21 +38,16 @@ import {
   ApplyAction,
   AutofillField,
   AutofillResult,
-  EssayFieldCandidate,
   ProgressionAction,
 } from "./content/types";
 import {
   getFieldDescriptor,
   isFieldRequired,
-  getOptionLabelText,
   getQuestionText,
-  isConsentField,
   isSelectBlank,
   isTextLikeInput,
   matchesDescriptor,
-  normalizeBooleanAnswer,
   readFieldAnswerForMemory,
-  scoreChoiceMatch,
   setFieldValue,
   shouldAutofillField,
   shouldOverwriteAutofillValue,
@@ -78,10 +64,12 @@ import {
 import {
   cssEscape,
   cleanText,
-  normalizeChoiceText,
-  textSimilarity,
-  truncateText,
 } from "./content/text";
+import {
+  applyAnswerToCheckbox,
+  applyAnswerToRadioGroup,
+  selectOptionByAnswer,
+} from "./content/choiceFill";
 import {
   getResumeAssetUploadKey,
   getSelectedFileName,
@@ -136,21 +124,6 @@ import {
   waitForJobDetailUrls as collectJobDetailUrls,
 } from "./content/searchResults";
 import { hasPendingResumeUploadSurface } from "./content/resumeStep";
-import {
-  buildChatGptPrompt,
-  copyTextToClipboard,
-  setComposerValue,
-  submitChatGptPrompt,
-  waitForChatGptAnswerText,
-  waitForChatGptComposer,
-} from "./content/chatGpt";
-import {
-  buildChatGptRequestUrl,
-  extractCurrentJobContextSnapshot,
-  isUsefulJobContextSnapshot,
-  mergeJobContextSnapshots,
-  prepareResumeAssetForAi,
-} from "./content/jobContext";
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -179,8 +152,6 @@ function createEmptyAutofillResult(): AutofillResult {
     usedSavedAnswers: 0,
     usedProfileAnswers: 0,
     uploadedResume: null,
-    generatedAiAnswers: 0,
-    copiedAiAnswers: 0,
   };
 }
 
@@ -191,8 +162,6 @@ function mergeAutofillResult(
   target.filledFields += source.filledFields;
   target.usedSavedAnswers += source.usedSavedAnswers;
   target.usedProfileAnswers += source.usedProfileAnswers;
-  target.generatedAiAnswers += source.generatedAiAnswers;
-  target.copiedAiAnswers += source.copiedAiAnswers;
   if (!target.uploadedResume && source.uploadedResume)
     target.uploadedResume = source.uploadedResume;
 }
@@ -609,11 +578,7 @@ async function runAutomation(): Promise<void> {
 
   switch (currentStage) {
     case "bootstrap":
-      if (
-        status.site === "startup" ||
-        status.site === "other_sites" ||
-        status.site === "chatgpt"
-      ) {
+      if (status.site === "startup" || status.site === "other_sites") {
         throw new Error(
           "Curated search should begin on a search-result tab."
         );
@@ -628,9 +593,6 @@ async function runAutomation(): Promise<void> {
       return;
     case "autofill-form":
       await runAutofillStage(status.site);
-      return;
-    case "generate-ai-answer":
-      await runGenerateAiAnswerStage();
       return;
   }
 }
@@ -876,7 +838,6 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
 
 async function runOpenApplyStage(site: SiteKey): Promise<void> {
   childApplicationTabOpened = false;
-  await rememberCurrentJobContextIfUseful();
 
   stageDepth += 1;
   if (stageDepth > MAX_STAGE_DEPTH) {
@@ -1433,7 +1394,6 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
   await waitForHumanVerificationToClear();
   throwIfRateLimited(site);
   await waitForLikelyApplicationSurface(site);
-  await rememberCurrentJobContextIfUseful();
 
   const standaloneFrameUrl = findStandaloneApplicationFrameUrl();
   if (standaloneFrameUrl) {
@@ -1766,81 +1726,6 @@ async function waitForHumanVerificationToClear(): Promise<void> {
 
 // ─── CHATGPT AI ANSWER ──────────────────────────────────────────────────────
 
-async function runGenerateAiAnswerStage(): Promise<void> {
-  const requestId = new URL(
-    window.location.href
-  ).searchParams.get("remoteJobSearchRequest");
-  if (!requestId)
-    throw new Error("Missing ChatGPT request details.");
-
-  const request = await readAiAnswerRequest(requestId);
-  if (!request)
-    throw new Error("Saved ChatGPT request not found.");
-
-  updateStatus(
-    "running",
-    `Drafting answer for "${truncateText(request.job.question, 70)}"...`,
-    true,
-    "generate-ai-answer"
-  );
-
-  try {
-    const settings = await readCurrentAutomationSettings();
-    await waitForHumanVerificationToClear();
-    const composer = await waitForChatGptComposer();
-    if (!composer)
-      throw new Error(
-        "ChatGPT composer not found. Are you signed in?"
-      );
-
-    const prompt = buildChatGptPrompt(
-      request,
-      getAvailableAnswers(settings)
-    );
-
-    const promptInserted = await setComposerValue(composer, prompt);
-    if (!promptInserted) {
-      throw new Error("Could not enter the prompt into ChatGPT.");
-    }
-
-    await submitChatGptPrompt(composer, prompt);
-    const answer = await waitForChatGptAnswerText();
-    if (!answer)
-      throw new Error(
-        "ChatGPT did not return an answer in time."
-      );
-
-    const copied = await copyTextToClipboard(answer);
-    await writeAiAnswerResponse({
-      id: request.id,
-      answer,
-      copiedToClipboard: copied,
-      updatedAt: Date.now(),
-    });
-
-    updateStatus(
-      "completed",
-      copied
-        ? "ChatGPT drafted and copied the answer."
-        : "ChatGPT drafted the answer.",
-      false,
-      "generate-ai-answer"
-    );
-    await closeCurrentTab();
-  } catch (error: unknown) {
-    const msg =
-      error instanceof Error ? error.message : "ChatGPT failed.";
-    await writeAiAnswerResponse({
-      id: request.id,
-      answer: "",
-      error: msg,
-      copiedToClipboard: false,
-      updatedAt: Date.now(),
-    });
-    throw error;
-  }
-}
-
 // src/content.ts
 // Part 3 of 3 – continues from Part 2
 
@@ -1890,14 +1775,6 @@ function collectResumeFileInputs(): HTMLInputElement[] {
   );
 }
 
-function collectEssayInputFields(): Array<
-  HTMLInputElement | HTMLTextAreaElement
-> {
-  return collectDeepMatches<
-    HTMLInputElement | HTMLTextAreaElement
-  >("textarea, input[type='text']");
-}
-
 async function autofillVisibleApplication(
   settings: AutomationSettings
 ): Promise<AutofillResult> {
@@ -1908,31 +1785,6 @@ async function autofillVisibleApplication(
   if (settings.autoUploadResumes) {
     const uploaded = await uploadResumeIfNeeded(settings);
     if (uploaded) result.uploadedResume = uploaded;
-  }
-
-  const essayFields = collectEssayFieldsNeedingAi(settings).sort(
-    (left, right) => Number(isFieldRequired(right.field)) - Number(isFieldRequired(left.field))
-  );
-  for (const candidate of essayFields) {
-    const generated = await generateAiAnswerForField(
-      candidate,
-      settings
-    );
-    const targetField =
-      resolveEssayTargetField(candidate) ?? candidate.field;
-    if (
-      generated?.answer &&
-      await applyGeneratedEssayAnswer(
-        targetField,
-        generated.answer
-      )
-    ) {
-      rememberAnswer(candidate.question, generated.answer);
-      await flushPendingAnswers();
-      result.filledFields += 1;
-      result.generatedAiAnswers += 1;
-      if (generated.copiedToClipboard) result.copiedAiAnswers += 1;
-    }
   }
 
   const processedGroups = new Set<string>();
@@ -2242,189 +2094,6 @@ function shouldUseFileInputForResume(
   return false;
 }
 
-function collectEssayFieldsNeedingAi(
-  settings: AutomationSettings
-): EssayFieldCandidate[] {
-  const result: EssayFieldCandidate[] = [];
-  for (const field of collectEssayInputFields()) {
-    if (!shouldAutofillField(field) || field.value.trim())
-      continue;
-    const question = getQuestionText(field);
-    if (
-      !question ||
-      !isAiEssayQuestion(field, question) ||
-      getAnswerForField(field, settings)
-    )
-      continue;
-    result.push({
-      field,
-      question,
-      descriptor: getFieldDescriptor(field, question),
-    });
-  }
-  return result;
-}
-
-function isAiEssayQuestion(
-  field: HTMLInputElement | HTMLTextAreaElement,
-  question: string
-): boolean {
-  const desc = getFieldDescriptor(field, question);
-  const signals = [
-    "cover letter",
-    "why are you interested",
-    "why are you a fit",
-    "why do you want",
-    "why this job",
-    "why this role",
-    "why this company",
-    "why should we hire you",
-    "tell us why",
-    "tell us about yourself",
-    "motivation",
-    "interest in this role",
-    "additional information",
-    "anything else",
-    "describe your experience",
-    "what makes you",
-  ];
-  if (signals.some((s) => desc.includes(normalizeChoiceText(s))))
-    return true;
-  return (
-    field instanceof HTMLTextAreaElement &&
-    desc.length > 12 &&
-    !matchesDescriptor(desc, [
-      "address",
-      "city",
-      "country",
-      "state",
-      "phone",
-      "email",
-      "linkedin",
-      "portfolio",
-      "name",
-    ])
-  );
-}
-
-async function generateAiAnswerForField(
-  candidate: EssayFieldCandidate,
-  settings: AutomationSettings
-): Promise<AiAnswerResponse | null> {
-  const resume = await prepareResumeAssetForAi(
-    pickResumeAsset(settings)
-  );
-  const requestId =
-    crypto.randomUUID?.() ??
-    `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const request: AiAnswerRequest = {
-    id: requestId,
-    createdAt: Date.now(),
-    resumeKind: currentResumeKind,
-    resume: resume ?? undefined,
-    candidate: settings.candidate,
-    job: await captureJobContextSnapshot(candidate.question),
-  };
-
-  try {
-    await flushPendingAnswers();
-    await deleteAiAnswerResponse(requestId);
-    await writeAiAnswerRequest(request);
-    updateStatus(
-      "running",
-      `Opening ChatGPT for "${truncateText(candidate.question, 60)}"...`,
-      true,
-      "autofill-form"
-    );
-    await spawnTabs([
-      {
-        url: buildChatGptRequestUrl(requestId),
-        site: "chatgpt",
-        stage: "generate-ai-answer",
-        runId: currentRunId,
-        active: false,
-        label: currentLabel,
-        resumeKind: currentResumeKind,
-        profileId: currentProfileId,
-      },
-    ]);
-
-    const response = await waitForAiAnswerResponse(
-      requestId,
-      180_000
-    );
-    if (response?.error) {
-      updateStatus(
-        "running",
-        `ChatGPT error: ${response.error}`,
-        true,
-        "autofill-form"
-      );
-      return null;
-    }
-    return response;
-  } finally {
-    await deleteAiAnswerRequest(requestId);
-    await deleteAiAnswerResponse(requestId);
-  }
-}
-
-async function waitForAiAnswerResponse(
-  requestId: string,
-  timeoutMs: number
-): Promise<AiAnswerResponse | null> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const r = await readAiAnswerResponse(requestId);
-    if (r?.answer || r?.error) return r;
-    await sleep(1500);
-  }
-  return null;
-}
-
-async function captureJobContextSnapshot(
-  question: string
-): Promise<JobContextSnapshot> {
-  const current = extractCurrentJobContextSnapshot(question);
-  await rememberCurrentJobContextIfUseful(question, current);
-
-  const remembered = await readRememberedJobContext();
-  return mergeJobContextSnapshots(
-    remembered,
-    current,
-    question
-  );
-}
-
-async function rememberCurrentJobContextIfUseful(
-  question = "",
-  context = extractCurrentJobContextSnapshot(question)
-): Promise<void> {
-  if (!isUsefulJobContextSnapshot(context)) {
-    return;
-  }
-
-  try {
-    await chrome.runtime.sendMessage({
-      type: "remember-job-context",
-      context,
-    });
-  } catch {
-    // Ignore persistence failures.
-  }
-}
-
-async function readRememberedJobContext(): Promise<JobContextSnapshot | null> {
-  try {
-    const response = await chrome.runtime.sendMessage({
-      type: "get-job-context",
-    });
-    return (response?.context as JobContextSnapshot | undefined) ?? null;
-  } catch {
-    return null;
-  }
-}
-
 // ─── FIELD ANSWER LOGIC ─────────────────────────────────────────────────────
 
 function getAnswerForField(
@@ -2653,17 +2322,14 @@ function applyAnswerToField(
 ): boolean {
   if (!answer.trim()) return false;
   if (field instanceof HTMLInputElement && field.type === "radio")
-    return applyAnswerToRadioGroup(field, answer);
+    return applyAnswerToRadioGroup(field, answer, allowOverwrite);
   if (
     field instanceof HTMLInputElement &&
     field.type === "checkbox"
   )
     return applyAnswerToCheckbox(field, answer);
   if (field instanceof HTMLSelectElement) {
-    if (
-      !isSelectBlank(field) &&
-      (!allowOverwrite || !shouldOverwriteAutofillValue(field, answer))
-    ) {
+    if (!isSelectBlank(field) && !allowOverwrite) {
       return false;
     }
     return selectOptionByAnswer(field, answer);
@@ -2695,247 +2361,6 @@ function applyAnswerToField(
     return true;
   }
   return false;
-}
-
-async function applyGeneratedEssayAnswer(
-  field: HTMLInputElement | HTMLTextAreaElement,
-  answer: string
-): Promise<boolean> {
-  if (!answer.trim()) {
-    return false;
-  }
-
-  field.focus();
-  try {
-    await copyTextToClipboard(answer);
-  } catch {
-    // Ignore clipboard failures.
-  }
-
-  trySelectTextField(field);
-  const inserted = tryInsertTextIntoField(field, answer);
-  if (!inserted) {
-    setFieldValue(field, answer);
-  } else {
-    field.dispatchEvent(
-      new InputEvent("input", {
-        bubbles: true,
-        data: answer,
-        inputType: "insertFromPaste",
-      })
-    );
-    field.dispatchEvent(
-      new Event("change", { bubbles: true })
-    );
-    field.dispatchEvent(
-      new Event("blur", { bubbles: true })
-    );
-  }
-
-  const appliedValue = cleanText(field.value);
-
-  return (
-    appliedValue === cleanText(answer) ||
-    appliedValue.length >= Math.min(cleanText(answer).length, 40)
-  );
-}
-
-function resolveEssayTargetField(
-  candidate: EssayFieldCandidate
-): HTMLInputElement | HTMLTextAreaElement | null {
-  if (
-    candidate.field.isConnected &&
-    shouldAutofillField(candidate.field) &&
-    !candidate.field.value.trim()
-  ) {
-    return candidate.field;
-  }
-
-  let best:
-    | {
-        field: HTMLInputElement | HTMLTextAreaElement;
-        score: number;
-      }
-    | undefined;
-
-  for (const field of collectEssayInputFields()) {
-    if (!shouldAutofillField(field) || field.value.trim()) {
-      continue;
-    }
-
-    const question = getQuestionText(field);
-    const descriptor = getFieldDescriptor(field, question);
-    const currentKey = normalizeQuestionKey(question);
-    const candidateKey = normalizeQuestionKey(candidate.question);
-    let score = Math.max(
-      textSimilarity(candidate.question, question),
-      textSimilarity(candidate.descriptor, descriptor)
-    );
-
-    if (
-      currentKey &&
-      candidateKey &&
-      (currentKey.includes(candidateKey) ||
-        candidateKey.includes(currentKey))
-    ) {
-      score = Math.max(score, 0.92);
-    }
-
-    if (!best || score > best.score) {
-      best = { field, score };
-    }
-  }
-
-  return best && best.score >= 0.55 ? best.field : null;
-}
-
-function trySelectTextField(
-  field: HTMLInputElement | HTMLTextAreaElement
-): void {
-  try {
-    field.focus();
-    field.select();
-    if ("setSelectionRange" in field) {
-      field.setSelectionRange(0, field.value.length);
-    }
-  } catch {
-    // Ignore selection failures.
-  }
-}
-
-function tryInsertTextIntoField(
-  field: HTMLInputElement | HTMLTextAreaElement,
-  answer: string
-): boolean {
-  field.focus();
-
-  try {
-    return document.execCommand("insertText", false, answer);
-  } catch {
-    return false;
-  }
-}
-
-function applyAnswerToRadioGroup(
-  field: HTMLInputElement,
-  answer: string
-): boolean {
-  const radios = getGroupedInputs(field, "radio");
-  if (radios.some((r) => r.checked)) return false;
-  const best = findBestChoice(radios, answer);
-  if (!best) return false;
-  best.checked = true;
-  best.dispatchEvent(new Event("input", { bubbles: true }));
-  best.dispatchEvent(new Event("change", { bubbles: true }));
-  return true;
-}
-
-function applyAnswerToCheckbox(
-  field: HTMLInputElement,
-  answer: string
-): boolean {
-  const boxes = getGroupedInputs(field, "checkbox");
-  if (boxes.length > 1) {
-    const values = answer
-      .split(/[,;|]/)
-      .map((e) => normalizeChoiceText(e))
-      .filter(Boolean);
-    if (!values.length) return false;
-    let changed = false;
-    for (const box of boxes) {
-      const opt = normalizeChoiceText(
-        getOptionLabelText(box) || box.value
-      );
-      if (
-        values.some(
-          (v) => opt.includes(v) || v.includes(opt)
-        ) &&
-        !box.checked
-      ) {
-        box.checked = true;
-        box.dispatchEvent(
-          new Event("input", { bubbles: true })
-        );
-        box.dispatchEvent(
-          new Event("change", { bubbles: true })
-        );
-        changed = true;
-      }
-    }
-    return changed;
-  }
-  if (isConsentField(field)) return false;
-  const bool = normalizeBooleanAnswer(answer);
-  if (bool === null || field.checked === bool) return false;
-  field.checked = bool;
-  field.dispatchEvent(new Event("input", { bubbles: true }));
-  field.dispatchEvent(new Event("change", { bubbles: true }));
-  return true;
-}
-
-function selectOptionByAnswer(
-  select: HTMLSelectElement,
-  answer: string
-): boolean {
-  const norm = normalizeChoiceText(answer);
-  let bestOpt: HTMLOptionElement | null = null,
-    bestScore = -1;
-  for (const opt of Array.from(select.options)) {
-    const score = scoreChoiceMatch(
-      norm,
-      `${normalizeChoiceText(opt.textContent || "")} ${normalizeChoiceText(opt.value)}`
-    );
-    if (score > bestScore) {
-      bestOpt = opt;
-      bestScore = score;
-    }
-  }
-  if (!bestOpt || bestScore <= 0) return false;
-  if (select.value === bestOpt.value) return false;
-  select.value = bestOpt.value;
-  select.dispatchEvent(new Event("input", { bubbles: true }));
-  select.dispatchEvent(new Event("change", { bubbles: true }));
-  return true;
-}
-
-function findBestChoice(
-  inputs: HTMLInputElement[],
-  answer: string
-): HTMLInputElement | null {
-  const norm = normalizeChoiceText(answer);
-  let best: HTMLInputElement | null = null,
-    bestScore = -1;
-  for (const input of inputs) {
-    const score = scoreChoiceMatch(
-      norm,
-      normalizeChoiceText(
-        `${getOptionLabelText(input)} ${input.value}`
-      )
-    );
-    if (score > bestScore) {
-      best = input;
-      bestScore = score;
-    }
-  }
-  return best && bestScore > 0 ? best : null;
-}
-
-function getGroupedInputs(
-  field: HTMLInputElement,
-  type: "radio" | "checkbox"
-): HTMLInputElement[] {
-  if (!field.name) return [field];
-  try {
-    return Array.from(
-      (
-        field.form ?? document
-      ).querySelectorAll<HTMLInputElement>(
-        `input[type='${type}'][name='${cssEscape(field.name)}']`
-      )
-    );
-  } catch {
-    return [field];
-  }
 }
 
 async function spawnTabs(
@@ -3323,10 +2748,6 @@ function buildAutofillSummary(
   if (result.usedProfileAnswers > 0)
     parts.push(
       `used ${result.usedProfileAnswers} profile value${result.usedProfileAnswers === 1 ? "" : "s"}`
-    );
-  if (result.generatedAiAnswers > 0)
-    parts.push(
-      `generated ${result.generatedAiAnswers} ChatGPT answer${result.generatedAiAnswers === 1 ? "" : "s"}`
     );
   return parts.length === 0
     ? "Application opened, nothing auto-filled."

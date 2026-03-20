@@ -1817,7 +1817,5 @@ function getSiteRoot(site: SiteKey): string {
     case "startup":
     case "other_sites":
       return window.location.hostname.toLowerCase();
-    case "chatgpt":
-      return "chatgpt.com";
   }
 }

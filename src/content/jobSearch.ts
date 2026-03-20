@@ -382,8 +382,6 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
         ...collectFallbackJobCandidates(),
       ]);
 
-    case "chatgpt":
-      return [];
   }
 }
 
@@ -880,8 +878,6 @@ export function isLikelyJobDetailUrl(
       return false;
     }
 
-    case "chatgpt":
-      return false;
   }
 }
 

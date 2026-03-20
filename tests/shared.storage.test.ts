@@ -8,22 +8,14 @@ import {
   STARTUP_COMPANIES_FEED_URL,
   createAutomationProfile,
   getActiveAutomationProfile,
-  getAiRequestStorageKey,
-  getAiResponseStorageKey,
   hasConfiguredSearchKeywords,
   parseSearchKeywords,
-  readAiAnswerRequest,
-  readAiAnswerResponse,
   readAutomationSettings,
   readStartupCompanyCache,
   refreshStartupCompanies,
   resolveAutomationSettingsForProfile,
   sanitizeAutomationSettings,
-  writeAiAnswerRequest,
-  writeAiAnswerResponse,
   writeAutomationSettings,
-  deleteAiAnswerRequest,
-  deleteAiAnswerResponse,
 } from "../src/shared";
 import { createMockChromeStorageLocal } from "./helpers/mockChromeStorage";
 
@@ -222,107 +214,6 @@ describe("shared storage and profile helpers", () => {
     expect(settings.profiles["profile-a"]?.answers.impact?.value).toBe(
       "Impact and scope."
     );
-  });
-
-  it("reads, sanitizes, and deletes AI answer requests and responses", async () => {
-    const local = installMockChrome();
-
-    await writeAiAnswerRequest({
-      id: "req-1",
-      createdAt: 1,
-      resumeKind: "front_end",
-      resume: createResumeAsset("resume.pdf", 5),
-      candidate: {
-        fullName: "Ada Lovelace",
-        email: "ada@example.com",
-        phone: "",
-        city: "",
-        state: "",
-        country: "United Kingdom",
-        linkedinUrl: "",
-        portfolioUrl: "",
-        currentCompany: "",
-        yearsExperience: "",
-        workAuthorization: "",
-        needsSponsorship: "",
-        willingToRelocate: "",
-      },
-      job: {
-        title: "Frontend Engineer",
-        company: "Example Co",
-        description: "Build UI systems",
-        question: "Why this role?",
-        pageUrl: "https://example.com/jobs/1",
-      },
-    });
-
-    local.state[getAiRequestStorageKey("req-invalid")] = {
-      id: " req-invalid ",
-      createdAt: "not-a-number",
-      resumeKind: "invalid-kind",
-      candidate: {
-        fullName: "  Grace Hopper ",
-      },
-      job: {
-        title: " Platform Engineer ",
-      },
-    };
-
-    await writeAiAnswerResponse({
-      id: "req-1",
-      answer: "I enjoy ownership.",
-      copiedToClipboard: true,
-      updatedAt: 10,
-    });
-
-    local.state[getAiResponseStorageKey("req-invalid")] = {
-      id: " req-invalid ",
-      answer: "  I like distributed systems. ",
-      error: "  ",
-      copiedToClipboard: 0,
-      updatedAt: "bad",
-    };
-
-    expect(await readAiAnswerRequest("req-1")).toEqual(
-      expect.objectContaining({
-        id: "req-1",
-        resumeKind: "front_end",
-      })
-    );
-    expect(await readAiAnswerRequest("req-invalid")).toEqual(
-      expect.objectContaining({
-        id: "req-invalid",
-        resumeKind: undefined,
-        candidate: expect.objectContaining({
-          fullName: "Grace Hopper",
-        }),
-        job: expect.objectContaining({
-          title: "Platform Engineer",
-        }),
-      })
-    );
-
-    expect(await readAiAnswerResponse("req-1")).toEqual(
-      expect.objectContaining({
-        id: "req-1",
-        answer: "I enjoy ownership.",
-        copiedToClipboard: true,
-      })
-    );
-    expect(await readAiAnswerResponse("req-invalid")).toEqual(
-      expect.objectContaining({
-        id: "req-invalid",
-        answer: "I like distributed systems.",
-        error: undefined,
-        copiedToClipboard: false,
-      })
-    );
-
-    await deleteAiAnswerRequest("req-1");
-    await deleteAiAnswerResponse("req-1");
-
-    expect(local.state[getAiRequestStorageKey("req-1")]).toBeUndefined();
-    expect(local.state[getAiResponseStorageKey("req-1")]).toBeUndefined();
   });
 
   it("returns a sanitized startup cache when present", async () => {

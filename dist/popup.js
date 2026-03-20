@@ -49357,8 +49357,7 @@
     monster: "Monster",
     glassdoor: "Glassdoor",
     startup: "Startup Careers",
-    other_sites: "Other Job Sites",
-    chatgpt: "ChatGPT"
+    other_sites: "Other Job Sites"
   };
   var STARTUP_REGION_LABELS = {
     auto: "Auto",
@@ -49456,9 +49455,6 @@
           return "glassdoor";
         }
       }
-    }
-    if (bare === "chatgpt.com" || bare.endsWith(".chatgpt.com")) {
-      return "chatgpt";
     }
     return null;
   }

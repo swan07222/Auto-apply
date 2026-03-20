@@ -490,6 +490,7 @@ describe("background spawn quota handling", () => {
           shouldResume: true,
           stage: "autofill-form",
           runId,
+          claimedJobKey: getJobDedupKey(firstUrl),
         },
         "remote-job-search-session:102": {
           tabId: 102,
@@ -501,13 +502,6 @@ describe("background spawn quota handling", () => {
           shouldResume: false,
           stage: "open-apply",
           runId,
-        },
-        "remote-job-search-job-context:101": {
-          title: "Front End Engineer",
-          company: "Example",
-          description: "Description",
-          question: "",
-          pageUrl: firstUrl,
         },
       },
       vi.fn()
@@ -530,7 +524,7 @@ describe("background spawn quota handling", () => {
       {
         tab: {
           id: 101,
-          url: firstUrl,
+          url: "https://boards.greenhouse.io/example/jobs/123/apply",
         },
       }
     );
@@ -581,13 +575,7 @@ describe("background spawn quota handling", () => {
           shouldResume: true,
           stage: "autofill-form",
           runId,
-        },
-        "remote-job-search-job-context:101": {
-          title: "Front End Engineer",
-          company: "Example",
-          description: "Description",
-          question: "",
-          pageUrl: firstUrl,
+          claimedJobKey: getJobDedupKey(firstUrl),
         },
       },
       vi.fn()
@@ -610,7 +598,7 @@ describe("background spawn quota handling", () => {
       {
         tab: {
           id: 101,
-          url: firstUrl,
+          url: "https://boards.greenhouse.io/example/jobs/123/apply",
         },
         frameId: 0,
       }
@@ -654,6 +642,7 @@ describe("background spawn quota handling", () => {
           shouldResume: true,
           stage: "open-apply",
           runId,
+          claimedJobKey: getJobDedupKey(firstUrl),
         },
         "remote-job-search-session:102": {
           tabId: 102,
@@ -665,13 +654,6 @@ describe("background spawn quota handling", () => {
           shouldResume: false,
           stage: "open-apply",
           runId,
-        },
-        "remote-job-search-job-context:101": {
-          title: "Front End Engineer",
-          company: "Example",
-          description: "Description",
-          question: "",
-          pageUrl: firstUrl,
         },
       },
       vi.fn()
@@ -695,7 +677,7 @@ describe("background spawn quota handling", () => {
       {
         tab: {
           id: 101,
-          url: firstUrl,
+          url: "https://boards.greenhouse.io/example/jobs/123/apply",
         },
         frameId: 0,
       }
@@ -746,6 +728,7 @@ describe("background spawn quota handling", () => {
           shouldResume: true,
           stage: "autofill-form",
           runId,
+          claimedJobKey: getJobDedupKey(firstUrl),
         },
         "remote-job-search-session:102": {
           tabId: 102,
@@ -758,13 +741,6 @@ describe("background spawn quota handling", () => {
           stage: "autofill-form",
           runId,
           controllerFrameId: 9,
-        },
-        "remote-job-search-job-context:101": {
-          title: "Front End Engineer",
-          company: "Example",
-          description: "Description",
-          question: "",
-          pageUrl: firstUrl,
         },
       },
       vi.fn()
@@ -788,7 +764,7 @@ describe("background spawn quota handling", () => {
       {
         tab: {
           id: 101,
-          url: firstUrl,
+          url: "https://boards.greenhouse.io/example/jobs/123/apply",
         },
         frameId: 0,
       }

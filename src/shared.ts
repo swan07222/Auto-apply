@@ -8,9 +8,8 @@ export type SiteKey =
   | "monster"
   | "glassdoor"
   | "startup"
-  | "other_sites"
-  | "chatgpt";
-export type JobBoardSite = Exclude<SiteKey, "startup" | "other_sites" | "chatgpt">;
+  | "other_sites";
+export type JobBoardSite = Exclude<SiteKey, "startup" | "other_sites">;
 export type ResumeKind = "front_end" | "back_end" | "full_stack";
 export type SearchMode = "job_board" | "startup_careers" | "other_job_sites";
 export type StartupRegion = "auto" | "us" | "uk" | "eu";
@@ -19,8 +18,7 @@ export type AutomationStage =
   | "bootstrap"
   | "collect-results"
   | "open-apply"
-  | "autofill-form"
-  | "generate-ai-answer";
+  | "autofill-form";
 export type AutomationPhase =
   | "idle"
   | "running"
@@ -45,6 +43,7 @@ export interface AutomationSession extends AutomationStatus {
   resumeKind?: ResumeKind;
   profileId?: string;
   controllerFrameId?: number;
+  claimedJobKey?: string;
 }
 
 export interface SearchTarget {
@@ -86,14 +85,6 @@ export interface SpawnTabRequest {
   keyword?: string;
 }
 
-export interface JobContextSnapshot {
-  title: string;
-  company: string;
-  description: string;
-  question: string;
-  pageUrl: string;
-}
-
 export interface ResumeAsset {
   name: string;
   type: string;
@@ -106,23 +97,6 @@ export interface ResumeAsset {
 export interface SavedAnswer {
   question: string;
   value: string;
-  updatedAt: number;
-}
-
-export interface AiAnswerRequest {
-  id: string;
-  createdAt: number;
-  resumeKind?: ResumeKind;
-  resume?: ResumeAsset;
-  candidate: CandidateProfile;
-  job: JobContextSnapshot;
-}
-
-export interface AiAnswerResponse {
-  id: string;
-  answer: string;
-  error?: string;
-  copiedToClipboard: boolean;
   updatedAt: number;
 }
 
@@ -176,7 +150,6 @@ export const SUPPORTED_SITE_LABELS: Record<SiteKey, string> = {
   glassdoor: "Glassdoor",
   startup: "Startup Careers",
   other_sites: "Other Job Sites",
-  chatgpt: "ChatGPT",
 };
 
 export const SEARCH_MODE_LABELS: Record<SearchMode, string> = {
@@ -333,8 +306,6 @@ export const STARTUP_COMPANIES_CACHE_STORAGE_KEY =
 export const STARTUP_COMPANIES_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const STARTUP_COMPANIES_REFRESH_ALARM =
   "remote-job-search-refresh-startup-companies";
-export const AI_REQUEST_STORAGE_PREFIX = "remote-job-search-ai-request:";
-export const AI_RESPONSE_STORAGE_PREFIX = "remote-job-search-ai-response:";
 export const MIN_JOB_PAGE_LIMIT = 1;
 export const MAX_JOB_PAGE_LIMIT = 25;
 
@@ -401,10 +372,6 @@ export function detectSiteFromUrl(url: string): SiteKey | null {
     }
   }
 
-  if (bare === "chatgpt.com" || bare.endsWith(".chatgpt.com")) {
-    return "chatgpt";
-  }
-
   return null;
 }
 
@@ -447,14 +414,6 @@ export function createSession(
 
 export function getSessionStorageKey(tabId: number): string {
   return `remote-job-search-session:${tabId}`;
-}
-
-export function getAiRequestStorageKey(requestId: string): string {
-  return `${AI_REQUEST_STORAGE_PREFIX}${requestId}`;
-}
-
-export function getAiResponseStorageKey(requestId: string): string {
-  return `${AI_RESPONSE_STORAGE_PREFIX}${requestId}`;
 }
 
 export function getSiteLabel(site: SiteKey | "unsupported" | null): string {
@@ -1306,34 +1265,6 @@ function mergeAutomationSettings(
   });
 }
 
-export async function writeAiAnswerRequest(request: AiAnswerRequest): Promise<void> {
-  await chrome.storage.local.set({ [getAiRequestStorageKey(request.id)]: request });
-}
-
-export async function readAiAnswerRequest(requestId: string): Promise<AiAnswerRequest | null> {
-  const stored = await chrome.storage.local.get(getAiRequestStorageKey(requestId));
-  const value = stored[getAiRequestStorageKey(requestId)];
-  return isRecord(value) ? sanitizeAiAnswerRequest(value) : null;
-}
-
-export async function deleteAiAnswerRequest(requestId: string): Promise<void> {
-  await chrome.storage.local.remove(getAiRequestStorageKey(requestId));
-}
-
-export async function writeAiAnswerResponse(response: AiAnswerResponse): Promise<void> {
-  await chrome.storage.local.set({ [getAiResponseStorageKey(response.id)]: response });
-}
-
-export async function readAiAnswerResponse(requestId: string): Promise<AiAnswerResponse | null> {
-  const stored = await chrome.storage.local.get(getAiResponseStorageKey(requestId));
-  const value = stored[getAiResponseStorageKey(requestId)];
-  return isRecord(value) ? sanitizeAiAnswerResponse(value) : null;
-}
-
-export async function deleteAiAnswerResponse(requestId: string): Promise<void> {
-  await chrome.storage.local.remove(getAiResponseStorageKey(requestId));
-}
-
 export function sanitizeAutomationSettings(raw: unknown): AutomationSettings {
   const source = isRecord(raw) ? raw : {};
   const profiles = sanitizeAutomationProfiles(source.profiles);
@@ -1586,38 +1517,6 @@ function sanitizeDatePostedWindow(value: unknown): DatePostedWindow {
 function sanitizeSearchKeywords(value: unknown): string {
   const raw = typeof value === "string" ? value : "";
   return parseSearchKeywords(raw).join("\n");
-}
-
-function sanitizeAiAnswerRequest(value: Record<string, unknown>): AiAnswerRequest {
-  return {
-    id: readString(value.id),
-    createdAt: Number.isFinite(value.createdAt) ? Number(value.createdAt) : Date.now(),
-    resumeKind: sanitizeResumeKind(value.resumeKind),
-    resume: sanitizeResumeAsset(value.resume),
-    candidate: sanitizeCandidateProfile(value.candidate),
-    job: sanitizeJobContextSnapshot(value.job),
-  };
-}
-
-function sanitizeAiAnswerResponse(value: Record<string, unknown>): AiAnswerResponse {
-  return {
-    id: readString(value.id),
-    answer: readString(value.answer),
-    error: readString(value.error) || undefined,
-    copiedToClipboard: Boolean(value.copiedToClipboard),
-    updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now(),
-  };
-}
-
-function sanitizeJobContextSnapshot(value: unknown): JobContextSnapshot {
-  const source = isRecord(value) ? value : {};
-  return {
-    title: readString(source.title),
-    company: readString(source.company),
-    description: readString(source.description),
-    question: readString(source.question),
-    pageUrl: readString(source.pageUrl),
-  };
 }
 
 function sanitizeResumeAsset(value: unknown): ResumeAsset | undefined {

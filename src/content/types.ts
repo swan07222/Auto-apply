@@ -25,14 +25,6 @@ export interface AutofillResult {
   usedSavedAnswers: number;
   usedProfileAnswers: number;
   uploadedResume: ResumeAsset | null;
-  generatedAiAnswers: number;
-  copiedAiAnswers: number;
-}
-
-export interface EssayFieldCandidate {
-  field: HTMLInputElement | HTMLTextAreaElement;
-  question: string;
-  descriptor: string;
 }
 
 // FIX: Add type for form field descriptor

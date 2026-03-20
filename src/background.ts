@@ -5,7 +5,6 @@ import {
   AutomationSession,
   AutomationStage,
   AutomationStatus,
-  JobContextSnapshot,
   SEARCH_OPEN_DELAY_MS,
   SearchTarget,
   SiteKey,
@@ -39,8 +38,6 @@ type BackgroundRequest =
       candidates: { url: string; key: string }[];
     }
   | { type: "get-tab-session"; tabId: number }
-  | { type: "remember-job-context"; context: JobContextSnapshot }
-  | { type: "get-job-context" }
   | { type: "content-ready"; looksLikeApplicationSurface?: boolean }
   | {
       type: "status-update";
@@ -85,7 +82,6 @@ const RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1_000;
 
 const AUTOMATION_RUN_STORAGE_PREFIX = "remote-job-search-run:";
 const SESSION_STORAGE_PREFIX = "remote-job-search-session:";
-const JOB_CONTEXT_STORAGE_PREFIX = "remote-job-search-job-context:";
 const ACTIVE_RUNS_STORAGE_KEY = "remote-job-search-active-runs";
 
 const runLocks = new Map<string, Promise<void>>();
@@ -257,28 +253,6 @@ async function handleMessage(
         session: await getSession(message.tabId),
       };
 
-    case "remember-job-context": {
-      const tabId = sender.tab?.id;
-      if (tabId === undefined) {
-        return { ok: false };
-      }
-
-      await setJobContext(tabId, message.context);
-      return { ok: true };
-    }
-
-    case "get-job-context": {
-      const tabId = sender.tab?.id;
-      if (tabId === undefined) {
-        return { ok: false, context: null };
-      }
-
-      return {
-        ok: true,
-        context: await getJobContext(tabId),
-      };
-    }
-
     case "content-ready": {
       const tabId = sender.tab?.id;
 
@@ -398,6 +372,9 @@ async function handleMessage(
             item.profileId
           );
           session.jobSlots = item.jobSlots;
+          if (item.runId && isManagedJobStage(item.stage)) {
+            session.claimedJobKey = getJobDedupKey(item.url) || undefined;
+          }
 
           await setSession(session);
 
@@ -508,6 +485,7 @@ async function updateSessionFromMessage(
     resumeKind: message.resumeKind ?? existingSession?.resumeKind,
     profileId: message.profileId ?? existingSession?.profileId,
     controllerFrameId,
+    claimedJobKey: existingSession?.claimedJobKey,
   };
 
   await setSession(nextSession);
@@ -586,12 +564,9 @@ async function attachSessionToSiteOpenedChildTab(
   );
 
   childSession.jobSlots = openerSession.jobSlots;
+  childSession.claimedJobKey = openerSession.claimedJobKey;
 
   await setSession(childSession);
-  const rememberedJobContext = await getJobContext(openerTabId);
-  if (rememberedJobContext) {
-    await setJobContext(childTabId, rememberedJobContext);
-  }
 
   try {
     await chrome.tabs.sendMessage(openerTabId, {
@@ -1543,13 +1518,27 @@ async function markRunRateLimited(runId: string): Promise<void> {
 }
 
 async function resolveManagedJobCompletionKey(
+  session: AutomationSession | null,
   tabId: number,
   fallbackUrl?: string
 ): Promise<string> {
-  const rememberedJobContext = await getJobContext(tabId);
-  return getJobDedupKey(
-    rememberedJobContext?.pageUrl ?? fallbackUrl ?? ""
-  );
+  if (session?.claimedJobKey) {
+    return session.claimedJobKey;
+  }
+
+  if (fallbackUrl) {
+    const fallbackKey = getJobDedupKey(fallbackUrl);
+    if (fallbackKey) {
+      return fallbackKey;
+    }
+  }
+
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return getJobDedupKey(getTabUrl(tab));
+  } catch {
+    return "";
+  }
 }
 
 async function recordSuccessfulJobCompletion(
@@ -1564,7 +1553,9 @@ async function recordSuccessfulJobCompletion(
       return;
     }
 
+    const session = await getSession(tabId);
     const completionKey = await resolveManagedJobCompletionKey(
+      session,
       tabId,
       fallbackUrl
     );
@@ -1594,7 +1585,12 @@ async function releaseManagedJobOpening(
   tabId: number,
   fallbackUrl?: string
 ): Promise<void> {
-  const completionKey = await resolveManagedJobCompletionKey(tabId, fallbackUrl);
+  const session = await getSession(tabId);
+  const completionKey = await resolveManagedJobCompletionKey(
+    session,
+    tabId,
+    fallbackUrl
+  );
   if (!completionKey) {
     return;
   }
@@ -1698,34 +1694,10 @@ async function setSession(session: AutomationSession): Promise<void> {
 async function removeSession(tabId: number): Promise<void> {
   const existingSession = await getSession(tabId);
   await chrome.storage.local.remove(getSessionStorageKey(tabId));
-  await removeJobContext(tabId);
 
   if (existingSession?.runId) {
     await removeRunStateIfUnused(existingSession.runId);
   }
-}
-
-async function getJobContext(
-  tabId: number
-): Promise<JobContextSnapshot | null> {
-  const key = getJobContextStorageKey(tabId);
-  const stored = await chrome.storage.local.get(key);
-  return (stored[key] as JobContextSnapshot | undefined) ?? null;
-}
-
-async function setJobContext(
-  tabId: number,
-  context: JobContextSnapshot
-): Promise<void> {
-  const key = getJobContextStorageKey(tabId);
-  const existing = await getJobContext(tabId);
-  await chrome.storage.local.set({
-    [key]: mergeJobContexts(existing, context),
-  });
-}
-
-async function removeJobContext(tabId: number): Promise<void> {
-  await chrome.storage.local.remove(getJobContextStorageKey(tabId));
 }
 
 async function getRunState(runId: string): Promise<AutomationRunState | null> {
@@ -1789,41 +1761,6 @@ async function removeRunState(runId: string): Promise<void> {
 
 function getAutomationRunStorageKey(runId: string): string {
   return `${AUTOMATION_RUN_STORAGE_PREFIX}${runId}`;
-}
-
-function getJobContextStorageKey(tabId: number): string {
-  return `${JOB_CONTEXT_STORAGE_PREFIX}${tabId}`;
-}
-
-function mergeJobContexts(
-  existing: JobContextSnapshot | null,
-  incoming: JobContextSnapshot
-): JobContextSnapshot {
-  if (!existing) {
-    return incoming;
-  }
-
-  return {
-    title: pickPreferredText(existing.title, incoming.title),
-    company: pickPreferredText(existing.company, incoming.company),
-    description: pickPreferredText(
-      existing.description,
-      incoming.description
-    ),
-    question: incoming.question || existing.question,
-    pageUrl: incoming.pageUrl || existing.pageUrl,
-  };
-}
-
-function pickPreferredText(current: string, next: string): string {
-  if (!current) {
-    return next;
-  }
-  if (!next) {
-    return current;
-  }
-
-  return next.length >= current.length ? next : current;
 }
 
 function createRunId(): string {
@@ -2190,8 +2127,6 @@ function getReadableSiteName(site: SiteKey | "unsupported"): string {
       return "Startup Careers";
     case "other_sites":
       return "Other Job Sites";
-    case "chatgpt":
-      return "ChatGPT";
     case "unsupported":
       return "Unsupported Site";
   }
@@ -2207,8 +2142,6 @@ function getReadableStageName(stage: AutomationStage): string {
       return "apply-page opener";
     case "autofill-form":
       return "application autofill";
-    case "generate-ai-answer":
-      return "ChatGPT answer generation";
   }
 }
 
