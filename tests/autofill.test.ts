@@ -71,7 +71,7 @@ describe("autofill helpers", () => {
     expect(getOptionLabelText(remoteOnly)).toContain("Remote only");
   });
 
-  it("accepts application fields and skips search or sensitive inputs", () => {
+  it("accepts required application fields and skips optional, search, or sensitive inputs", () => {
     document.body.innerHTML = `
       <form>
         <label for="keywords">Search jobs</label>
@@ -88,6 +88,12 @@ describe("autofill helpers", () => {
           <option value="">Select one</option>
           <option value="us">United States</option>
         </select>
+
+        <label for="authorized">Work authorization *</label>
+        <select id="authorized">
+          <option value="">Select one</option>
+          <option value="yes">Authorized</option>
+        </select>
       </form>
     `;
 
@@ -99,8 +105,46 @@ describe("autofill helpers", () => {
       false
     );
     expect(shouldAutofillField(document.querySelector("#country") as HTMLSelectElement)).toBe(
+      false
+    );
+    expect(
+      shouldAutofillField(document.querySelector("#country") as HTMLSelectElement, false, true)
+    ).toBe(true);
+    expect(shouldAutofillField(document.querySelector("#authorized") as HTMLSelectElement)).toBe(
       true
     );
+  });
+
+  it("treats fields marked optional in the label or container as non-required", () => {
+    document.body.innerHTML = `
+      <form>
+        <div class="application-question optional">
+          <label for="linkedin">LinkedIn profile (optional)</label>
+          <input id="linkedin" type="url" />
+        </div>
+
+        <div class="application-question">
+          <label for="portfolio">Portfolio</label>
+          <input id="portfolio" type="url" aria-required="false" />
+        </div>
+
+        <div class="application-question required">
+          <label for="email">Email</label>
+          <input id="email" type="email" required />
+        </div>
+      </form>
+    `;
+
+    expect(isFieldRequired(document.querySelector("#linkedin") as HTMLInputElement)).toBe(false);
+    expect(shouldAutofillField(document.querySelector("#linkedin") as HTMLInputElement)).toBe(
+      false
+    );
+    expect(isFieldRequired(document.querySelector("#portfolio") as HTMLInputElement)).toBe(false);
+    expect(shouldAutofillField(document.querySelector("#portfolio") as HTMLInputElement)).toBe(
+      false
+    );
+    expect(isFieldRequired(document.querySelector("#email") as HTMLInputElement)).toBe(true);
+    expect(shouldAutofillField(document.querySelector("#email") as HTMLInputElement)).toBe(true);
   });
 
   it("detects blank selects and text-like input types", () => {

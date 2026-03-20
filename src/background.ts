@@ -78,6 +78,7 @@ type AutomationRunState = {
 };
 
 const ZIPRECRUITER_SPAWN_DELAY_MS = 4_000;
+const MONSTER_SPAWN_DELAY_MS = 9_000;
 const RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1_000;
 
 const AUTOMATION_RUN_STORAGE_PREFIX = "remote-job-search-run:";
@@ -493,6 +494,15 @@ async function updateSessionFromMessage(
   if (isFinal && nextSession.runId && isRateLimitedSession(nextSession)) {
     await markRunRateLimited(nextSession.runId);
     return { ok: true };
+  }
+
+  if (
+    !isFinal &&
+    nextSession.runId &&
+    nextSession.site === "monster" &&
+    nextSession.phase === "waiting_for_verification"
+  ) {
+    await markRunRateLimited(nextSession.runId);
   }
 
   if (
@@ -1811,6 +1821,10 @@ async function withRunLock<T>(
 function getSpawnOpenDelayMs(item: SpawnTabRequest): number {
   if (item.site === "ziprecruiter") {
     return ZIPRECRUITER_SPAWN_DELAY_MS;
+  }
+
+  if (item.site === "monster") {
+    return MONSTER_SPAWN_DELAY_MS;
   }
 
   return SEARCH_OPEN_DELAY_MS;

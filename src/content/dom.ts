@@ -42,13 +42,13 @@ export function getClickableApplyElement(el: HTMLElement): HTMLElement {
 export function getNavigationUrl(el: HTMLElement): string | null {
   // Direct href on anchor
   if (el instanceof HTMLAnchorElement && el.href) {
-    return normalizeUrl(el.href);
+    return unwrapRedirectNavigationUrl(normalizeUrl(el.href));
   }
 
   // Parent anchor
   const parentAnchor = el.closest("a");
   if (parentAnchor?.href) {
-    return normalizeUrl(parentAnchor.href);
+    return unwrapRedirectNavigationUrl(normalizeUrl(parentAnchor.href));
   }
 
   // Form action on button/input
@@ -57,7 +57,7 @@ export function getNavigationUrl(el: HTMLElement): string | null {
     el.formAction &&
     el.formAction !== window.location.href
   ) {
-    return normalizeUrl(el.formAction);
+    return unwrapRedirectNavigationUrl(normalizeUrl(el.formAction));
   }
 
   if (
@@ -65,7 +65,7 @@ export function getNavigationUrl(el: HTMLElement): string | null {
     el.formAction &&
     el.formAction !== window.location.href
   ) {
-    return normalizeUrl(el.formAction);
+    return unwrapRedirectNavigationUrl(normalizeUrl(el.formAction));
   }
 
   // Data attributes commonly used for URLs
@@ -92,7 +92,7 @@ export function getNavigationUrl(el: HTMLElement): string | null {
     if (value) {
       const normalized = normalizeUrl(value);
       if (normalized) {
-        return normalized;
+        return unwrapRedirectNavigationUrl(normalized);
       }
     }
   }
@@ -133,7 +133,7 @@ export function getNavigationUrl(el: HTMLElement): string | null {
 
     const normalized = normalizeUrl(value);
     if (normalized) {
-      return normalized;
+      return unwrapRedirectNavigationUrl(normalized);
     }
   }
 
@@ -148,14 +148,14 @@ export function getNavigationUrl(el: HTMLElement): string | null {
       onclick.match(/navigate\s*\(\s*['"]([^'"]+)['"]/i);
 
     if (match?.[1]) {
-      return normalizeUrl(match[1]);
+      return unwrapRedirectNavigationUrl(normalizeUrl(match[1]));
     }
   }
 
   // FIX: Check for URL in inner anchor if element wraps one
   const innerAnchor = el.querySelector<HTMLAnchorElement>("a[href]");
   if (innerAnchor?.href) {
-    return normalizeUrl(innerAnchor.href);
+    return unwrapRedirectNavigationUrl(normalizeUrl(innerAnchor.href));
   }
 
   return null;
@@ -186,6 +186,49 @@ export function normalizeUrl(url: string): string | null {
     return normalized.toString();
   } catch {
     return null;
+  }
+}
+
+function unwrapRedirectNavigationUrl(url: string | null): string | null {
+  if (!url) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(url, window.location.href);
+    const redirectParamNames = [
+      "url",
+      "u",
+      "dest",
+      "destination",
+      "redirect",
+      "redirect_url",
+      "external_url",
+      "target",
+      "target_url",
+      "href",
+      "link",
+      "apply_url",
+      "job_url",
+    ];
+
+    for (const name of redirectParamNames) {
+      const value = parsed.searchParams.get(name);
+      if (!value) {
+        continue;
+      }
+
+      const normalized = normalizeUrl(value);
+      if (!normalized || normalized === url) {
+        continue;
+      }
+
+      return normalized;
+    }
+
+    return parsed.toString();
+  } catch {
+    return url;
   }
 }
 
@@ -301,11 +344,26 @@ export function findFirstVisibleElement<T extends HTMLElement>(
 }
 
 export function performClickAction(element: HTMLElement): void {
+  const isNativeSubmitControl =
+    (element instanceof HTMLButtonElement &&
+      element.type.toLowerCase() === "submit") ||
+    (element instanceof HTMLInputElement &&
+      element.type.toLowerCase() === "submit");
+
   // FIX: Ensure element is focused first
   try {
     element.focus();
   } catch {
     // Some elements cannot be focused
+  }
+
+  if (isNativeSubmitControl) {
+    try {
+      element.click();
+      return;
+    } catch {
+      // Fall through to the synthetic path when native click is unavailable.
+    }
   }
 
   // FIX: Dispatch a complete sequence of pointer/mouse events
@@ -356,6 +414,28 @@ export function performClickAction(element: HTMLElement): void {
     element.click();
   } catch {
     // Some elements may throw on click()
+  }
+
+  const keyboardEvents = [
+    ["keydown", "Enter"],
+    ["keyup", "Enter"],
+    ["keydown", " "],
+    ["keyup", " "],
+  ] as const;
+
+  for (const [eventType, key] of keyboardEvents) {
+    try {
+      element.dispatchEvent(
+        new KeyboardEvent(eventType, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          key,
+        })
+      );
+    } catch {
+      // Ignore keyboard dispatch issues
+    }
   }
 }
 

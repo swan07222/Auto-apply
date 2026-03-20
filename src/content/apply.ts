@@ -172,6 +172,40 @@ function isLikelyInformationalPageUrl(url: string | null | undefined): boolean {
   ].some((token) => lower.includes(token));
 }
 
+function isZipRecruiterCandidatePortalUrl(url: string | null | undefined): boolean {
+  if (!url) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(url, window.location.href);
+    const hostname = parsed.hostname.toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+
+    if (!hostname.includes("ziprecruiter")) {
+      return false;
+    }
+
+    if (path.includes("candidateexperience") || path.includes("jobapply")) {
+      return false;
+    }
+
+    return (
+      path.includes("/candidate/") ||
+      path.includes("/my-jobs") ||
+      path.includes("/myjobs") ||
+      path.includes("/saved-jobs") ||
+      path.includes("/savedjobs") ||
+      path.includes("/profile") ||
+      path.includes("/account") ||
+      path.includes("/login") ||
+      path.includes("/signin")
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function findCompanySiteAction(): ApplyAction | null {
   const pageText = cleanText(document.body?.innerText || "")
     .toLowerCase()
@@ -580,12 +614,17 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
       lower.includes("share") ||
       lower.includes("alert") ||
       lower.includes("sign in") ||
-      lower.includes("job alert")
+      lower.includes("job alert") ||
+      lower.includes("my jobs") ||
+      lower.includes("saved jobs")
     ) {
       continue;
     }
 
     const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
+    if (isZipRecruiterCandidatePortalUrl(url)) {
+      continue;
+    }
     const attrs = [
       actionElement.getAttribute("data-testid"),
       actionElement.getAttribute("data-qa"),
@@ -615,7 +654,7 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
     if (attrs.includes("quick")) score += 15;
     if (attrs.includes("company")) score += 15;
     if (url && shouldPreferApplyNavigation(url, text, "ziprecruiter")) score += 35;
-    if (url && /zipapply|jobapply|\/apply\/|candidate/i.test(url)) score += 35;
+    if (url && /zipapply|jobapply|\/apply\/|candidateexperience/i.test(url)) score += 35;
 
     if (score < 45) {
       continue;
@@ -641,7 +680,16 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
       const lower = text.toLowerCase();
       if (
         !lower ||
-        ["save", "share", "alert", "sign in", "job alert", "subscribe"].some((token) =>
+        [
+          "save",
+          "share",
+          "alert",
+          "sign in",
+          "job alert",
+          "subscribe",
+          "my jobs",
+          "saved jobs",
+        ].some((token) =>
           lower.includes(token)
         )
       ) {
@@ -649,11 +697,14 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
       }
 
       const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
+      if (isZipRecruiterCandidatePortalUrl(url)) {
+        continue;
+      }
       let score = 0;
       if (/apply|company|employer|continue|resume/.test(lower)) score += 55;
       if (/\bapply\b/.test(lower)) score += 20;
       if (url && shouldPreferApplyNavigation(url, text, "ziprecruiter")) score += 35;
-      if (url && /zipapply|jobapply|\/apply\/|candidate/i.test(url)) score += 30;
+      if (url && /zipapply|jobapply|\/apply\/|candidateexperience/i.test(url)) score += 30;
 
       if (score < 55) {
         continue;
@@ -1285,7 +1336,7 @@ function shouldTreatInternalApplyNavigationAsClick(
   );
 }
 
-function isSameOriginInternalApplyStepNavigation(url: string): boolean {
+export function isSameOriginInternalApplyStepNavigation(url: string): boolean {
   const currentUrl = normalizeUrl(window.location.href);
   const targetUrl = normalizeUrl(url);
 
@@ -1449,6 +1500,10 @@ export function isLikelyApplyUrl(url: string, site: SiteKey): boolean {
     return true;
   }
 
+  if (site === "ziprecruiter" && isZipRecruiterCandidatePortalUrl(url)) {
+    return false;
+  }
+
   if (
     lower.includes("smartapply.indeed.com") ||
     lower.includes("indeedapply") ||
@@ -1457,11 +1512,10 @@ export function isLikelyApplyUrl(url: string, site: SiteKey): boolean {
     lower.includes("easy-apply") ||
     lower.includes("/apply") ||
     lower.includes("application") ||
-    lower.includes("candidate") ||
+    lower.includes("candidateexperience") ||
     lower.includes("jobapply") ||
     lower.includes("job_app") ||
-    lower.includes("applytojob") ||
-    lower.includes("candidateexperience")
+    lower.includes("applytojob")
   ) {
     return true;
   }
@@ -1493,7 +1547,8 @@ function extractLikelyApplyUrl(element: HTMLElement): string | null {
       if (
         normalized &&
         !isKnownBrokenApplyUrl(normalized) &&
-        /apply|application|candidate|jobapply|company|career/i.test(normalized)
+        !isZipRecruiterCandidatePortalUrl(normalized) &&
+        /apply|application|candidateexperience|jobapply|company|career/i.test(normalized)
       ) {
         return normalized;
       }

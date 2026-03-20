@@ -10,6 +10,7 @@ import {
   formatStartupRegionList,
   getJobDedupKey,
   inferResumeKindFromTitle,
+  isProbablyAuthGatePage,
   isProbablyRateLimitPage,
   inferStartupRegionFromCountry,
   isStartupCompaniesCacheFresh,
@@ -274,6 +275,47 @@ describe("shared automation target logic", () => {
     `;
 
     expect(isProbablyRateLimitPage(document, "ziprecruiter")).toBe(true);
+  });
+
+  it("detects Monster unusual-activity restriction pages as rate limits", () => {
+    document.title = "Unusual activity detected";
+    document.body.innerHTML = `
+      <main>
+        <h1>We detected unusual activity from your device or network.</h1>
+        <p>Automated (bot) activity on your network (IP 23.237.33.110)</p>
+        <p>Rapid taps or clicks</p>
+        <p>Need help? Submit feedback.</p>
+        <p>ID: 7460a163-a6a2-8656-d0de-3dc67263769c</p>
+      </main>
+    `;
+
+    expect(isProbablyRateLimitPage(document, "monster")).toBe(true);
+  });
+
+  it("detects sign-in gates without mistaking application forms for auth walls", () => {
+    document.title = "Sign in to continue";
+    document.body.innerHTML = `
+      <main>
+        <h1>Sign in to continue</h1>
+        <input type="email" />
+        <input type="password" />
+        <button type="button">Continue with Google</button>
+      </main>
+    `;
+
+    expect(isProbablyAuthGatePage(document)).toBe(true);
+
+    document.title = "Apply";
+    document.body.innerHTML = `
+      <main>
+        <h1>Submit Your Application</h1>
+        <label>Email <input type="email" /></label>
+        <label>Password hint <input type="text" /></label>
+        <button type="button">Continue</button>
+      </main>
+    `;
+
+    expect(isProbablyAuthGatePage(document)).toBe(false);
   });
 
   it("detects access-denied XML error pages and does not treat them as verification", () => {

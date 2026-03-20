@@ -687,6 +687,7 @@
 
   // src/background.ts
   var ZIPRECRUITER_SPAWN_DELAY_MS = 4e3;
+  var MONSTER_SPAWN_DELAY_MS = 9e3;
   var RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1e3;
   var AUTOMATION_RUN_STORAGE_PREFIX = "remote-job-search-run:";
   var SESSION_STORAGE_PREFIX = "remote-job-search-session:";
@@ -990,6 +991,9 @@
     if (isFinal && nextSession.runId && isRateLimitedSession(nextSession)) {
       await markRunRateLimited(nextSession.runId);
       return { ok: true };
+    }
+    if (!isFinal && nextSession.runId && nextSession.site === "monster" && nextSession.phase === "waiting_for_verification") {
+      await markRunRateLimited(nextSession.runId);
     }
     if (isFinal && nextSession.runId && isManagedJobSession(nextSession)) {
       if (isSuccessfulJobCompletion(nextSession, completionKind)) {
@@ -1926,6 +1930,9 @@
   function getSpawnOpenDelayMs(item) {
     if (item.site === "ziprecruiter") {
       return ZIPRECRUITER_SPAWN_DELAY_MS;
+    }
+    if (item.site === "monster") {
+      return MONSTER_SPAWN_DELAY_MS;
     }
     return SEARCH_OPEN_DELAY_MS;
   }

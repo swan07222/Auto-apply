@@ -41,7 +41,8 @@ const STABLE_PROFILE_FIELD_TOKENS = [
 
 export function shouldAutofillField(
   field: AutofillField,
-  ignoreBlankCheck = false
+  ignoreBlankCheck = false,
+  includeOptionalFields = false
 ): boolean {
   if (field.disabled) return false;
   if (field instanceof HTMLInputElement) {
@@ -81,6 +82,13 @@ export function shouldAutofillField(
     descriptor.includes("password") ||
     descriptor.includes("credit card") ||
     descriptor.includes("card number")
+  ) {
+    return false;
+  }
+  if (
+    !includeOptionalFields &&
+    !(field instanceof HTMLInputElement && field.type.toLowerCase() === "file") &&
+    !isFieldRequired(field)
   ) {
     return false;
   }
@@ -295,6 +303,10 @@ export function isFieldRequired(field: AutofillField): boolean {
     return true;
   }
 
+  if (field.getAttribute("aria-required") === "false" || field.getAttribute("data-required") === "false") {
+    return false;
+  }
+
   if (/\*/.test(getQuestionText(field))) {
     return true;
   }
@@ -304,6 +316,10 @@ export function isFieldRequired(field: AutofillField): boolean {
   );
 
   if (!(container instanceof HTMLElement)) {
+    return false;
+  }
+
+  if (isFieldExplicitlyOptional(field, container)) {
     return false;
   }
 
@@ -405,6 +421,58 @@ function isFieldContextVisible(field: AutofillField): boolean {
 
   const root = field.getRootNode();
   return root instanceof ShadowRoot && root.host instanceof HTMLElement && isElementVisible(root.host);
+}
+
+function isFieldExplicitlyOptional(
+  field: AutofillField,
+  container?: HTMLElement | null
+): boolean {
+  if (/\boptional\b/i.test(getQuestionText(field))) {
+    return true;
+  }
+
+  const fieldSignals = [
+    field.getAttribute("aria-required"),
+    field.getAttribute("data-required"),
+    field.getAttribute("aria-label"),
+    field.getAttribute("placeholder"),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  if (
+    fieldSignals.includes("optional") ||
+    field.getAttribute("aria-required") === "false" ||
+    field.getAttribute("data-required") === "false"
+  ) {
+    return true;
+  }
+
+  const context = container ?? field.closest(
+    "label, fieldset, [role='group'], [role='radiogroup'], [role='dialog'], .field, .form-field, .question, .application-question, [class*='field'], [class*='question'], [class*='optional'], [data-required], [aria-required]"
+  );
+  if (!(context instanceof HTMLElement)) {
+    return false;
+  }
+
+  const attrs = [
+    context.className,
+    context.getAttribute("data-required"),
+    context.getAttribute("aria-required"),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (
+    attrs.includes("optional") ||
+    context.getAttribute("aria-required") === "false" ||
+    context.getAttribute("data-required") === "false"
+  ) {
+    return true;
+  }
+
+  return /\boptional\b/i.test(cleanText(context.textContent || ""));
 }
 
 function normalizeAutofillComparableValue(value: string): string {

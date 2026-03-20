@@ -51,7 +51,7 @@ export function hasLikelyApplicationForm(
   collectors: ApplicationSurfaceCollectors
 ): boolean {
   const relevantFields = collectors.collectAutofillFields().filter(
-    (field) => shouldAutofillField(field, true) && isLikelyApplicationField(field)
+    (field) => shouldAutofillField(field, true, true) && isLikelyApplicationField(field)
   );
 
   if (relevantFields.length >= 2) {
@@ -59,7 +59,7 @@ export function hasLikelyApplicationForm(
   }
 
   return collectors.collectResumeFileInputs().some(
-    (input) => shouldAutofillField(input, true) && isLikelyApplicationField(input)
+    (input) => shouldAutofillField(input, true, true) && isLikelyApplicationField(input)
   );
 }
 
@@ -71,7 +71,7 @@ export function findStandaloneApplicationFrameUrl(
   collectors: ApplicationSurfaceCollectors
 ): string | null {
   const localRelevantFields = collectors.collectAutofillFields().filter(
-    (field) => shouldAutofillField(field, true) && isLikelyApplicationField(field)
+    (field) => shouldAutofillField(field, true, true) && isLikelyApplicationField(field)
   );
 
   if (localRelevantFields.length > 0) {
@@ -79,7 +79,7 @@ export function findStandaloneApplicationFrameUrl(
   }
 
   const hasLocalResumeUpload = collectors.collectResumeFileInputs().some(
-    (input) => shouldAutofillField(input, true) && isLikelyApplicationField(input)
+    (input) => shouldAutofillField(input, true, true) && isLikelyApplicationField(input)
   );
 
   if (hasLocalResumeUpload) {

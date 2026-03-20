@@ -77,6 +77,7 @@ export async function waitForJobDetailUrls({
   const isCareerSite = site === "startup" || site === "other_sites";
   const needsAggressiveScan =
     isCareerSite ||
+    site === "indeed" ||
     site === "dice" ||
     site === "ziprecruiter" ||
     site === "glassdoor";
@@ -193,6 +194,7 @@ export async function waitForJobDetailUrls({
         tryClickLoadMoreButton();
       }
     } else if (
+      site === "indeed" ||
       site === "dice" ||
       site === "ziprecruiter" ||
       site === "glassdoor"
@@ -269,7 +271,7 @@ async function waitForResultSurfaceSettle(site: SiteKey): Promise<void> {
   const maxWaitMs =
     site === "startup" || site === "other_sites" || site === "glassdoor"
       ? 1_600
-      : site === "dice" || site === "ziprecruiter"
+      : site === "indeed" || site === "dice" || site === "ziprecruiter"
         ? 1_400
         : 1_000;
 

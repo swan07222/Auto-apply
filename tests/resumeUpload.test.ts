@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   getResumeAssetUploadKey,
   getSelectedFileName,
+  hasSelectedMatchingFile,
   inferResumeKindFromLabel,
   pickResumeAssetForUpload,
   resolveResumeKindForJob,
+  scoreResumeFileInputPreference,
   shouldAttemptResumeUpload,
 } from "../src/content/resumeUpload";
 
@@ -27,6 +29,8 @@ describe("resume upload helpers", () => {
 
     expect(getSelectedFileName(withFiles)).toBe("frontend-resume.pdf");
     expect(getSelectedFileName(withValue)).toBe("backend-resume.pdf");
+    expect(hasSelectedMatchingFile(withFiles, "frontend-resume.pdf")).toBe(true);
+    expect(hasSelectedMatchingFile(withValue, "resume.pdf")).toBe(false);
   });
 
   it("retries upload when a different resume is already attached", () => {
@@ -159,5 +163,44 @@ describe("resume upload helpers", () => {
         updatedAt: 1234.8,
       })
     ).toBe("resume.pdf:42:1235");
+  });
+
+  it("prefers resume inputs over cover-letter inputs on multi-file forms", () => {
+    document.body.innerHTML = `
+      <form>
+        <label for="cover">Upload cover letter</label>
+        <input id="cover" type="file" />
+        <label for="resume">Upload resume</label>
+        <input id="resume" type="file" />
+      </form>
+    `;
+
+    const coverInput = document.querySelector("#cover") as HTMLInputElement;
+    const resumeInput = document.querySelector("#resume") as HTMLInputElement;
+
+    expect(scoreResumeFileInputPreference(coverInput, 2)).toBeLessThan(0);
+    expect(scoreResumeFileInputPreference(resumeInput, 2)).toBeGreaterThan(0);
+    expect(scoreResumeFileInputPreference(resumeInput, 2)).toBeGreaterThan(
+      scoreResumeFileInputPreference(coverInput, 2)
+    );
+  });
+
+  it("rejects generic file inputs when only the surrounding container says cover letter", () => {
+    document.body.innerHTML = `
+      <div>
+        <div>Cover Letter</div>
+        <input id="cover-generic" type="file" />
+      </div>
+      <div>
+        <div>Resume</div>
+        <input id="resume-generic" type="file" />
+      </div>
+    `;
+
+    const coverInput = document.querySelector("#cover-generic") as HTMLInputElement;
+    const resumeInput = document.querySelector("#resume-generic") as HTMLInputElement;
+
+    expect(scoreResumeFileInputPreference(coverInput, 2)).toBeLessThan(0);
+    expect(scoreResumeFileInputPreference(resumeInput, 2)).toBeGreaterThan(0);
   });
 });

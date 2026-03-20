@@ -997,6 +997,64 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
   );
 }
 
+export function isProbablyAuthGatePage(doc: Document): boolean {
+  if (detectBrokenPageReason(doc) || isProbablyHumanVerificationPage(doc)) {
+    return false;
+  }
+
+  if (
+    hasLikelyApplicationFormSignals(doc) ||
+    hasLikelyApplicationStepSignals(doc)
+  ) {
+    return false;
+  }
+
+  const title = doc.title.toLowerCase();
+  const bodyText = (doc.body?.innerText ?? "").toLowerCase().slice(0, 6000);
+  const text = `${title} ${bodyText}`;
+  const hasPasswordField = Boolean(
+    doc.querySelector("input[type='password']")
+  );
+  const hasAuthActions = Array.from(
+    doc.querySelectorAll<HTMLElement>(
+      "button, a[href], [role='button'], input[type='submit'], input[type='button']"
+    )
+  ).some((element) => {
+    const elementText =
+      element instanceof HTMLInputElement
+        ? `${element.value} ${element.getAttribute("aria-label") || ""}`
+        : `${element.innerText || element.textContent || ""} ${
+            element.getAttribute("aria-label") || ""
+          } ${element.getAttribute("title") || ""}`;
+    const lower = elementText.toLowerCase();
+    return (
+      /(sign in|log in|continue with google|continue with email|continue with apple|use work email|forgot password)/.test(
+        lower
+      )
+    );
+  });
+
+  const strongPhrases = [
+    "sign in to continue",
+    "log in to continue",
+    "sign in to apply",
+    "log in to apply",
+    "please sign in",
+    "please log in",
+    "create an account to continue",
+    "create account to continue",
+    "continue with google",
+    "continue with email",
+    "forgot password",
+  ];
+
+  if (strongPhrases.some((phrase) => text.includes(phrase))) {
+    return true;
+  }
+
+  return hasPasswordField && hasAuthActions;
+}
+
 export function isProbablyRateLimitPage(
   doc: Document,
   site: SiteKey | null = null
@@ -1013,6 +1071,21 @@ export function isProbablyRateLimitPage(
       text.includes("xml feed containing an up to date list of jobs");
 
     if (hasStrongSignal || (hasRetrySignal && hasFeedSignal)) {
+      return true;
+    }
+  }
+
+  if (site === "monster" || text.includes("monster")) {
+    const hasUnusualActivitySignal =
+      text.includes("we detected unusual activity from your device or network") ||
+      text.includes("automated (bot) activity on your network") ||
+      text.includes("automated bot activity on your network");
+    const hasRestrictionSignal =
+      text.includes("rapid taps or clicks") ||
+      text.includes("submit feedback") ||
+      text.includes("id:");
+
+    if (hasUnusualActivitySignal && hasRestrictionSignal) {
       return true;
     }
   }

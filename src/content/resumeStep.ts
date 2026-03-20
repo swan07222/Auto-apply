@@ -40,7 +40,7 @@ function collectLikelyResumeInputs(
   collectors: ResumeStepCollectors
 ): HTMLInputElement[] {
   return collectors.collectResumeFileInputs().filter(
-    (input) => shouldAutofillField(input, true) && isLikelyApplicationField(input)
+    (input) => shouldAutofillField(input, true, true) && isLikelyApplicationField(input)
   );
 }
 
@@ -52,6 +52,6 @@ function collectLikelyNonFileApplicationFields(
       return false;
     }
 
-    return shouldAutofillField(field, true) && isLikelyApplicationField(field);
+    return shouldAutofillField(field, true, true) && isLikelyApplicationField(field);
   });
 }

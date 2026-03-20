@@ -396,6 +396,48 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     return !(hasLikelyApplicationFormSignals(doc) || hasLikelyApplicationStepSignals(doc));
   }
+  function isProbablyAuthGatePage(doc) {
+    if (detectBrokenPageReason(doc) || isProbablyHumanVerificationPage(doc)) {
+      return false;
+    }
+    if (hasLikelyApplicationFormSignals(doc) || hasLikelyApplicationStepSignals(doc)) {
+      return false;
+    }
+    const title = doc.title.toLowerCase();
+    const bodyText = (doc.body?.innerText ?? "").toLowerCase().slice(0, 6e3);
+    const text = `${title} ${bodyText}`;
+    const hasPasswordField = Boolean(
+      doc.querySelector("input[type='password']")
+    );
+    const hasAuthActions = Array.from(
+      doc.querySelectorAll(
+        "button, a[href], [role='button'], input[type='submit'], input[type='button']"
+      )
+    ).some((element) => {
+      const elementText = element instanceof HTMLInputElement ? `${element.value} ${element.getAttribute("aria-label") || ""}` : `${element.innerText || element.textContent || ""} ${element.getAttribute("aria-label") || ""} ${element.getAttribute("title") || ""}`;
+      const lower = elementText.toLowerCase();
+      return /(sign in|log in|continue with google|continue with email|continue with apple|use work email|forgot password)/.test(
+        lower
+      );
+    });
+    const strongPhrases = [
+      "sign in to continue",
+      "log in to continue",
+      "sign in to apply",
+      "log in to apply",
+      "please sign in",
+      "please log in",
+      "create an account to continue",
+      "create account to continue",
+      "continue with google",
+      "continue with email",
+      "forgot password"
+    ];
+    if (strongPhrases.some((phrase) => text.includes(phrase))) {
+      return true;
+    }
+    return hasPasswordField && hasAuthActions;
+  }
   function isProbablyRateLimitPage(doc, site = null) {
     const title = doc.title.toLowerCase();
     const bodyText = (doc.body?.innerText ?? "").toLowerCase().slice(0, 6e3);
@@ -405,6 +447,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       const hasRetrySignal = text.includes("please try again later");
       const hasFeedSignal = text.includes("xml feed containing an up-to-date list of jobs") || text.includes("xml feed containing an up to date list of jobs");
       if (hasStrongSignal || hasRetrySignal && hasFeedSignal) {
+        return true;
+      }
+    }
+    if (site === "monster" || text.includes("monster")) {
+      const hasUnusualActivitySignal = text.includes("we detected unusual activity from your device or network") || text.includes("automated (bot) activity on your network") || text.includes("automated bot activity on your network");
+      const hasRestrictionSignal = text.includes("rapid taps or clicks") || text.includes("submit feedback") || text.includes("id:");
+      if (hasUnusualActivitySignal && hasRestrictionSignal) {
         return true;
       }
     }
@@ -829,17 +878,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function getNavigationUrl(el) {
     if (el instanceof HTMLAnchorElement && el.href) {
-      return normalizeUrl(el.href);
+      return unwrapRedirectNavigationUrl(normalizeUrl(el.href));
     }
     const parentAnchor = el.closest("a");
     if (parentAnchor?.href) {
-      return normalizeUrl(parentAnchor.href);
+      return unwrapRedirectNavigationUrl(normalizeUrl(parentAnchor.href));
     }
     if (el instanceof HTMLButtonElement && el.formAction && el.formAction !== window.location.href) {
-      return normalizeUrl(el.formAction);
+      return unwrapRedirectNavigationUrl(normalizeUrl(el.formAction));
     }
     if (el instanceof HTMLInputElement && el.formAction && el.formAction !== window.location.href) {
-      return normalizeUrl(el.formAction);
+      return unwrapRedirectNavigationUrl(normalizeUrl(el.formAction));
     }
     const dataUrlAttributes = [
       "data-href",
@@ -863,7 +912,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       if (value) {
         const normalized = normalizeUrl(value);
         if (normalized) {
-          return normalized;
+          return unwrapRedirectNavigationUrl(normalized);
         }
       }
     }
@@ -896,7 +945,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
       const normalized = normalizeUrl(value);
       if (normalized) {
-        return normalized;
+        return unwrapRedirectNavigationUrl(normalized);
       }
     }
     const onclick = el.getAttribute("onclick");
@@ -905,12 +954,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         /(?:window\.open|window\.location(?:\.href)?|document\.location(?:\.href)?)\s*\(?\s*['"]([^'"]+)['"]/i
       ) ?? onclick.match(/location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/i) ?? onclick.match(/navigate\s*\(\s*['"]([^'"]+)['"]/i);
       if (match?.[1]) {
-        return normalizeUrl(match[1]);
+        return unwrapRedirectNavigationUrl(normalizeUrl(match[1]));
       }
     }
     const innerAnchor = el.querySelector("a[href]");
     if (innerAnchor?.href) {
-      return normalizeUrl(innerAnchor.href);
+      return unwrapRedirectNavigationUrl(normalizeUrl(innerAnchor.href));
     }
     return null;
   }
@@ -930,6 +979,43 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return normalized.toString();
     } catch {
       return null;
+    }
+  }
+  function unwrapRedirectNavigationUrl(url) {
+    if (!url) {
+      return null;
+    }
+    try {
+      const parsed = new URL(url, window.location.href);
+      const redirectParamNames = [
+        "url",
+        "u",
+        "dest",
+        "destination",
+        "redirect",
+        "redirect_url",
+        "external_url",
+        "target",
+        "target_url",
+        "href",
+        "link",
+        "apply_url",
+        "job_url"
+      ];
+      for (const name of redirectParamNames) {
+        const value = parsed.searchParams.get(name);
+        if (!value) {
+          continue;
+        }
+        const normalized = normalizeUrl(value);
+        if (!normalized || normalized === url) {
+          continue;
+        }
+        return normalized;
+      }
+      return parsed.toString();
+    } catch {
+      return url;
     }
   }
   function isExternalUrl(url) {
@@ -987,9 +1073,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return true;
   }
   function performClickAction(element) {
+    const isNativeSubmitControl = element instanceof HTMLButtonElement && element.type.toLowerCase() === "submit" || element instanceof HTMLInputElement && element.type.toLowerCase() === "submit";
     try {
       element.focus();
     } catch {
+    }
+    if (isNativeSubmitControl) {
+      try {
+        element.click();
+        return;
+      } catch {
+      }
     }
     const eventOptions = {
       bubbles: true,
@@ -1029,6 +1123,25 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     try {
       element.click();
     } catch {
+    }
+    const keyboardEvents = [
+      ["keydown", "Enter"],
+      ["keyup", "Enter"],
+      ["keydown", " "],
+      ["keyup", " "]
+    ];
+    for (const [eventType, key] of keyboardEvents) {
+      try {
+        element.dispatchEvent(
+          new KeyboardEvent(eventType, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            key
+          })
+        );
+      } catch {
+      }
     }
   }
   function isElementInteractive(el) {
@@ -1085,7 +1198,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     "relocate",
     "relocation"
   ];
-  function shouldAutofillField(field, ignoreBlankCheck = false) {
+  function shouldAutofillField(field, ignoreBlankCheck = false, includeOptionalFields = false) {
     if (field.disabled) return false;
     if (field instanceof HTMLInputElement) {
       const inputType = field.type.toLowerCase();
@@ -1115,6 +1228,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return false;
     }
     if (descriptor.includes("captcha") || descriptor.includes("social security") || descriptor.includes("ssn") || descriptor.includes("password") || descriptor.includes("credit card") || descriptor.includes("card number")) {
+      return false;
+    }
+    if (!includeOptionalFields && !(field instanceof HTMLInputElement && field.type.toLowerCase() === "file") && !isFieldRequired(field)) {
       return false;
     }
     if (!ignoreBlankCheck && field instanceof HTMLSelectElement) {
@@ -1262,6 +1378,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (field.hasAttribute("required") || field.getAttribute("aria-required") === "true") {
       return true;
     }
+    if (field.getAttribute("aria-required") === "false" || field.getAttribute("data-required") === "false") {
+      return false;
+    }
     if (/\*/.test(getQuestionText(field))) {
       return true;
     }
@@ -1269,6 +1388,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "label, fieldset, [role='group'], [role='radiogroup'], [role='dialog'], .field, .form-field, .question, .application-question, [class*='field'], [class*='question'], [class*='required'], [data-required]"
     );
     if (!(container instanceof HTMLElement)) {
+      return false;
+    }
+    if (isFieldExplicitlyOptional(field, container)) {
       return false;
     }
     const attrs = [
@@ -1342,6 +1464,35 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     const root = field.getRootNode();
     return root instanceof ShadowRoot && root.host instanceof HTMLElement && isElementVisible(root.host);
+  }
+  function isFieldExplicitlyOptional(field, container) {
+    if (/\boptional\b/i.test(getQuestionText(field))) {
+      return true;
+    }
+    const fieldSignals = [
+      field.getAttribute("aria-required"),
+      field.getAttribute("data-required"),
+      field.getAttribute("aria-label"),
+      field.getAttribute("placeholder")
+    ].filter(Boolean).join(" ").toLowerCase();
+    if (fieldSignals.includes("optional") || field.getAttribute("aria-required") === "false" || field.getAttribute("data-required") === "false") {
+      return true;
+    }
+    const context = container ?? field.closest(
+      "label, fieldset, [role='group'], [role='radiogroup'], [role='dialog'], .field, .form-field, .question, .application-question, [class*='field'], [class*='question'], [class*='optional'], [data-required], [aria-required]"
+    );
+    if (!(context instanceof HTMLElement)) {
+      return false;
+    }
+    const attrs = [
+      context.className,
+      context.getAttribute("data-required"),
+      context.getAttribute("aria-required")
+    ].filter(Boolean).join(" ").toLowerCase();
+    if (attrs.includes("optional") || context.getAttribute("aria-required") === "false" || context.getAttribute("data-required") === "false") {
+      return true;
+    }
+    return /\boptional\b/i.test(cleanText(context.textContent || ""));
   }
   function normalizeAutofillComparableValue(value) {
     return normalizeChoiceText(value).replace(/\s+/g, " ").trim();
@@ -1857,6 +2008,11 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     return true;
   }
+  function hasSelectedMatchingFile(input, assetName) {
+    const selected = normalizeFileName(getSelectedFileName(input));
+    const desired = normalizeFileName(assetName);
+    return Boolean(selected && desired && selected === desired);
+  }
   function getResumeAssetUploadKey(asset) {
     return [
       normalizeFileName(asset.name),
@@ -1866,6 +2022,94 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function normalizeFileName(value) {
     return value.trim().toLowerCase();
+  }
+  function scoreResumeFileInputPreference(input, count) {
+    const descriptor = normalizeChoiceText(
+      getFieldDescriptor(input, getQuestionText(input))
+    );
+    const directMetadata = normalizeChoiceText(
+      cleanText(
+        [
+          descriptor,
+          input.getAttribute("aria-label"),
+          input.getAttribute("title"),
+          input.getAttribute("placeholder"),
+          input.name,
+          input.id,
+          input.className,
+          input.accept
+        ].filter(Boolean).join(" ")
+      )
+    );
+    const surroundingText = normalizeChoiceText(
+      cleanText(
+        input.closest("label, fieldset, section, article, form, div")?.textContent
+      ).slice(0, 600)
+    );
+    const context = `${directMetadata} ${surroundingText}`.trim();
+    if (!context) {
+      return count === 1 ? 8 : 0;
+    }
+    const strongResumeSignals = [
+      "resume",
+      "resume cv",
+      "upload resume",
+      "attach resume",
+      "resume selection",
+      "add a resume for the employer",
+      "curriculum vitae"
+    ];
+    const weakResumeSignals = ["cv", "document", "attachment", "upload", "file"];
+    const negativeSignals = [
+      "cover letter",
+      "motivation letter",
+      "personal statement",
+      "transcript",
+      "portfolio",
+      "work sample",
+      "writing sample",
+      "certificate",
+      "certification",
+      "letter of recommendation",
+      "recommendation",
+      "supporting document",
+      "additional document",
+      "additional attachment"
+    ];
+    const hasDirectNegativeSignal = negativeSignals.some(
+      (signal) => directMetadata.includes(signal)
+    );
+    const hasSurroundingNegativeSignal = negativeSignals.some(
+      (signal) => surroundingText.includes(signal)
+    );
+    const hasDirectResumeSignal = strongResumeSignals.some(
+      (signal) => directMetadata.includes(signal)
+    );
+    if (hasDirectNegativeSignal || hasSurroundingNegativeSignal && !hasDirectResumeSignal) {
+      return -60;
+    }
+    let score = 0;
+    if (strongResumeSignals.some(
+      (signal) => directMetadata.includes(signal) || surroundingText.includes(signal)
+    )) {
+      score += 90;
+    }
+    if (weakResumeSignals.some((signal) => directMetadata.includes(signal)) && !context.includes("cover")) {
+      score += count === 1 ? 24 : 10;
+    }
+    if (input.accept.toLowerCase().includes("pdf")) {
+      score += 6;
+    }
+    if (input.name.toLowerCase().includes("resume") || input.id.toLowerCase().includes("resume")) {
+      score += 28;
+    }
+    if (score <= 0 && negativeSignals.some((signal) => surroundingText.includes(signal))) {
+      score -= 40;
+    }
+    if (count === 1 && score > -20) {
+      score += 10;
+    }
+    return score;
   }
   function inferResumeKindFromLabel(label) {
     const normalizedLabel = label?.trim().toLowerCase() ?? "";
@@ -1914,6 +2158,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       case "full_stack":
         return ["full_stack", "front_end", "back_end"];
     }
+  }
+  function shouldUseFileInputForResume(input, count) {
+    return scoreResumeFileInputPreference(input, count) > 0;
   }
 
   // src/content/sitePatterns.ts
@@ -2425,12 +2672,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       const record = jobResult;
       const url = stringOrEmpty(record.normalizedJobPosting?.url) || stringOrEmpty(record.jobPosting?.url) || stringOrEmpty(record.enrichments?.localizedMonsterUrls?.[0]?.url) || stringOrEmpty(record.canonicalUrl);
       const title = stringOrEmpty(record.normalizedJobPosting?.title) || stringOrEmpty(record.jobPosting?.title);
+      const appliedSignal = extractMonsterEmbeddedAppliedSignal(
+        jobResult
+      );
       const contextText = cleanText(
         [
           stringOrEmpty(record.normalizedJobPosting?.hiringOrganization?.name) || stringOrEmpty(record.jobPosting?.hiringOrganization?.name),
           stringOrEmpty(record.location?.displayText) || stringOrEmpty(record.location?.displayTextJobCard),
           stringOrEmpty(record.dateRecency),
-          stringOrEmpty(record.enrichments?.processedDescriptions?.shortDescription)
+          stringOrEmpty(record.enrichments?.processedDescriptions?.shortDescription),
+          appliedSignal ? "already applied" : ""
         ].filter(Boolean).join(" ")
       );
       addJobCandidate(candidates, url, title, contextText);
@@ -2442,10 +2693,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       (candidate) => isLikelyJobDetailUrl(site, candidate.url, candidate.title, candidate.contextText)
     );
     const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
-    const eligible = datePostedWindow === "any" ? valid : recencyFiltered;
+    const recencyEligible = datePostedWindow === "any" ? valid : recencyFiltered;
+    const eligible = filterCandidatesForRemotePreference(recencyEligible);
     const shouldKeywordFilter = searchKeywords.length > 0 && (site === "startup" || site === "other_sites");
+    const hasKeywordMatchedBoardCandidates = searchKeywords.length > 0 && (site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor") && eligible.some(
+      (candidate) => scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0
+    );
     const keywordEligible = shouldKeywordFilter ? eligible.filter(
       (candidate) => matchesConfiguredSearchKeywords(candidate, searchKeywords)
+    ) : hasKeywordMatchedBoardCandidates ? eligible.filter(
+      (candidate) => scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0
     ) : eligible;
     const technicalEligible = site === "startup" || site === "other_sites" ? keywordEligible.filter(
       (candidate) => looksLikeTechnicalRoleTitle(candidate.title)
@@ -2475,30 +2732,67 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return [...preferred, ...fallback];
   }
   function matchesConfiguredSearchKeywords(candidate, searchKeywords) {
+    return scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0;
+  }
+  function scoreCandidateKeywordRelevance(candidate, searchKeywords) {
     const haystack = normalizeChoiceText(
       `${candidate.title} ${candidate.contextText}`
     );
-    return searchKeywords.some(
-      (keyword) => matchesSearchKeyword(haystack, keyword)
-    );
+    let bestScore = 0;
+    for (const keyword of searchKeywords) {
+      const normalizedKeyword = normalizeChoiceText(keyword);
+      if (!normalizedKeyword) {
+        continue;
+      }
+      if (haystack.includes(normalizedKeyword)) {
+        bestScore = Math.max(bestScore, 100);
+        continue;
+      }
+      const keywordTokens = normalizedKeyword.split(/\s+/).filter((token) => token.length >= 2);
+      if (keywordTokens.length === 0) {
+        continue;
+      }
+      const haystackTokens = new Set(haystack.split(/\s+/).filter(Boolean));
+      const matchedTokens = keywordTokens.filter(
+        (token) => haystackTokens.has(token)
+      ).length;
+      const score = Math.round(matchedTokens / keywordTokens.length * 100);
+      bestScore = Math.max(bestScore, score);
+    }
+    return bestScore >= 75 ? bestScore : 0;
   }
-  function matchesSearchKeyword(haystack, keyword) {
-    const normalizedKeyword = normalizeChoiceText(keyword);
-    if (!haystack || !normalizedKeyword) {
-      return false;
+  function filterCandidatesForRemotePreference(candidates) {
+    const annotated = candidates.map((candidate) => ({
+      candidate,
+      remoteScore: scoreRemotePreference(candidate)
+    }));
+    const hasStrongRemoteCandidate = annotated.some(
+      (entry) => entry.remoteScore > 0
+    );
+    if (!hasStrongRemoteCandidate) {
+      return candidates;
     }
-    if (haystack.includes(normalizedKeyword)) {
-      return true;
+    return annotated.filter((entry) => entry.remoteScore >= 0).map((entry) => entry.candidate);
+  }
+  function scoreRemotePreference(candidate) {
+    const haystack = normalizeChoiceText(
+      `${candidate.title} ${candidate.contextText} ${candidate.url}`
+    );
+    let score = 0;
+    if (/\b(remote|fully remote|100 remote|work from home|distributed|anywhere|remote first)\b/.test(
+      haystack
+    )) {
+      score += 2;
     }
-    const keywordTokens = normalizedKeyword.split(/\s+/).filter((token) => token.length >= 2);
-    if (keywordTokens.length === 0) {
-      return false;
+    if (/\bhybrid\b/.test(haystack)) {
+      score -= 2;
     }
-    const haystackTokens = new Set(haystack.split(/\s+/).filter(Boolean));
-    const matchedTokens = keywordTokens.filter(
-      (token) => haystackTokens.has(token)
-    ).length;
-    return matchedTokens === keywordTokens.length || matchedTokens / keywordTokens.length >= 0.75;
+    if (/\b(onsite|on site|in office|in-office|office based|office-based|relocation required)\b/.test(
+      haystack
+    )) {
+      score -= 3;
+    }
+    return score;
   }
   function isLikelyJobDetailUrl(site, url, text, contextText = "") {
     if (!site) {
@@ -2878,9 +3172,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (site === "startup" || site === "other_sites") {
       minAttemptsBeforeEarlyStop = 22;
       stableThreshold = 8;
-    } else if (site === "ziprecruiter" || site === "dice" || site === "glassdoor") {
-      minAttemptsBeforeEarlyStop = 14;
-      stableThreshold = 8;
+    } else if (site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "glassdoor") {
+      minAttemptsBeforeEarlyStop = site === "indeed" ? 12 : 14;
+      stableThreshold = site === "indeed" ? 6 : 8;
     }
     return attempt >= minAttemptsBeforeEarlyStop && stablePasses >= stableThreshold;
   }
@@ -2931,7 +3225,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       } catch {
         titleText = cleanText(anchor?.textContent) || "";
       }
-      const contextText = cleanText(container.innerText || container.textContent || "");
+      const contextText = buildCandidateContextText(container, anchor);
       if (!anchor) {
         const dataJk = container.getAttribute("data-jk");
         if (dataJk) {
@@ -2954,8 +3248,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     for (const selector of selectors) {
       try {
         for (const anchor of Array.from(document.querySelectorAll(selector))) {
-          const contextText = cleanText(
-            anchor.closest("article, li, section, div")?.textContent || anchor.textContent || ""
+          const contextText = buildCandidateContextText(
+            anchor.closest("article, li, section, div"),
+            anchor
           );
           const title = resolveAnchorCandidateTitle(anchor, contextText);
           if (isCareerListingCtaText(title)) {
@@ -3086,8 +3381,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     for (const anchor of Array.from(document.querySelectorAll("a[href]"))) {
       const href = anchor.href?.toLowerCase() ?? "";
-      const contextText = cleanText(
-        anchor.closest("article, li, section, div")?.textContent || anchor.textContent || ""
+      const contextText = buildCandidateContextText(
+        anchor.closest("article, li, section, div"),
+        anchor
       );
       const text = resolveAnchorCandidateTitle(anchor, contextText);
       if (!text || text.length < 3 || text.length > 200) {
@@ -3157,8 +3453,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const currentHost = window.location.hostname.toLowerCase();
     for (const anchor of Array.from(document.querySelectorAll("a[href]"))) {
       const href = anchor.href?.toLowerCase() ?? "";
-      const contextText = cleanText(
-        anchor.closest("article, li, section, div")?.textContent || anchor.textContent || ""
+      const contextText = buildCandidateContextText(
+        anchor.closest("article, li, section, div"),
+        anchor
       );
       const text = resolveAnchorCandidateTitle(anchor, contextText);
       if (!text || text.length < 4 || text.length > 240) {
@@ -3239,6 +3536,41 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       title,
       contextText: cleanText(rawContext)
     });
+  }
+  function buildCandidateContextText(container, anchor) {
+    return cleanText(
+      [
+        container?.innerText || container?.textContent || "",
+        container?.getAttribute("aria-label") || "",
+        container?.getAttribute("title") || "",
+        container?.getAttribute("data-status") || "",
+        anchor?.getAttribute("aria-label") || "",
+        anchor?.getAttribute("title") || "",
+        anchor?.textContent || ""
+      ].filter(Boolean).join(" ")
+    );
+  }
+  function extractMonsterEmbeddedAppliedSignal(record) {
+    for (const key of ["applied", "isApplied", "alreadyApplied", "hasApplied"]) {
+      if (record[key] === true) {
+        return true;
+      }
+    }
+    for (const key of [
+      "applicationStatus",
+      "applyStatus",
+      "candidateStatus",
+      "jobActivity",
+      "status"
+    ]) {
+      const value = record[key];
+      if (typeof value === "string" && isAppliedJobText(value)) {
+        return true;
+      }
+    }
+    return Object.values(record).some(
+      (value) => typeof value === "object" && value !== null && !Array.isArray(value) && extractMonsterEmbeddedAppliedSignal(value)
+    );
   }
   function dedupeJobCandidates(candidates) {
     const unique = /* @__PURE__ */ new Map();
@@ -3827,6 +4159,25 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "/contact"
     ].some((token) => lower.includes(token));
   }
+  function isZipRecruiterCandidatePortalUrl(url) {
+    if (!url) {
+      return false;
+    }
+    try {
+      const parsed = new URL(url, window.location.href);
+      const hostname = parsed.hostname.toLowerCase();
+      const path = parsed.pathname.toLowerCase();
+      if (!hostname.includes("ziprecruiter")) {
+        return false;
+      }
+      if (path.includes("candidateexperience") || path.includes("jobapply")) {
+        return false;
+      }
+      return path.includes("/candidate/") || path.includes("/my-jobs") || path.includes("/myjobs") || path.includes("/saved-jobs") || path.includes("/savedjobs") || path.includes("/profile") || path.includes("/account") || path.includes("/login") || path.includes("/signin");
+    } catch {
+      return false;
+    }
+  }
   function findCompanySiteAction() {
     const pageText = cleanText(document.body?.innerText || "").toLowerCase().slice(0, 6e3);
     const hasGateText = COMPANY_SITE_GATE_TOKENS.some((token) => pageText.includes(token));
@@ -4097,10 +4448,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
       const text = (getActionText(actionElement) || getActionText(element)).trim();
       const lower = text.toLowerCase();
-      if (!lower || lower.includes("save") || lower.includes("share") || lower.includes("alert") || lower.includes("sign in") || lower.includes("job alert")) {
+      if (!lower || lower.includes("save") || lower.includes("share") || lower.includes("alert") || lower.includes("sign in") || lower.includes("job alert") || lower.includes("my jobs") || lower.includes("saved jobs")) {
         continue;
       }
       const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
+      if (isZipRecruiterCandidatePortalUrl(url)) {
+        continue;
+      }
       const attrs = [
         actionElement.getAttribute("data-testid"),
         actionElement.getAttribute("data-qa"),
@@ -4127,7 +4481,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       if (attrs.includes("quick")) score += 15;
       if (attrs.includes("company")) score += 15;
       if (url && shouldPreferApplyNavigation(url, text, "ziprecruiter")) score += 35;
-      if (url && /zipapply|jobapply|\/apply\/|candidate/i.test(url)) score += 35;
+      if (url && /zipapply|jobapply|\/apply\/|candidateexperience/i.test(url)) score += 35;
       if (score < 45) {
         continue;
       }
@@ -4147,17 +4501,29 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         }
         const text = (getActionText(actionElement) || getActionText(element)).trim();
         const lower = text.toLowerCase();
-        if (!lower || ["save", "share", "alert", "sign in", "job alert", "subscribe"].some(
+        if (!lower || [
+          "save",
+          "share",
+          "alert",
+          "sign in",
+          "job alert",
+          "subscribe",
+          "my jobs",
+          "saved jobs"
+        ].some(
           (token) => lower.includes(token)
         )) {
           continue;
         }
         const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
+        if (isZipRecruiterCandidatePortalUrl(url)) {
+          continue;
+        }
         let score = 0;
         if (/apply|company|employer|continue|resume/.test(lower)) score += 55;
         if (/\bapply\b/.test(lower)) score += 20;
         if (url && shouldPreferApplyNavigation(url, text, "ziprecruiter")) score += 35;
-        if (url && /zipapply|jobapply|\/apply\/|candidate/i.test(url)) score += 30;
+        if (url && /zipapply|jobapply|\/apply\/|candidateexperience/i.test(url)) score += 30;
         if (score < 55) {
           continue;
         }
@@ -4699,7 +5065,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (hostname.includes("greenhouse.io") && (pathAndQuery.includes("/embed/job_app") || pathAndQuery.includes("/jobs/") || pathAndQuery.includes("gh_jid="))) {
       return true;
     }
-    if (lower.includes("smartapply.indeed.com") || lower.includes("indeedapply") || lower.includes("zipapply") || lower.includes("easyapply") || lower.includes("easy-apply") || lower.includes("/apply") || lower.includes("application") || lower.includes("candidate") || lower.includes("jobapply") || lower.includes("job_app") || lower.includes("applytojob") || lower.includes("candidateexperience")) {
+    if (site === "ziprecruiter" && isZipRecruiterCandidatePortalUrl(url)) {
+      return false;
+    }
+    if (lower.includes("smartapply.indeed.com") || lower.includes("indeedapply") || lower.includes("zipapply") || lower.includes("easyapply") || lower.includes("easy-apply") || lower.includes("/apply") || lower.includes("application") || lower.includes("candidateexperience") || lower.includes("jobapply") || lower.includes("job_app") || lower.includes("applytojob")) {
       return true;
     }
     if (site === "startup" || site === "other_sites") {
@@ -4722,7 +5091,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
       if (/^https?:\/\//i.test(value) || value.startsWith("/")) {
         const normalized = normalizeUrl(value);
-        if (normalized && !isKnownBrokenApplyUrl(normalized) && /apply|application|candidate|jobapply|company|career/i.test(normalized)) {
+        if (normalized && !isKnownBrokenApplyUrl(normalized) && !isZipRecruiterCandidatePortalUrl(normalized) && /apply|application|candidateexperience|jobapply|company|career/i.test(normalized)) {
           return normalized;
         }
       }
@@ -5073,13 +5442,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function hasLikelyApplicationForm(collectors) {
     const relevantFields = collectors.collectAutofillFields().filter(
-      (field) => shouldAutofillField(field, true) && isLikelyApplicationField(field)
+      (field) => shouldAutofillField(field, true, true) && isLikelyApplicationField(field)
     );
     if (relevantFields.length >= 2) {
       return true;
     }
     return collectors.collectResumeFileInputs().some(
-      (input) => shouldAutofillField(input, true) && isLikelyApplicationField(input)
+      (input) => shouldAutofillField(input, true, true) && isLikelyApplicationField(input)
     );
   }
   function hasLikelyApplicationFrame() {
@@ -5087,13 +5456,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function findStandaloneApplicationFrameUrl(collectors) {
     const localRelevantFields = collectors.collectAutofillFields().filter(
-      (field) => shouldAutofillField(field, true) && isLikelyApplicationField(field)
+      (field) => shouldAutofillField(field, true, true) && isLikelyApplicationField(field)
     );
     if (localRelevantFields.length > 0) {
       return null;
     }
     const hasLocalResumeUpload = collectors.collectResumeFileInputs().some(
-      (input) => shouldAutofillField(input, true) && isLikelyApplicationField(input)
+      (input) => shouldAutofillField(input, true, true) && isLikelyApplicationField(input)
     );
     if (hasLocalResumeUpload) {
       return null;
@@ -5474,7 +5843,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     onOpenListingsSurface
   }) {
     const isCareerSite = site === "startup" || site === "other_sites";
-    const needsAggressiveScan = isCareerSite || site === "dice" || site === "ziprecruiter" || site === "glassdoor";
+    const needsAggressiveScan = isCareerSite || site === "indeed" || site === "dice" || site === "ziprecruiter" || site === "glassdoor";
     let careerSurfaceAttempts = 0;
     const desiredCount = Math.max(1, Math.floor(targetCount));
     let bestUrls = [];
@@ -5570,7 +5939,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         if (attempt === 10 || attempt === 20 || attempt === 30) {
           tryClickLoadMoreButton();
         }
-      } else if (site === "dice" || site === "ziprecruiter" || site === "glassdoor") {
+      } else if (site === "indeed" || site === "dice" || site === "ziprecruiter" || site === "glassdoor") {
         if (attempt % 4 === 0) {
           window.scrollTo({
             top: document.body.scrollHeight,
@@ -5619,7 +5988,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return merged;
   }
   async function waitForResultSurfaceSettle(site) {
-    const maxWaitMs = site === "startup" || site === "other_sites" || site === "glassdoor" ? 1600 : site === "dice" || site === "ziprecruiter" ? 1400 : 1e3;
+    const maxWaitMs = site === "startup" || site === "other_sites" || site === "glassdoor" ? 1600 : site === "indeed" || site === "dice" || site === "ziprecruiter" ? 1400 : 1e3;
     await waitForDomSettle(maxWaitMs, 350);
   }
   async function waitForDomSettle(maxWaitMs, quietWindowMs) {
@@ -5850,7 +6219,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function collectLikelyResumeInputs(collectors) {
     return collectors.collectResumeFileInputs().filter(
-      (input) => shouldAutofillField(input, true) && isLikelyApplicationField(input)
+      (input) => shouldAutofillField(input, true, true) && isLikelyApplicationField(input)
     );
   }
   function collectLikelyNonFileApplicationFields(collectors) {
@@ -5858,8 +6227,66 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       if (field instanceof HTMLInputElement && field.type === "file") {
         return false;
       }
-      return shouldAutofillField(field, true) && isLikelyApplicationField(field);
+      return shouldAutofillField(field, true, true) && isLikelyApplicationField(field);
     });
+  }
+
+  // src/content/manualReview.ts
+  var MANUAL_REVIEW_ACTION_PATTERNS = [
+    /\bback\b/,
+    /\bprevious\b/,
+    /\bedit\b/,
+    /\bchange\b/
+  ];
+  var MANUAL_REVIEW_BLOCK_PATTERNS = [
+    "back to search",
+    "back to results",
+    "edit profile",
+    "edit profile name",
+    "change profile"
+  ];
+  function shouldStartManualReviewPause(target) {
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+    const actionElement = target.closest(
+      "button, a[href], [role='button'], input[type='button'], input[type='submit']"
+    );
+    if (!actionElement || !isElementVisible(actionElement)) {
+      return false;
+    }
+    const text = cleanText(
+      getActionText(actionElement) || actionElement.getAttribute("aria-label") || actionElement.getAttribute("title") || ""
+    ).toLowerCase();
+    if (!text) {
+      return false;
+    }
+    if (MANUAL_REVIEW_BLOCK_PATTERNS.some((pattern) => text.includes(pattern))) {
+      return false;
+    }
+    return MANUAL_REVIEW_ACTION_PATTERNS.some((pattern) => pattern.test(text));
+  }
+  function hasEditableAutofillFields(fields) {
+    return fields.some((field) => {
+      if (!shouldAutofillField(field, false, true)) {
+        return false;
+      }
+      if (field instanceof HTMLInputElement) {
+        if (["hidden", "submit", "button", "reset", "image", "search"].includes(
+          field.type.toLowerCase()
+        )) {
+          return false;
+        }
+        return !field.disabled && !field.readOnly;
+      }
+      if (field instanceof HTMLTextAreaElement) {
+        return !field.disabled && !field.readOnly;
+      }
+      return !field.disabled;
+    });
+  }
+  function shouldPauseAutomationForManualReview(pauseUntil, fields, now = Date.now()) {
+    return now < pauseUntil && hasEditableAutofillFields(fields);
   }
 
   // src/content.ts
@@ -5895,6 +6322,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   var childApplicationTabOpened = false;
   var stageDepth = 0;
   var lastNavigationUrl = "";
+  var manualReviewPauseUntil = 0;
   var pendingAnswers = /* @__PURE__ */ new Map();
   var recentResumeUploadAttempts = /* @__PURE__ */ new WeakMap();
   var extensionManagedResumeUploads = /* @__PURE__ */ new WeakMap();
@@ -5938,6 +6366,28 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return Math.max(25, Math.floor(jobPageLimit) * 4);
     }
     return Math.max(1, Math.floor(jobPageLimit));
+  }
+  function getCurrentSearchKeywordHints(site, settings) {
+    const configured = parseSearchKeywords(settings.searchKeywords);
+    const trimmedLabel = currentLabel?.trim() ?? "";
+    if (!trimmedLabel) {
+      return configured;
+    }
+    if (isJobBoardSite(site)) {
+      return [trimmedLabel];
+    }
+    if (site === "other_sites") {
+      const separatorIndex = trimmedLabel.indexOf(":");
+      if (separatorIndex >= 0) {
+        const parsed = parseSearchKeywords(
+          trimmedLabel.slice(separatorIndex + 1)
+        );
+        if (parsed.length > 0) {
+          return parsed;
+        }
+      }
+    }
+    return configured;
   }
   function throwIfRateLimited(site) {
     const brokenReason = detectBrokenPageReason(document);
@@ -6104,6 +6554,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   document.addEventListener("blur", handlePotentialAnswerMemory, true);
   document.addEventListener("focusout", handlePotentialAnswerMemory, true);
   document.addEventListener("click", handlePotentialChoiceAnswerMemory, true);
+  document.addEventListener("click", handlePotentialManualReviewPause, true);
   window.addEventListener("pagehide", flushPendingAnswersOnPageHide);
   document.addEventListener("visibilitychange", flushPendingAnswersOnPageHide, true);
   void resumeAutomationIfNeeded().catch(() => {
@@ -6250,6 +6701,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       site,
       effectiveLimit
     );
+    const keywordHints = getCurrentSearchKeywordHints(site, settings);
     updateStatus(
       "running",
       `Scanning ${labelPrefix}${getSiteLabel(site)} results for job pages${postedWindowDescription}...`,
@@ -6267,17 +6719,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return;
     }
     await waitForHumanVerificationToClear();
-    const renderWaitMs = site === "startup" || site === "other_sites" ? 5e3 : site === "dice" || site === "ziprecruiter" || site === "glassdoor" ? 5e3 : site === "monster" ? 5e3 : 2500;
+    const renderWaitMs = site === "startup" || site === "other_sites" ? 5e3 : site === "indeed" || site === "dice" || site === "ziprecruiter" || site === "glassdoor" ? 5e3 : site === "monster" ? 5e3 : 2500;
     await sleep(renderWaitMs);
     throwIfRateLimited(site);
-    if (site === "startup" || site === "other_sites" || site === "dice" || site === "ziprecruiter" || site === "monster" || site === "glassdoor") {
+    if (site === "startup" || site === "other_sites" || site === "indeed" || site === "dice" || site === "ziprecruiter" || site === "monster" || site === "glassdoor") {
       await scrollPageForLazyContent2();
     }
     const jobUrls = await waitForJobDetailUrls2(
       site,
       settings.datePostedWindow,
       collectionTargetCount,
-      parseSearchKeywords(settings.searchKeywords)
+      keywordHints
     );
     if (jobUrls.length === 0) {
       updateStatus(
@@ -6890,6 +7342,21 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       const settings = await readCurrentAutomationSettings();
       const result = await autofillVisibleApplication(settings);
       mergeAutofillResult(combinedResult, result);
+      const currentFields = collectAutofillFields();
+      if (shouldPauseAutomationForManualReview(
+        manualReviewPauseUntil,
+        currentFields
+      )) {
+        noProgressCount = 0;
+        updateStatus(
+          "running",
+          "Manual review detected. Pausing automation briefly so you can edit this step.",
+          true,
+          "autofill-form"
+        );
+        await sleep(1200);
+        continue;
+      }
       if (result.filledFields > 0 || result.uploadedResume) {
         noProgressCount = 0;
         const pendingResumeUploadSurface = Boolean(result.uploadedResume) && hasPendingResumeUploadSurface(applicationSurfaceCollectors);
@@ -7068,14 +7535,24 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         `The page returned a bad gateway error instead of a usable application page.`
       );
     }
-    if (!isProbablyHumanVerificationPage(document)) return;
+    const getManualBlockKind = () => {
+      if (isProbablyHumanVerificationPage(document)) {
+        return "verification";
+      }
+      if (isProbablyAuthGatePage(document)) {
+        return "auth";
+      }
+      return null;
+    };
+    const initialBlockKind = getManualBlockKind();
+    if (!initialBlockKind) return;
     updateStatus(
       "waiting_for_verification",
-      "Verification detected. Complete it manually.",
+      initialBlockKind === "auth" ? "Sign-in required. Complete it manually and the run will continue automatically." : "Verification detected. Complete it manually.",
       true
     );
     let lastReminderAt = Date.now();
-    while (isProbablyHumanVerificationPage(document)) {
+    while (getManualBlockKind()) {
       const pendingBrokenReason = detectBrokenPageReason(document);
       if (pendingBrokenReason === "access_denied") {
         throw new Error(
@@ -7088,9 +7565,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         );
       }
       if (Date.now() - lastReminderAt > VERIFICATION_TIMEOUT_MS) {
+        const currentBlockKind = getManualBlockKind();
         updateStatus(
           "waiting_for_verification",
-          "Still waiting for verification. Complete it manually and the run will resume automatically.",
+          currentBlockKind === "auth" ? "Still waiting for sign-in. Complete it manually and the run will resume automatically." : "Still waiting for verification. Complete it manually and the run will resume automatically.",
           true
         );
         lastReminderAt = Date.now();
@@ -7175,7 +7653,30 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       const hiddenFileInputs = Array.from(
         document.querySelectorAll("input[type='file']")
       );
-      for (const input of hiddenFileInputs) {
+      const rankedHiddenTargets = hiddenFileInputs.map((input, index) => ({
+        input,
+        index,
+        score: scoreResumeFileInputPreference(input, hiddenFileInputs.length)
+      })).sort(
+        (left, right) => right.score - left.score || left.index - right.index
+      );
+      const satisfiedHiddenTarget = rankedHiddenTargets.find(
+        ({ input, score }) => score > 0 && (extensionManagedResumeUploads.get(input) === resumeUploadKey || hasSelectedMatchingFile(input, resume.name))
+      );
+      if (satisfiedHiddenTarget) {
+        if (extensionManagedResumeUploads.get(satisfiedHiddenTarget.input) !== resumeUploadKey) {
+          extensionManagedResumeUploads.set(
+            satisfiedHiddenTarget.input,
+            resumeUploadKey
+          );
+        }
+        return resume;
+      }
+      const hiddenTargets = rankedHiddenTargets.filter(
+        (entry) => shouldUseFileInputForResume(entry.input, hiddenFileInputs.length)
+      ).map((entry) => entry.input);
+      const fallbackHiddenTargets = hiddenTargets.length > 0 ? hiddenTargets : hiddenFileInputs.length === 1 ? hiddenFileInputs : [];
+      for (const input of fallbackHiddenTargets) {
         if (input.disabled) continue;
         const lastAttemptAt = recentResumeUploadAttempts.get(input) ?? 0;
         const now = Date.now();
@@ -7200,10 +7701,29 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
       return null;
     }
-    const usable = fileInputs.filter(
-      (i) => shouldUseFileInputForResume(i, fileInputs.length)
+    const rankedTargets = fileInputs.map((input, index) => ({
+      input,
+      index,
+      score: scoreResumeFileInputPreference(input, fileInputs.length)
+    })).sort(
+      (left, right) => right.score - left.score || left.index - right.index
     );
-    const targets = usable.length > 0 ? usable : fileInputs;
+    const alreadySatisfiedTarget = rankedTargets.find(
+      ({ input, score }) => score > 0 && (extensionManagedResumeUploads.get(input) === resumeUploadKey || hasSelectedMatchingFile(input, resume.name))
+    );
+    if (alreadySatisfiedTarget) {
+      if (extensionManagedResumeUploads.get(alreadySatisfiedTarget.input) !== resumeUploadKey) {
+        extensionManagedResumeUploads.set(
+          alreadySatisfiedTarget.input,
+          resumeUploadKey
+        );
+      }
+      return resume;
+    }
+    const usable = rankedTargets.filter(
+      (entry) => shouldUseFileInputForResume(entry.input, fileInputs.length)
+    ).map((entry) => entry.input);
+    const targets = usable.length > 0 ? usable : fileInputs.length === 1 ? fileInputs : [];
     for (const input of targets) {
       const lastAttemptAt = recentResumeUploadAttempts.get(input) ?? 0;
       const now = Date.now();
@@ -7366,17 +7886,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
     }
     return Array.from(targets);
-  }
-  function shouldUseFileInputForResume(input, count) {
-    const ctx = getFieldDescriptor(input, getQuestionText(input));
-    if (ctx.includes("cover letter") || ctx.includes("transcript"))
-      return false;
-    if (ctx.includes("resume") || ctx.includes("cv")) return true;
-    if (count === 1) return true;
-    if (ctx.includes("upload") || ctx.includes("attachment") || ctx.includes("document")) {
-      return true;
-    }
-    return false;
   }
   function getAnswerForField(field, settings) {
     const question = getQuestionText(field);
@@ -7615,20 +8124,54 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
   }
   function shouldPreferInFrameProgressionClick(url) {
-    if (IS_TOP_FRAME || currentStage !== "autofill-form") {
+    if (IS_TOP_FRAME) {
       return false;
     }
     if (status.site === "unsupported") {
       return false;
     }
-    if (!isLikelyApplyUrl(window.location.href, status.site) || !isLikelyApplyUrl(url, status.site)) {
+    if (!looksLikeCurrentFrameApplicationSurface(status.site)) {
       return false;
     }
-    try {
-      return new URL(url).origin === new URL(window.location.href).origin;
-    } catch {
-      return false;
+    return isSameOriginInternalApplyStepNavigation(url);
+  }
+  function findEmbeddedContinuationElement(url) {
+    const targetUrl = normalizeUrl(url);
+    if (!targetUrl) {
+      return null;
     }
+    let best;
+    for (const element of collectDeepMatches2(
+      "button, input[type='submit'], input[type='button'], a[href], [role='button']"
+    )) {
+      if (!isElementInteractive(element)) {
+        continue;
+      }
+      const candidateUrl = getNavigationUrl(element);
+      if (candidateUrl !== targetUrl) {
+        continue;
+      }
+      const text = cleanText(
+        getActionText(element) || element.getAttribute("aria-label") || element.getAttribute("title") || ""
+      ).toLowerCase();
+      const attrs = [
+        element.getAttribute("data-testid"),
+        element.getAttribute("data-test"),
+        element.className,
+        element.id
+      ].filter(Boolean).join(" ").toLowerCase();
+      let score = 0;
+      if (element.closest("form, [role='dialog'], [aria-modal='true']")) {
+        score += 20;
+      }
+      if (/continue|next|review|save|submit|application/.test(text) || /continue|next|review|save|submit|application/.test(attrs)) {
+        score += 12;
+      }
+      if (!best || score > best.score) {
+        best = { element, score };
+      }
+    }
+    return best?.element ?? null;
   }
   function tryContinueEmbeddedApplication(url) {
     if (!shouldPreferInFrameProgressionClick(url)) {
@@ -7636,6 +8179,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     if (status.site === "unsupported") {
       return false;
+    }
+    const directMatch = findEmbeddedContinuationElement(url);
+    if (directMatch) {
+      try {
+        directMatch.scrollIntoView({
+          behavior: "smooth",
+          block: "center"
+        });
+      } catch {
+      }
+      performClickAction(directMatch);
+      return true;
     }
     const clickAction = findProgressionAction(status.site) ?? findApplyAction(status.site, "follow-up");
     if (!clickAction || clickAction.type !== "click") {
@@ -7767,6 +8322,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return;
     }
     void flushPendingAnswers();
+  }
+  function handlePotentialManualReviewPause(event) {
+    if (status.site === "unsupported" || currentStage !== "autofill-form" || !event.isTrusted) {
+      return;
+    }
+    if (!shouldStartManualReviewPause(event.target)) {
+      return;
+    }
+    manualReviewPauseUntil = Date.now() + 15e3;
   }
   async function flushPendingAnswers() {
     answerFlushPromise = answerFlushPromise.then(async () => {

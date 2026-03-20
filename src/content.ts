@@ -24,6 +24,7 @@ import {
   getSiteLabel,
   inferResumeKindFromTitle,
   isJobBoardSite,
+  isProbablyAuthGatePage,
   isProbablyRateLimitPage,
   isProbablyHumanVerificationPage,
   normalizeQuestionKey,
@@ -72,10 +73,13 @@ import {
 } from "./content/choiceFill";
 import {
   getResumeAssetUploadKey,
+  hasSelectedMatchingFile,
   getSelectedFileName,
   pickResumeAssetForUpload,
   resolveResumeKindForJob,
+  scoreResumeFileInputPreference,
   shouldAttemptResumeUpload,
+  shouldUseFileInputForResume,
 } from "./content/resumeUpload";
 import {
   getActionText,
@@ -102,6 +106,7 @@ import {
   hasIndeedApplyIframe,
   hasZipRecruiterApplyModal,
   isAlreadyOnApplyPage,
+  isSameOriginInternalApplyStepNavigation,
   isLikelyApplyUrl,
   shouldPreferApplyNavigation,
 } from "./content/apply";
@@ -124,6 +129,10 @@ import {
   waitForJobDetailUrls as collectJobDetailUrls,
 } from "./content/searchResults";
 import { hasPendingResumeUploadSurface } from "./content/resumeStep";
+import {
+  shouldPauseAutomationForManualReview,
+  shouldStartManualReviewPause,
+} from "./content/manualReview";
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -181,6 +190,7 @@ let overlayHideTimerId: number | null = null;
 let childApplicationTabOpened = false;
 let stageDepth = 0;
 let lastNavigationUrl: string = "";
+let manualReviewPauseUntil = 0;
 const pendingAnswers = new Map<string, SavedAnswer>();
 const recentResumeUploadAttempts = new WeakMap<
   HTMLInputElement,
@@ -250,6 +260,36 @@ function getJobResultCollectionTargetCount(
   }
 
   return Math.max(1, Math.floor(jobPageLimit));
+}
+
+function getCurrentSearchKeywordHints(
+  site: SiteKey,
+  settings: AutomationSettings
+): string[] {
+  const configured = parseSearchKeywords(settings.searchKeywords);
+  const trimmedLabel = currentLabel?.trim() ?? "";
+
+  if (!trimmedLabel) {
+    return configured;
+  }
+
+  if (isJobBoardSite(site)) {
+    return [trimmedLabel];
+  }
+
+  if (site === "other_sites") {
+    const separatorIndex = trimmedLabel.indexOf(":");
+    if (separatorIndex >= 0) {
+      const parsed = parseSearchKeywords(
+        trimmedLabel.slice(separatorIndex + 1)
+      );
+      if (parsed.length > 0) {
+        return parsed;
+      }
+    }
+  }
+
+  return configured;
 }
 
 function throwIfRateLimited(site: SiteKey): void {
@@ -469,6 +509,7 @@ document.addEventListener("input", handlePotentialAnswerMemory, true);
 document.addEventListener("blur", handlePotentialAnswerMemory, true);
 document.addEventListener("focusout", handlePotentialAnswerMemory, true);
 document.addEventListener("click", handlePotentialChoiceAnswerMemory, true);
+document.addEventListener("click", handlePotentialManualReviewPause, true);
 window.addEventListener("pagehide", flushPendingAnswersOnPageHide);
 document.addEventListener("visibilitychange", flushPendingAnswersOnPageHide, true);
 void resumeAutomationIfNeeded().catch(() => {});
@@ -661,6 +702,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     site,
     effectiveLimit
   );
+  const keywordHints = getCurrentSearchKeywordHints(site, settings);
 
   updateStatus(
     "running",
@@ -686,7 +728,10 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   const renderWaitMs =
     site === "startup" || site === "other_sites"
       ? 5000
-      : site === "dice" || site === "ziprecruiter" || site === "glassdoor"
+      : site === "indeed" ||
+          site === "dice" ||
+          site === "ziprecruiter" ||
+          site === "glassdoor"
         ? 5000
         : site === "monster"
           ? 5000
@@ -698,6 +743,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   if (
     site === "startup" ||
     site === "other_sites" ||
+    site === "indeed" ||
     site === "dice" ||
     site === "ziprecruiter" ||
     site === "monster" ||
@@ -710,7 +756,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     site,
     settings.datePostedWindow,
     collectionTargetCount,
-    parseSearchKeywords(settings.searchKeywords)
+    keywordHints
   );
 
   if (jobUrls.length === 0) {
@@ -1447,6 +1493,24 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     const settings = await readCurrentAutomationSettings();
     const result = await autofillVisibleApplication(settings);
     mergeAutofillResult(combinedResult, result);
+    const currentFields = collectAutofillFields();
+
+    if (
+      shouldPauseAutomationForManualReview(
+        manualReviewPauseUntil,
+        currentFields
+      )
+    ) {
+      noProgressCount = 0;
+      updateStatus(
+        "running",
+        "Manual review detected. Pausing automation briefly so you can edit this step.",
+        true,
+        "autofill-form"
+      );
+      await sleep(1200);
+      continue;
+    }
 
     if (result.filledFields > 0 || result.uploadedResume) {
       noProgressCount = 0;
@@ -1674,17 +1738,30 @@ async function waitForHumanVerificationToClear(): Promise<void> {
     );
   }
 
-  if (!isProbablyHumanVerificationPage(document)) return;
+  const getManualBlockKind = (): "verification" | "auth" | null => {
+    if (isProbablyHumanVerificationPage(document)) {
+      return "verification";
+    }
+    if (isProbablyAuthGatePage(document)) {
+      return "auth";
+    }
+    return null;
+  };
+
+  const initialBlockKind = getManualBlockKind();
+  if (!initialBlockKind) return;
 
   updateStatus(
     "waiting_for_verification",
-    "Verification detected. Complete it manually.",
+    initialBlockKind === "auth"
+      ? "Sign-in required. Complete it manually and the run will continue automatically."
+      : "Verification detected. Complete it manually.",
     true
   );
 
   let lastReminderAt = Date.now();
 
-  while (isProbablyHumanVerificationPage(document)) {
+  while (getManualBlockKind()) {
     const pendingBrokenReason = detectBrokenPageReason(document);
     if (pendingBrokenReason === "access_denied") {
       throw new Error(
@@ -1698,9 +1775,12 @@ async function waitForHumanVerificationToClear(): Promise<void> {
     }
 
     if (Date.now() - lastReminderAt > VERIFICATION_TIMEOUT_MS) {
+      const currentBlockKind = getManualBlockKind();
       updateStatus(
         "waiting_for_verification",
-        "Still waiting for verification. Complete it manually and the run will resume automatically.",
+        currentBlockKind === "auth"
+          ? "Still waiting for sign-in. Complete it manually and the run will resume automatically."
+          : "Still waiting for verification. Complete it manually and the run will resume automatically.",
         true
       );
       lastReminderAt = Date.now();
@@ -1836,7 +1916,46 @@ async function uploadResumeIfNeeded(
     const hiddenFileInputs = Array.from(
       document.querySelectorAll<HTMLInputElement>("input[type='file']")
     );
-    for (const input of hiddenFileInputs) {
+    const rankedHiddenTargets = hiddenFileInputs
+      .map((input, index) => ({
+        input,
+        index,
+        score: scoreResumeFileInputPreference(input, hiddenFileInputs.length),
+      }))
+      .sort(
+        (left, right) =>
+          right.score - left.score || left.index - right.index
+      );
+    const satisfiedHiddenTarget = rankedHiddenTargets.find(
+      ({ input, score }) =>
+        score > 0 &&
+        (extensionManagedResumeUploads.get(input) === resumeUploadKey ||
+          hasSelectedMatchingFile(input, resume.name))
+    );
+
+    if (satisfiedHiddenTarget) {
+      if (extensionManagedResumeUploads.get(satisfiedHiddenTarget.input) !== resumeUploadKey) {
+        extensionManagedResumeUploads.set(
+          satisfiedHiddenTarget.input,
+          resumeUploadKey
+        );
+      }
+      return resume;
+    }
+
+    const hiddenTargets = rankedHiddenTargets
+      .filter((entry) =>
+        shouldUseFileInputForResume(entry.input, hiddenFileInputs.length)
+      )
+      .map((entry) => entry.input);
+    const fallbackHiddenTargets =
+      hiddenTargets.length > 0
+        ? hiddenTargets
+        : hiddenFileInputs.length === 1
+          ? hiddenFileInputs
+          : [];
+
+    for (const input of fallbackHiddenTargets) {
       if (input.disabled) continue;
       const lastAttemptAt = recentResumeUploadAttempts.get(input) ?? 0;
       const now = Date.now();
@@ -1863,12 +1982,48 @@ async function uploadResumeIfNeeded(
     return null;
   }
 
-  const usable = fileInputs.filter((i) =>
-    shouldUseFileInputForResume(i, fileInputs.length)
+  const rankedTargets = fileInputs
+    .map((input, index) => ({
+      input,
+      index,
+      score: scoreResumeFileInputPreference(input, fileInputs.length),
+    }))
+    .sort(
+      (left, right) =>
+        right.score - left.score || left.index - right.index
+    );
+
+  const alreadySatisfiedTarget = rankedTargets.find(
+    ({ input, score }) =>
+      score > 0 &&
+      (extensionManagedResumeUploads.get(input) === resumeUploadKey ||
+        hasSelectedMatchingFile(input, resume.name))
   );
 
-  // FIX: If no usable inputs after filtering, try all file inputs as fallback
-  const targets = usable.length > 0 ? usable : fileInputs;
+  if (alreadySatisfiedTarget) {
+    if (extensionManagedResumeUploads.get(alreadySatisfiedTarget.input) !== resumeUploadKey) {
+      extensionManagedResumeUploads.set(
+        alreadySatisfiedTarget.input,
+        resumeUploadKey
+      );
+    }
+    return resume;
+  }
+
+  const usable = rankedTargets
+    .filter((entry) =>
+      shouldUseFileInputForResume(entry.input, fileInputs.length)
+    )
+    .map((entry) => entry.input);
+
+  // Keep a single-input fallback for simple forms, but avoid uploading the
+  // resume into every generic attachment/cover-letter field on multi-file pages.
+  const targets =
+    usable.length > 0
+      ? usable
+      : fileInputs.length === 1
+        ? fileInputs
+        : [];
 
   for (const input of targets) {
     const lastAttemptAt =
@@ -2077,22 +2232,6 @@ function collectResumeUploadEventTargets(
   return Array.from(targets);
 }
 
-function shouldUseFileInputForResume(
-  input: HTMLInputElement,
-  count: number
-): boolean {
-  const ctx = getFieldDescriptor(input, getQuestionText(input));
-  if (ctx.includes("cover letter") || ctx.includes("transcript"))
-    return false;
-  if (ctx.includes("resume") || ctx.includes("cv")) return true;
-  // FIX: Also match "upload" and "document" when it's the only file input
-  if (count === 1) return true;
-  // FIX: Match generic upload fields when context suggests application
-  if (ctx.includes("upload") || ctx.includes("attachment") || ctx.includes("document")) {
-    return true;
-  }
-  return false;
-}
 
 // ─── FIELD ANSWER LOGIC ─────────────────────────────────────────────────────
 
@@ -2430,7 +2569,7 @@ async function closeCurrentTab(): Promise<void> {
 }
 
 function shouldPreferInFrameProgressionClick(url: string): boolean {
-  if (IS_TOP_FRAME || currentStage !== "autofill-form") {
+  if (IS_TOP_FRAME) {
     return false;
   }
 
@@ -2438,18 +2577,72 @@ function shouldPreferInFrameProgressionClick(url: string): boolean {
     return false;
   }
 
-  if (
-    !isLikelyApplyUrl(window.location.href, status.site) ||
-    !isLikelyApplyUrl(url, status.site)
-  ) {
+  if (!looksLikeCurrentFrameApplicationSurface(status.site)) {
     return false;
   }
 
-  try {
-    return new URL(url).origin === new URL(window.location.href).origin;
-  } catch {
-    return false;
+  return isSameOriginInternalApplyStepNavigation(url);
+}
+
+function findEmbeddedContinuationElement(url: string): HTMLElement | null {
+  const targetUrl = normalizeUrl(url);
+  if (!targetUrl) {
+    return null;
   }
+
+  let best:
+    | {
+        element: HTMLElement;
+        score: number;
+      }
+    | undefined;
+
+  for (const element of collectDeepMatches<HTMLElement>(
+    "button, input[type='submit'], input[type='button'], a[href], [role='button']"
+  )) {
+    if (!isElementInteractive(element)) {
+      continue;
+    }
+
+    const candidateUrl = getNavigationUrl(element);
+    if (candidateUrl !== targetUrl) {
+      continue;
+    }
+
+    const text = cleanText(
+      getActionText(element) ||
+        element.getAttribute("aria-label") ||
+        element.getAttribute("title") ||
+        ""
+    ).toLowerCase();
+    const attrs = [
+      element.getAttribute("data-testid"),
+      element.getAttribute("data-test"),
+      element.className,
+      element.id,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    let score = 0;
+
+    if (element.closest("form, [role='dialog'], [aria-modal='true']")) {
+      score += 20;
+    }
+    if (
+      /continue|next|review|save|submit|application/.test(text) ||
+      /continue|next|review|save|submit|application/.test(attrs)
+    ) {
+      score += 12;
+    }
+
+    if (!best || score > best.score) {
+      best = { element, score };
+    }
+  }
+
+  return best?.element ?? null;
 }
 
 function tryContinueEmbeddedApplication(url: string): boolean {
@@ -2459,6 +2652,21 @@ function tryContinueEmbeddedApplication(url: string): boolean {
 
   if (status.site === "unsupported") {
     return false;
+  }
+
+  const directMatch = findEmbeddedContinuationElement(url);
+  if (directMatch) {
+    try {
+      directMatch.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    } catch {
+      // Ignore scroll issues and still try the click.
+    }
+
+    performClickAction(directMatch);
+    return true;
   }
 
   const clickAction =
@@ -2663,6 +2871,22 @@ async function handlePotentialChoiceAnswerMemory(
   }
 
   void flushPendingAnswers();
+}
+
+function handlePotentialManualReviewPause(event: Event): void {
+  if (
+    status.site === "unsupported" ||
+    currentStage !== "autofill-form" ||
+    !event.isTrusted
+  ) {
+    return;
+  }
+
+  if (!shouldStartManualReviewPause(event.target)) {
+    return;
+  }
+
+  manualReviewPauseUntil = Date.now() + 15_000;
 }
 
 async function flushPendingAnswers(): Promise<void> {

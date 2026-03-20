@@ -38,6 +38,12 @@ describe("dom helpers", () => {
       <a id="anchor" href="/apply#step-1">Apply</a>
       <button id="data" data-apply-url="https://company.example.com/jobs/apply">Apply on company site</button>
       <button id="data-to" data-to="/candidate/apply">Continue</button>
+      <a
+        id="redirect"
+        href="https://www.ziprecruiter.com/jobs/redirect?url=https%3A%2F%2Fcompany.example.com%2Fcareers%2Fapply"
+      >
+        Apply on company site
+      </a>
       <button id="onclick" onclick="window.open('https://jobs.example.com/opening/123')">Open</button>
       <form action="https://company.example.com/candidate/submit">
         <button id="form-action" formaction="https://company.example.com/candidate/submit">Continue</button>
@@ -52,6 +58,9 @@ describe("dom helpers", () => {
     );
     expect(getNavigationUrl(document.querySelector("#data-to") as HTMLButtonElement)).toBe(
       "https://example.com/candidate/apply"
+    );
+    expect(getNavigationUrl(document.querySelector("#redirect") as HTMLAnchorElement)).toBe(
+      "https://company.example.com/careers/apply"
     );
     expect(getNavigationUrl(document.querySelector("#onclick") as HTMLButtonElement)).toBe(
       "https://jobs.example.com/opening/123"
@@ -132,5 +141,21 @@ describe("dom helpers", () => {
     performClickAction(button);
 
     expect(clickSpy).toHaveBeenCalled();
+  });
+
+  it("uses a single native click for submit buttons", () => {
+    document.body.innerHTML = `
+      <form>
+        <button id="submit" type="submit">Submit</button>
+      </form>
+    `;
+
+    const button = document.querySelector("#submit") as HTMLButtonElement;
+    const clickSpy = vi.fn();
+    button.addEventListener("click", clickSpy);
+
+    performClickAction(button);
+
+    expect(clickSpy).toHaveBeenCalledTimes(1);
   });
 });

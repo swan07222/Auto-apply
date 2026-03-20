@@ -431,6 +431,9 @@ export function collectMonsterEmbeddedCandidates(source: unknown): JobCandidate[
     const title =
       stringOrEmpty(record.normalizedJobPosting?.title) ||
       stringOrEmpty(record.jobPosting?.title);
+    const appliedSignal = extractMonsterEmbeddedAppliedSignal(
+      jobResult as Record<string, unknown>
+    );
     const contextText = cleanText(
       [
         stringOrEmpty(record.normalizedJobPosting?.hiringOrganization?.name) ||
@@ -439,6 +442,7 @@ export function collectMonsterEmbeddedCandidates(source: unknown): JobCandidate[
           stringOrEmpty(record.location?.displayTextJobCard),
         stringOrEmpty(record.dateRecency),
         stringOrEmpty(record.enrichments?.processedDescriptions?.shortDescription),
+        appliedSignal ? "already applied" : "",
       ]
         .filter(Boolean)
         .join(" ")
@@ -462,15 +466,31 @@ export function pickRelevantJobUrls(
   );
 
   const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
-  const eligible = datePostedWindow === "any" ? valid : recencyFiltered;
+  const recencyEligible = datePostedWindow === "any" ? valid : recencyFiltered;
+  const eligible = filterCandidatesForRemotePreference(recencyEligible);
   const shouldKeywordFilter =
     searchKeywords.length > 0 &&
     (site === "startup" || site === "other_sites");
+  const hasKeywordMatchedBoardCandidates =
+    searchKeywords.length > 0 &&
+    (site === "indeed" ||
+      site === "ziprecruiter" ||
+      site === "dice" ||
+      site === "monster" ||
+      site === "glassdoor") &&
+    eligible.some((candidate) =>
+      scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0
+    );
   const keywordEligible =
     shouldKeywordFilter
       ? eligible.filter((candidate) =>
           matchesConfiguredSearchKeywords(candidate, searchKeywords)
         )
+      : hasKeywordMatchedBoardCandidates
+        ? eligible.filter(
+            (candidate) =>
+              scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0
+          )
       : eligible;
   const technicalEligible =
     site === "startup" || site === "other_sites"
@@ -526,13 +546,7 @@ function matchesConfiguredSearchKeywords(
   candidate: JobCandidate,
   searchKeywords: string[]
 ): boolean {
-  const haystack = normalizeChoiceText(
-    `${candidate.title} ${candidate.contextText}`
-  );
-
-  return searchKeywords.some((keyword) =>
-    matchesSearchKeyword(haystack, keyword)
-  );
+  return scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0;
 }
 
 function matchesSearchKeyword(haystack: string, keyword: string): boolean {
@@ -561,6 +575,94 @@ function matchesSearchKeyword(haystack: string, keyword: string): boolean {
     matchedTokens === keywordTokens.length ||
     matchedTokens / keywordTokens.length >= 0.75
   );
+}
+
+function scoreCandidateKeywordRelevance(
+  candidate: JobCandidate,
+  searchKeywords: string[]
+): number {
+  const haystack = normalizeChoiceText(
+    `${candidate.title} ${candidate.contextText}`
+  );
+
+  let bestScore = 0;
+  for (const keyword of searchKeywords) {
+    const normalizedKeyword = normalizeChoiceText(keyword);
+    if (!normalizedKeyword) {
+      continue;
+    }
+
+    if (haystack.includes(normalizedKeyword)) {
+      bestScore = Math.max(bestScore, 100);
+      continue;
+    }
+
+    const keywordTokens = normalizedKeyword
+      .split(/\s+/)
+      .filter((token) => token.length >= 2);
+    if (keywordTokens.length === 0) {
+      continue;
+    }
+
+    const haystackTokens = new Set(haystack.split(/\s+/).filter(Boolean));
+    const matchedTokens = keywordTokens.filter((token) =>
+      haystackTokens.has(token)
+    ).length;
+    const score = Math.round((matchedTokens / keywordTokens.length) * 100);
+    bestScore = Math.max(bestScore, score);
+  }
+
+  return bestScore >= 75 ? bestScore : 0;
+}
+
+function filterCandidatesForRemotePreference(
+  candidates: JobCandidate[]
+): JobCandidate[] {
+  const annotated = candidates.map((candidate) => ({
+    candidate,
+    remoteScore: scoreRemotePreference(candidate),
+  }));
+  const hasStrongRemoteCandidate = annotated.some(
+    (entry) => entry.remoteScore > 0
+  );
+
+  if (!hasStrongRemoteCandidate) {
+    return candidates;
+  }
+
+  return annotated
+    .filter((entry) => entry.remoteScore >= 0)
+    .map((entry) => entry.candidate);
+}
+
+function scoreRemotePreference(candidate: JobCandidate): number {
+  const haystack = normalizeChoiceText(
+    `${candidate.title} ${candidate.contextText} ${candidate.url}`
+  );
+
+  let score = 0;
+
+  if (
+    /\b(remote|fully remote|100 remote|work from home|distributed|anywhere|remote first)\b/.test(
+      haystack
+    )
+  ) {
+    score += 2;
+  }
+
+  if (/\bhybrid\b/.test(haystack)) {
+    score -= 2;
+  }
+
+  if (
+    /\b(onsite|on site|in office|in-office|office based|office-based|relocation required)\b/.test(
+      haystack
+    )
+  ) {
+    score -= 3;
+  }
+
+  return score;
 }
 
 export function isLikelyJobDetailUrl(
@@ -1107,12 +1209,13 @@ export function shouldFinishJobResultScan(
     minAttemptsBeforeEarlyStop = 22;
     stableThreshold = 8;
   } else if (
+    site === "indeed" ||
     site === "ziprecruiter" ||
     site === "dice" ||
     site === "glassdoor"
   ) {
-    minAttemptsBeforeEarlyStop = 14;
-    stableThreshold = 8;
+    minAttemptsBeforeEarlyStop = site === "indeed" ? 12 : 14;
+    stableThreshold = site === "indeed" ? 6 : 8;
   }
 
   return attempt >= minAttemptsBeforeEarlyStop && stablePasses >= stableThreshold;
@@ -1185,7 +1288,7 @@ function collectCandidatesFromContainers(
       titleText = cleanText(anchor?.textContent) || "";
     }
 
-    const contextText = cleanText(container.innerText || container.textContent || "");
+    const contextText = buildCandidateContextText(container, anchor);
 
     if (!anchor) {
       const dataJk = container.getAttribute("data-jk");
@@ -1215,8 +1318,9 @@ function collectCandidatesFromAnchors(selectors: string[]): JobCandidate[] {
   for (const selector of selectors) {
     try {
       for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>(selector))) {
-        const contextText = cleanText(
-          anchor.closest("article, li, section, div")?.textContent || anchor.textContent || ""
+        const contextText = buildCandidateContextText(
+          anchor.closest<HTMLElement>("article, li, section, div"),
+          anchor
         );
         const title = resolveAnchorCandidateTitle(anchor, contextText);
         if (isCareerListingCtaText(title)) {
@@ -1390,8 +1494,9 @@ function collectMonsterFallbackCandidates(): JobCandidate[] {
 
   for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"))) {
     const href = anchor.href?.toLowerCase() ?? "";
-    const contextText = cleanText(
-      anchor.closest("article, li, section, div")?.textContent || anchor.textContent || ""
+    const contextText = buildCandidateContextText(
+      anchor.closest<HTMLElement>("article, li, section, div"),
+      anchor
     );
     const text = resolveAnchorCandidateTitle(anchor, contextText);
 
@@ -1496,8 +1601,9 @@ function collectFallbackJobCandidates(): JobCandidate[] {
 
   for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"))) {
     const href = anchor.href?.toLowerCase() ?? "";
-    const contextText = cleanText(
-      anchor.closest("article, li, section, div")?.textContent || anchor.textContent || ""
+    const contextText = buildCandidateContextText(
+      anchor.closest<HTMLElement>("article, li, section, div"),
+      anchor
     );
     const text = resolveAnchorCandidateTitle(anchor, contextText);
 
@@ -1604,6 +1710,56 @@ function addJobCandidate(
     title,
     contextText: cleanText(rawContext),
   });
+}
+
+function buildCandidateContextText(
+  container: HTMLElement | null | undefined,
+  anchor?: HTMLAnchorElement | null
+): string {
+  return cleanText(
+    [
+      container?.innerText || container?.textContent || "",
+      container?.getAttribute("aria-label") || "",
+      container?.getAttribute("title") || "",
+      container?.getAttribute("data-status") || "",
+      anchor?.getAttribute("aria-label") || "",
+      anchor?.getAttribute("title") || "",
+      anchor?.textContent || "",
+    ]
+      .filter(Boolean)
+      .join(" ")
+  );
+}
+
+function extractMonsterEmbeddedAppliedSignal(
+  record: Record<string, unknown>
+): boolean {
+  for (const key of ["applied", "isApplied", "alreadyApplied", "hasApplied"]) {
+    if (record[key] === true) {
+      return true;
+    }
+  }
+
+  for (const key of [
+    "applicationStatus",
+    "applyStatus",
+    "candidateStatus",
+    "jobActivity",
+    "status",
+  ]) {
+    const value = record[key];
+    if (typeof value === "string" && isAppliedJobText(value)) {
+      return true;
+    }
+  }
+
+  return Object.values(record).some(
+    (value) =>
+      typeof value === "object" &&
+      value !== null &&
+      !Array.isArray(value) &&
+      extractMonsterEmbeddedAppliedSignal(value as Record<string, unknown>)
+  );
 }
 
 function dedupeJobCandidates(candidates: JobCandidate[]): JobCandidate[] {

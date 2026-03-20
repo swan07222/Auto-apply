@@ -10,6 +10,7 @@ import {
   hasIndeedApplyIframe,
   hasZipRecruiterApplyModal,
   isAlreadyOnApplyPage,
+  isSameOriginInternalApplyStepNavigation,
   isLikelyApplyUrl,
   shouldPreferApplyNavigation,
 } from "../src/content/apply";
@@ -91,6 +92,44 @@ describe("application progression actions", () => {
     expect(action).not.toBeNull();
     expect(action?.type).toBe("click");
     expect(action?.text).toBe("Continue");
+  });
+
+  it("keeps review-module follow-up controls click-based for internal Indeed steps", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/beta/indeedapply/form/review-module"
+    );
+    document.body.innerHTML = `
+      <section class="ia-ReviewModule">
+        <button
+          formaction="/beta/indeedapply/form/submit"
+          data-testid="continue-button"
+        >
+          Continue
+        </button>
+      </section>
+    `;
+
+    const action = findApplyAction("indeed", "follow-up");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Continue");
+  });
+
+  it("recognizes review-module to submit-step Indeed URLs as internal apply-step navigation", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/beta/indeedapply/form/review-module"
+    );
+
+    expect(
+      isSameOriginInternalApplyStepNavigation(
+        "/beta/indeedapply/form/submit"
+      )
+    ).toBe(true);
   });
 
   it("prefers application-context progression controls over header navigation", () => {
@@ -266,6 +305,42 @@ describe("application progression actions", () => {
     expect(action?.type).toBe("navigate");
     if (action?.type === "navigate") {
       expect(action.url).toBe("https://company.example.com/careers/apply/123");
+    }
+  });
+
+  it("ignores ZipRecruiter candidate-portal links like My Jobs and prefers the real apply action", () => {
+    document.body.innerHTML = `
+      <a href="https://www.ziprecruiter.com/candidate/my-jobs">My Jobs</a>
+      <button
+        data-testid="company-apply-button"
+        data-to="https://company.example.com/careers/apply/123"
+      >
+        Continue to company site
+      </button>
+    `;
+
+    const action = findZipRecruiterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe("https://company.example.com/careers/apply/123");
+    }
+  });
+
+  it("unwraps ZipRecruiter redirect links to the real company-site destination", () => {
+    document.body.innerHTML = `
+      <a href="https://www.ziprecruiter.com/jobs/redirect?url=https%3A%2F%2Fcompany.example.com%2Fcareers%2Fapply">
+        Apply on company site
+      </a>
+    `;
+
+    const action = findZipRecruiterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe("https://company.example.com/careers/apply");
     }
   });
 

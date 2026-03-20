@@ -127,6 +127,61 @@ describe("job search candidate filtering", () => {
     ]);
   });
 
+  it("drops clearly unrelated board results when the current search still exposes strong keyword matches", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://www.indeed.com/viewjob?jk=frontend123",
+        title: "Senior Frontend Engineer",
+        contextText: "Remote role. Posted today.",
+      },
+      {
+        url: "https://www.indeed.com/viewjob?jk=sales456",
+        title: "Account Executive",
+        contextText: "Remote role. Posted today.",
+      },
+    ];
+
+    expect(
+      pickRelevantJobUrls(
+        candidates,
+        "indeed",
+        undefined,
+        "any",
+        ["frontend engineer"]
+      )
+    ).toEqual(["https://www.indeed.com/viewjob?jk=frontend123"]);
+  });
+
+  it("prefers remote roles over hybrid and onsite roles when the page exposes explicit remote matches", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://www.ziprecruiter.com/jobs/frontend-1?jid=remote",
+        title: "Frontend Engineer",
+        contextText: "Remote role. Posted today.",
+      },
+      {
+        url: "https://www.ziprecruiter.com/jobs/frontend-2?jid=hybrid",
+        title: "Frontend Engineer",
+        contextText: "Hybrid role. Posted today.",
+      },
+      {
+        url: "https://www.ziprecruiter.com/jobs/frontend-3?jid=onsite",
+        title: "Frontend Engineer",
+        contextText: "Onsite in Phoenix. Posted today.",
+      },
+    ];
+
+    expect(
+      pickRelevantJobUrls(
+        candidates,
+        "ziprecruiter",
+        undefined,
+        "any",
+        ["frontend engineer"]
+      )
+    ).toEqual(["https://www.ziprecruiter.com/jobs/frontend-1?jid=remote"]);
+  });
+
   it("accepts ZipRecruiter jobs-search URLs when they pin a specific job", () => {
     expect(
       isLikelyJobDetailUrl(
@@ -477,10 +532,39 @@ describe("job search candidate filtering", () => {
   it("waits for enough job results until slower boards exhaust their later recovery passes", () => {
     expect(shouldFinishJobResultScan(1, 5, 0, 2, "dice")).toBe(false);
     expect(shouldFinishJobResultScan(5, 5, 0, 2, "dice")).toBe(true);
+    expect(shouldFinishJobResultScan(4, 8, 6, 5, "indeed")).toBe(false);
+    expect(shouldFinishJobResultScan(4, 8, 6, 12, "indeed")).toBe(true);
     expect(shouldFinishJobResultScan(3, 5, 6, 8, "ziprecruiter")).toBe(false);
     expect(shouldFinishJobResultScan(3, 5, 7, 14, "ziprecruiter")).toBe(false);
     expect(shouldFinishJobResultScan(3, 5, 8, 14, "ziprecruiter")).toBe(true);
     expect(shouldFinishJobResultScan(2, 5, 7, 20, "startup")).toBe(false);
     expect(shouldFinishJobResultScan(2, 5, 8, 22, "startup")).toBe(true);
+  });
+
+  it("marks embedded Monster results as applied when the page-state record says so", () => {
+    const urls = pickRelevantJobUrls(
+      collectMonsterEmbeddedCandidates([
+        {
+          canonicalUrl: "https://www.monster.com/job-openings/frontend-engineer-remote--alpha123",
+          normalizedJobPosting: {
+            title: "Frontend Engineer",
+            hiringOrganization: { name: "Example Corp" },
+          },
+          applicationStatus: "Already applied",
+        },
+        {
+          canonicalUrl: "https://www.monster.com/job-openings/backend-engineer-remote--beta456",
+          normalizedJobPosting: {
+            title: "Backend Engineer",
+            hiringOrganization: { name: "Example Corp" },
+          },
+        },
+      ]),
+      "monster"
+    );
+
+    expect(urls).toEqual([
+      "https://www.monster.com/job-openings/backend-engineer-remote--beta456",
+    ]);
   });
 });
