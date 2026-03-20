@@ -69,6 +69,30 @@ describe("application progression actions", () => {
     expect(action?.text).toBe("Continue");
   });
 
+  it("treats same-origin Indeed apply-step continuation controls as clicks even outside forms", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/beta/indeedapply/form/demographic-questions-module/demographic-questions/1"
+    );
+    document.body.innerHTML = `
+      <section class="ia-ResumeStep">
+        <button
+          formaction="/beta/indeedapply/form/review"
+          data-testid="continue-button"
+        >
+          Continue
+        </button>
+      </section>
+    `;
+
+    const action = findProgressionAction("indeed");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.text).toBe("Continue");
+  });
+
   it("prefers application-context progression controls over header navigation", () => {
     document.body.innerHTML = `
       <header>
@@ -110,6 +134,25 @@ describe("application progression actions", () => {
     if (action?.type === "navigate") {
       expect(action.url).toBe("https://company.example.com/careers/apply");
     }
+  });
+
+  it("ignores Indeed support article links on demographic apply steps", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/beta/indeedapply/form/demographic-questions-module/demographic-questions/1"
+    );
+    document.body.innerHTML = `
+      <main>
+        <p>Learn more about demographic questions during the application process.</p>
+        <a href="https://support.indeed.com/hc/en-us/articles/360059972312-Why-Is-Indeed-Collecting-Demographic-Data-From-Job-Seekers">
+          Why Is Indeed Collecting Demographic Data From Job Seekers?
+        </a>
+      </main>
+    `;
+
+    expect(findCompanySiteAction()).toBeNull();
+    expect(findApplyAction("indeed", "job-page")).toBeNull();
   });
 
   it("extracts Monster apply URLs from custom web components", () => {

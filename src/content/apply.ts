@@ -136,6 +136,42 @@ function isKnownBrokenApplyUrl(url: string | null | undefined): boolean {
   }
 }
 
+function isLikelyInformationalPageUrl(url: string | null | undefined): boolean {
+  if (!url) {
+    return false;
+  }
+
+  const lower = url.toLowerCase();
+  const hasApplyCue =
+    /apply|application|candidate|jobapply|zipapply|indeedapply|easyapply|career|careers|opening|openings|position|positions|jobs?\//.test(
+      lower
+    ) || includesAnyToken(lower, ATS_APPLICATION_URL_TOKENS);
+
+  if (hasApplyCue) {
+    return false;
+  }
+
+  return [
+    "support.",
+    "/support",
+    "/help",
+    "/hc/",
+    "/articles/",
+    "/faq",
+    "/faqs",
+    "/knowledge",
+    "/guide",
+    "/guides",
+    "/blog",
+    "/privacy",
+    "/terms",
+    "/cookie",
+    "/legal",
+    "/about",
+    "/contact",
+  ].some((token) => lower.includes(token));
+}
+
 export function findCompanySiteAction(): ApplyAction | null {
   const pageText = cleanText(document.body?.innerText || "")
     .toLowerCase()
@@ -216,6 +252,10 @@ export function findCompanySiteAction(): ApplyAction | null {
         "subscribe",
       ].some((blocked) => lower.includes(blocked))
     ) {
+      continue;
+    }
+
+    if (isLikelyInformationalPageUrl(url)) {
       continue;
     }
 
@@ -1240,7 +1280,45 @@ function shouldTreatInternalApplyNavigationAsClick(
 
   return (
     isLikelyApplicationContext(element) ||
-    Boolean(element.closest("form, [role='dialog'], [aria-modal='true']"))
+    Boolean(element.closest("form, [role='dialog'], [aria-modal='true']")) ||
+    isSameOriginInternalApplyStepNavigation(url)
+  );
+}
+
+function isSameOriginInternalApplyStepNavigation(url: string): boolean {
+  const currentUrl = normalizeUrl(window.location.href);
+  const targetUrl = normalizeUrl(url);
+
+  if (!currentUrl || !targetUrl) {
+    return false;
+  }
+
+  try {
+    const current = new URL(currentUrl);
+    const target = new URL(targetUrl);
+
+    if (current.origin !== target.origin) {
+      return false;
+    }
+
+    return (
+      isKnownInternalApplyStepUrl(current) &&
+      isKnownInternalApplyStepUrl(target)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isKnownInternalApplyStepUrl(url: URL): boolean {
+  const lower = `${url.hostname}${url.pathname}${url.search}`.toLowerCase();
+
+  return (
+    lower.includes("indeedapply/form/") ||
+    lower.includes("smartapply.indeed.com") ||
+    lower.includes("zipapply") ||
+    lower.includes("candidateexperience") ||
+    lower.includes("jobapply")
   );
 }
 
@@ -1519,6 +1597,10 @@ function scoreApplyElement(
     return -1;
   }
 
+  if (isLikelyInformationalPageUrl(url)) {
+    return -1;
+  }
+
   if (!isElementVisible(element) || (element as HTMLButtonElement).disabled) {
     return -1;
   }
@@ -1776,6 +1858,10 @@ export function shouldPreferApplyNavigation(
   site: SiteKey | null
 ): boolean {
   if (isKnownBrokenApplyUrl(url)) {
+    return false;
+  }
+
+  if (isLikelyInformationalPageUrl(url)) {
     return false;
   }
 

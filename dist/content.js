@@ -394,7 +394,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (!hasChallengeSignals) {
       return false;
     }
-    return !hasLikelyApplicationFormSignals(doc);
+    return !(hasLikelyApplicationFormSignals(doc) || hasLikelyApplicationStepSignals(doc));
   }
   function isProbablyRateLimitPage(doc, site = null) {
     const title = doc.title.toLowerCase();
@@ -435,6 +435,39 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       (signal) => applicationText.includes(signal)
     ).length;
     return signalCount >= 3 && interactiveFields.length >= 1;
+  }
+  function hasLikelyApplicationStepSignals(doc) {
+    const pageUrl = doc.location?.href.toLowerCase() ?? "";
+    const applicationText = (doc.body?.innerText ?? "").toLowerCase();
+    const progressionControls = Array.from(
+      doc.querySelectorAll(
+        "button, [role='button'], input[type='submit'], input[type='button']"
+      )
+    );
+    const hasProgressionControl = progressionControls.some((control) => {
+      const controlText = control instanceof HTMLInputElement ? `${control.value} ${control.getAttribute("aria-label") || ""}` : `${control.innerText || control.textContent || ""} ${control.getAttribute("aria-label") || ""} ${control.getAttribute("data-test") || ""} ${control.getAttribute("data-testid") || ""}`;
+      const lower = controlText.toLowerCase();
+      return /(continue|next|review|save and continue|save & continue|start my application)/.test(
+        lower
+      ) && !/(sign in|log in|search|captcha)/.test(lower);
+    });
+    const strongStepSignals = [
+      "add a resume for the employer",
+      "resume selection",
+      "resume options",
+      "uploaded ",
+      "save and close",
+      "application questions",
+      "review your application"
+    ];
+    const stepSignalCount = strongStepSignals.filter(
+      (signal) => applicationText.includes(signal)
+    ).length;
+    const onKnownApplyFlowUrl = pageUrl.includes("indeedapply/form/") || pageUrl.includes("/apply/") || pageUrl.includes("/application/");
+    if (stepSignalCount >= 2 && hasProgressionControl) {
+      return true;
+    }
+    return onKnownApplyFlowUrl && (stepSignalCount >= 1 || hasProgressionControl);
   }
   function isLikelyVisibleFormField(field) {
     if (field.disabled) {
@@ -3763,6 +3796,37 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return false;
     }
   }
+  function isLikelyInformationalPageUrl(url) {
+    if (!url) {
+      return false;
+    }
+    const lower = url.toLowerCase();
+    const hasApplyCue = /apply|application|candidate|jobapply|zipapply|indeedapply|easyapply|career|careers|opening|openings|position|positions|jobs?\//.test(
+      lower
+    ) || includesAnyToken(lower, ATS_APPLICATION_URL_TOKENS);
+    if (hasApplyCue) {
+      return false;
+    }
+    return [
+      "support.",
+      "/support",
+      "/help",
+      "/hc/",
+      "/articles/",
+      "/faq",
+      "/faqs",
+      "/knowledge",
+      "/guide",
+      "/guides",
+      "/blog",
+      "/privacy",
+      "/terms",
+      "/cookie",
+      "/legal",
+      "/about",
+      "/contact"
+    ].some((token) => lower.includes(token));
+  }
   function findCompanySiteAction() {
     const pageText = cleanText(document.body?.innerText || "").toLowerCase().slice(0, 6e3);
     const hasGateText = COMPANY_SITE_GATE_TOKENS.some((token) => pageText.includes(token));
@@ -3816,6 +3880,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         "job alert",
         "subscribe"
       ].some((blocked) => lower.includes(blocked))) {
+        continue;
+      }
+      if (isLikelyInformationalPageUrl(url)) {
         continue;
       }
       if (isLikelyNavigationChrome(actionElement) && !hasGateText && !url) {
@@ -4526,7 +4593,28 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (isExternalUrl(url)) {
       return false;
     }
-    return isLikelyApplicationContext(element) || Boolean(element.closest("form, [role='dialog'], [aria-modal='true']"));
+    return isLikelyApplicationContext(element) || Boolean(element.closest("form, [role='dialog'], [aria-modal='true']")) || isSameOriginInternalApplyStepNavigation(url);
+  }
+  function isSameOriginInternalApplyStepNavigation(url) {
+    const currentUrl = normalizeUrl(window.location.href);
+    const targetUrl = normalizeUrl(url);
+    if (!currentUrl || !targetUrl) {
+      return false;
+    }
+    try {
+      const current = new URL(currentUrl);
+      const target = new URL(targetUrl);
+      if (current.origin !== target.origin) {
+        return false;
+      }
+      return isKnownInternalApplyStepUrl(current) && isKnownInternalApplyStepUrl(target);
+    } catch {
+      return false;
+    }
+  }
+  function isKnownInternalApplyStepUrl(url) {
+    const lower = `${url.hostname}${url.pathname}${url.search}`.toLowerCase();
+    return lower.includes("indeedapply/form/") || lower.includes("smartapply.indeed.com") || lower.includes("zipapply") || lower.includes("candidateexperience") || lower.includes("jobapply");
   }
   function getElementActionMetadata(element) {
     return cleanText(
@@ -4704,6 +4792,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function scoreApplyElement(text, url, element, context) {
     if (isKnownBrokenApplyUrl(url)) {
+      return -1;
+    }
+    if (isLikelyInformationalPageUrl(url)) {
       return -1;
     }
     if (!isElementVisible(element) || element.disabled) {
@@ -4928,6 +5019,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function shouldPreferApplyNavigation(url, text, site) {
     if (isKnownBrokenApplyUrl(url)) {
+      return false;
+    }
+    if (isLikelyInformationalPageUrl(url)) {
       return false;
     }
     const lowerText = text.toLowerCase();

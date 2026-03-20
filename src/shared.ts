@@ -991,7 +991,10 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
     return false;
   }
 
-  return !hasLikelyApplicationFormSignals(doc);
+  return !(
+    hasLikelyApplicationFormSignals(doc) ||
+    hasLikelyApplicationStepSignals(doc)
+  );
 }
 
 export function isProbablyRateLimitPage(
@@ -1046,6 +1049,57 @@ function hasLikelyApplicationFormSignals(doc: Document): boolean {
   ).length;
 
   return signalCount >= 3 && interactiveFields.length >= 1;
+}
+
+function hasLikelyApplicationStepSignals(doc: Document): boolean {
+  const pageUrl = doc.location?.href.toLowerCase() ?? "";
+  const applicationText = (doc.body?.innerText ?? "").toLowerCase();
+  const progressionControls = Array.from(
+    doc.querySelectorAll<HTMLElement>(
+      "button, [role='button'], input[type='submit'], input[type='button']"
+    )
+  );
+
+  const hasProgressionControl = progressionControls.some((control) => {
+    const controlText =
+      control instanceof HTMLInputElement
+        ? `${control.value} ${control.getAttribute("aria-label") || ""}`
+        : `${
+            control.innerText || control.textContent || ""
+          } ${control.getAttribute("aria-label") || ""} ${
+            control.getAttribute("data-test") || ""
+          } ${control.getAttribute("data-testid") || ""}`;
+    const lower = controlText.toLowerCase();
+    return (
+      /(continue|next|review|save and continue|save & continue|start my application)/.test(
+        lower
+      ) &&
+      !/(sign in|log in|search|captcha)/.test(lower)
+    );
+  });
+
+  const strongStepSignals = [
+    "add a resume for the employer",
+    "resume selection",
+    "resume options",
+    "uploaded ",
+    "save and close",
+    "application questions",
+    "review your application",
+  ];
+  const stepSignalCount = strongStepSignals.filter((signal) =>
+    applicationText.includes(signal)
+  ).length;
+  const onKnownApplyFlowUrl =
+    pageUrl.includes("indeedapply/form/") ||
+    pageUrl.includes("/apply/") ||
+    pageUrl.includes("/application/");
+
+  if (stepSignalCount >= 2 && hasProgressionControl) {
+    return true;
+  }
+
+  return onKnownApplyFlowUrl && (stepSignalCount >= 1 || hasProgressionControl);
 }
 
 function isLikelyVisibleFormField(

@@ -323,6 +323,27 @@ describe("shared automation target logic", () => {
     expect(isProbablyHumanVerificationPage(document)).toBe(false);
   });
 
+  it("does not treat Indeed resume-selection steps with embedded captcha markers as verification", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/beta/indeedapply/form/resume-selection-module/resume-selection"
+    );
+    document.title = "Indeed Apply";
+    document.body.innerHTML = `
+      <main>
+        <button type="button">Save and Close</button>
+        <h1>Add a resume for the employer</h1>
+        <p>Uploaded Mar 16, 2026</p>
+        <button type="button">Resume options</button>
+        <button type="button">Continue</button>
+        <div data-sitekey="test-key"></div>
+      </main>
+    `;
+
+    expect(isProbablyHumanVerificationPage(document)).toBe(false);
+  });
+
   it("sanitizes automation settings and stored answers", () => {
     const settings = sanitizeAutomationSettings({
       jobPageLimit: 999,
