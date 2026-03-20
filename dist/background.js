@@ -2019,6 +2019,7 @@
   }
   async function filterAlreadyOpenManagedSpawnItems(items) {
     const existingUrlKeysByRunId = /* @__PURE__ */ new Map();
+    const existingClaimedKeysByRunId = /* @__PURE__ */ new Map();
     const filtered = [];
     const skippedItems = [];
     for (const item of items) {
@@ -2027,23 +2028,38 @@
         continue;
       }
       const urlKey = getSpawnDedupKey(item.url);
-      if (!urlKey) {
-        filtered.push(item);
-        continue;
-      }
+      const claimedKey = item.claimedJobKey?.trim() || getJobDedupKey(item.url);
       let existingUrlKeys = existingUrlKeysByRunId.get(item.runId);
-      if (!existingUrlKeys) {
+      let existingClaimedKeys = existingClaimedKeysByRunId.get(item.runId);
+      if (!existingUrlKeys || !existingClaimedKeys) {
         const existingSessions = await listSessionsForRunId(item.runId);
         existingUrlKeys = new Set(
           existingSessions.filter((session) => session.phase !== "error").map((session) => session.openedUrlKey || "").filter(Boolean)
         );
+        existingClaimedKeys = new Set(
+          existingSessions.filter((session) => session.phase !== "error").map((session) => session.claimedJobKey || "").filter(Boolean)
+        );
         existingUrlKeysByRunId.set(item.runId, existingUrlKeys);
+        existingClaimedKeysByRunId.set(item.runId, existingClaimedKeys);
+      }
+      if (claimedKey && existingClaimedKeys.has(claimedKey)) {
+        continue;
+      }
+      if (!urlKey) {
+        if (claimedKey) {
+          existingClaimedKeys.add(claimedKey);
+        }
+        filtered.push(item);
+        continue;
       }
       if (existingUrlKeys.has(urlKey)) {
         skippedItems.push(item);
         continue;
       }
       existingUrlKeys.add(urlKey);
+      if (claimedKey) {
+        existingClaimedKeys.add(claimedKey);
+      }
       filtered.push(item);
     }
     return {

@@ -71,6 +71,30 @@ const COMPANY_SITE_GATE_TOKENS = [
 
 const KNOWN_BROKEN_APPLY_HOSTS = ["apply.monster.com"];
 
+function isLegalOrPolicyText(text: string): boolean {
+  const lower = text.toLowerCase();
+  if (!lower) {
+    return false;
+  }
+
+  if (
+    [
+      "terms of service",
+      "terms and conditions",
+      "privacy policy",
+      "cookie policy",
+      "legal notice",
+      "cookie & privacy policies",
+      "terms, cookie & privacy policies",
+    ].some((token) => lower.includes(token))
+  ) {
+    return true;
+  }
+
+  const legalSignals = ["terms", "privacy", "cookie", "legal"];
+  return legalSignals.filter((token) => lower.includes(token)).length >= 2;
+}
+
 function collectDeepMatchesFromSelectors(
   selectors: string[]
 ): HTMLElement[] {
@@ -260,12 +284,8 @@ export function findCompanySiteAction(): ApplyAction | null {
         "create account",
         "job alert",
         "subscribe",
-        "terms of service",
-        "terms and conditions",
-        "privacy policy",
-        "cookie policy",
-        "legal notice",
-      ].some((blocked) => lower.includes(blocked))
+      ].some((blocked) => lower.includes(blocked)) ||
+      isLegalOrPolicyText(lower)
     ) {
       continue;
     }
@@ -415,6 +435,33 @@ function isCompanySiteActionText(text: string): boolean {
     lower.includes("apply on external") ||
     lower.includes("apply through")
   );
+}
+
+function isZipRecruiterExplicitCompanyApplyControl(
+  text: string,
+  attrs: string,
+  url: string | null
+): boolean {
+  const lower = text.toLowerCase();
+  const lowerUrl = url?.toLowerCase() ?? "";
+
+  if (isCompanySiteActionText(lower)) {
+    return true;
+  }
+
+  return [
+    "company-apply",
+    "companyapply",
+    "company-site",
+    "employer-site",
+    "external-apply",
+    "externalapply",
+  ].some((token) => attrs.includes(token)) ||
+    (lower.includes("continue") && lower.includes("company")) ||
+    (lower.includes("apply") && lower.includes("company")) ||
+    /careers?\/apply|\/apply\/|candidateexperience|jobapply|zipapply/.test(
+      lowerUrl
+    );
 }
 
 function isDirectApplyActionCandidate(text: string, url: string | null): boolean {
@@ -647,14 +694,15 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
     "button[data-testid='apply-button']",
     "button[data-testid*='apply']",
     "[data-testid*='quick-apply' i]",
-    "[data-testid*='company' i]",
     "[data-qa*='apply' i]",
-    "[data-qa*='company' i]",
+    "[data-testid*='company-apply' i]",
+    "[data-qa*='company-apply' i]",
     "[class*='apply_button']",
     "[class*='applyButton']",
     "[class*='quickApply']",
     "[class*='quick-apply']",
-    "[class*='company']",
+    "[class*='company-apply']",
+    "[class*='companyApply']",
     "button[name='apply']",
     "button[data-testid='one-click-apply']",
     "[class*='one-click']",
@@ -718,18 +766,36 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
     ]
       .join(" ")
       .toLowerCase();
+    const hasDirectApplySignal =
+      isDirectApplyActionCandidate(text, url) ||
+      (/apply-button|one-click|quick-apply|quickapply/.test(attrs) &&
+        !/company-apply|companyapply/.test(attrs));
+    const hasExplicitCompanyApplySignal =
+      isZipRecruiterExplicitCompanyApplyControl(text, attrs, url);
+
+    if (
+      !lower &&
+      !hasDirectApplySignal &&
+      !hasExplicitCompanyApplySignal
+    ) {
+      continue;
+    }
+
+    if (!hasDirectApplySignal && !hasExplicitCompanyApplySignal) {
+      continue;
+    }
 
     let score = 0;
-    if (lower === "apply now" || lower === "apply") score += 95;
-    if (lower.includes("1-click apply") || lower.includes("1 click apply")) score += 92;
-    if (lower.includes("quick apply") || lower.includes("easy apply")) score += 90;
+    if (lower === "apply now" || lower === "apply") score += 118;
+    if (lower.includes("1-click apply") || lower.includes("1 click apply")) score += 116;
+    if (lower.includes("quick apply") || lower.includes("easy apply")) score += 112;
     if (lower.includes("apply on company") || lower.includes("apply on employer")) score += 88;
-    if (lower.includes("continue to company") || lower.includes("company site")) score += 86;
-    if (lower.includes("apply")) score += 70;
+    if (lower.includes("continue to company") || lower.includes("company site")) score += 80;
+    if (hasDirectApplySignal && lower.includes("apply")) score += 82;
     if (lower.includes("continue")) score += 40;
     if (attrs.includes("apply")) score += 25;
     if (attrs.includes("quick")) score += 15;
-    if (attrs.includes("company")) score += 15;
+    if (hasExplicitCompanyApplySignal && attrs.includes("company")) score += 15;
     if (url && shouldPreferApplyNavigation(url, text, "ziprecruiter")) score += 35;
     if (url && /zipapply|jobapply|\/apply\/|candidateexperience/i.test(url)) score += 35;
 
@@ -783,8 +849,41 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
       if (isZipRecruiterCandidatePortalUrl(url)) {
         continue;
       }
+      const attrs = [
+        actionElement.getAttribute("data-testid"),
+        actionElement.getAttribute("data-qa"),
+        actionElement.getAttribute("aria-label"),
+        actionElement.getAttribute("title"),
+        actionElement.className,
+        actionElement.id,
+        element.getAttribute("data-testid"),
+        element.getAttribute("data-qa"),
+        element.getAttribute("aria-label"),
+        element.getAttribute("title"),
+        element.className,
+        element.id,
+      ]
+        .join(" ")
+        .toLowerCase();
+      const hasDirectApplySignal =
+        isDirectApplyActionCandidate(text, url) ||
+        (/apply-button|one-click|quick-apply|quickapply/.test(attrs) &&
+          !/company-apply|companyapply/.test(attrs));
+      const hasExplicitCompanyApplySignal =
+        isZipRecruiterExplicitCompanyApplyControl(text, attrs, url);
+      if (
+        !lower &&
+        !hasDirectApplySignal &&
+        !hasExplicitCompanyApplySignal
+      ) {
+        continue;
+      }
+      if (!hasDirectApplySignal && !hasExplicitCompanyApplySignal) {
+        continue;
+      }
       let score = 0;
-      if (/apply|company|employer|continue|resume/.test(lower)) score += 55;
+      if (hasDirectApplySignal) score += 75;
+      if (hasExplicitCompanyApplySignal) score += 60;
       if (/\bapply\b/.test(lower)) score += 20;
       if (url && shouldPreferApplyNavigation(url, text, "ziprecruiter")) score += 35;
       if (url && /zipapply|jobapply|\/apply\/|candidateexperience/i.test(url)) score += 30;
@@ -1812,16 +1911,27 @@ function scoreApplyElement(
     "learn more",
     "dismiss",
     "close",
-    "terms of service",
-    "terms and conditions",
-    "privacy policy",
-    "cookie policy",
-    "legal notice",
   ];
-  if (blocked.some((value) => lower.includes(value))) {
+  if (blocked.some((value) => lower.includes(value)) || isLegalOrPolicyText(lower)) {
     return -1;
   }
   if (isLikelyNavigationChrome(element) && !lower.includes("apply")) {
+    return -1;
+  }
+
+  const hasActionSignal =
+    /apply|application|continue|next|review|start|begin|proceed|easy|quick|1-click|1 click/.test(
+      lower
+    ) ||
+    /apply|application|continue|next|review|start|begin|proceed|easy|quick|zipapply|jobapply|one-click/.test(
+      attrs
+    ) ||
+    includesAnyToken(lowerUrl, ATS_APPLICATION_URL_TOKENS) ||
+    /\/apply\/|zipapply|jobapply|candidateexperience|indeedapply|smartapply/.test(
+      lowerUrl
+    );
+
+  if (!hasActionSignal) {
     return -1;
   }
 
@@ -1928,10 +2038,13 @@ function getApplyCandidateSelectors(site: SiteKey | null): string[] {
         "a[href*='candidate']",
         "[data-testid*='apply']",
         "[data-qa*='apply']",
-        "[data-testid*='company']",
+        "[data-testid*='company-apply']",
+        "[data-qa*='company-apply']",
         "[class*='apply']",
         "[class*='quickApply']",
         "[class*='quick-apply']",
+        "[class*='company-apply']",
+        "[class*='companyApply']",
         "button[data-testid='apply-button']",
         "button[data-testid='one-click-apply']",
         "[class*='apply_button']",

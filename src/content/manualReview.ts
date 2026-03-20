@@ -1,4 +1,9 @@
-import { shouldAutofillField } from "./autofill";
+import {
+  getQuestionText,
+  isFieldRequired,
+  isSelectBlank,
+  shouldAutofillField,
+} from "./autofill";
 import { getActionText, isElementVisible } from "./dom";
 import { cleanText } from "./text";
 import { AutofillField } from "./types";
@@ -16,6 +21,21 @@ const MANUAL_REVIEW_BLOCK_PATTERNS = [
   "edit profile",
   "edit profile name",
   "change profile",
+];
+
+const MANUAL_SUBMIT_ACTION_PATTERNS = [
+  /\bsubmit(\s+your|\s+my)?\s+application\b/,
+  /\bconfirm\s+and\s+submit\b/,
+  /\bsend\s+application\b/,
+  /^submit$/,
+];
+
+const MANUAL_SUBMIT_REVIEW_PATTERNS = [
+  "please review your application",
+  "review your application",
+  "you will not be able to make changes after you submit",
+  "before you submit your application",
+  "review before submitting",
 ];
 
 export function shouldStartManualReviewPause(
@@ -73,6 +93,139 @@ export function hasEditableAutofillFields(fields: AutofillField[]): boolean {
 
     return !field.disabled;
   });
+}
+
+export function hasPendingRequiredAutofillFields(
+  fields: AutofillField[]
+): boolean {
+  const requiredRadioGroups = new Set<string>();
+  const checkedRadioGroups = new Set<string>();
+
+  for (const field of fields) {
+    if (!isFieldRequired(field)) {
+      continue;
+    }
+
+    if (field instanceof HTMLInputElement) {
+      const type = field.type.toLowerCase();
+      if (
+        ["hidden", "submit", "button", "reset", "image", "search"].includes(
+          type
+        ) ||
+        field.disabled ||
+        field.readOnly
+      ) {
+        continue;
+      }
+
+      if (type === "radio") {
+        const groupKey = field.name || field.id || getQuestionText(field);
+        if (!groupKey) {
+          if (!field.checked) {
+            return true;
+          }
+          continue;
+        }
+        requiredRadioGroups.add(groupKey);
+        if (field.checked) {
+          checkedRadioGroups.add(groupKey);
+        }
+        continue;
+      }
+
+      if (type === "checkbox") {
+        if (!field.checked) {
+          return true;
+        }
+        continue;
+      }
+
+      if (type === "file") {
+        if (!field.files?.length) {
+          return true;
+        }
+        continue;
+      }
+
+      if (!field.value.trim()) {
+        return true;
+      }
+      continue;
+    }
+
+    if (field instanceof HTMLSelectElement) {
+      if (!field.disabled && isSelectBlank(field)) {
+        return true;
+      }
+      continue;
+    }
+
+    if (
+      field instanceof HTMLTextAreaElement &&
+      !field.disabled &&
+      !field.readOnly &&
+      !field.value.trim()
+    ) {
+      return true;
+    }
+  }
+
+  for (const groupKey of requiredRadioGroups) {
+    if (!checkedRadioGroups.has(groupKey)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function hasVisibleManualSubmitAction(
+  root: ParentNode = document
+): boolean {
+  const candidates = Array.from(
+    root.querySelectorAll<HTMLElement>(
+      "button, input[type='submit'], input[type='button'], a[href], [role='button']"
+    )
+  );
+
+  return candidates.some((candidate) => {
+    if (!isElementVisible(candidate)) {
+      return false;
+    }
+
+    const text = cleanText(
+      getActionText(candidate) ||
+        candidate.getAttribute("aria-label") ||
+        candidate.getAttribute("title") ||
+        ""
+    ).toLowerCase();
+
+    if (!text) {
+      return false;
+    }
+
+    return MANUAL_SUBMIT_ACTION_PATTERNS.some((pattern) => pattern.test(text));
+  });
+}
+
+export function isLikelyManualSubmitReviewPage(
+  root: ParentNode = document
+): boolean {
+  const text = cleanText(
+    root instanceof Document
+      ? root.body?.innerText || root.body?.textContent || ""
+      : root.textContent || ""
+  )
+    .toLowerCase()
+    .slice(0, 5000);
+
+  if (!text) {
+    return false;
+  }
+
+  return MANUAL_SUBMIT_REVIEW_PATTERNS.some((pattern) =>
+    text.includes(pattern)
+  );
 }
 
 export function shouldPauseAutomationForManualReview(

@@ -1023,4 +1023,76 @@ describe("background spawn quota handling", () => {
       })
     );
   });
+
+  it("skips opening a managed job tab when the same claimed job is already active, without releasing the slot", async () => {
+    const runId = "run-duplicate-claim";
+    const runStateKey = `remote-job-search-run:${runId}`;
+    const existingJobUrl = "https://www.indeed.com/viewjob?jk=alpha123";
+    const existingTargetUrl = "https://company.example.com/careers/apply/alpha";
+    const duplicateTargetUrl = "https://company.example.com/careers/apply/alpha?step=2";
+    const createTabMock = vi.fn();
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 2,
+          openedJobPages: 1,
+          openedJobKeys: [getJobDedupKey(existingJobUrl)],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          updatedAt: 1,
+        },
+        "remote-job-search-session:88": {
+          tabId: 88,
+          site: "other_sites",
+          phase: "running",
+          message: "Opening company career page...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "open-apply",
+          runId,
+          claimedJobKey: getJobDedupKey(existingJobUrl),
+          openedUrlKey: "company.example.com/careers/apply/alpha",
+        },
+      },
+      createTabMock
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "spawn-tabs",
+        items: [
+          {
+            url: duplicateTargetUrl,
+            site: "other_sites",
+            stage: "open-apply",
+            runId,
+            claimedJobKey: getJobDedupKey(existingJobUrl),
+          },
+        ],
+      },
+      {
+        tab: {
+          id: 42,
+          index: 0,
+          url: existingTargetUrl,
+        },
+      }
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      opened: 0,
+    });
+    expect(createTabMock).not.toHaveBeenCalled();
+    expect(chromeMock.local.state[runStateKey]).toEqual(
+      expect.objectContaining({
+        openedJobPages: 1,
+        openedJobKeys: [getJobDedupKey(existingJobUrl)],
+      })
+    );
+  });
 });

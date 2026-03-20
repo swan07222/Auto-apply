@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   hasEditableAutofillFields,
+  hasPendingRequiredAutofillFields,
+  hasVisibleManualSubmitAction,
+  isLikelyManualSubmitReviewPage,
   shouldPauseAutomationForManualReview,
   shouldStartManualReviewPause,
 } from "../src/content/manualReview";
@@ -67,5 +70,37 @@ describe("manual review helpers", () => {
     expect(
       shouldPauseAutomationForManualReview(Date.now() + 5_000, [workAuth])
     ).toBe(true);
+  });
+
+  it("detects required application fields that still need manual input", () => {
+    document.body.innerHTML = `
+      <form>
+        <label for="job-title">Job title *</label>
+        <input id="job-title" type="text" required />
+        <label for="company">Company *</label>
+        <input id="company" type="text" required value="Acme" />
+      </form>
+    `;
+
+    const jobTitle = document.querySelector("#job-title") as HTMLInputElement;
+    const company = document.querySelector("#company") as HTMLInputElement;
+
+    expect(hasPendingRequiredAutofillFields([jobTitle, company])).toBe(true);
+
+    jobTitle.value = "Senior Engineer";
+    expect(hasPendingRequiredAutofillFields([jobTitle, company])).toBe(false);
+  });
+
+  it("recognizes final review pages with manual submit actions", () => {
+    document.body.innerHTML = `
+      <main>
+        <h1>Please review your application</h1>
+        <p>You will not be able to make changes after you submit your application.</p>
+        <button type="submit" disabled>Submit your application</button>
+      </main>
+    `;
+
+    expect(hasVisibleManualSubmitAction()).toBe(true);
+    expect(isLikelyManualSubmitReviewPage()).toBe(true);
   });
 });

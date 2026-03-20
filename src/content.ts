@@ -131,6 +131,9 @@ import {
 } from "./content/searchResults";
 import { hasPendingResumeUploadSurface } from "./content/resumeStep";
 import {
+  hasPendingRequiredAutofillFields,
+  hasVisibleManualSubmitAction,
+  isLikelyManualSubmitReviewPage,
   shouldPauseAutomationForManualReview,
   shouldStartManualReviewPause,
 } from "./content/manualReview";
@@ -398,6 +401,7 @@ async function openApplicationTargetInNewTab(
       site,
       stage: "open-apply" as const,
       runId: currentRunId,
+      active: shouldKeepJobPageOpen(site),
       claimedJobKey: resolveCurrentClaimedJobKey(),
       label: currentLabel,
       resumeKind: currentResumeKind,
@@ -913,6 +917,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   }
 
   const items: SpawnTabRequest[] = approvedUrls.map((url) => {
+    const claimedJobKey = getJobDedupKey(url) || undefined;
     const jobTitle = titleMap.get(getJobDedupKey(url)) ?? "";
     const itemResumeKind = resolveResumeKindForJob({
       preferredResumeKind: currentResumeKind,
@@ -927,6 +932,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
         stage: "autofill-form" as const,
         runId: currentRunId,
         message: `Autofilling ${labelPrefix}${getSiteLabel(site)} apply page...`,
+        claimedJobKey,
         label: currentLabel,
         resumeKind: itemResumeKind,
         profileId: currentProfileId,
@@ -938,6 +944,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
       stage: "open-apply" as const,
       runId: currentRunId,
       message: `Opening ${labelPrefix}${getSiteLabel(site)} job page...`,
+      claimedJobKey,
       label: currentLabel,
       resumeKind: itemResumeKind,
       profileId: currentProfileId,
@@ -1116,8 +1123,10 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     action = findApplyAction(site, "job-page");
     if (action) break;
 
-    action = findCompanySiteAction();
-    if (action) break;
+    if (site !== "ziprecruiter") {
+      action = findCompanySiteAction();
+      if (action) break;
+    }
 
     if (hasLikelyApplicationForm()) {
       currentStage = "autofill-form";
@@ -1476,7 +1485,8 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     }
   }
 
-  const retryCompanyAction = findCompanySiteAction();
+  const retryCompanyAction =
+    site === "ziprecruiter" ? null : findCompanySiteAction();
   if (retryCompanyAction) {
     updateStatus(
       "running",
@@ -1649,6 +1659,32 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       continue;
     }
 
+    const onManualSubmitReviewPage =
+      hasVisibleManualSubmitAction() &&
+      isLikelyManualSubmitReviewPage(document);
+    if (onManualSubmitReviewPage) {
+      updateStatus(
+        "completed",
+        "Final review page ready. Complete any required checks and submit manually.",
+        false,
+        "autofill-form",
+        "successful"
+      );
+      return;
+    }
+
+    if (hasPendingRequiredAutofillFields(currentFields)) {
+      noProgressCount = 0;
+      updateStatus(
+        "running",
+        "Required questions need manual input on this step. Fill them and automation will continue automatically.",
+        true,
+        "autofill-form"
+      );
+      await sleep(1200);
+      continue;
+    }
+
     if (result.filledFields > 0 || result.uploadedResume) {
       noProgressCount = 0;
       const pendingResumeUploadSurface =
@@ -1697,55 +1733,6 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
         continue;
       }
       return;
-    }
-
-    const companySiteAction = findCompanySiteAction();
-    if (companySiteAction) {
-      noProgressCount = 0;
-      updateStatus(
-        "running",
-        `Continuing to ${companySiteAction.description}...`,
-        true,
-        "open-apply"
-      );
-
-      previousUrl = window.location.href;
-      await flushPendingAnswers();
-
-      if (companySiteAction.type === "navigate") {
-        if (shouldKeepJobPageOpen(site)) {
-          await openApplicationTargetInNewTab(
-            companySiteAction.url,
-            site,
-            companySiteAction.description
-          );
-          return;
-        }
-        await navigateToApplicationTarget(
-          companySiteAction.url,
-          site,
-          companySiteAction.description
-        );
-        return;
-      }
-
-      companySiteAction.element.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
-      await sleep(400);
-      performClickAction(companySiteAction.element);
-      await sleep(2800);
-
-      if (window.location.href !== previousUrl) {
-        await waitForHumanVerificationToClear();
-        currentStage = "open-apply";
-        await runOpenApplyStage(site);
-        return;
-      }
-
-      await waitForLikelyApplicationSurface(site);
-      continue;
     }
 
     const followUp = findApplyAction(site, "follow-up");
@@ -1799,6 +1786,57 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
 
       await waitForLikelyApplicationSurface(site);
       continue;
+    }
+
+    if (site !== "ziprecruiter") {
+      const companySiteAction = findCompanySiteAction();
+      if (companySiteAction) {
+        noProgressCount = 0;
+        updateStatus(
+          "running",
+          `Continuing to ${companySiteAction.description}...`,
+          true,
+          "open-apply"
+        );
+
+        previousUrl = window.location.href;
+        await flushPendingAnswers();
+
+        if (companySiteAction.type === "navigate") {
+          if (shouldKeepJobPageOpen(site)) {
+            await openApplicationTargetInNewTab(
+              companySiteAction.url,
+              site,
+              companySiteAction.description
+            );
+            return;
+          }
+          await navigateToApplicationTarget(
+            companySiteAction.url,
+            site,
+            companySiteAction.description
+          );
+          return;
+        }
+
+        companySiteAction.element.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
+        await sleep(400);
+        performClickAction(companySiteAction.element);
+        await sleep(2800);
+
+        if (window.location.href !== previousUrl) {
+          await waitForHumanVerificationToClear();
+          currentStage = "open-apply";
+          await runOpenApplyStage(site);
+          return;
+        }
+
+        await waitForLikelyApplicationSurface(site);
+        continue;
+      }
     }
 
     if (hasPendingResumeUploadSurface(applicationSurfaceCollectors)) {

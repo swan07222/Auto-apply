@@ -221,6 +221,19 @@ describe("application progression actions", () => {
     expect(findApplyAction("indeed", "job-page")).toBeNull();
   });
 
+  it("ignores combined legal-policy links on final Indeed review pages", () => {
+    document.body.innerHTML = `
+      <main>
+        <a href="https://www.indeed.com/legal">
+          Terms, Cookie & Privacy Policies
+        </a>
+      </main>
+    `;
+
+    expect(findCompanySiteAction()).toBeNull();
+    expect(findApplyAction("indeed", "follow-up")).toBeNull();
+  });
+
   it("ignores company-site actions that already point to not-found or error pages", () => {
     document.body.innerHTML = `
       <section>
@@ -363,6 +376,31 @@ describe("application progression actions", () => {
     expect(action).not.toBeNull();
     expect(action?.type).toBe("click");
     expect(action?.description).toBe("Apply Now");
+  });
+
+  it("does not treat a ZipRecruiter company-name link as the apply action", () => {
+    document.body.innerHTML = `
+      <a class="company-name" href="https://company.example.com">Acme Corp</a>
+      <a href="https://www.ziprecruiter.com/job/apply/abc?zipapply=true">1-Click Apply</a>
+    `;
+
+    const action = findZipRecruiterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toContain("ziprecruiter.com/job/apply/abc");
+    }
+  });
+
+  it("only treats explicit ZipRecruiter company-apply controls as company-site apply actions", () => {
+    document.body.innerHTML = `
+      <a class="company-name" href="https://company.example.com">Acme Corp</a>
+    `;
+
+    const action = findZipRecruiterApplyAction();
+
+    expect(action).toBeNull();
   });
 
   it("ignores ZipRecruiter candidate-portal links like My Jobs and prefers the real apply action", () => {

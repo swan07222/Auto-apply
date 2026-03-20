@@ -1956,6 +1956,7 @@ async function filterAlreadyOpenManagedSpawnItems(
   items: SpawnTabRequest[]
 ): Promise<{ items: SpawnTabRequest[]; skippedItems: SpawnTabRequest[] }> {
   const existingUrlKeysByRunId = new Map<string, Set<string>>();
+  const existingClaimedKeysByRunId = new Map<string, Set<string>>();
   const filtered: SpawnTabRequest[] = [];
   const skippedItems: SpawnTabRequest[] = [];
 
@@ -1966,13 +1967,11 @@ async function filterAlreadyOpenManagedSpawnItems(
     }
 
     const urlKey = getSpawnDedupKey(item.url);
-    if (!urlKey) {
-      filtered.push(item);
-      continue;
-    }
+    const claimedKey = item.claimedJobKey?.trim() || getJobDedupKey(item.url);
 
     let existingUrlKeys = existingUrlKeysByRunId.get(item.runId);
-    if (!existingUrlKeys) {
+    let existingClaimedKeys = existingClaimedKeysByRunId.get(item.runId);
+    if (!existingUrlKeys || !existingClaimedKeys) {
       const existingSessions = await listSessionsForRunId(item.runId);
       existingUrlKeys = new Set(
         existingSessions
@@ -1980,7 +1979,26 @@ async function filterAlreadyOpenManagedSpawnItems(
           .map((session) => session.openedUrlKey || "")
           .filter(Boolean)
       );
+      existingClaimedKeys = new Set(
+        existingSessions
+          .filter((session) => session.phase !== "error")
+          .map((session) => session.claimedJobKey || "")
+          .filter(Boolean)
+      );
       existingUrlKeysByRunId.set(item.runId, existingUrlKeys);
+      existingClaimedKeysByRunId.set(item.runId, existingClaimedKeys);
+    }
+
+    if (claimedKey && existingClaimedKeys.has(claimedKey)) {
+      continue;
+    }
+
+    if (!urlKey) {
+      if (claimedKey) {
+        existingClaimedKeys.add(claimedKey);
+      }
+      filtered.push(item);
+      continue;
     }
 
     if (existingUrlKeys.has(urlKey)) {
@@ -1989,6 +2007,9 @@ async function filterAlreadyOpenManagedSpawnItems(
     }
 
     existingUrlKeys.add(urlKey);
+    if (claimedKey) {
+      existingClaimedKeys.add(claimedKey);
+    }
     filtered.push(item);
   }
 

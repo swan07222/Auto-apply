@@ -747,6 +747,41 @@ describe("job search candidate filtering", () => {
     ]);
   });
 
+  it("skips Dice cards whose title is visually marked as viewed or applied", () => {
+    document.body.innerHTML = `
+      <ul aria-label="Job search results">
+        <li>
+          <div class="card-shell viewed">
+            <a
+              data-testid="job-search-job-detail-link"
+              href="https://www.dice.com/job-detail/viewed-1"
+              style="color: rgb(124, 58, 237);"
+            >
+              Viewed Staff Engineer
+            </a>
+            <p>Remote</p>
+          </div>
+        </li>
+        <li>
+          <div class="card-shell">
+            <a
+              data-testid="job-search-job-detail-link"
+              href="https://www.dice.com/job-detail/fresh-2"
+              style="color: rgb(17, 24, 39);"
+            >
+              Fresh Platform Engineer
+            </a>
+            <p>Remote</p>
+          </div>
+        </li>
+      </ul>
+    `;
+
+    expect(pickRelevantJobUrls(collectJobDetailCandidates("dice"), "dice")).toEqual([
+      "https://www.dice.com/job-detail/fresh-2",
+    ]);
+  });
+
   it("collects ATS-backed startup roles and ignores listing CTAs", () => {
     document.body.innerHTML = `
       <section class="careers">

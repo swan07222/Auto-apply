@@ -182,54 +182,56 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
       ]);
 
     case "dice":
-      return dedupeJobCandidates([
-        ...collectDiceListItemCandidates(),
-        // FIX: Dice uses custom web components — collect from shadow DOM
-        ...collectDiceSearchCardCandidates(),
-        ...collectCandidatesFromAnchors([
-          "a[href*='/job-detail/']",
-          "a[href*='/jobs/detail/']",
-          "a[data-cy*='job']",
-          "a[data-id]",
-          // FIX: Additional Dice selectors
-          "a.card-title-link",
-          "a[class*='card-title']",
-          "a[class*='job-title']",
-          "a[data-testid*='job']",
-        ]),
-        ...collectCandidatesFromContainers(
-          [
-            "[data-cy*='search-card']",
-            "[data-testid*='search-card']",
-            "[class*='search-card']",
-            "[class*='SearchCard']",
-            "[class*='job-card']",
-            "[class*='JobCard']",
-            ".dhi-search-cards-widget .card",
-            "article",
-            "li",
-          ],
-          [
+      return filterDiceViewedOrAppliedCandidates(
+        dedupeJobCandidates([
+          ...collectDiceListItemCandidates(),
+          // FIX: Dice uses custom web components — collect from shadow DOM
+          ...collectDiceSearchCardCandidates(),
+          ...collectCandidatesFromAnchors([
             "a[href*='/job-detail/']",
             "a[href*='/jobs/detail/']",
             "a[data-cy*='job']",
+            "a[data-id]",
+            // FIX: Additional Dice selectors
             "a.card-title-link",
             "a[class*='card-title']",
             "a[class*='job-title']",
-          ],
-          [
-            "h1",
-            "h2",
-            "h3",
-            "h5",
-            "[data-cy*='title']",
-            "[class*='card-title']",
-            "[class*='job-title']",
-            "[class*='jobTitle']",
-            "a.card-title-link",
-          ]
-        ),
-      ]);
+            "a[data-testid*='job']",
+          ]),
+          ...collectCandidatesFromContainers(
+            [
+              "[data-cy*='search-card']",
+              "[data-testid*='search-card']",
+              "[class*='search-card']",
+              "[class*='SearchCard']",
+              "[class*='job-card']",
+              "[class*='JobCard']",
+              ".dhi-search-cards-widget .card",
+              "article",
+              "li",
+            ],
+            [
+              "a[href*='/job-detail/']",
+              "a[href*='/jobs/detail/']",
+              "a[data-cy*='job']",
+              "a.card-title-link",
+              "a[class*='card-title']",
+              "a[class*='job-title']",
+            ],
+            [
+              "h1",
+              "h2",
+              "h3",
+              "h5",
+              "[data-cy*='title']",
+              "[class*='card-title']",
+              "[class*='job-title']",
+              "[class*='jobTitle']",
+              "a.card-title-link",
+            ]
+          ),
+        ])
+      );
 
     case "monster":
       return dedupeJobCandidates([
@@ -1527,6 +1529,10 @@ function collectDiceListItemCandidates(): JobCandidate[] {
       continue;
     }
 
+    if (shouldSkipDiceTitleCandidate(titleAnchor, card)) {
+      continue;
+    }
+
     addJobCandidate(
       candidates,
       titleAnchor.href,
@@ -1567,6 +1573,16 @@ function collectDiceSearchCardCandidates(): JobCandidate[] {
         );
         const contextText = cleanText(card.innerText || card.textContent || "");
         if (title) {
+          const titleElement =
+            root.querySelector<HTMLElement>(
+              "h5, h3, h2, [class*='card-title'], [class*='job-title'], a"
+            ) ?? null;
+          if (
+            titleElement instanceof HTMLAnchorElement &&
+            shouldSkipDiceTitleCandidate(titleElement, card)
+          ) {
+            continue;
+          }
           addJobCandidate(
             candidates,
             `https://www.dice.com/job-detail/${dataId}`,
@@ -1596,6 +1612,10 @@ function collectDiceSearchCardCandidates(): JobCandidate[] {
       continue;
     }
 
+    if (shouldSkipDiceTitleCandidate(anchor, card)) {
+      continue;
+    }
+
     addJobCandidate(candidates, href, title, contextText);
   }
 
@@ -1615,6 +1635,9 @@ function collectDiceSearchCardCandidates(): JobCandidate[] {
     for (const anchor of shadowAnchors) {
       const title = cleanText(anchor.textContent || "");
       const contextText = cleanText(host.innerText || host.textContent || "");
+      if (shouldSkipDiceTitleCandidate(anchor, host)) {
+        continue;
+      }
       if (title && title.length >= 3) {
         addJobCandidate(candidates, anchor.href, title, contextText);
       }
@@ -1622,6 +1645,98 @@ function collectDiceSearchCardCandidates(): JobCandidate[] {
   }
 
   return candidates;
+}
+
+function shouldSkipDiceTitleCandidate(
+  titleAnchor: HTMLAnchorElement,
+  container: HTMLElement
+): boolean {
+  const metadata = cleanText(
+    [
+      titleAnchor.className,
+      titleAnchor.id,
+      titleAnchor.getAttribute("data-testid"),
+      titleAnchor.getAttribute("data-cy"),
+      titleAnchor.getAttribute("data-status"),
+      titleAnchor.getAttribute("aria-label"),
+      titleAnchor.getAttribute("title"),
+      container.className,
+      container.id,
+      container.getAttribute("data-testid"),
+      container.getAttribute("data-cy"),
+      container.getAttribute("data-status"),
+      container.getAttribute("aria-label"),
+      container.getAttribute("title"),
+    ]
+      .filter(Boolean)
+      .join(" ")
+  ).toLowerCase();
+
+  if (/\b(applied|viewed|visited|seen|read)\b/.test(metadata)) {
+    return true;
+  }
+
+  const inlineColorSignal = [
+    titleAnchor.getAttribute("style"),
+    container.getAttribute("style"),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  if (!inlineColorSignal.includes("color")) {
+    return false;
+  }
+
+  const color = window.getComputedStyle(titleAnchor).color;
+  if (!color) {
+    return false;
+  }
+
+  const match = color.match(
+    /rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/
+  );
+  if (!match) {
+    return false;
+  }
+
+  const channels = match.slice(1, 4).map((value) => Number(value));
+  const max = Math.max(...channels);
+  const min = Math.min(...channels);
+
+  return !(max <= 140 && max - min <= 35);
+}
+
+function filterDiceViewedOrAppliedCandidates(
+  candidates: JobCandidate[]
+): JobCandidate[] {
+  return candidates.filter((candidate) => {
+    const selectors = [
+      `a[href='${candidate.url}']`,
+      `a[href='${candidate.url.replace(/'/g, "\\'")}']`,
+    ];
+
+    for (const selector of selectors) {
+      let anchors: HTMLAnchorElement[] = [];
+      try {
+        anchors = Array.from(
+          document.querySelectorAll<HTMLAnchorElement>(selector)
+        );
+      } catch {
+        continue;
+      }
+
+      for (const anchor of anchors) {
+        const container =
+          anchor.closest<HTMLElement>("li, article, section, div") ?? anchor;
+        if (shouldSkipDiceTitleCandidate(anchor, container)) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  });
 }
 
 // FIX: New collector for ZipRecruiter data-attribute based candidates

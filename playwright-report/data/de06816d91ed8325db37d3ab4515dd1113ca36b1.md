@@ -1,0 +1,338 @@
+# Page snapshot
+
+```yaml
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - link "Skip to content" [ref=e4] [cursor=pointer]:
+        - /url: "#skipNav"
+      - banner [ref=e5]:
+        - generic [ref=e6]:
+          - generic [ref=e7]:
+            - link "Monster" [ref=e9] [cursor=pointer]:
+              - /url: https://www.monster.com
+              - img [ref=e11]
+            - generic [ref=e18]:
+              - combobox "Search jobs, keywords, companies" [ref=e23] [cursor=pointer]: Software Engineer
+              - combobox "Enter location or \"remote\"" [ref=e28] [cursor=pointer]: Remote
+              - button "Search" [ref=e29] [cursor=pointer]:
+                - img [ref=e30]
+                - generic:
+                  - generic: Search
+            - generic [ref=e33]:
+              - link "Sign up" [ref=e34] [cursor=pointer]:
+                - /url: /profile/valid-profile-continue?redirectUri=%2Fjobs%2Fsearch%3Fq%3Dsoftware%2Bengineer%26where%3Dremote%26so%3Dm.h.s&mode=SignUp
+                - generic [ref=e35]: Sign up
+              - link "Log in" [ref=e36] [cursor=pointer]:
+                - /url: /profile/valid-profile-continue?redirectUri=%2Fjobs%2Fsearch%3Fq%3Dsoftware%2Bengineer%26where%3Dremote%26so%3Dm.h.s&mode=Login
+                - generic [ref=e37]: Log in
+          - navigation "Main Menu" [ref=e38]:
+            - generic [ref=e39]:
+              - list [ref=e41]:
+                - listitem [ref=e42] [cursor=pointer]:
+                  - link "Find Jobs" [ref=e43]:
+                    - /url: https://www.monster.com/jobs/search?q=&where=Remote
+                - listitem [ref=e44] [cursor=pointer]:
+                  - link "Salary Tools" [ref=e45]:
+                    - /url: https://www.monster.com/salary/
+                - listitem [ref=e46] [cursor=pointer]:
+                  - link "Career Advice" [ref=e47]:
+                    - /url: https://www.monster.com/career-advice
+                - listitem [ref=e48] [cursor=pointer]:
+                  - link "Free Resume Templates" [ref=e49]:
+                    - /url: https://www.monster.com/resume/templates
+                - listitem [ref=e50] [cursor=pointer]:
+                  - link "Free Resume Builder" [ref=e51]:
+                    - /url: https://www.monster.com/resume/
+              - link "Employers / Post Job" [ref=e55] [cursor=pointer]:
+                - /url: https://hiring.monster.com/?intcid=skr_www_TopNav_Employer&ch=MONS
+                - text: Employers / Post Job
+                - img [ref=e56]
+    - main [ref=e59]:
+      - generic [ref=e60]:
+        - status [ref=e62]:
+          - text: Search results for
+          - heading "software engineer Jobs in remote" [level=1] [ref=e63]:
+            - generic [ref=e65]: software engineer Jobs
+            - text: in remote
+        - generic [ref=e69]:
+          - generic [ref=e70]:
+            - button "remote Filter" [disabled]:
+              - generic:
+                - generic: remote
+              - img
+            - menu [ref=e72]:
+              - group [ref=e73]:
+                - menuitem [ref=e74] [cursor=pointer]: Remote jobs only
+          - generic [ref=e75]:
+            - button "Date Posted Filter, All Dates" [disabled]:
+              - generic:
+                - generic: All Dates
+              - img
+            - menu [ref=e77]:
+              - group [ref=e78]:
+                - menuitem [ref=e79] [cursor=pointer]:
+                  - img [ref=e80]
+                  - text: All Dates
+                - menuitem [ref=e82] [cursor=pointer]: Today
+                - menuitem [ref=e83] [cursor=pointer]: Last 2 days
+                - menuitem [ref=e84] [cursor=pointer]: Last week
+                - menuitem [ref=e85] [cursor=pointer]: Last 2 weeks
+                - menuitem [ref=e86] [cursor=pointer]: Last month
+          - generic [ref=e87]:
+            - button "Distance Filter, Within 30 miles" [disabled]:
+              - generic:
+                - generic: Distance
+              - img
+            - menu [ref=e89]:
+              - group [ref=e90]:
+                - menuitem [ref=e91] [cursor=pointer]: 5 miles
+                - menuitem [ref=e92] [cursor=pointer]: 10 miles
+                - menuitem [ref=e93] [cursor=pointer]:
+                  - img [ref=e94]
+                  - text: 30 miles
+                - menuitem [ref=e96] [cursor=pointer]: 50 miles
+                - menuitem [ref=e97] [cursor=pointer]: 100 miles
+      - navigation [ref=e100]:
+        - generic [ref=e101]:
+          - tablist
+        - generic [ref=e109]:
+          - heading "Jobs" [level=2] [ref=e110]
+          - generic [ref=e382]:
+            - heading "Resume Resources" [level=4] [ref=e383]
+            - link "Free Resume Templates" [ref=e384] [cursor=pointer]:
+              - /url: /resume/templates
+            - link "Free Resume Builder" [ref=e385] [cursor=pointer]:
+              - /url: /resume/
+    - contentinfo [ref=e388]:
+      - generic [ref=e389]:
+        - generic [ref=e390]:
+          - img [ref=e392]
+          - text: We extracted this information from the job description.
+        - generic [ref=e395] [cursor=pointer]:
+          - button "Select a language - United States (English)" [ref=e396]:
+            - img [ref=e398]
+            - text: United States (English)
+            - img [ref=e406]
+          - list "lang-ul":
+            - listitem [ref=e408]:
+              - link "Belgium (English)" [ref=e409]:
+                - /url: https://www.monster.be/en/
+                - img [ref=e411]
+                - text: Belgium (English)
+            - listitem [ref=e416]:
+              - link "Belgique (Français)" [ref=e417]:
+                - /url: https://www.monster.be/fr/
+                - img [ref=e419]
+                - text: Belgique (Français)
+            - listitem [ref=e424]:
+              - link "België (Nederlands)" [ref=e425]:
+                - /url: https://www.monster.be/nl/
+                - img [ref=e427]
+                - text: België (Nederlands)
+            - listitem [ref=e432]:
+              - link "Canada (English)" [ref=e433]:
+                - /url: https://www.monster.ca/
+                - img [ref=e435]
+                - text: Canada (English)
+            - listitem [ref=e438]:
+              - link "Canada (Français)" [ref=e439]:
+                - /url: https://www.monster.ca/fr/
+                - img [ref=e441]
+                - text: Canada (Français)
+            - listitem [ref=e444]:
+              - link "Deutschland (Deutsch)" [ref=e445]:
+                - /url: https://www.monster.de/
+                - img [ref=e447]
+                - text: Deutschland (Deutsch)
+            - listitem [ref=e451]:
+              - link "España (Español)" [ref=e452]:
+                - /url: https://www.monster.es/
+                - img [ref=e454]
+                - text: España (Español)
+            - listitem [ref=e457]:
+              - link "France (Français)" [ref=e458]:
+                - /url: https://www.monster.fr/
+                - img [ref=e460]
+                - text: France (Français)
+            - listitem [ref=e465]:
+              - link "Ireland (English)" [ref=e466]:
+                - /url: https://www.monster.ie/
+                - img [ref=e468]
+                - text: Ireland (English)
+            - listitem [ref=e473]:
+              - link "Italia (Italiano)" [ref=e474]:
+                - /url: https://www.monster.it/
+                - img [ref=e476]
+                - text: Italia (Italiano)
+            - listitem [ref=e481]:
+              - link "Luxemburg (Deutsch)" [ref=e482]:
+                - /url: https://www.monster.lu/de/
+                - img [ref=e484]
+                - text: Luxemburg (Deutsch)
+            - listitem [ref=e488]:
+              - link "Luxembourg (English)" [ref=e489]:
+                - /url: https://www.monster.lu/en/
+                - img [ref=e491]
+                - text: Luxembourg (English)
+            - listitem [ref=e495]:
+              - link "Luxembourg (Français)" [ref=e496]:
+                - /url: https://www.monster.lu/fr/
+                - img [ref=e498]
+                - text: Luxembourg (Français)
+            - listitem [ref=e502]:
+              - link "Nederland (Nederlands)" [ref=e503]:
+                - /url: https://www.monsterboard.nl/
+                - img [ref=e505]
+                - text: Nederland (Nederlands)
+            - listitem [ref=e509]:
+              - link "Österreich (Deutsch)" [ref=e510]:
+                - /url: https://www.monster.at/
+                - img [ref=e512]
+                - text: Österreich (Deutsch)
+            - listitem [ref=e516]:
+              - link "Schweiz (Deutsch)" [ref=e517]:
+                - /url: https://www.monster.ch/de/
+                - img [ref=e519]
+                - text: Schweiz (Deutsch)
+            - listitem [ref=e525]:
+              - link "Suisse (Français)" [ref=e526]:
+                - /url: https://www.monster.ch/fr/
+                - img [ref=e528]
+                - text: Suisse (Français)
+            - listitem [ref=e534]:
+              - link "Sverige (Svenska)" [ref=e535]:
+                - /url: https://www.monster.se/
+                - img [ref=e537]
+                - text: Sverige (Svenska)
+            - listitem [ref=e545]:
+              - link "United Kingdom (English)" [ref=e546]:
+                - /url: https://www.monster.co.uk/
+                - img [ref=e548]
+                - text: United Kingdom (English)
+        - generic [ref=e554]:
+          - generic [ref=e555]:
+            - heading "For Job Seekers" [level=2] [ref=e556]
+            - region "For Job Seekers" [ref=e557]:
+              - list [ref=e558]:
+                - listitem [ref=e559]:
+                  - link "For Job Seekers - Browse Jobs" [ref=e560] [cursor=pointer]:
+                    - /url: https://www.monster.com/jobs
+                    - text: Browse Jobs
+                - listitem [ref=e561]:
+                  - link "For Job Seekers - Salary Tools" [ref=e562] [cursor=pointer]:
+                    - /url: https://www.monster.com/salary/
+                    - text: Salary Tools
+                - listitem [ref=e563]:
+                  - link "For Job Seekers - Career Advice" [ref=e564] [cursor=pointer]:
+                    - /url: https://www.monster.com/career-advice
+                    - text: Career Advice
+                - listitem [ref=e565]:
+                  - link "For Job Seekers - Free Resume Templates" [ref=e566] [cursor=pointer]:
+                    - /url: https://www.monster.com/resume/templates
+                    - text: Free Resume Templates
+                - listitem [ref=e567]:
+                  - link "For Job Seekers - Free Resume Builder" [ref=e568] [cursor=pointer]:
+                    - /url: https://www.monster.com/resume/
+                    - text: Free Resume Builder
+                - listitem [ref=e569]:
+                  - link "For Job Seekers - Company Profile" [ref=e570] [cursor=pointer]:
+                    - /url: https://www.monster.com/company/
+                    - text: Company Profile
+                - listitem [ref=e571]:
+                  - link "For Job Seekers - Student Career Center" [ref=e572] [cursor=pointer]:
+                    - /url: https://www.monster.com/student-career-center/
+                    - text: Student Career Center
+                - listitem [ref=e573]:
+                  - link "For Job Seekers - Help" [ref=e574] [cursor=pointer]:
+                    - /url: https://candidatehelp.monster.com/s/?language=en_US&brandtag=seeker
+                    - text: Help
+          - generic [ref=e575]:
+            - heading "For Employers" [level=2] [ref=e576]
+            - region "For Employers" [ref=e577]:
+              - list [ref=e578]:
+                - listitem [ref=e579]:
+                  - link "For Employers - Products" [ref=e580] [cursor=pointer]:
+                    - /url: https://hiring.monster.com/products/post-a-job/
+                    - text: Products
+                - listitem [ref=e581]:
+                  - link "For Employers - Solutions" [ref=e582] [cursor=pointer]:
+                    - /url: https://hiring.monster.com/solutions/
+                    - text: Solutions
+                - listitem [ref=e583]:
+                  - link "For Employers - Pricing" [ref=e584] [cursor=pointer]:
+                    - /url: https://hiring.monster.com/pricing-3/
+                    - text: Pricing
+                - listitem [ref=e585]:
+                  - link "For Employers - Resources" [ref=e586] [cursor=pointer]:
+                    - /url: https://hiring.monster.com/resources/
+                    - text: Resources
+                - listitem [ref=e587]:
+                  - link "For Employers - Help" [ref=e588] [cursor=pointer]:
+                    - /url: https://hiring.monster.com/help-center
+                    - text: Help
+          - generic [ref=e589]:
+            - heading "Helpful Resources" [level=2] [ref=e590]
+            - region "Helpful Resources" [ref=e591]:
+              - list [ref=e592]:
+                - listitem [ref=e593]:
+                  - link "Helpful Resources - Terms of Use" [ref=e594] [cursor=pointer]:
+                    - /url: https://www.monster.com/inside/terms-of-use
+                    - text: Terms of Use
+                - listitem [ref=e595]:
+                  - link "Helpful Resources - Privacy Center - UPDATED!" [ref=e596] [cursor=pointer]:
+                    - /url: https://www.monster.com/inside/privacy
+                    - text: Privacy Center - UPDATED!
+                - listitem [ref=e597]:
+                  - link "Helpful Resources - Security Center" [ref=e598] [cursor=pointer]:
+                    - /url: https://www.monster.com/inside/security-center
+                    - text: Security Center
+                - listitem [ref=e599]:
+                  - link "Helpful Resources - Accessibility Center" [ref=e600] [cursor=pointer]:
+                    - /url: https://www.monster.com/inside/accessibility
+                    - text: Accessibility Center
+                - listitem [ref=e601]:
+                  - link "Helpful Resources - Do Not Sell My Personal Information" [ref=e602] [cursor=pointer]:
+                    - /url: https://privacyportal.onetrust.com/webform/a7e660bb-bfdf-4dd0-b65c-49ce834f786e/b5f214a5-2d09-4d94-86a5-8df5670af8cd
+                    - text: Do Not Sell My Personal Information
+                - listitem [ref=e603]:
+                  - link "Helpful Resources - AdChoices" [ref=e604] [cursor=pointer]:
+                    - /url: https://preferences-mgr.trustarc.com/?type=monster&affiliateId=155
+                    - text: AdChoices
+                - listitem [ref=e605]:
+                  - button "Helpful Resources - Your Privacy Choices" [ref=e606] [cursor=pointer]:
+                    - text: Your Privacy Choices
+                    - img [ref=e607]
+        - generic [ref=e620]:
+          - heading "Find us on social media:" [level=2] [ref=e621]
+          - generic [ref=e623]:
+            - link "Monster Facebook" [ref=e624] [cursor=pointer]:
+              - /url: https://www.facebook.com/monstercareers
+              - img [ref=e627]
+            - link "Monster Twitter" [ref=e629] [cursor=pointer]:
+              - /url: https://twitter.com/Monster
+              - img [ref=e632]
+            - link "Monster Instagram" [ref=e635] [cursor=pointer]:
+              - /url: https://www.instagram.com/monster/
+              - img [ref=e638]
+            - link "Monster Youtube" [ref=e640] [cursor=pointer]:
+              - /url: https://www.youtube.com/monster
+              - img [ref=e643]
+            - link "Monster Pinterest" [ref=e645] [cursor=pointer]:
+              - /url: https://in.pinterest.com/monsterdotcom/
+              - img [ref=e648]
+            - link "Monster Tiktok" [ref=e650] [cursor=pointer]:
+              - /url: https://www.tiktok.com/@monsterjobs
+              - img [ref=e653]
+        - generic [ref=e655]:
+          - heading "Get the Monster App" [level=2] [ref=e656]
+          - generic [ref=e658]:
+            - link "Download on the App Store" [ref=e659] [cursor=pointer]:
+              - /url: https://apps.apple.com/us/app/id870221491
+              - img [ref=e661]
+            - link "Get it on Google Play" [ref=e666] [cursor=pointer]:
+              - /url: https://play.google.com/store/apps/details?id=com.jobrapp.jobr&pcampaignid=MKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1
+              - img [ref=e668]
+        - generic [ref=e679]: © 2026 MCB Bermuda Ltd
+  - alert [ref=e680]: Monster Jobs - Job Search, Career Advice & Hiring Resources | Monster.com | software engineer
+```
