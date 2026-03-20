@@ -49477,11 +49477,19 @@
   }
   function parseSearchKeywords(value) {
     const source = typeof value === "string" ? value : "";
-    return Array.from(
-      new Set(
-        source.split(/[\r\n,]+/).map((keyword) => keyword.trim()).filter(Boolean)
-      )
-    );
+    const deduped = /* @__PURE__ */ new Map();
+    for (const rawKeyword of source.split(/[\r\n,]+/)) {
+      const keyword = rawKeyword.trim();
+      if (!keyword) {
+        continue;
+      }
+      const normalized = normalizeQuestionKey(keyword);
+      if (!normalized || deduped.has(normalized)) {
+        continue;
+      }
+      deduped.set(normalized, keyword);
+    }
+    return Array.from(deduped.values());
   }
   var STARTUP_TARGET_REGIONS = [
     "us",

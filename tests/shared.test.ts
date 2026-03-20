@@ -77,6 +77,22 @@ describe("shared automation target logic", () => {
     expect(firstUrl.searchParams.get("locId")).toBe("1");
   });
 
+  it("builds Dice search targets with the workplace-type remote filter", () => {
+    const targets = buildSearchTargets(
+      "dice",
+      "https://www.dice.com",
+      "software engineer"
+    );
+
+    expect(targets).toHaveLength(1);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(firstUrl.pathname).toBe("/jobs");
+    expect(firstUrl.searchParams.get("q")).toBe("software engineer");
+    expect(firstUrl.searchParams.get("filters.workplaceTypes")).toBe("Remote");
+    expect(firstUrl.searchParams.get("location")).toBeNull();
+  });
+
   it("resolves startup region from candidate country", () => {
     expect(resolveStartupRegion("auto", "United States")).toBe("us");
     expect(resolveStartupRegion("auto", "United Kingdom")).toBe("uk");
@@ -190,6 +206,30 @@ describe("shared automation target logic", () => {
     expect(urls).toContain(
       "https://www.workatastartup.com/jobs?query=software%20engineer"
     );
+  });
+
+  it("dedupes equivalent other-site keyword variants before building search targets", () => {
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      startupRegion: "us" as const,
+      searchKeywords:
+        "Software Engineer\n software engineer \nsoftware-engineer",
+      candidate: {
+        ...DEFAULT_SETTINGS.candidate,
+        country: "United States",
+      },
+    };
+
+    const targets = buildOtherJobSiteTargets(settings);
+    const builtInTargets = targets.filter((target) =>
+      target.url.startsWith("https://builtin.com/jobs?")
+    );
+    const workAtStartupTargets = targets.filter((target) =>
+      target.url.startsWith("https://www.workatastartup.com/jobs?")
+    );
+
+    expect(builtInTargets).toHaveLength(1);
+    expect(workAtStartupTargets).toHaveLength(1);
   });
 
   it("normalizes dedup keys for Monster, Glassdoor, and ATS job URLs", () => {
@@ -318,6 +358,21 @@ describe("shared automation target logic", () => {
     expect(isProbablyAuthGatePage(document)).toBe(false);
   });
 
+  it("detects Dice-style apply login prompts as auth gates", () => {
+    document.title = "Apply to job";
+    document.body.innerHTML = `
+      <section role="dialog" aria-modal="true">
+        <h1>Apply to job</h1>
+        <p>To apply to this job, you need to create an account or log in.</p>
+        <button type="button">Cancel</button>
+        <a href="/dashboard/login">Log in</a>
+        <button type="button">Create an Account</button>
+      </section>
+    `;
+
+    expect(isProbablyAuthGatePage(document)).toBe(true);
+  });
+
   it("detects access-denied XML error pages and does not treat them as verification", () => {
     document.title = "";
     document.body.textContent = `
@@ -347,6 +402,20 @@ describe("shared automation target logic", () => {
     `;
 
     expect(detectBrokenPageReason(document)).toBe("bad_gateway");
+    expect(isProbablyHumanVerificationPage(document)).toBe(false);
+  });
+
+  it("detects page-not-found error pages and does not treat them as verification", () => {
+    window.history.replaceState({}, "", "/careers/page-not-found");
+    document.title = "404 Page Not Found";
+    document.body.innerHTML = `
+      <main>
+        <h1>Page Not Found</h1>
+        <p>The page you were looking for does not exist.</p>
+      </main>
+    `;
+
+    expect(detectBrokenPageReason(document)).toBe("not_found");
     expect(isProbablyHumanVerificationPage(document)).toBe(false);
   });
 

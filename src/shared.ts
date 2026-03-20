@@ -441,14 +441,23 @@ export function getResumeKindLabel(resumeKind: ResumeKind): string {
 
 export function parseSearchKeywords(value: string): string[] {
   const source = typeof value === "string" ? value : "";
-  return Array.from(
-    new Set(
-      source
-        .split(/[\r\n,]+/)
-        .map((keyword) => keyword.trim())
-        .filter(Boolean)
-    )
-  );
+  const deduped = new Map<string, string>();
+
+  for (const rawKeyword of source.split(/[\r\n,]+/)) {
+    const keyword = rawKeyword.trim();
+    if (!keyword) {
+      continue;
+    }
+
+    const normalized = normalizeQuestionKey(keyword);
+    if (!normalized || deduped.has(normalized)) {
+      continue;
+    }
+
+    deduped.set(normalized, keyword);
+  }
+
+  return Array.from(deduped.values());
 }
 
 export function hasConfiguredSearchKeywords(value: string): boolean {
@@ -543,45 +552,6 @@ function dedupeSearchTargets(targets: SearchTarget[]): SearchTarget[] {
   }
 
   return Array.from(deduped.values());
-}
-
-function interleaveTargetsByResumeKind(targets: SearchTarget[]): SearchTarget[] {
-  const grouped = new Map<ResumeKind | "unscoped", SearchTarget[]>();
-
-  for (const target of targets) {
-    const key = target.resumeKind ?? "unscoped";
-    const existing = grouped.get(key) ?? [];
-    existing.push(target);
-    grouped.set(key, existing);
-  }
-
-  const orderedKeys: Array<ResumeKind | "unscoped"> = [
-    "front_end",
-    "back_end",
-    "full_stack",
-    "unscoped",
-  ];
-  const result: SearchTarget[] = [];
-  let remaining = true;
-
-  while (remaining) {
-    remaining = false;
-
-    for (const key of orderedKeys) {
-      const queue = grouped.get(key);
-      if (!queue || queue.length === 0) {
-        continue;
-      }
-
-      const next = queue.shift();
-      if (next) {
-        result.push(next);
-        remaining = true;
-      }
-    }
-  }
-
-  return result;
 }
 
 const STARTUP_TARGET_REGIONS: Array<Exclude<StartupRegion, "auto">> = [
@@ -871,7 +841,9 @@ function buildSingleSearchUrl(site: JobBoardSite, query: string): string {
     case "dice": {
       const url = new URL("/jobs", baseOrigin);
       url.searchParams.set("q", query);
-      url.searchParams.set("location", "Remote");
+      // Dice no longer preserves location=Remote as a true remote-only filter.
+      // The workplaceTypes filter is what actually keeps the results remote.
+      url.searchParams.set("filters.workplaceTypes", "Remote");
       return url.toString();
     }
     case "monster": {
@@ -889,7 +861,10 @@ export function sleep(ms: number): Promise<void> {
   });
 }
 
-export type BrokenPageReason = "access_denied" | "bad_gateway";
+export type BrokenPageReason =
+  | "access_denied"
+  | "bad_gateway"
+  | "not_found";
 
 function getDocumentTextSnapshot(doc: Document): string {
   const title = doc.title ?? "";
@@ -908,6 +883,7 @@ export function detectBrokenPageReason(doc: Document): BrokenPageReason | null {
   if (!text) {
     return null;
   }
+  const lowerUrl = doc.location?.href?.toLowerCase() ?? "";
 
   const hasAccessDeniedSignal =
     text.includes("access denied") ||
@@ -933,6 +909,30 @@ export function detectBrokenPageReason(doc: Document): BrokenPageReason | null {
 
   if (hasBadGatewaySignal && hasCloudflareGatewaySignal) {
     return "bad_gateway";
+  }
+
+  const hasNotFoundUrlSignal = [
+    "/404",
+    "not-found",
+    "page-not-found",
+    "/unavailable",
+    "/error",
+  ].some((token) => lowerUrl.includes(token));
+  const hasNotFoundTextSignal =
+    /\b404\b/.test(text) &&
+      /\b(not found|page not found)\b/.test(text) ||
+    [
+      "page not found",
+      "the page you were looking for doesn't exist",
+      "the page you were looking for does not exist",
+      "this page does not exist",
+      "this page doesn't exist",
+      "the page you requested could not be found",
+      "requested page could not be found",
+    ].some((phrase) => text.includes(phrase));
+
+  if (hasNotFoundUrlSignal || hasNotFoundTextSignal) {
+    return "not_found";
   }
 
   return null;
@@ -1049,6 +1049,14 @@ export function isProbablyAuthGatePage(doc: Document): boolean {
   ];
 
   if (strongPhrases.some((phrase) => text.includes(phrase))) {
+    return true;
+  }
+
+  if (
+    /to apply to this job/.test(text) &&
+    /(create an account|log in|sign in)/.test(text) &&
+    hasAuthActions
+  ) {
     return true;
   }
 
@@ -1659,8 +1667,3 @@ function sanitizeResumeAsset(value: unknown): ResumeAsset | undefined {
   return asset.name && asset.dataUrl ? asset : undefined;
 }
 
-function sanitizeResumeKind(value: unknown): ResumeKind | undefined {
-  return value === "front_end" || value === "back_end" || value === "full_stack"
-    ? value
-    : undefined;
-}

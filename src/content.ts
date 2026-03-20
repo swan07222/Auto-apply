@@ -7,6 +7,7 @@ import {
   AutomationSettings,
   AutomationStage,
   AutomationStatus,
+  BrokenPageReason,
   DatePostedWindow,
   JobBoardSite,
   ResumeAsset,
@@ -22,7 +23,6 @@ import {
   getResumeKindLabel,
   getJobDedupKey,
   getSiteLabel,
-  inferResumeKindFromTitle,
   isJobBoardSite,
   isProbablyAuthGatePage,
   isProbablyRateLimitPage,
@@ -82,8 +82,10 @@ import {
   shouldUseFileInputForResume,
 } from "./content/resumeUpload";
 import {
+  collectDeepMatches,
   getActionText,
   getNavigationUrl,
+  isExternalUrl,
   normalizeUrl,
   performClickAction,
   isElementInteractive,
@@ -93,7 +95,6 @@ import {
   collectMonsterEmbeddedCandidates,
   isAppliedJobText,
   isCurrentPageAppliedJob,
-  pickRelevantJobUrls,
 } from "./content/jobSearch";
 import {
   findApplyAction,
@@ -116,7 +117,6 @@ import {
   hasLikelyApplicationFrame as detectLikelyApplicationFrame,
   hasLikelyApplicationPageContent as detectLikelyApplicationPageContent,
   hasLikelyApplicationSurface as detectLikelyApplicationSurface,
-  isLikelyApplicationField as detectLikelyApplicationField,
   waitForLikelyApplicationSurface as waitForApplicationSurface,
 } from "./content/applicationSurface";
 import {
@@ -124,6 +124,7 @@ import {
   waitForReadyProgressionAction as waitForReadyProgressionStep,
 } from "./content/progression";
 import {
+  getJobResultCollectionTargetCount,
   getPostedWindowDescription as describePostedWindow,
   scrollPageForLazyContent as scrollSearchResultsPage,
   waitForJobDetailUrls as collectJobDetailUrls,
@@ -189,7 +190,6 @@ let answerFlushPromise: Promise<void> = Promise.resolve();
 let overlayHideTimerId: number | null = null;
 let childApplicationTabOpened = false;
 let stageDepth = 0;
-let lastNavigationUrl: string = "";
 let manualReviewPauseUntil = 0;
 const pendingAnswers = new Map<string, SavedAnswer>();
 const recentResumeUploadAttempts = new WeakMap<
@@ -215,10 +215,6 @@ const applicationSurfaceCollectors = {
   collectAutofillFields: () => collectAutofillFields(),
   collectResumeFileInputs: () => collectResumeFileInputs(),
 };
-
-function getPostedWindowDescription(datePostedWindow: DatePostedWindow): string {
-  return describePostedWindow(datePostedWindow);
-}
 
 async function readCurrentAutomationSettings(): Promise<AutomationSettings> {
   return resolveAutomationSettingsForProfile(
@@ -249,17 +245,6 @@ async function waitForJobDetailUrls(
       updateStatus("running", message, true, "collect-results");
     },
   });
-}
-
-function getJobResultCollectionTargetCount(
-  site: SiteKey,
-  jobPageLimit: number
-): number {
-  if (isJobBoardSite(site)) {
-    return Math.max(25, Math.floor(jobPageLimit) * 4);
-  }
-
-  return Math.max(1, Math.floor(jobPageLimit));
 }
 
 function getCurrentSearchKeywordHints(
@@ -303,6 +288,12 @@ function throwIfRateLimited(site: SiteKey): void {
   if (brokenReason === "bad_gateway") {
     throw new Error(
       `${getSiteLabel(site)} returned a bad gateway error page. Skipping this job.`
+    );
+  }
+
+  if (brokenReason === "not_found") {
+    throw new Error(
+      `${getSiteLabel(site)} redirected to a page-not-found error page. Skipping this job.`
     );
   }
 
@@ -383,10 +374,6 @@ function looksLikeCurrentFrameApplicationSurface(
   return hasLikelyApplicationPageContent();
 }
 
-function isLikelyApplicationField(field: AutofillField): boolean {
-  return detectLikelyApplicationField(field);
-}
-
 async function waitForLikelyApplicationSurface(site: SiteKey): Promise<boolean> {
   return waitForApplicationSurface(site, applicationSurfaceCollectors);
 }
@@ -400,6 +387,10 @@ async function openApplicationTargetInNewTab(
   site: SiteKey,
   description: string
 ): Promise<void> {
+  if (!(await ensureApplicationTargetReachable(url, site, description))) {
+    return;
+  }
+
   await spawnTabs([
     {
       url,
@@ -420,6 +411,81 @@ async function openApplicationTargetInNewTab(
     "autofill-form",
     "handoff"
   );
+}
+
+function describeBrokenApplicationTarget(
+  description: string,
+  reason: BrokenPageReason | "unreachable"
+): string {
+  switch (reason) {
+    case "access_denied":
+      return `${description} returned an access-denied error page. Skipping this job.`;
+    case "bad_gateway":
+      return `${description} returned a bad gateway error page. Skipping this job.`;
+    case "not_found":
+      return `${description} returned a page-not-found error. Skipping this job.`;
+    case "unreachable":
+      return `${description} could not be reached. Skipping this job.`;
+  }
+}
+
+async function probeApplicationTargetReason(
+  url: string,
+  site: SiteKey
+): Promise<BrokenPageReason | "unreachable" | null> {
+  if (isSameOriginInternalApplyStepNavigation(url)) {
+    return null;
+  }
+
+  if (!isExternalUrl(url) && isLikelyApplyUrl(url, site)) {
+    return null;
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "probe-application-target",
+      url,
+    });
+    if (response?.ok && response.reachable) {
+      return null;
+    }
+    return response?.reason ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureApplicationTargetReachable(
+  url: string,
+  site: SiteKey,
+  description: string
+): Promise<boolean> {
+  const reason = await probeApplicationTargetReason(url, site);
+  if (!reason) {
+    return true;
+  }
+
+  updateStatus(
+    "error",
+    describeBrokenApplicationTarget(description, reason),
+    false,
+    currentStage,
+    "released"
+  );
+  return false;
+}
+
+async function navigateToApplicationTarget(
+  url: string,
+  site: SiteKey,
+  description: string
+): Promise<boolean> {
+  if (!(await ensureApplicationTargetReachable(url, site, description))) {
+    return false;
+  }
+
+  navigateCurrentTab(url);
+  return true;
 }
 
 // ─── MESSAGE LISTENER ────────────────────────────────────────────────────────
@@ -467,7 +533,6 @@ chrome.runtime.onMessage.addListener(
 
       childApplicationTabOpened = false;
       stageDepth = 0;
-      lastNavigationUrl = window.location.href;
       if (message.session) {
         status = message.session;
         currentStage = message.session.stage;
@@ -521,7 +586,6 @@ async function resumeAutomationIfNeeded(): Promise<void> {
   const detectedSite = detectSiteFromUrl(window.location.href);
   childApplicationTabOpened = false;
   stageDepth = 0;
-  lastNavigationUrl = window.location.href;
 
   const maxAttempts = detectedSite ? 30 : 18;
 
@@ -691,9 +755,7 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
 async function runCollectResultsStage(site: SiteKey): Promise<void> {
   const settings = await readCurrentAutomationSettings();
   const labelPrefix = currentLabel ? `${currentLabel} ` : "";
-  const postedWindowDescription = getPostedWindowDescription(
-    settings.datePostedWindow
-  );
+  const postedWindowDescription = describePostedWindow(settings.datePostedWindow);
   const effectiveLimit =
     typeof currentJobSlots === "number"
       ? Math.max(0, Math.floor(currentJobSlots))
@@ -1119,7 +1181,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       true,
       "open-apply"
     );
-    navigateCurrentTab(action.url);
+    await navigateToApplicationTarget(action.url, site, action.description);
     return;
   }
 
@@ -1206,7 +1268,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
         true,
         "open-apply"
       );
-      navigateCurrentTab(href);
+      await navigateToApplicationTarget(href, site, action.description);
       return;
     }
   }
@@ -1258,6 +1320,26 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       );
       await sleep(1500);
       await runAutofillStage(site);
+      return;
+    }
+
+    if (isProbablyAuthGatePage(document)) {
+      await waitForHumanVerificationToClear();
+
+      if (hasLikelyApplicationSurface(site)) {
+        await waitForLikelyApplicationSurface(site);
+        await runAutofillStage(site);
+        return;
+      }
+
+      currentStage = "open-apply";
+      updateStatus(
+        "running",
+        "Sign-in completed. Looking for the next apply step...",
+        true,
+        "open-apply"
+      );
+      await runOpenApplyStage(site);
       return;
     }
 
@@ -1324,7 +1406,11 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       "open-apply"
     );
     if (retryCompanyAction.type === "navigate") {
-      navigateCurrentTab(retryCompanyAction.url);
+      await navigateToApplicationTarget(
+        retryCompanyAction.url,
+        site,
+        retryCompanyAction.description
+      );
       return;
     }
     retryCompanyAction.element.scrollIntoView({
@@ -1388,6 +1474,26 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       await runAutofillStage(site);
       return;
     }
+  }
+
+  if (isProbablyAuthGatePage(document)) {
+    await waitForHumanVerificationToClear();
+
+    if (hasLikelyApplicationSurface(site)) {
+      await waitForLikelyApplicationSurface(site);
+      await runAutofillStage(site);
+      return;
+    }
+
+    currentStage = "open-apply";
+    updateStatus(
+      "running",
+      "Sign-in completed. Looking for the next apply step...",
+      true,
+      "open-apply"
+    );
+    await runOpenApplyStage(site);
+    return;
   }
 
   updateStatus(
@@ -1584,7 +1690,11 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
           );
           return;
         }
-        navigateCurrentTab(companySiteAction.url);
+        await navigateToApplicationTarget(
+          companySiteAction.url,
+          site,
+          companySiteAction.description
+        );
         return;
       }
 
@@ -1629,7 +1739,11 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
           );
           return;
         }
-        navigateCurrentTab(followUp.url);
+        await navigateToApplicationTarget(
+          followUp.url,
+          site,
+          followUp.description
+        );
         return;
       }
 
@@ -1700,10 +1814,12 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     return;
   }
 
-  if (hasLikelyApplicationForm()) {
+  if (hasLikelyApplicationForm() || hasLikelyApplicationPageContent()) {
     updateStatus(
       "completed",
-      "Application opened. No fields auto-filled - review manually.",
+      hasLikelyApplicationForm()
+        ? "Application opened. No fields auto-filled - review manually."
+        : "Final review page opened. Review and submit manually.",
       false,
       "autofill-form",
       "successful"
@@ -1735,6 +1851,11 @@ async function waitForHumanVerificationToClear(): Promise<void> {
   if (brokenReason === "bad_gateway") {
     throw new Error(
       `The page returned a bad gateway error instead of a usable application page.`
+    );
+  }
+  if (brokenReason === "not_found") {
+    throw new Error(
+      `The page returned a page-not-found error instead of a usable application page.`
     );
   }
 
@@ -1771,6 +1892,11 @@ async function waitForHumanVerificationToClear(): Promise<void> {
     if (pendingBrokenReason === "bad_gateway") {
       throw new Error(
         `The page returned a bad gateway error instead of a usable application page.`
+      );
+    }
+    if (pendingBrokenReason === "not_found") {
+      throw new Error(
+        `The page returned a page-not-found error instead of a usable application page.`
       );
     }
 
@@ -1810,38 +1936,6 @@ async function waitForHumanVerificationToClear(): Promise<void> {
 // Part 3 of 3 – continues from Part 2
 
 // ─── AUTOFILL HELPERS ────────────────────────────────────────────────────────
-
-function collectDeepMatches<T extends Element>(
-  selector: string
-): T[] {
-  const results: T[] = [];
-  const seen = new Set<Element>();
-  const roots: Array<Document | ShadowRoot> = [document];
-
-  while (roots.length > 0) {
-    const root = roots.shift()!;
-
-    try {
-      for (const element of Array.from(
-        root.querySelectorAll<T>(selector)
-      )) {
-        if (seen.has(element)) continue;
-        seen.add(element);
-        results.push(element);
-      }
-    } catch {
-      // Skip invalid selectors
-    }
-
-    for (const host of Array.from(
-      root.querySelectorAll<HTMLElement>("*")
-    )) {
-      if (host.shadowRoot) roots.push(host.shadowRoot);
-    }
-  }
-
-  return results;
-}
 
 function collectAutofillFields(): AutofillField[] {
   return collectDeepMatches<AutofillField>(
@@ -2693,7 +2787,6 @@ function tryContinueEmbeddedApplication(url: string): boolean {
 function navigateCurrentTab(url: string): void {
   const n = normalizeUrl(url);
   if (!n) throw new Error("Invalid URL.");
-  lastNavigationUrl = n;
 
   if (tryContinueEmbeddedApplication(n)) {
     return;

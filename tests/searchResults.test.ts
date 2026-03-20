@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { waitForJobDetailUrls } from "../src/content/searchResults";
+import {
+  getJobResultCollectionTargetCount,
+  waitForJobDetailUrls,
+} from "../src/content/searchResults";
 
 describe("search result collection", () => {
   beforeEach(() => {
@@ -36,6 +39,14 @@ describe("search result collection", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     delete (globalThis as Record<string, unknown>).chrome;
+  });
+
+  it("over-collects for startup and other job sites so filtering still leaves enough pages to open", () => {
+    expect(getJobResultCollectionTargetCount("other_sites", 1)).toBe(30);
+    expect(getJobResultCollectionTargetCount("other_sites", 5)).toBe(30);
+    expect(getJobResultCollectionTargetCount("other_sites", 8)).toBe(48);
+    expect(getJobResultCollectionTargetCount("startup", 6)).toBe(36);
+    expect(getJobResultCollectionTargetCount("indeed", 5)).toBe(25);
   });
 
   it("merges Monster embedded search results when the DOM alone does not satisfy the requested count", async () => {

@@ -83,6 +83,15 @@ const STARTUP_OTHER_SITE_LINK_SELECTORS = Array.from(
   ])
 );
 
+function isElementLike(value: unknown): value is Element {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      "closest" in value &&
+      "getAttribute" in value
+  );
+}
+
 export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
   switch (site) {
     case "indeed":
@@ -174,6 +183,7 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
 
     case "dice":
       return dedupeJobCandidates([
+        ...collectDiceListItemCandidates(),
         // FIX: Dice uses custom web components — collect from shadow DOM
         ...collectDiceSearchCardCandidates(),
         ...collectCandidatesFromAnchors([
@@ -354,6 +364,7 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
     case "startup":
     case "other_sites":
       return dedupeJobCandidates([
+        ...collectFocusedAtsLinkCandidates(),
         ...collectCandidatesFromContainers(
           [
             "[data-qa*='job']",
@@ -471,26 +482,30 @@ export function pickRelevantJobUrls(
   const shouldKeywordFilter =
     searchKeywords.length > 0 &&
     (site === "startup" || site === "other_sites");
-  const hasKeywordMatchedBoardCandidates =
+  const boardKeywordMatchedCandidates =
     searchKeywords.length > 0 &&
     (site === "indeed" ||
       site === "ziprecruiter" ||
       site === "dice" ||
       site === "monster" ||
-      site === "glassdoor") &&
-    eligible.some((candidate) =>
-      scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0
+      site === "glassdoor")
+      ? eligible.filter((candidate) =>
+          scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0
+        )
+      : [];
+  const shouldKeywordFilterBoardResults =
+    shouldFilterBoardResultsByKeyword(
+      site,
+      eligible.length,
+      boardKeywordMatchedCandidates.length
     );
   const keywordEligible =
     shouldKeywordFilter
       ? eligible.filter((candidate) =>
           matchesConfiguredSearchKeywords(candidate, searchKeywords)
         )
-      : hasKeywordMatchedBoardCandidates
-        ? eligible.filter(
-            (candidate) =>
-              scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0
-          )
+      : shouldKeywordFilterBoardResults
+        ? boardKeywordMatchedCandidates
       : eligible;
   const technicalEligible =
     site === "startup" || site === "other_sites"
@@ -542,39 +557,30 @@ export function pickRelevantJobUrls(
   return [...preferred, ...fallback];
 }
 
+function shouldFilterBoardResultsByKeyword(
+  site: SiteKey | null,
+  eligibleCount: number,
+  matchedCount: number
+): boolean {
+  if (matchedCount <= 0 || eligibleCount <= 0) {
+    return false;
+  }
+
+  if (site === "ziprecruiter") {
+    return (
+      matchedCount >= Math.max(2, eligibleCount - 1) &&
+      matchedCount >= 2
+    );
+  }
+
+  return matchedCount >= Math.min(3, Math.max(1, Math.ceil(eligibleCount / 2)));
+}
+
 function matchesConfiguredSearchKeywords(
   candidate: JobCandidate,
   searchKeywords: string[]
 ): boolean {
   return scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0;
-}
-
-function matchesSearchKeyword(haystack: string, keyword: string): boolean {
-  const normalizedKeyword = normalizeChoiceText(keyword);
-  if (!haystack || !normalizedKeyword) {
-    return false;
-  }
-
-  if (haystack.includes(normalizedKeyword)) {
-    return true;
-  }
-
-  const keywordTokens = normalizedKeyword
-    .split(/\s+/)
-    .filter((token) => token.length >= 2);
-  if (keywordTokens.length === 0) {
-    return false;
-  }
-
-  const haystackTokens = new Set(haystack.split(/\s+/).filter(Boolean));
-  const matchedTokens = keywordTokens.filter((token) =>
-    haystackTokens.has(token)
-  ).length;
-
-  return (
-    matchedTokens === keywordTokens.length ||
-    matchedTokens / keywordTokens.length >= 0.75
-  );
 }
 
 function scoreCandidateKeywordRelevance(
@@ -622,16 +628,16 @@ function filterCandidatesForRemotePreference(
     candidate,
     remoteScore: scoreRemotePreference(candidate),
   }));
-  const hasStrongRemoteCandidate = annotated.some(
-    (entry) => entry.remoteScore > 0
+  const hasLocationModeSignal = annotated.some(
+    (entry) => entry.remoteScore !== 0
   );
 
-  if (!hasStrongRemoteCandidate) {
+  if (!hasLocationModeSignal) {
     return candidates;
   }
 
   return annotated
-    .filter((entry) => entry.remoteScore >= 0)
+    .filter((entry) => entry.remoteScore > 0)
     .map((entry) => entry.candidate);
 }
 
@@ -643,19 +649,19 @@ function scoreRemotePreference(candidate: JobCandidate): number {
   let score = 0;
 
   if (
-    /\b(remote|fully remote|100 remote|work from home|distributed|anywhere|remote first)\b/.test(
+    /\b(remote|fully remote|100 remote|work from home|distributed|anywhere|remote first|home based|home-based|remote us|remote usa)\b/.test(
       haystack
     )
   ) {
     score += 2;
   }
 
-  if (/\bhybrid\b/.test(haystack)) {
+  if (/\b(hybrid|remote hybrid|hybrid remote)\b/.test(haystack)) {
     score -= 2;
   }
 
   if (
-    /\b(onsite|on site|in office|in-office|office based|office-based|relocation required)\b/.test(
+    /\b(onsite|on site|in office|in-office|office based|office-based|relocation required|local only|must be onsite)\b/.test(
       haystack
     )
   ) {
@@ -701,11 +707,20 @@ export function isLikelyJobDetailUrl(
 
   switch (site) {
     case "indeed":
-      return (
-        lowerUrl.includes("/viewjob") ||
-        lowerUrl.includes("/rc/clk") ||
-        lowerUrl.includes("/pagead/clk")
-      );
+      try {
+        const parsedIndeedUrl = new URL(url, window.location.href);
+        const jobKey =
+          parsedIndeedUrl.searchParams.get("jk") ??
+          parsedIndeedUrl.searchParams.get("vjk");
+        const hasTrackedIndeedJobPath =
+          lowerUrl.includes("/viewjob") ||
+          lowerUrl.includes("/rc/clk") ||
+          lowerUrl.includes("/pagead/clk");
+
+        return hasTrackedIndeedJobPath && Boolean(jobKey);
+      } catch {
+        return false;
+      }
 
     // FIX: Completely rewritten ZipRecruiter URL matching
     case "ziprecruiter": {
@@ -1173,10 +1188,113 @@ export function isStrongAppliedJobText(text: string): boolean {
 }
 
 export function isCurrentPageAppliedJob(site: SiteKey | null = null): boolean {
+  if (site === "indeed") {
+    if (isIndeedApplyConfirmationPage()) {
+      return true;
+    }
+    if (isActiveIndeedApplyStep()) {
+      return false;
+    }
+  }
+
   const currentSurfaceTexts = collectCurrentJobSurfaceTexts(site);
 
   for (const text of currentSurfaceTexts) {
     if (isStrongAppliedJobText(text)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function getIndeedApplyPageText(): string {
+  return cleanText(
+    document.body?.innerText || document.body?.textContent || ""
+  )
+    .toLowerCase()
+    .slice(0, 12000);
+}
+
+function isIndeedApplyConfirmationPage(): boolean {
+  const lowerUrl = window.location.href.toLowerCase();
+  const lowerPath = window.location.pathname.toLowerCase();
+  if (
+    !(
+      lowerUrl.includes("smartapply.indeed.com") ||
+      lowerPath.includes("/indeedapply/form/")
+    )
+  ) {
+    return false;
+  }
+
+  return /\b(your application has been submitted|thanks for applying|application submitted|application complete|application received)\b/.test(
+    getIndeedApplyPageText()
+  );
+}
+
+function isActiveIndeedApplyStep(): boolean {
+  const lowerUrl = window.location.href.toLowerCase();
+  const lowerPath = window.location.pathname.toLowerCase();
+  if (
+    !(
+      lowerUrl.includes("smartapply.indeed.com") ||
+      lowerPath.includes("/indeedapply/form/")
+    )
+  ) {
+    return false;
+  }
+
+  const bodyText = getIndeedApplyPageText();
+
+  if (isIndeedApplyConfirmationPage()) {
+    return false;
+  }
+
+  if (
+    /\/(?:review-module|resume-selection-module|demographic-questions-module|contact-info-module|work-experience-module|education-module|cover-letter-module|additional-documents-module)(?:[/?#]|$)/.test(
+      lowerPath
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(please review your application|review your application|add a resume for the employer|save and close|step\s+\d+\s+of\s+\d+)\b/.test(
+      bodyText
+    )
+  ) {
+    return true;
+  }
+
+  for (const control of Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "button, a[role='button'], [role='button'], input[type='submit'], input[type='button']"
+    )
+  )) {
+    const controlText = cleanText(
+      control.innerText ||
+        control.textContent ||
+        control.getAttribute("aria-label") ||
+        control.getAttribute("value") ||
+        ""
+    ).toLowerCase();
+    if (!controlText) {
+      continue;
+    }
+    if (
+      [
+        "submit",
+        "submit application",
+        "continue",
+        "back",
+        "save and close",
+        "edit",
+      ].some(
+        (signal) =>
+          controlText === signal || controlText.includes(` ${signal}`) || controlText.startsWith(`${signal} `)
+      )
+    ) {
       return true;
     }
   }
@@ -1289,6 +1407,9 @@ function collectCandidatesFromContainers(
     }
 
     const contextText = buildCandidateContextText(container, anchor);
+    const canonicalIndeedUrl =
+      getCanonicalIndeedCandidateUrl(container) ??
+      getCanonicalIndeedCandidateUrl(anchor);
 
     if (!anchor) {
       const dataJk = container.getAttribute("data-jk");
@@ -1306,7 +1427,12 @@ function collectCandidatesFromContainers(
       continue;
     }
 
-    addJobCandidate(candidates, anchor.href, titleText, contextText);
+    addJobCandidate(
+      candidates,
+      canonicalIndeedUrl ?? anchor.href,
+      titleText,
+      contextText
+    );
   }
 
   return candidates;
@@ -1326,9 +1452,10 @@ function collectCandidatesFromAnchors(selectors: string[]): JobCandidate[] {
         if (isCareerListingCtaText(title)) {
           continue;
         }
+        const canonicalIndeedUrl = getCanonicalIndeedCandidateUrl(anchor);
         addJobCandidate(
           candidates,
-          anchor.href,
+          canonicalIndeedUrl ?? anchor.href,
           title,
           contextText
         );
@@ -1336,6 +1463,76 @@ function collectCandidatesFromAnchors(selectors: string[]): JobCandidate[] {
     } catch {
       // Skip invalid selectors
     }
+  }
+
+  return candidates;
+}
+
+function collectFocusedAtsLinkCandidates(): JobCandidate[] {
+  const candidates: JobCandidate[] = [];
+
+  for (const selector of STARTUP_OTHER_SITE_LINK_SELECTORS) {
+    try {
+      for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>(selector))) {
+        if (!hasJobDetailAtsUrl(anchor.href)) {
+          continue;
+        }
+
+        const title = cleanText(
+          anchor.textContent ||
+            anchor.getAttribute("aria-label") ||
+            anchor.getAttribute("title") ||
+            ""
+        );
+        if (!title || isGenericRoleCtaText(title) || isCareerListingCtaText(title)) {
+          continue;
+        }
+
+        addJobCandidate(candidates, anchor.href, title, title);
+      }
+    } catch {
+      // Skip invalid selectors
+    }
+  }
+
+  return candidates;
+}
+
+function collectDiceListItemCandidates(): JobCandidate[] {
+  const candidates: JobCandidate[] = [];
+  const cards = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "[aria-label='Job search results'] li, [aria-label='Job search results'] article, [data-testid='job-search-results'] li, [data-testid='job-search-results'] article, li, article"
+    )
+  );
+
+  for (const card of cards) {
+    const titleAnchor =
+      card.querySelector<HTMLAnchorElement>(
+        "a[data-testid='job-search-job-detail-link'], a[href*='/job-detail/'], a[href*='/jobs/detail/']"
+      ) ?? null;
+    if (!titleAnchor?.href) {
+      continue;
+    }
+
+    const title = cleanText(
+      titleAnchor.textContent ||
+        titleAnchor.getAttribute("aria-label") ||
+        card.querySelector<HTMLElement>(
+          "h1, h2, h3, h4, h5, [data-testid='job-search-job-detail-link']"
+        )?.textContent ||
+        ""
+    );
+    if (!title) {
+      continue;
+    }
+
+    addJobCandidate(
+      candidates,
+      titleAnchor.href,
+      title,
+      buildCandidateContextText(card, titleAnchor)
+    );
   }
 
   return candidates;
@@ -1712,22 +1909,86 @@ function addJobCandidate(
   });
 }
 
+function getCanonicalIndeedCandidateUrl(
+  element: Element | null | undefined
+): string | null {
+  if (!isElementLike(element)) {
+    return null;
+  }
+
+  const jobContainer =
+    (element instanceof HTMLElement && element.hasAttribute("data-jk")
+      ? element
+      : element.closest<HTMLElement>("[data-jk]")) ?? null;
+  const jobKey = jobContainer?.getAttribute("data-jk")?.trim();
+
+  if (!jobKey) {
+    return null;
+  }
+
+  return `/viewjob?jk=${jobKey}`;
+}
+
 function buildCandidateContextText(
   container: HTMLElement | null | undefined,
   anchor?: HTMLAnchorElement | null
 ): string {
-  return cleanText(
+  const contexts = new Set<string>();
+
+  const addContext = (element: HTMLElement | null | undefined) => {
+    if (!element) {
+      return;
+    }
+
+    const text = cleanText(
+      [
+        element.innerText || element.textContent || "",
+        element.getAttribute("aria-label") || "",
+        element.getAttribute("title") || "",
+        element.getAttribute("data-status") || "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+    if (text) {
+      contexts.add(text);
+    }
+  };
+
+  addContext(container);
+
+  if (anchor) {
+    let current = anchor.parentElement;
+    for (let depth = 0; current && depth < 6; depth += 1) {
+      if (
+        current === container ||
+        /^(article|li|section|main)$/i.test(current.tagName) ||
+        current.getAttribute("role") === "listitem" ||
+        current.hasAttribute("data-testid") ||
+        /(?:job|card|result|listing)/i.test(current.className || "")
+      ) {
+        addContext(current);
+      }
+      current = current.parentElement;
+    }
+  }
+
+  const anchorText = cleanText(
     [
-      container?.innerText || container?.textContent || "",
-      container?.getAttribute("aria-label") || "",
-      container?.getAttribute("title") || "",
-      container?.getAttribute("data-status") || "",
       anchor?.getAttribute("aria-label") || "",
       anchor?.getAttribute("title") || "",
       anchor?.textContent || "",
     ]
       .filter(Boolean)
       .join(" ")
+  );
+  if (anchorText) {
+    contexts.add(anchorText);
+  }
+
+  return (
+    Array.from(contexts).sort((left, right) => right.length - left.length)[0] ??
+    ""
   );
 }
 
@@ -1762,6 +2023,53 @@ function extractMonsterEmbeddedAppliedSignal(
   );
 }
 
+function scoreCandidateContextQuality(candidate: JobCandidate): number {
+  const normalizedTitle = normalizeChoiceText(candidate.title);
+  const normalizedContext = normalizeChoiceText(candidate.contextText);
+  let score = 0;
+
+  if (
+    normalizedTitle &&
+    !isGenericRoleCtaText(candidate.title) &&
+    !isCareerListingCtaText(candidate.title)
+  ) {
+    score += 4;
+  }
+
+  if (normalizedContext.includes("remote")) {
+    score += 3;
+  }
+  if (normalizedContext.includes("hybrid")) {
+    score += 1;
+  }
+  if (normalizedContext.includes("onsite") || normalizedContext.includes("on site")) {
+    score += 1;
+  }
+
+  const contextLength = candidate.contextText.length;
+  if (contextLength >= 40 && contextLength <= 500) {
+    score += 4;
+  } else if (contextLength >= 20 && contextLength <= 900) {
+    score += 2;
+  } else if (contextLength > 1200) {
+    score -= 4;
+  }
+
+  if (
+    normalizedContext.includes("create alert") ||
+    normalizedContext.includes("job alert") ||
+    normalizedContext.includes("search jobs")
+  ) {
+    score -= 3;
+  }
+
+  if (normalizedContext && normalizedTitle && normalizedContext.includes(normalizedTitle)) {
+    score += 1;
+  }
+
+  return score;
+}
+
 function dedupeJobCandidates(candidates: JobCandidate[]): JobCandidate[] {
   const unique = new Map<string, JobCandidate>();
 
@@ -1772,7 +2080,18 @@ function dedupeJobCandidates(candidates: JobCandidate[]): JobCandidate[] {
     }
 
     const existing = unique.get(key);
-    if (!existing || candidate.contextText.length > existing.contextText.length) {
+    if (!existing) {
+      unique.set(key, candidate);
+      continue;
+    }
+
+    const existingScore = scoreCandidateContextQuality(existing);
+    const candidateScore = scoreCandidateContextQuality(candidate);
+    if (
+      candidateScore > existingScore ||
+      (candidateScore === existingScore &&
+        candidate.contextText.length > existing.contextText.length)
+    ) {
       unique.set(key, candidate);
     }
   }

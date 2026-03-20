@@ -97,6 +97,19 @@ describe("application surface helpers", () => {
     expect(hasLikelyApplicationPageContent()).toBe(true);
   });
 
+  it("recognizes final review pages with submit actions as application page content", () => {
+    document.body.innerHTML = `
+      <main>
+        <h1>Please review your application</h1>
+        <p>You will not be able to make changes after you submit your application.</p>
+        <button type="button">Back</button>
+        <button type="submit">Submit</button>
+      </main>
+    `;
+
+    expect(hasLikelyApplicationPageContent()).toBe(true);
+  });
+
   it("rejects generic search inputs when deciding whether a field belongs to an application form", () => {
     document.body.innerHTML = `
       <form>

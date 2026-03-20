@@ -49,4 +49,23 @@ describe("manual review helpers", () => {
       shouldPauseAutomationForManualReview(Date.now() - 1, [fullName, search])
     ).toBe(false);
   });
+
+  it("treats preselected selects as editable review fields", () => {
+    document.body.innerHTML = `
+      <form>
+        <label for="work-auth">Work authorization *</label>
+        <select id="work-auth">
+          <option value="">Select one</option>
+          <option value="citizen" selected>US Citizen</option>
+        </select>
+      </form>
+    `;
+
+    const workAuth = document.querySelector("#work-auth") as HTMLSelectElement;
+
+    expect(hasEditableAutofillFields([workAuth])).toBe(true);
+    expect(
+      shouldPauseAutomationForManualReview(Date.now() + 5_000, [workAuth])
+    ).toBe(true);
+  });
 });

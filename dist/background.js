@@ -201,11 +201,19 @@
   }
   function parseSearchKeywords(value) {
     const source = typeof value === "string" ? value : "";
-    return Array.from(
-      new Set(
-        source.split(/[\r\n,]+/).map((keyword) => keyword.trim()).filter(Boolean)
-      )
-    );
+    const deduped = /* @__PURE__ */ new Map();
+    for (const rawKeyword of source.split(/[\r\n,]+/)) {
+      const keyword = rawKeyword.trim();
+      if (!keyword) {
+        continue;
+      }
+      const normalized = normalizeQuestionKey(keyword);
+      if (!normalized || deduped.has(normalized)) {
+        continue;
+      }
+      deduped.set(normalized, keyword);
+    }
+    return Array.from(deduped.values());
   }
   function buildStartupSearchTargets(settings, companies = STARTUP_COMPANIES) {
     const regionSet = new Set(
@@ -845,6 +853,8 @@
         return updateSessionFromMessage(message, sender, false);
       case "finalize-session":
         return updateSessionFromMessage(message, sender, true);
+      case "probe-application-target":
+        return probeApplicationTargetUrl(message.url);
       case "spawn-tabs": {
         const currentTab = sender.tab;
         if (!currentTab?.id) {
@@ -1344,84 +1354,90 @@
     }
     return results.filter((result) => !result.hardFailure).map((result) => result.target);
   }
-  async function probeSearchTarget(target) {
+  async function probeApplicationTargetUrl(url) {
+    const result = await probeUrlForHardFailure(url);
+    return {
+      ok: true,
+      reachable: !result.reason,
+      reason: result.reason ?? void 0
+    };
+  }
+  async function probeUrlForHardFailure(url) {
     const timeout = 8e3;
     const controller = new AbortController();
     const timeoutId = globalThis.setTimeout(() => controller.abort(), timeout);
     try {
-      const response = await fetch(target.url, {
+      const response = await fetch(url, {
         cache: "no-store",
         redirect: "follow",
         signal: controller.signal
       });
-      if (response.status === 401 || response.status === 403 || response.status === 404 || response.status === 410 || response.status >= 500) {
-        return {
-          target,
-          ok: false,
-          hardFailure: true
-        };
+      if (response.status === 401 || response.status === 403) {
+        return { reason: "access_denied" };
+      }
+      if (response.status === 404 || response.status === 410) {
+        return { reason: "not_found" };
+      }
+      if (response.status >= 500) {
+        return { reason: "bad_gateway" };
       }
       const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
       if (contentType && !contentType.includes("text/html")) {
-        return {
-          target,
-          ok: false,
-          hardFailure: true
-        };
+        return { reason: "unreachable" };
       }
       const finalUrl = response.url.toLowerCase();
       if (["/404", "not-found", "page-not-found", "/error", "/unavailable"].some(
         (token) => finalUrl.includes(token)
       )) {
-        return {
-          target,
-          ok: false,
-          hardFailure: true
-        };
+        return { reason: "not_found" };
       }
-      const bodyText = (await response.text()).toLowerCase().replace(/\s+/g, " ").slice(0, 2500);
+      const bodyText = (await response.text()).toLowerCase().replace(/\s+/g, " ").slice(0, 3e3);
+      if (bodyText.includes("access denied") || bodyText.includes("accessdenied")) {
+        return { reason: "access_denied" };
+      }
+      if (bodyText.includes("bad gateway") || bodyText.includes("error reference number: 502") || bodyText.includes("web server reported a bad gateway error")) {
+        return { reason: "bad_gateway" };
+      }
       if ([
         "page not found",
         "this page does not exist",
         "this page doesn t exist",
+        "the page you were looking for does not exist",
+        "the page you were looking for doesn't exist",
+        "the page you requested could not be found",
+        "requested page could not be found",
         "temporarily unavailable",
-        "service unavailable",
-        "access denied"
+        "service unavailable"
       ].some((token) => bodyText.includes(token))) {
-        return {
-          target,
-          ok: false,
-          hardFailure: true
-        };
+        return { reason: "not_found" };
       }
-      return {
-        target,
-        ok: true,
-        hardFailure: false
-      };
+      return { reason: null };
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
-        return {
-          target,
-          ok: true,
-          hardFailure: false
-        };
+        return { reason: null };
       }
       if (isHardSearchTargetProbeError(error)) {
-        return {
-          target,
-          ok: false,
-          hardFailure: true
-        };
+        return { reason: "unreachable" };
       }
-      return {
-        target,
-        ok: true,
-        hardFailure: false
-      };
+      return { reason: null };
     } finally {
       globalThis.clearTimeout(timeoutId);
     }
+  }
+  async function probeSearchTarget(target) {
+    const result = await probeUrlForHardFailure(target.url);
+    if (!result.reason) {
+      return {
+        target,
+        ok: true,
+        hardFailure: false
+      };
+    }
+    return {
+      target,
+      ok: false,
+      hardFailure: true
+    };
   }
   function isHardSearchTargetProbeError(error) {
     if (!(error instanceof Error)) {

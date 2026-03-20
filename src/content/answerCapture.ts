@@ -23,10 +23,19 @@ const BLOCKED_CHOICE_TOKENS = [
 const QUESTION_CONTAINER_SELECTOR =
   "fieldset, [role='radiogroup'], [role='group'], [role='listbox'], [role='dialog'], .field, .form-field, .question, .application-question, [class*='field'], [class*='question'], [data-testid*='question'], [data-test*='question']";
 
+function isElementLike(value: unknown): value is Element {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      "closest" in value &&
+      "getAttribute" in value
+  );
+}
+
 export function findRememberableChoiceTarget(
   target: EventTarget | null
 ): HTMLElement | null {
-  if (!(target instanceof Element)) {
+  if (!isElementLike(target)) {
     return null;
   }
 
@@ -131,7 +140,7 @@ function extractChoiceQuestion(
 }
 
 function readLabelledQuestion(element: Element | null): string {
-  if (!(element instanceof Element)) {
+  if (!isElementLike(element)) {
     return "";
   }
 

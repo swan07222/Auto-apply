@@ -51,7 +51,7 @@ export function shouldStartManualReviewPause(
 
 export function hasEditableAutofillFields(fields: AutofillField[]): boolean {
   return fields.some((field) => {
-    if (!shouldAutofillField(field, false, true)) {
+    if (!shouldAutofillField(field, true, true)) {
       return false;
     }
 

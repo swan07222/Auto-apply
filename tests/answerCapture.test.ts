@@ -37,4 +37,31 @@ describe("answer capture helpers", () => {
     expect(button).not.toBeNull();
     expect(findRememberableChoiceTarget(button)).toBeNull();
   });
+
+  it("does not depend on a global Element constructor to capture custom choices", () => {
+    document.body.innerHTML = `
+      <fieldset>
+        <legend>Are you legally authorized to work in the United States?</legend>
+        <button type="button" role="radio" aria-checked="true">Yes</button>
+      </fieldset>
+    `;
+
+    const button = document.querySelector<HTMLElement>("button");
+    expect(button).not.toBeNull();
+
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Element");
+    delete (globalThis as Record<string, unknown>).Element;
+
+    try {
+      expect(findRememberableChoiceTarget(button)).toBe(button);
+      expect(readChoiceAnswerForMemory(button as HTMLElement)).toEqual({
+        question: "Are you legally authorized to work in the United States?",
+        value: "Yes",
+      });
+    } finally {
+      if (descriptor) {
+        Object.defineProperty(globalThis, "Element", descriptor);
+      }
+    }
+  });
 });

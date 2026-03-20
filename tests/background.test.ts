@@ -223,6 +223,40 @@ describe("background spawn quota handling", () => {
     expect(createTabMock).not.toHaveBeenCalled();
   });
 
+  it("reports hard failures for broken external application targets before navigation", async () => {
+    const chromeMock = createBackgroundChrome({}, vi.fn());
+
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: vi.fn().mockResolvedValue({
+        status: 404,
+        headers: {
+          get: vi.fn().mockReturnValue("text/html"),
+        },
+        url: "https://company.example.com/careers/page-not-found",
+        text: vi.fn().mockResolvedValue("Page not found"),
+      }),
+    });
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "probe-application-target",
+        url: "https://company.example.com/careers/apply",
+      },
+      {}
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      reachable: false,
+      reason: "not_found",
+    });
+  });
+
   it("claims only the remaining configured number of job openings for a run", async () => {
     const runId = "run-claim-capped";
     const senderTabId = 42;

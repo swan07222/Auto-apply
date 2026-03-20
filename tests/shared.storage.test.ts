@@ -61,6 +61,11 @@ describe("shared storage and profile helpers", () => {
     expect(
       parseSearchKeywords("  frontend engineer,\nbackend engineer\r\nfrontend engineer  ")
     ).toEqual(["frontend engineer", "backend engineer"]);
+    expect(
+      parseSearchKeywords(
+        "Software Engineer\n software engineer \nsoftware-engineer\nPlatform Engineer"
+      )
+    ).toEqual(["Software Engineer", "Platform Engineer"]);
     expect(hasConfiguredSearchKeywords("   \n  ,")).toBe(false);
     expect(hasConfiguredSearchKeywords("platform engineer")).toBe(true);
   });

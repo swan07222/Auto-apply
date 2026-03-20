@@ -5,6 +5,7 @@ import { SiteKey } from "../shared";
 import { ApplyAction, ProgressionAction } from "./types";
 import { cleanText } from "./text";
 import {
+  collectDeepMatches,
   getActionText,
   getClickableApplyElement,
   getNavigationUrl,
@@ -70,39 +71,6 @@ const COMPANY_SITE_GATE_TOKENS = [
 
 const KNOWN_BROKEN_APPLY_HOSTS = ["apply.monster.com"];
 
-function collectDeepMatches<T extends HTMLElement>(
-  selector: string
-): T[] {
-  const results: T[] = [];
-  const seen = new Set<Element>();
-  const roots: Array<Document | ShadowRoot> = [document];
-
-  while (roots.length > 0) {
-    const root = roots.shift()!;
-
-    try {
-      for (const element of Array.from(root.querySelectorAll<T>(selector))) {
-        if (seen.has(element)) {
-          continue;
-        }
-
-        seen.add(element);
-        results.push(element);
-      }
-    } catch {
-      continue;
-    }
-
-    for (const host of Array.from(root.querySelectorAll<HTMLElement>("*"))) {
-      if (host.shadowRoot) {
-        roots.push(host.shadowRoot);
-      }
-    }
-  }
-
-  return results;
-}
-
 function collectDeepMatchesFromSelectors(
   selectors: string[]
 ): HTMLElement[] {
@@ -142,6 +110,14 @@ function isLikelyInformationalPageUrl(url: string | null | undefined): boolean {
   }
 
   const lower = url.toLowerCase();
+  if (
+    ["/404", "not-found", "page-not-found", "/unavailable", "/error"].some(
+      (token) => lower.includes(token)
+    )
+  ) {
+    return true;
+  }
+
   const hasApplyCue =
     /apply|application|candidate|jobapply|zipapply|indeedapply|easyapply|career|careers|opening|openings|position|positions|jobs?\//.test(
       lower
@@ -284,6 +260,11 @@ export function findCompanySiteAction(): ApplyAction | null {
         "create account",
         "job alert",
         "subscribe",
+        "terms of service",
+        "terms and conditions",
+        "privacy policy",
+        "cookie policy",
+        "legal notice",
       ].some((blocked) => lower.includes(blocked))
     ) {
       continue;
@@ -1700,6 +1681,11 @@ function scoreApplyElement(
     "learn more",
     "dismiss",
     "close",
+    "terms of service",
+    "terms and conditions",
+    "privacy policy",
+    "cookie policy",
+    "legal notice",
   ];
   if (blocked.some((value) => lower.includes(value))) {
     return -1;

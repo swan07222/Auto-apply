@@ -5,6 +5,7 @@ import {
   SiteKey,
   getJobDedupKey,
   getSiteLabel,
+  isJobBoardSite,
   sleep,
 } from "../shared";
 import {
@@ -62,6 +63,23 @@ export async function scrollPageForLazyContent(): Promise<void> {
 
   window.scrollTo({ top: 0, behavior: "smooth" });
   await waitForDomSettle(700, 250);
+}
+
+export function getJobResultCollectionTargetCount(
+  site: SiteKey,
+  jobPageLimit: number
+): number {
+  const normalizedLimit = Math.max(1, Math.floor(jobPageLimit));
+
+  if (site === "startup" || site === "other_sites") {
+    return Math.max(30, normalizedLimit * 6);
+  }
+
+  if (isJobBoardSite(site)) {
+    return Math.max(25, normalizedLimit * 4);
+  }
+
+  return normalizedLimit;
 }
 
 export async function waitForJobDetailUrls({

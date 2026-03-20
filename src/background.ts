@@ -5,6 +5,7 @@ import {
   AutomationSession,
   AutomationStage,
   AutomationStatus,
+  BrokenPageReason,
   SEARCH_OPEN_DELAY_MS,
   SearchTarget,
   SiteKey,
@@ -59,12 +60,15 @@ type BackgroundRequest =
       profileId?: SpawnTabRequest["profileId"];
       completionKind?: ManagedSessionCompletionKind;
     }
+  | { type: "probe-application-target"; url: string }
   | { type: "close-current-tab" };
 
 type ManagedSessionCompletionKind =
   | "successful"
   | "released"
   | "handoff";
+
+type ProbedTargetFailureReason = BrokenPageReason | "unreachable";
 
 type AutomationRunState = {
   id: string;
@@ -288,6 +292,9 @@ async function handleMessage(
 
     case "finalize-session":
       return updateSessionFromMessage(message, sender, true);
+
+    case "probe-application-target":
+      return probeApplicationTargetUrl(message.url);
 
     case "spawn-tabs": {
       const currentTab = sender.tab;
@@ -971,17 +978,28 @@ async function filterReachableSearchTargets(
     .map((result) => result.target);
 }
 
-async function probeSearchTarget(target: SearchTarget): Promise<{
-  target: SearchTarget;
+async function probeApplicationTargetUrl(url: string): Promise<{
   ok: boolean;
-  hardFailure: boolean;
+  reachable: boolean;
+  reason?: ProbedTargetFailureReason;
 }> {
+  const result = await probeUrlForHardFailure(url);
+  return {
+    ok: true,
+    reachable: !result.reason,
+    reason: result.reason ?? undefined,
+  };
+}
+
+async function probeUrlForHardFailure(
+  url: string
+): Promise<{ reason: ProbedTargetFailureReason | null }> {
   const timeout = 8_000;
   const controller = new AbortController();
   const timeoutId = globalThis.setTimeout(() => controller.abort(), timeout);
 
   try {
-    const response = await fetch(target.url, {
+    const response = await fetch(url, {
       cache: "no-store",
       redirect: "follow",
       signal: controller.signal,
@@ -989,25 +1007,25 @@ async function probeSearchTarget(target: SearchTarget): Promise<{
 
     if (
       response.status === 401 ||
-      response.status === 403 ||
-      response.status === 404 ||
-      response.status === 410 ||
-      response.status >= 500
+      response.status === 403
     ) {
-      return {
-        target,
-        ok: false,
-        hardFailure: true,
-      };
+      return { reason: "access_denied" };
+    }
+
+    if (
+      response.status === 404 ||
+      response.status === 410
+    ) {
+      return { reason: "not_found" };
+    }
+
+    if (response.status >= 500) {
+      return { reason: "bad_gateway" };
     }
 
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
     if (contentType && !contentType.includes("text/html")) {
-      return {
-        target,
-        ok: false,
-        hardFailure: true,
-      };
+      return { reason: "unreachable" };
     }
 
     const finalUrl = response.url.toLowerCase();
@@ -1016,61 +1034,73 @@ async function probeSearchTarget(target: SearchTarget): Promise<{
         finalUrl.includes(token)
       )
     ) {
-      return {
-        target,
-        ok: false,
-        hardFailure: true,
-      };
+      return { reason: "not_found" };
     }
 
-    const bodyText = (await response.text()).toLowerCase().replace(/\s+/g, " ").slice(0, 2500);
+    const bodyText = (await response.text()).toLowerCase().replace(/\s+/g, " ").slice(0, 3000);
+    if (bodyText.includes("access denied") || bodyText.includes("accessdenied")) {
+      return { reason: "access_denied" };
+    }
+
+    if (
+      bodyText.includes("bad gateway") ||
+      bodyText.includes("error reference number: 502") ||
+      bodyText.includes("web server reported a bad gateway error")
+    ) {
+      return { reason: "bad_gateway" };
+    }
+
     if (
       [
         "page not found",
         "this page does not exist",
         "this page doesn t exist",
+        "the page you were looking for does not exist",
+        "the page you were looking for doesn't exist",
+        "the page you requested could not be found",
+        "requested page could not be found",
         "temporarily unavailable",
         "service unavailable",
-        "access denied",
       ].some((token) => bodyText.includes(token))
     ) {
-      return {
-        target,
-        ok: false,
-        hardFailure: true,
-      };
+      return { reason: "not_found" };
     }
 
-    return {
-      target,
-      ok: true,
-      hardFailure: false,
-    };
+    return { reason: null };
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      return {
-        target,
-        ok: true,
-        hardFailure: false,
-      };
+      return { reason: null };
     }
 
     if (isHardSearchTargetProbeError(error)) {
-      return {
-        target,
-        ok: false,
-        hardFailure: true,
-      };
+      return { reason: "unreachable" };
     }
 
+    return { reason: null };
+  } finally {
+    globalThis.clearTimeout(timeoutId);
+  }
+}
+
+async function probeSearchTarget(target: SearchTarget): Promise<{
+  target: SearchTarget;
+  ok: boolean;
+  hardFailure: boolean;
+}> {
+  const result = await probeUrlForHardFailure(target.url);
+  if (!result.reason) {
     return {
       target,
       ok: true,
       hardFailure: false,
     };
-  } finally {
-    globalThis.clearTimeout(timeoutId);
   }
+
+  return {
+    target,
+    ok: false,
+    hardFailure: true,
+  };
 }
 
 function isHardSearchTargetProbeError(error: unknown): boolean {

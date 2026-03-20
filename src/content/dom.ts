@@ -16,6 +16,42 @@ export function getActionText(el: HTMLElement): string {
   );
 }
 
+export function collectDeepMatches<T extends Element>(
+  selector: string
+): T[] {
+  const results: T[] = [];
+  const seen = new Set<Element>();
+  const roots: Array<Document | ShadowRoot> = [document];
+
+  while (roots.length > 0) {
+    const root = roots.shift();
+    if (!root) {
+      continue;
+    }
+
+    try {
+      for (const element of Array.from(root.querySelectorAll<T>(selector))) {
+        if (seen.has(element)) {
+          continue;
+        }
+
+        seen.add(element);
+        results.push(element);
+      }
+    } catch {
+      continue;
+    }
+
+    for (const host of Array.from(root.querySelectorAll<HTMLElement>("*"))) {
+      if (host.shadowRoot) {
+        roots.push(host.shadowRoot);
+      }
+    }
+  }
+
+  return results;
+}
+
 export function getClickableApplyElement(el: HTMLElement): HTMLElement {
   // FIX: Check shadow DOM first
   if (el.shadowRoot) {
@@ -437,48 +473,6 @@ export function performClickAction(element: HTMLElement): void {
       // Ignore keyboard dispatch issues
     }
   }
-}
-
-// FIX: Add helper to scroll element into view
-export function scrollElementIntoView(element: HTMLElement): void {
-  try {
-    element.scrollIntoView({
-      behavior: "smooth",
-      block: "center",
-      inline: "nearest",
-    });
-  } catch {
-    // Fallback to basic scroll
-    try {
-      element.scrollIntoView(true);
-    } catch {
-      // Ignore scroll errors
-    }
-  }
-}
-
-// FIX: Add helper to wait for element to appear
-export async function waitForElement<T extends HTMLElement>(
-  selector: string,
-  timeoutMs: number = 5000
-): Promise<T | null> {
-  const startTime = Date.now();
-
-  while (Date.now() - startTime < timeoutMs) {
-    try {
-      const element = document.querySelector<T>(selector);
-      if (element && isElementVisible(element)) {
-        return element;
-      }
-    } catch {
-      // Invalid selector
-      return null;
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-
-  return null;
 }
 
 // FIX: Add helper to check if element is interactive

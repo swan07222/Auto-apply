@@ -26,33 +26,3 @@ export interface AutofillResult {
   usedProfileAnswers: number;
   uploadedResume: ResumeAsset | null;
 }
-
-// FIX: Add type for form field descriptor
-export interface FieldDescriptor {
-  question: string;
-  type: string;
-  name: string;
-  id: string;
-  placeholder: string;
-  autocomplete: string;
-  ariaLabel: string;
-  required: boolean;
-}
-
-// FIX: Add type for job page context
-export interface JobPageContext {
-  title: string;
-  company: string;
-  location: string;
-  description: string;
-  url: string;
-  site: string;
-}
-
-// FIX: Add type for autofill match
-export interface AutofillMatch {
-  field: AutofillField;
-  value: string;
-  source: "profile" | "saved" | "inferred";
-  confidence: number;
-}

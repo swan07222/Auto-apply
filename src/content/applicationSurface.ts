@@ -376,7 +376,9 @@ export function isLikelyApplicationField(field: AutofillField): boolean {
 }
 
 export function hasLikelyApplicationPageContent(): boolean {
-  const bodyText = cleanText(document.body?.innerText || "")
+  const bodyText = cleanText(
+    document.body?.innerText || document.body?.textContent || ""
+  )
     .toLowerCase()
     .slice(0, 5000);
   if (!bodyText) {
@@ -395,6 +397,9 @@ export function hasLikelyApplicationPageContent(): boolean {
     "submit your application",
     "start my application",
     "you re on your way to apply",
+    "please review your application",
+    "review your application",
+    "review before submitting",
   ];
 
   if (strongSignals.some((token) => bodyText.includes(token))) {

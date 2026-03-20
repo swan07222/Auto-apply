@@ -13,6 +13,7 @@ import {
 import {
   collectJobDetailCandidates,
   collectMonsterEmbeddedCandidates,
+  isLikelyJobDetailUrl,
   pickRelevantJobUrls,
 } from "../src/content/jobSearch";
 import {
@@ -529,63 +530,81 @@ async function navigateAndCollect(
 
   let followedCareerSurface = false;
   const maxAttempts = allowCareerSurfaceDiscovery ? 3 : 1;
+  try {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const snapshot = await snapshotCurrentPage(page);
+      const candidateUrls = extractCandidateUrlsFromHtml(
+        snapshot.html,
+        snapshot.url,
+        site
+      );
+      const fallbackCandidateUrls =
+        site === "monster" && candidateUrls.length === 0
+          ? await extractMonsterPageCandidateUrls(page)
+          : candidateUrls;
+      const verificationDetected = detectVerificationFromHtml(
+        snapshot.html,
+        snapshot.url
+      );
+      const isDirectJobDetail =
+        allowCareerSurfaceDiscovery &&
+        (site === "startup" || site === "other_sites") &&
+        isLikelyJobDetailUrl(site, snapshot.url, snapshot.title, snapshot.bodyText);
 
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (
+        fallbackCandidateUrls.length > 0 ||
+        isDirectJobDetail ||
+        verificationDetected ||
+        !allowCareerSurfaceDiscovery
+      ) {
+        return {
+          title: snapshot.title,
+          finalUrl: snapshot.url,
+          bodySnippet: snapshot.bodyText,
+          candidateUrls: isDirectJobDetail ? [snapshot.url] : fallbackCandidateUrls,
+          verificationDetected,
+          followedCareerSurface,
+        };
+      }
+
+      const openedCareerSurface = await tryOpenCareerSurface(page);
+      if (!openedCareerSurface) {
+        return {
+          title: snapshot.title,
+          finalUrl: snapshot.url,
+          bodySnippet: snapshot.bodyText,
+          candidateUrls: fallbackCandidateUrls,
+          verificationDetected,
+          followedCareerSurface,
+        };
+      }
+
+      followedCareerSurface = true;
+      await settlePage(page);
+    }
+
     const snapshot = await snapshotCurrentPage(page);
-    const candidateUrls = extractCandidateUrlsFromHtml(
-      snapshot.html,
-      snapshot.url,
-      site
-    );
-    const fallbackCandidateUrls =
-      site === "monster" && candidateUrls.length === 0
-        ? await extractMonsterPageCandidateUrls(page)
-        : candidateUrls;
-    const verificationDetected = detectVerificationFromHtml(
-      snapshot.html,
-      snapshot.url
-    );
-
-    if (
-      fallbackCandidateUrls.length > 0 ||
-      verificationDetected ||
-      !allowCareerSurfaceDiscovery
-    ) {
-      return {
-        title: snapshot.title,
-        finalUrl: snapshot.url,
-        bodySnippet: snapshot.bodyText,
-        candidateUrls: fallbackCandidateUrls,
-        verificationDetected,
-        followedCareerSurface,
-      };
-    }
-
-    const openedCareerSurface = await tryOpenCareerSurface(page);
-    if (!openedCareerSurface) {
-      return {
-        title: snapshot.title,
-        finalUrl: snapshot.url,
-        bodySnippet: snapshot.bodyText,
-        candidateUrls: fallbackCandidateUrls,
-        verificationDetected,
-        followedCareerSurface,
-      };
-    }
-
-    followedCareerSurface = true;
-    await settlePage(page);
+    return {
+      title: snapshot.title,
+      finalUrl: snapshot.url,
+      bodySnippet: snapshot.bodyText,
+      candidateUrls: extractCandidateUrlsFromHtml(snapshot.html, snapshot.url, site),
+      verificationDetected: detectVerificationFromHtml(snapshot.html, snapshot.url),
+      followedCareerSurface,
+    };
+  } catch (error) {
+    const currentUrl =
+      typeof page.url === "function" && !page.isClosed() ? page.url() : target.url;
+    return {
+      title: "",
+      finalUrl: currentUrl,
+      bodySnippet: "",
+      candidateUrls: [],
+      verificationDetected: false,
+      followedCareerSurface,
+      navigationError: error instanceof Error ? error.message : String(error),
+    };
   }
-
-  const snapshot = await snapshotCurrentPage(page);
-  return {
-    title: snapshot.title,
-    finalUrl: snapshot.url,
-    bodySnippet: snapshot.bodyText,
-    candidateUrls: extractCandidateUrlsFromHtml(snapshot.html, snapshot.url, site),
-    verificationDetected: detectVerificationFromHtml(snapshot.html, snapshot.url),
-    followedCareerSurface,
-  };
 }
 
 function describeProbeFailure(target: SearchTarget, probe: ProbeResult): string {

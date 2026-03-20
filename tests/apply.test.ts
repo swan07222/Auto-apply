@@ -194,6 +194,29 @@ describe("application progression actions", () => {
     expect(findApplyAction("indeed", "job-page")).toBeNull();
   });
 
+  it("ignores legal or terms links even when their URLs look like Indeed tracking links", () => {
+    document.body.innerHTML = `
+      <main>
+        <a href="https://www.indeed.com/pagead/clk?jk=alpha123&url=https%3A%2F%2Fwww.indeed.com%2Flegal">
+          Terms of Service
+        </a>
+      </main>
+    `;
+
+    expect(findApplyAction("indeed", "job-page")).toBeNull();
+  });
+
+  it("ignores company-site actions that already point to not-found or error pages", () => {
+    document.body.innerHTML = `
+      <section>
+        <p>You will be redirected to the company website to apply.</p>
+        <a href="https://company.example.com/careers/page-not-found">Apply on company site</a>
+      </section>
+    `;
+
+    expect(findCompanySiteAction()).toBeNull();
+  });
+
   it("extracts Monster apply URLs from custom web components", () => {
     document.body.innerHTML = `
       <apply-button-wc
