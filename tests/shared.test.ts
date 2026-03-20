@@ -455,6 +455,28 @@ describe("shared automation target logic", () => {
     expect(isProbablyHumanVerificationPage(document)).toBe(false);
   });
 
+  it("does not treat Indeed relevant-experience steps with embedded captcha markers as verification", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/beta/indeedapply/form/resume-module/relevant-experience"
+    );
+    document.title = "Indeed Apply";
+    document.body.innerHTML = `
+      <main>
+        <button type="button">Save and Close</button>
+        <h1>Enter a job that shows relevant experience</h1>
+        <p>We share one job title with the employer to introduce you as a candidate.</p>
+        <label>Job title <input type="text" /></label>
+        <label>Company <input type="text" /></label>
+        <button type="button">Continue</button>
+        <div data-sitekey="test-key"></div>
+      </main>
+    `;
+
+    expect(isProbablyHumanVerificationPage(document)).toBe(false);
+  });
+
   it("sanitizes automation settings and stored answers", () => {
     const settings = sanitizeAutomationSettings({
       jobPageLimit: 999,

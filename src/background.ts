@@ -318,11 +318,20 @@ async function handleMessage(
 
       // FIX: Deduplicate items before opening — uses getSpawnDedupKey to preserve query params
       itemsToOpen = deduplicateSpawnItems(itemsToOpen);
+      const {
+        items: filteredItemsToOpen,
+        skippedItems: skippedAlreadyOpenItems,
+      } = await filterAlreadyOpenManagedSpawnItems(itemsToOpen);
+      itemsToOpen = filteredItemsToOpen;
+
+      if (skippedAlreadyOpenItems.length > 0) {
+        await releaseJobOpeningsForItems(skippedAlreadyOpenItems);
+      }
 
       if (itemsToOpen.length === 0) {
         return {
-          ok: false,
-          error: "No tabs were available to open.",
+          ok: true,
+          opened: 0,
         };
       }
 
@@ -381,8 +390,10 @@ async function handleMessage(
           );
           session.jobSlots = item.jobSlots;
           if (item.runId && isManagedJobStage(item.stage)) {
-            session.claimedJobKey = getJobDedupKey(item.url) || undefined;
+            session.claimedJobKey =
+              item.claimedJobKey || getJobDedupKey(item.url) || undefined;
           }
+          session.openedUrlKey = getSpawnDedupKey(item.url) || undefined;
 
           await setSession(session);
 
@@ -582,6 +593,7 @@ async function attachSessionToSiteOpenedChildTab(
 
   childSession.jobSlots = openerSession.jobSlots;
   childSession.claimedJobKey = openerSession.claimedJobKey;
+  childSession.openedUrlKey = openerSession.openedUrlKey;
 
   await setSession(childSession);
 
@@ -1365,7 +1377,7 @@ async function releaseJobOpeningsForItems(
 
   for (const item of items) {
     const runId = item.runId?.trim();
-    const key = getJobDedupKey(item.url);
+    const key = item.claimedJobKey?.trim() || getJobDedupKey(item.url);
 
     if (!runId || !key) {
       continue;
@@ -1938,6 +1950,52 @@ function deduplicateSpawnItems(items: SpawnTabRequest[]): SpawnTabRequest[] {
   }
 
   return result;
+}
+
+async function filterAlreadyOpenManagedSpawnItems(
+  items: SpawnTabRequest[]
+): Promise<{ items: SpawnTabRequest[]; skippedItems: SpawnTabRequest[] }> {
+  const existingUrlKeysByRunId = new Map<string, Set<string>>();
+  const filtered: SpawnTabRequest[] = [];
+  const skippedItems: SpawnTabRequest[] = [];
+
+  for (const item of items) {
+    if (!item.runId || !isManagedJobStage(item.stage)) {
+      filtered.push(item);
+      continue;
+    }
+
+    const urlKey = getSpawnDedupKey(item.url);
+    if (!urlKey) {
+      filtered.push(item);
+      continue;
+    }
+
+    let existingUrlKeys = existingUrlKeysByRunId.get(item.runId);
+    if (!existingUrlKeys) {
+      const existingSessions = await listSessionsForRunId(item.runId);
+      existingUrlKeys = new Set(
+        existingSessions
+          .filter((session) => session.phase !== "error")
+          .map((session) => session.openedUrlKey || "")
+          .filter(Boolean)
+      );
+      existingUrlKeysByRunId.set(item.runId, existingUrlKeys);
+    }
+
+    if (existingUrlKeys.has(urlKey)) {
+      skippedItems.push(item);
+      continue;
+    }
+
+    existingUrlKeys.add(urlKey);
+    filtered.push(item);
+  }
+
+  return {
+    items: filtered,
+    skippedItems,
+  };
 }
 
 type BackgroundSourceTab = chrome.tabs.Tab & { pendingUrl?: string };

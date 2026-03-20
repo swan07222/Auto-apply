@@ -712,6 +712,41 @@ describe("job search candidate filtering", () => {
     ]);
   });
 
+  it("does not collect Dice cards that are already applied", () => {
+    document.body.innerHTML = `
+      <ul aria-label="Job search results">
+        <li>
+          <div class="card-shell">
+            <a
+              data-testid="job-search-job-detail-link"
+              href="https://www.dice.com/job-detail/applied-1"
+            >
+              Senior Software Engineer
+            </a>
+            <p>Remote</p>
+            <p>Application submitted. You applied 2 days ago.</p>
+          </div>
+        </li>
+        <li>
+          <div class="card-shell">
+            <a
+              data-testid="job-search-job-detail-link"
+              href="https://www.dice.com/job-detail/fresh-2"
+            >
+              Staff Platform Engineer
+            </a>
+            <p>Remote</p>
+            <p>Posted today</p>
+          </div>
+        </li>
+      </ul>
+    `;
+
+    expect(pickRelevantJobUrls(collectJobDetailCandidates("dice"), "dice")).toEqual([
+      "https://www.dice.com/job-detail/fresh-2",
+    ]);
+  });
+
   it("collects ATS-backed startup roles and ignores listing CTAs", () => {
     document.body.innerHTML = `
       <section class="careers">

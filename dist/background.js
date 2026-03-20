@@ -868,10 +868,18 @@
           itemsToOpen = capJobOpeningItems(itemsToOpen, cap);
         }
         itemsToOpen = deduplicateSpawnItems(itemsToOpen);
+        const {
+          items: filteredItemsToOpen,
+          skippedItems: skippedAlreadyOpenItems
+        } = await filterAlreadyOpenManagedSpawnItems(itemsToOpen);
+        itemsToOpen = filteredItemsToOpen;
+        if (skippedAlreadyOpenItems.length > 0) {
+          await releaseJobOpeningsForItems(skippedAlreadyOpenItems);
+        }
         if (itemsToOpen.length === 0) {
           return {
-            ok: false,
-            error: "No tabs were available to open."
+            ok: true,
+            opened: 0
           };
         }
         const baseIndex = currentTab.index ?? 0;
@@ -919,8 +927,9 @@
             );
             session.jobSlots = item.jobSlots;
             if (item.runId && isManagedJobStage(item.stage)) {
-              session.claimedJobKey = getJobDedupKey(item.url) || void 0;
+              session.claimedJobKey = item.claimedJobKey || getJobDedupKey(item.url) || void 0;
             }
+            session.openedUrlKey = getSpawnDedupKey(item.url) || void 0;
             await setSession(session);
             if (shouldQueue && item.runId) {
               queuedRunIds.add(item.runId);
@@ -1053,6 +1062,7 @@
     );
     childSession.jobSlots = openerSession.jobSlots;
     childSession.claimedJobKey = openerSession.claimedJobKey;
+    childSession.openedUrlKey = openerSession.openedUrlKey;
     await setSession(childSession);
     try {
       await chrome.tabs.sendMessage(openerTabId, {
@@ -1626,7 +1636,7 @@
     const grouped = /* @__PURE__ */ new Map();
     for (const item of items) {
       const runId = item.runId?.trim();
-      const key = getJobDedupKey(item.url);
+      const key = item.claimedJobKey?.trim() || getJobDedupKey(item.url);
       if (!runId || !key) {
         continue;
       }
@@ -2006,6 +2016,40 @@
       result.push({ ...item });
     }
     return result;
+  }
+  async function filterAlreadyOpenManagedSpawnItems(items) {
+    const existingUrlKeysByRunId = /* @__PURE__ */ new Map();
+    const filtered = [];
+    const skippedItems = [];
+    for (const item of items) {
+      if (!item.runId || !isManagedJobStage(item.stage)) {
+        filtered.push(item);
+        continue;
+      }
+      const urlKey = getSpawnDedupKey(item.url);
+      if (!urlKey) {
+        filtered.push(item);
+        continue;
+      }
+      let existingUrlKeys = existingUrlKeysByRunId.get(item.runId);
+      if (!existingUrlKeys) {
+        const existingSessions = await listSessionsForRunId(item.runId);
+        existingUrlKeys = new Set(
+          existingSessions.filter((session) => session.phase !== "error").map((session) => session.openedUrlKey || "").filter(Boolean)
+        );
+        existingUrlKeysByRunId.set(item.runId, existingUrlKeys);
+      }
+      if (existingUrlKeys.has(urlKey)) {
+        skippedItems.push(item);
+        continue;
+      }
+      existingUrlKeys.add(urlKey);
+      filtered.push(item);
+    }
+    return {
+      items: filtered,
+      skippedItems
+    };
   }
   async function getTabSafely(tabId) {
     try {

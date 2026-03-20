@@ -388,6 +388,87 @@ export function findCompanySiteAction(): ApplyAction | null {
   };
 }
 
+type ScoredApplyCandidate = {
+  element: HTMLElement;
+  score: number;
+  text: string;
+  url: string | null;
+};
+
+function isCompanySiteActionText(text: string): boolean {
+  const lower = text.toLowerCase();
+  return (
+    lower.includes("company site") ||
+    lower.includes("company website") ||
+    lower.includes("employer site") ||
+    lower.includes("employer website") ||
+    lower.includes("continue to company") ||
+    lower.includes("continue to employer") ||
+    lower.includes("visit company") ||
+    lower.includes("visit employer") ||
+    lower.includes("go to company") ||
+    lower.includes("go to employer") ||
+    lower.includes("apply on company") ||
+    lower.includes("apply on employer") ||
+    lower.includes("apply externally") ||
+    lower.includes("apply directly") ||
+    lower.includes("apply on external") ||
+    lower.includes("apply through")
+  );
+}
+
+function isDirectApplyActionCandidate(text: string, url: string | null): boolean {
+  const lower = text.toLowerCase().trim();
+  if (!lower || isCompanySiteActionText(lower)) {
+    return false;
+  }
+
+  if (
+    lower === "apply now" ||
+    lower === "apply" ||
+    lower === "easy apply" ||
+    lower === "quick apply" ||
+    lower === "indeed apply" ||
+    lower === "1-click apply" ||
+    lower === "1 click apply" ||
+    lower.includes("start application") ||
+    lower.includes("begin application") ||
+    lower.includes("apply for this") ||
+    lower.includes("apply to this") ||
+    lower.includes("continue application")
+  ) {
+    return true;
+  }
+
+  const lowerUrl = url?.toLowerCase() ?? "";
+  return (
+    Boolean(lowerUrl) &&
+    !isExternalUrl(url || "") &&
+    /smartapply\.indeed\.com|indeedapply|zipapply|easyapply|easy-apply|\/apply\/|candidateexperience|jobapply|job_app/.test(
+      lowerUrl
+    )
+  );
+}
+
+function choosePreferredJobPageAction(
+  best: ScoredApplyCandidate | undefined,
+  bestDirect: ScoredApplyCandidate | undefined
+): ScoredApplyCandidate | undefined {
+  if (!best) {
+    return bestDirect;
+  }
+
+  if (
+    bestDirect &&
+    isCompanySiteActionText(best.text) &&
+    bestDirect.score >= 45
+  ) {
+    return bestDirect;
+  }
+
+  return best;
+}
+
 export function findMonsterApplyAction(): ApplyAction | null {
   const elements = collectDeepMatchesFromSelectors(getApplyCandidateSelectors("monster"));
   let best:
@@ -398,6 +479,7 @@ export function findMonsterApplyAction(): ApplyAction | null {
         text: string;
       }
     | undefined;
+  let bestDirect: ScoredApplyCandidate | undefined;
 
   for (const element of elements) {
     const actionElement = getClickableApplyElement(element);
@@ -421,7 +503,20 @@ export function findMonsterApplyAction(): ApplyAction | null {
         text,
       };
     }
+    if (
+      isDirectApplyActionCandidate(text, url) &&
+      (!bestDirect || score > bestDirect.score)
+    ) {
+      bestDirect = {
+        element: actionElement,
+        score,
+        url,
+        text,
+      };
+    }
   }
+
+  best = choosePreferredJobPageAction(best, bestDirect);
 
   if (!best) {
     const extractedUrl = findExternalApplyUrlInDocument();
@@ -580,6 +675,7 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
         url: string | null;
       }
     | undefined;
+  let bestDirect: ScoredApplyCandidate | undefined;
 
   for (const element of collectDeepMatchesFromSelectors(selectors)) {
     const actionElement = getClickableApplyElement(element);
@@ -644,6 +740,12 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
     if (!best || score > best.score) {
       best = { element: actionElement, score, text, url };
     }
+    if (
+      isDirectApplyActionCandidate(text, url) &&
+      (!bestDirect || score > bestDirect.score)
+    ) {
+      bestDirect = { element: actionElement, score, text, url };
+    }
   }
 
   if (!best) {
@@ -694,8 +796,16 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
       if (!best || score > best.score) {
         best = { element: actionElement, score, text, url };
       }
+      if (
+        isDirectApplyActionCandidate(text, url) &&
+        (!bestDirect || score > bestDirect.score)
+      ) {
+        bestDirect = { element: actionElement, score, text, url };
+      }
     }
   }
+
+  best = choosePreferredJobPageAction(best, bestDirect);
 
   if (!best) {
     return null;
@@ -743,6 +853,7 @@ export function findGlassdoorApplyAction(): ApplyAction | null {
         url: string | null;
       }
     | undefined;
+  let bestDirect: ScoredApplyCandidate | undefined;
 
   for (const element of collectDeepMatchesFromSelectors(selectors)) {
     const actionElement = getClickableApplyElement(element);
@@ -804,7 +915,15 @@ export function findGlassdoorApplyAction(): ApplyAction | null {
     if (!best || score > best.score) {
       best = { element: actionElement, score, text, url };
     }
+    if (
+      isDirectApplyActionCandidate(text, url) &&
+      (!bestDirect || score > bestDirect.score)
+    ) {
+      bestDirect = { element: actionElement, score, text, url };
+    }
   }
+
+  best = choosePreferredJobPageAction(best, bestDirect);
 
   if (!best) {
     return null;
@@ -1407,6 +1526,7 @@ export function findApplyAction(
         text: string;
       }
     | undefined;
+  let bestDirect: ScoredApplyCandidate | undefined;
 
   for (const element of elements) {
     const actionElement = getClickableApplyElement(element);
@@ -1421,6 +1541,17 @@ export function findApplyAction(
     if (!best || score > best.score) {
       best = { element: actionElement, score, url, text };
     }
+    if (
+      context === "job-page" &&
+      isDirectApplyActionCandidate(text, url) &&
+      (!bestDirect || score > bestDirect.score)
+    ) {
+      bestDirect = { element: actionElement, score, url, text };
+    }
+  }
+
+  if (context === "job-page") {
+    best = choosePreferredJobPageAction(best, bestDirect);
   }
 
   if (!best) {

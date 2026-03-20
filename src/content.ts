@@ -184,6 +184,7 @@ let currentLabel: string | undefined;
 let currentResumeKind: ResumeKind | undefined;
 let currentProfileId: string | undefined;
 let currentRunId: string | undefined;
+let currentClaimedJobKey: string | undefined;
 let currentJobSlots: number | undefined;
 let activeRun: Promise<void> | null = null;
 let answerFlushPromise: Promise<void> = Promise.resolve();
@@ -391,18 +392,30 @@ async function openApplicationTargetInNewTab(
     return;
   }
 
-  await spawnTabs([
+  const response = await spawnTabs([
     {
       url,
       site,
       stage: "open-apply" as const,
       runId: currentRunId,
+      claimedJobKey: resolveCurrentClaimedJobKey(),
       label: currentLabel,
       resumeKind: currentResumeKind,
       profileId: currentProfileId,
       message: `Continuing application from ${description}...`,
     },
   ]);
+
+  if (response.opened <= 0) {
+    updateStatus(
+      "completed",
+      `${description} is already open in another tab. Keeping this job page open.`,
+      false,
+      "autofill-form",
+      "handoff"
+    );
+    return;
+  }
 
   updateStatus(
     "completed",
@@ -411,6 +424,10 @@ async function openApplicationTargetInNewTab(
     "autofill-form",
     "handoff"
   );
+}
+
+function resolveCurrentClaimedJobKey(): string | undefined {
+  return currentClaimedJobKey || getJobDedupKey(window.location.href) || undefined;
 }
 
 function describeBrokenApplicationTarget(
@@ -540,6 +557,7 @@ chrome.runtime.onMessage.addListener(
         currentResumeKind = message.session.resumeKind;
         currentProfileId = message.session.profileId;
         currentRunId = message.session.runId;
+        currentClaimedJobKey = message.session.claimedJobKey;
         currentJobSlots = message.session.jobSlots;
         renderOverlay();
       } else {
@@ -548,6 +566,7 @@ chrome.runtime.onMessage.addListener(
         currentResumeKind = undefined;
         currentProfileId = undefined;
         currentRunId = undefined;
+        currentClaimedJobKey = undefined;
         currentJobSlots = undefined;
       }
 
@@ -628,6 +647,7 @@ async function resumeAutomationIfNeeded(): Promise<void> {
       currentResumeKind = s.resumeKind;
       currentProfileId = s.profileId;
       currentRunId = s.runId;
+      currentClaimedJobKey = s.claimedJobKey;
       currentJobSlots = s.jobSlots;
       renderOverlay();
 
@@ -1093,10 +1113,10 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       if (action) break;
     }
 
-    action = findCompanySiteAction();
+    action = findApplyAction(site, "job-page");
     if (action) break;
 
-    action = findApplyAction(site, "job-page");
+    action = findCompanySiteAction();
     if (action) break;
 
     if (hasLikelyApplicationForm()) {
@@ -1228,18 +1248,29 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
           return;
         }
 
-        await spawnTabs([
+        const response = await spawnTabs([
           {
             url: href,
             site,
             stage: "open-apply" as const,
             runId: currentRunId,
+            claimedJobKey: resolveCurrentClaimedJobKey(),
             label: currentLabel,
             resumeKind: currentResumeKind,
             profileId: currentProfileId,
             message: `Continuing application from ${action.description}...`,
           },
         ]);
+        if (response.opened <= 0) {
+          updateStatus(
+            "completed",
+            "Apply page is already open in another tab.",
+            false,
+            "autofill-form",
+            "handoff"
+          );
+          return;
+        }
         updateStatus(
           "completed",
           `Opened apply page in new tab.`,
@@ -1397,37 +1428,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
   if (childApplicationTabOpened) return;
 
-  const retryCompanyAction = findCompanySiteAction();
-  if (retryCompanyAction) {
-    updateStatus(
-      "running",
-      `Retrying: navigating to ${retryCompanyAction.description}...`,
-      true,
-      "open-apply"
-    );
-    if (retryCompanyAction.type === "navigate") {
-      await navigateToApplicationTarget(
-        retryCompanyAction.url,
-        site,
-        retryCompanyAction.description
-      );
-      return;
-    }
-    retryCompanyAction.element.scrollIntoView({
-      behavior: "smooth",
-      block: "center",
-    });
-    await sleep(400);
-    performClickAction(retryCompanyAction.element);
-    await sleep(3000);
-
-    if (window.location.href !== urlBeforeClick) {
-      await waitForHumanVerificationToClear();
-      await runOpenApplyStage(site);
-      return;
-    }
-  }
-
   let retryAction: ApplyAction | null = null;
   if (site === "monster") {
     retryAction = findMonsterApplyAction();
@@ -1472,6 +1472,37 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       }
       await waitForLikelyApplicationSurface(site);
       await runAutofillStage(site);
+      return;
+    }
+  }
+
+  const retryCompanyAction = findCompanySiteAction();
+  if (retryCompanyAction) {
+    updateStatus(
+      "running",
+      `Retrying: navigating to ${retryCompanyAction.description}...`,
+      true,
+      "open-apply"
+    );
+    if (retryCompanyAction.type === "navigate") {
+      await navigateToApplicationTarget(
+        retryCompanyAction.url,
+        site,
+        retryCompanyAction.description
+      );
+      return;
+    }
+    retryCompanyAction.element.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+    await sleep(400);
+    performClickAction(retryCompanyAction.element);
+    await sleep(3000);
+
+    if (window.location.href !== urlBeforeClick) {
+      await waitForHumanVerificationToClear();
+      await runOpenApplyStage(site);
       return;
     }
   }

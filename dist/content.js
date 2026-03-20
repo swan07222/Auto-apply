@@ -519,6 +519,27 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   function hasLikelyApplicationStepSignals(doc) {
     const pageUrl = doc.location?.href.toLowerCase() ?? "";
     const applicationText = (doc.body?.innerText ?? "").toLowerCase();
+    const visibleFields = Array.from(
+      doc.querySelectorAll(
+        "input, textarea, select"
+      )
+    ).filter((field) => isLikelyVisibleFormField(field));
+    const visibleEditableFieldCount = visibleFields.filter((field) => {
+      if (!(field instanceof HTMLInputElement)) {
+        return true;
+      }
+      const type = field.type.toLowerCase();
+      return ![
+        "hidden",
+        "submit",
+        "button",
+        "reset",
+        "image",
+        "file",
+        "checkbox",
+        "radio"
+      ].includes(type);
+    }).length;
     const progressionControls = Array.from(
       doc.querySelectorAll(
         "button, [role='button'], input[type='submit'], input[type='button']"
@@ -535,6 +556,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "add a resume for the employer",
       "resume selection",
       "resume options",
+      "relevant experience",
+      "enter a job that shows relevant experience",
+      "share one job title with the employer",
       "uploaded ",
       "save and close",
       "application questions",
@@ -545,6 +569,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     ).length;
     const onKnownApplyFlowUrl = pageUrl.includes("indeedapply/form/") || pageUrl.includes("/apply/") || pageUrl.includes("/application/");
     if (stepSignalCount >= 2 && hasProgressionControl) {
+      return true;
+    }
+    if (onKnownApplyFlowUrl && hasProgressionControl && visibleEditableFieldCount >= 1) {
       return true;
     }
     return onKnownApplyFlowUrl && (stepSignalCount >= 1 || hasProgressionControl);
@@ -3746,13 +3773,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   function addJobCandidate(candidates, rawUrl, rawTitle, rawContext) {
     const url = normalizeUrl(rawUrl);
     const title = cleanText(rawTitle);
+    const contextText = cleanText(rawContext);
     if (!url || !title) {
+      return;
+    }
+    if (isAppliedJobText(title) || isAppliedJobText(contextText)) {
       return;
     }
     candidates.push({
       url,
       title,
-      contextText: cleanText(rawContext)
+      contextText
     });
   }
   function getCanonicalIndeedCandidateUrl(element) {
@@ -4594,9 +4625,36 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       description: best.text || "the company career page"
     };
   }
+  function isCompanySiteActionText(text) {
+    const lower = text.toLowerCase();
+    return lower.includes("company site") || lower.includes("company website") || lower.includes("employer site") || lower.includes("employer website") || lower.includes("continue to company") || lower.includes("continue to employer") || lower.includes("visit company") || lower.includes("visit employer") || lower.includes("go to company") || lower.includes("go to employer") || lower.includes("apply on company") || lower.includes("apply on employer") || lower.includes("apply externally") || lower.includes("apply directly") || lower.includes("apply on external") || lower.includes("apply through");
+  }
+  function isDirectApplyActionCandidate(text, url) {
+    const lower = text.toLowerCase().trim();
+    if (!lower || isCompanySiteActionText(lower)) {
+      return false;
+    }
+    if (lower === "apply now" || lower === "apply" || lower === "easy apply" || lower === "quick apply" || lower === "indeed apply" || lower === "1-click apply" || lower === "1 click apply" || lower.includes("start application") || lower.includes("begin application") || lower.includes("apply for this") || lower.includes("apply to this") || lower.includes("continue application")) {
+      return true;
+    }
+    const lowerUrl = url?.toLowerCase() ?? "";
+    return Boolean(lowerUrl) && !isExternalUrl(url || "") && /smartapply\.indeed\.com|indeedapply|zipapply|easyapply|easy-apply|\/apply\/|candidateexperience|jobapply|job_app/.test(
+      lowerUrl
+    );
+  }
+  function choosePreferredJobPageAction(best, bestDirect) {
+    if (!best) {
+      return bestDirect;
+    }
+    if (bestDirect && isCompanySiteActionText(best.text) && bestDirect.score >= 45) {
+      return bestDirect;
+    }
+    return best;
+  }
   function findMonsterApplyAction() {
     const elements = collectDeepMatchesFromSelectors(getApplyCandidateSelectors("monster"));
     let best;
+    let bestDirect;
     for (const element of elements) {
       const actionElement = getClickableApplyElement(element);
       const text = (getActionText(actionElement) || getActionText(element)).trim();
@@ -4613,7 +4671,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           text
         };
       }
+      if (isDirectApplyActionCandidate(text, url) && (!bestDirect || score > bestDirect.score)) {
+        bestDirect = {
+          element: actionElement,
+          score,
+          url,
+          text
+        };
+      }
     }
+    best = choosePreferredJobPageAction(best, bestDirect);
     if (!best) {
       const extractedUrl2 = findExternalApplyUrlInDocument();
       if (extractedUrl2) {
@@ -4720,6 +4787,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "a[href*='candidate']"
     ];
     let best;
+    let bestDirect;
     for (const element of collectDeepMatchesFromSelectors(selectors)) {
       const actionElement = getClickableApplyElement(element);
       if (!isElementVisible(actionElement)) {
@@ -4767,6 +4835,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       if (!best || score > best.score) {
         best = { element: actionElement, score, text, url };
       }
+      if (isDirectApplyActionCandidate(text, url) && (!bestDirect || score > bestDirect.score)) {
+        bestDirect = { element: actionElement, score, text, url };
+      }
     }
     if (!best) {
       for (const element of collectDeepMatchesFromSelectors([
@@ -4809,8 +4880,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         if (!best || score > best.score) {
           best = { element: actionElement, score, text, url };
         }
+        if (isDirectApplyActionCandidate(text, url) && (!bestDirect || score > bestDirect.score)) {
+          bestDirect = { element: actionElement, score, text, url };
+        }
       }
     }
+    best = choosePreferredJobPageAction(best, bestDirect);
     if (!best) {
       return null;
     }
@@ -4846,6 +4921,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "a[href*='apply' i]"
     ];
     let best;
+    let bestDirect;
     for (const element of collectDeepMatchesFromSelectors(selectors)) {
       const actionElement = getClickableApplyElement(element);
       if (!isElementVisible(actionElement)) {
@@ -4887,7 +4963,11 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       if (!best || score > best.score) {
         best = { element: actionElement, score, text, url };
       }
+      if (isDirectApplyActionCandidate(text, url) && (!bestDirect || score > bestDirect.score)) {
+        bestDirect = { element: actionElement, score, text, url };
+      }
     }
+    best = choosePreferredJobPageAction(best, bestDirect);
     if (!best) {
       return null;
     }
@@ -5293,6 +5373,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const selectors = getApplyCandidateSelectors(site);
     const elements = collectDeepMatchesFromSelectors(selectors);
     let best;
+    let bestDirect;
     for (const element of elements) {
       const actionElement = getClickableApplyElement(element);
       const text = getActionText(actionElement) || getActionText(element);
@@ -5304,6 +5385,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       if (!best || score > best.score) {
         best = { element: actionElement, score, url, text };
       }
+      if (context === "job-page" && isDirectApplyActionCandidate(text, url) && (!bestDirect || score > bestDirect.score)) {
+        bestDirect = { element: actionElement, score, url, text };
+      }
+    }
+    if (context === "job-page") {
+      best = choosePreferredJobPageAction(best, bestDirect);
     }
     if (!best) {
       return null;
@@ -6614,6 +6701,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   var currentResumeKind;
   var currentProfileId;
   var currentRunId;
+  var currentClaimedJobKey;
   var currentJobSlots;
   var activeRun = null;
   var answerFlushPromise = Promise.resolve();
@@ -6761,18 +6849,29 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (!await ensureApplicationTargetReachable(url, site, description)) {
       return;
     }
-    await spawnTabs([
+    const response = await spawnTabs([
       {
         url,
         site,
         stage: "open-apply",
         runId: currentRunId,
+        claimedJobKey: resolveCurrentClaimedJobKey(),
         label: currentLabel,
         resumeKind: currentResumeKind,
         profileId: currentProfileId,
         message: `Continuing application from ${description}...`
       }
     ]);
+    if (response.opened <= 0) {
+      updateStatus(
+        "completed",
+        `${description} is already open in another tab. Keeping this job page open.`,
+        false,
+        "autofill-form",
+        "handoff"
+      );
+      return;
+    }
     updateStatus(
       "completed",
       `Opened ${description} in a new tab. Keeping this job page open.`,
@@ -6780,6 +6879,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "autofill-form",
       "handoff"
     );
+  }
+  function resolveCurrentClaimedJobKey() {
+    return currentClaimedJobKey || getJobDedupKey(window.location.href) || void 0;
   }
   function describeBrokenApplicationTarget(description, reason) {
     switch (reason) {
@@ -6879,6 +6981,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           currentResumeKind = message.session.resumeKind;
           currentProfileId = message.session.profileId;
           currentRunId = message.session.runId;
+          currentClaimedJobKey = message.session.claimedJobKey;
           currentJobSlots = message.session.jobSlots;
           renderOverlay();
         } else {
@@ -6887,6 +6990,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           currentResumeKind = void 0;
           currentProfileId = void 0;
           currentRunId = void 0;
+          currentClaimedJobKey = void 0;
           currentJobSlots = void 0;
         }
         void ensureAutomationRunning().then(() => sendResponse({ ok: true, status })).catch((error) => {
@@ -6941,6 +7045,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         currentResumeKind = s.resumeKind;
         currentProfileId = s.profileId;
         currentRunId = s.runId;
+        currentClaimedJobKey = s.claimedJobKey;
         currentJobSlots = s.jobSlots;
         renderOverlay();
         if (response.shouldResume) {
@@ -7300,9 +7405,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         action = findDiceApplyAction();
         if (action) break;
       }
-      action = findCompanySiteAction();
-      if (action) break;
       action = findApplyAction(site, "job-page");
+      if (action) break;
+      action = findCompanySiteAction();
       if (action) break;
       if (hasLikelyApplicationForm2()) {
         currentStage = "autofill-form";
@@ -7411,18 +7516,29 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             await openApplicationTargetInNewTab(href, site, action.description);
             return;
           }
-          await spawnTabs([
+          const response = await spawnTabs([
             {
               url: href,
               site,
               stage: "open-apply",
               runId: currentRunId,
+              claimedJobKey: resolveCurrentClaimedJobKey(),
               label: currentLabel,
               resumeKind: currentResumeKind,
               profileId: currentProfileId,
               message: `Continuing application from ${action.description}...`
             }
           ]);
+          if (response.opened <= 0) {
+            updateStatus(
+              "completed",
+              "Apply page is already open in another tab.",
+              false,
+              "autofill-form",
+              "handoff"
+            );
+            return;
+          }
           updateStatus(
             "completed",
             `Opened apply page in new tab.`,
@@ -7559,35 +7675,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return;
     }
     if (childApplicationTabOpened) return;
-    const retryCompanyAction = findCompanySiteAction();
-    if (retryCompanyAction) {
-      updateStatus(
-        "running",
-        `Retrying: navigating to ${retryCompanyAction.description}...`,
-        true,
-        "open-apply"
-      );
-      if (retryCompanyAction.type === "navigate") {
-        await navigateToApplicationTarget(
-          retryCompanyAction.url,
-          site,
-          retryCompanyAction.description
-        );
-        return;
-      }
-      retryCompanyAction.element.scrollIntoView({
-        behavior: "smooth",
-        block: "center"
-      });
-      await sleep(400);
-      performClickAction(retryCompanyAction.element);
-      await sleep(3e3);
-      if (window.location.href !== urlBeforeClick) {
-        await waitForHumanVerificationToClear();
-        await runOpenApplyStage(site);
-        return;
-      }
-    }
     let retryAction = null;
     if (site === "monster") {
       retryAction = findMonsterApplyAction();
@@ -7623,6 +7710,35 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         }
         await waitForLikelyApplicationSurface2(site);
         await runAutofillStage(site);
+        return;
+      }
+    }
+    const retryCompanyAction = findCompanySiteAction();
+    if (retryCompanyAction) {
+      updateStatus(
+        "running",
+        `Retrying: navigating to ${retryCompanyAction.description}...`,
+        true,
+        "open-apply"
+      );
+      if (retryCompanyAction.type === "navigate") {
+        await navigateToApplicationTarget(
+          retryCompanyAction.url,
+          site,
+          retryCompanyAction.description
+        );
+        return;
+      }
+      retryCompanyAction.element.scrollIntoView({
+        behavior: "smooth",
+        block: "center"
+      });
+      await sleep(400);
+      performClickAction(retryCompanyAction.element);
+      await sleep(3e3);
+      if (window.location.href !== urlBeforeClick) {
+        await waitForHumanVerificationToClear();
+        await runOpenApplyStage(site);
         return;
       }
     }

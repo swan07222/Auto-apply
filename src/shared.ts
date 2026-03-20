@@ -44,6 +44,7 @@ export interface AutomationSession extends AutomationStatus {
   profileId?: string;
   controllerFrameId?: number;
   claimedJobKey?: string;
+  openedUrlKey?: string;
 }
 
 export interface SearchTarget {
@@ -77,6 +78,7 @@ export interface SpawnTabRequest {
   active?: boolean;
   stage?: AutomationStage;
   runId?: string;
+  claimedJobKey?: string;
   jobSlots?: number;
   message?: string;
   label?: string;
@@ -1135,6 +1137,28 @@ function hasLikelyApplicationFormSignals(doc: Document): boolean {
 function hasLikelyApplicationStepSignals(doc: Document): boolean {
   const pageUrl = doc.location?.href.toLowerCase() ?? "";
   const applicationText = (doc.body?.innerText ?? "").toLowerCase();
+  const visibleFields = Array.from(
+    doc.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
+      "input, textarea, select"
+    )
+  ).filter((field) => isLikelyVisibleFormField(field));
+  const visibleEditableFieldCount = visibleFields.filter((field) => {
+    if (!(field instanceof HTMLInputElement)) {
+      return true;
+    }
+
+    const type = field.type.toLowerCase();
+    return ![
+      "hidden",
+      "submit",
+      "button",
+      "reset",
+      "image",
+      "file",
+      "checkbox",
+      "radio",
+    ].includes(type);
+  }).length;
   const progressionControls = Array.from(
     doc.querySelectorAll<HTMLElement>(
       "button, [role='button'], input[type='submit'], input[type='button']"
@@ -1163,6 +1187,9 @@ function hasLikelyApplicationStepSignals(doc: Document): boolean {
     "add a resume for the employer",
     "resume selection",
     "resume options",
+    "relevant experience",
+    "enter a job that shows relevant experience",
+    "share one job title with the employer",
     "uploaded ",
     "save and close",
     "application questions",
@@ -1177,6 +1204,10 @@ function hasLikelyApplicationStepSignals(doc: Document): boolean {
     pageUrl.includes("/application/");
 
   if (stepSignalCount >= 2 && hasProgressionControl) {
+    return true;
+  }
+
+  if (onKnownApplyFlowUrl && hasProgressionControl && visibleEditableFieldCount >= 1) {
     return true;
   }
 

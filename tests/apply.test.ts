@@ -175,6 +175,21 @@ describe("application progression actions", () => {
     }
   });
 
+  it("prefers a direct apply button over a company-site CTA on generic job pages", () => {
+    document.body.innerHTML = `
+      <section>
+        <button type="button">Apply Now</button>
+        <a href="https://company.example.com/careers/apply">Apply on company site</a>
+      </section>
+    `;
+
+    const action = findApplyAction("other_sites", "job-page");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply Now");
+  });
+
   it("ignores Indeed support article links on demographic apply steps", () => {
     window.history.replaceState(
       {},
@@ -329,6 +344,25 @@ describe("application progression actions", () => {
     if (action?.type === "navigate") {
       expect(action.url).toBe("https://company.example.com/careers/apply/123");
     }
+  });
+
+  it("prefers ZipRecruiter direct apply buttons over company-site CTAs when both are present", () => {
+    document.body.innerHTML = `
+      <button data-testid="apply-button">Apply Now</button>
+      <button
+        data-testid="company-apply-button"
+        data-to="https://company.example.com/careers/apply/123"
+        aria-label="Apply on company site"
+      >
+        Continue to company site
+      </button>
+    `;
+
+    const action = findZipRecruiterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply Now");
   });
 
   it("ignores ZipRecruiter candidate-portal links like My Jobs and prefers the real apply action", () => {

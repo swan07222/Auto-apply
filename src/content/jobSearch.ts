@@ -1897,15 +1897,20 @@ function addJobCandidate(
 ): void {
   const url = normalizeUrl(rawUrl);
   const title = cleanText(rawTitle);
+  const contextText = cleanText(rawContext);
 
   if (!url || !title) {
+    return;
+  }
+
+  if (isAppliedJobText(title) || isAppliedJobText(contextText)) {
     return;
   }
 
   candidates.push({
     url,
     title,
-    contextText: cleanText(rawContext),
+    contextText,
   });
 }
 
