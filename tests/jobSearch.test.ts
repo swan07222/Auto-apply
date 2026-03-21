@@ -829,6 +829,23 @@ describe("job search candidate filtering", () => {
     ]);
   });
 
+  it("skips Dice custom cards when applied state is only exposed through card metadata", () => {
+    document.body.innerHTML = `
+      <dhi-search-card data-id="applied-1">
+        <h5>Senior Software Engineer</h5>
+        <span data-testid="job-card-applied-badge"></span>
+      </dhi-search-card>
+      <dhi-search-card data-id="fresh-2">
+        <h5>Staff Platform Engineer</h5>
+        <p>Remote</p>
+      </dhi-search-card>
+    `;
+
+    expect(pickRelevantJobUrls(collectJobDetailCandidates("dice"), "dice")).toEqual([
+      "https://www.dice.com/job-detail/fresh-2",
+    ]);
+  });
+
   it("skips Dice cards whose title is visually marked as viewed or applied", () => {
     document.body.innerHTML = `
       <ul aria-label="Job search results">
@@ -852,6 +869,66 @@ describe("job search candidate filtering", () => {
               style="color: rgb(17, 24, 39);"
             >
               Fresh Platform Engineer
+            </a>
+            <p>Remote</p>
+          </div>
+        </li>
+      </ul>
+    `;
+
+    expect(pickRelevantJobUrls(collectJobDetailCandidates("dice"), "dice")).toEqual([
+      "https://www.dice.com/job-detail/fresh-2",
+    ]);
+  });
+
+  it("keeps live-style Dice cards that only use visited utility classes for styling", () => {
+    document.body.innerHTML = `
+      <div data-testid="job-card" data-id="live-1" role="article">
+        <div class="card-shell">
+          <a
+            data-testid="job-search-job-card-link"
+            href="https://www.dice.com/job-detail/live-1"
+            class="absolute left-0 top-0 z-0 h-full w-full opacity-0"
+          ></a>
+          <a href="https://www.dice.com/company-profile/example">Beacon Hill</a>
+          <a
+            data-testid="job-search-job-detail-link"
+            href="https://www.dice.com/job-detail/live-1"
+            class="visited:text-interaction-visited line-clamp-1 text-xl font-semibold text-zinc-800"
+          >
+            Sr. AI Lead Software Engineer
+          </a>
+          <p>Easy Apply</p>
+          <p>Remote</p>
+        </div>
+      </div>
+    `;
+
+    expect(pickRelevantJobUrls(collectJobDetailCandidates("dice"), "dice")).toEqual([
+      "https://www.dice.com/job-detail/live-1",
+    ]);
+  });
+
+  it("does not open Dice result cards when the job title is blank", () => {
+    document.body.innerHTML = `
+      <ul aria-label="Job search results">
+        <li>
+          <div class="card-shell">
+            <a
+              data-testid="job-search-job-detail-link"
+              href="https://www.dice.com/job-detail/blank-1"
+            >
+            </a>
+            <p>Remote</p>
+          </div>
+        </li>
+        <li>
+          <div class="card-shell">
+            <a
+              data-testid="job-search-job-detail-link"
+              href="https://www.dice.com/job-detail/fresh-2"
+            >
+              Senior Platform Engineer
             </a>
             <p>Remote</p>
           </div>
@@ -1014,6 +1091,44 @@ describe("job search candidate filtering", () => {
 
     expect(isCurrentPageAppliedJob("ziprecruiter")).toBe(false);
     expect(isStrongAppliedJobText("Applied")).toBe(true);
+  });
+
+  it("does not treat nested Dice result-card applied badges as the current job being applied", () => {
+    document.body.innerHTML = `
+      <main class="job-details-pane">
+        <section class="job-description">
+          <h1>Senior Platform Engineer</h1>
+          <p>Remote role with TypeScript and React.</p>
+        </section>
+        <section aria-label="Job search results">
+          <article>
+            <a
+              data-testid="job-search-job-detail-link"
+              href="https://www.dice.com/job-detail/another-role"
+            >
+              Another Role
+            </a>
+            <span>Applied 2 days ago</span>
+          </article>
+        </section>
+      </main>
+    `;
+
+    expect(isCurrentPageAppliedJob("dice")).toBe(false);
+  });
+
+  it("does not treat Dice pages with a visible apply action as already applied", () => {
+    document.body.innerHTML = `
+      <main class="job-details-pane">
+        <section class="job-description">
+          <h1>Senior Platform Engineer</h1>
+          <button data-testid="apply-button">Apply Now</button>
+          <p>Applied 2 days ago</p>
+        </section>
+      </main>
+    `;
+
+    expect(isCurrentPageAppliedJob("dice")).toBe(false);
   });
 
   it("does not treat active Indeed SmartApply review steps as already applied", () => {

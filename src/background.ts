@@ -2140,11 +2140,79 @@ function deduplicateSpawnItems(items: SpawnTabRequest[]): SpawnTabRequest[] {
   return result;
 }
 
+function shouldKeepManagedJobPageOpen(site: SiteKey | "unsupported"): boolean {
+  return site === "ziprecruiter" || site === "dice";
+}
+
+function isLikelyManagedApplyTarget(
+  urlOrKey: string,
+  site: SiteKey | "unsupported"
+): boolean {
+  if (site === "unsupported") {
+    return false;
+  }
+
+  const lower = urlOrKey.trim().toLowerCase();
+  if (!lower) {
+    return false;
+  }
+
+  if (
+    site === "ziprecruiter" &&
+    (lower.includes("/candidate/") ||
+      lower.includes("/my-jobs") ||
+      lower.includes("/myjobs") ||
+      lower.includes("/saved-jobs") ||
+      lower.includes("/savedjobs") ||
+      lower.includes("/profile") ||
+      lower.includes("/account") ||
+      lower.includes("/login") ||
+      lower.includes("/signin")) &&
+    !lower.includes("candidateexperience") &&
+    !lower.includes("jobapply")
+  ) {
+    return false;
+  }
+
+  return (
+    lower.includes("smartapply.indeed.com") ||
+    lower.includes("indeedapply") ||
+    lower.includes("zipapply") ||
+    lower.includes("easyapply") ||
+    lower.includes("easy-apply") ||
+    lower.includes("/job-applications/") ||
+    lower.includes("start-apply") ||
+    lower.includes("/apply") ||
+    lower.includes("application") ||
+    lower.includes("candidateexperience") ||
+    lower.includes("jobapply") ||
+    lower.includes("job_app") ||
+    lower.includes("applytojob")
+  );
+}
+
+function canOpenSeparateApplyTabForClaimedJob(
+  item: SpawnTabRequest,
+  claimedKey: string | null | undefined,
+  existingApplyClaimedKeys: Set<string>
+): boolean {
+  if (!claimedKey || !shouldKeepManagedJobPageOpen(item.site)) {
+    return false;
+  }
+
+  if (existingApplyClaimedKeys.has(claimedKey)) {
+    return false;
+  }
+
+  return isLikelyManagedApplyTarget(item.url, item.site);
+}
+
 async function filterAlreadyOpenManagedSpawnItems(
   items: SpawnTabRequest[]
 ): Promise<{ items: SpawnTabRequest[]; skippedItems: SpawnTabRequest[] }> {
   const existingUrlKeysByRunId = new Map<string, Set<string>>();
   const existingClaimedKeysByRunId = new Map<string, Set<string>>();
+  const existingApplyClaimedKeysByRunId = new Map<string, Set<string>>();
   const filtered: SpawnTabRequest[] = [];
   const skippedItems: SpawnTabRequest[] = [];
 
@@ -2159,7 +2227,13 @@ async function filterAlreadyOpenManagedSpawnItems(
 
     let existingUrlKeys = existingUrlKeysByRunId.get(item.runId);
     let existingClaimedKeys = existingClaimedKeysByRunId.get(item.runId);
-    if (!existingUrlKeys || !existingClaimedKeys) {
+    let existingApplyClaimedKeys =
+      existingApplyClaimedKeysByRunId.get(item.runId);
+    if (
+      !existingUrlKeys ||
+      !existingClaimedKeys ||
+      !existingApplyClaimedKeys
+    ) {
       const existingSessions = await listSessionsForRunId(item.runId);
       existingUrlKeys = new Set(
         existingSessions
@@ -2173,17 +2247,38 @@ async function filterAlreadyOpenManagedSpawnItems(
           .map((session) => session.claimedJobKey || "")
           .filter(Boolean)
       );
+      existingApplyClaimedKeys = new Set(
+        existingSessions
+          .filter((session) => session.phase !== "error")
+          .filter((session) =>
+            isLikelyManagedApplyTarget(session.openedUrlKey || "", session.site)
+          )
+          .map((session) => session.claimedJobKey || "")
+          .filter(Boolean)
+      );
       existingUrlKeysByRunId.set(item.runId, existingUrlKeys);
       existingClaimedKeysByRunId.set(item.runId, existingClaimedKeys);
+      existingApplyClaimedKeysByRunId.set(item.runId, existingApplyClaimedKeys);
     }
 
-    if (claimedKey && existingClaimedKeys.has(claimedKey)) {
+    if (
+      claimedKey &&
+      existingClaimedKeys.has(claimedKey) &&
+      !canOpenSeparateApplyTabForClaimedJob(
+        item,
+        claimedKey,
+        existingApplyClaimedKeys
+      )
+    ) {
       continue;
     }
 
     if (!urlKey) {
       if (claimedKey) {
         existingClaimedKeys.add(claimedKey);
+        if (isLikelyManagedApplyTarget(item.url, item.site)) {
+          existingApplyClaimedKeys.add(claimedKey);
+        }
       }
       filtered.push(item);
       continue;
@@ -2197,6 +2292,9 @@ async function filterAlreadyOpenManagedSpawnItems(
     existingUrlKeys.add(urlKey);
     if (claimedKey) {
       existingClaimedKeys.add(claimedKey);
+      if (isLikelyManagedApplyTarget(item.url, item.site)) {
+        existingApplyClaimedKeys.add(claimedKey);
+      }
     }
     filtered.push(item);
   }

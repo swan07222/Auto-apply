@@ -2263,6 +2263,107 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   function shouldUseFileInputForResume(input, count) {
     return scoreResumeFileInputPreference(input, count) > 0;
   }
+  function isLikelyCoverLetterFileInput(input) {
+    const context = normalizeChoiceText(
+      cleanText(
+        [
+          getFieldDescriptor(input, getQuestionText(input)),
+          input.getAttribute("aria-label"),
+          input.getAttribute("title"),
+          input.getAttribute("placeholder"),
+          input.name,
+          input.id,
+          input.className,
+          input.closest("label, fieldset, section, article, form, div")?.textContent
+        ].filter(Boolean).join(" ")
+      ).slice(0, 800)
+    );
+    if (!context) {
+      return false;
+    }
+    return context.includes("cover letter") || context.includes("upload your cover letter") || context.includes("motivation letter") || context.includes("personal statement");
+  }
+  function findScopedResumeUploadContainer(input) {
+    const ancestors = [
+      input.parentElement,
+      input.closest("label"),
+      input.closest("[class*='upload']"),
+      input.closest("[class*='resume']"),
+      input.closest("[class*='file']"),
+      input.closest("[class*='dropzone']"),
+      input.closest("[data-upload]"),
+      input.closest("[data-test*='upload']"),
+      input.closest("[data-test*='resume']"),
+      input.closest("[data-testid*='resume']"),
+      input.closest("[data-testid*='upload']"),
+      input.closest("section"),
+      input.closest("article"),
+      input.closest("fieldset"),
+      input.closest("form")
+    ].filter((element) => element instanceof HTMLElement);
+    let best;
+    for (const element of ancestors) {
+      const text = normalizeChoiceText(cleanText(element.textContent).slice(0, 800));
+      let score = 0;
+      if (text.includes("resume")) score += 70;
+      if (text.includes("upload your resume")) score += 60;
+      if (text.includes("upload resume")) score += 55;
+      if (text.includes("cover letter")) score -= 120;
+      if (text.includes("upload your cover letter")) score -= 120;
+      if (text.includes("optional")) score -= 10;
+      score -= Math.min(Math.floor(text.length / 140), 10);
+      if (element.matches("[class*='resume'], [data-test*='resume'], [data-testid*='resume']")) {
+        score += 25;
+      }
+      if (element.matches("[class*='upload'], [class*='dropzone'], [data-upload]")) {
+        score += 10;
+      }
+      if (element.tagName === "FORM") {
+        score -= 35;
+      }
+      if (!best || score > best.score) {
+        best = {
+          element,
+          score
+        };
+      }
+    }
+    return best && best.score > 0 ? best.element : null;
+  }
+  function pickResumeUploadTargets(options) {
+    const { inputs, assetName, uploadKey, extensionManagedUploads } = options;
+    const eligibleInputs = inputs.filter((input) => !isLikelyCoverLetterFileInput(input));
+    const rankedTargets = eligibleInputs.map((input, index) => ({
+      input,
+      index,
+      score: scoreResumeFileInputPreference(input, eligibleInputs.length)
+    })).sort(
+      (left, right) => right.score - left.score || left.index - right.index
+    );
+    const alreadySatisfiedTarget = rankedTargets.find(
+      ({ input, score }) => score > 0 && (extensionManagedUploads.get(input) === uploadKey || hasSelectedMatchingFile(input, assetName))
+    )?.input ?? null;
+    if (alreadySatisfiedTarget) {
+      return {
+        alreadySatisfied: alreadySatisfiedTarget,
+        targets: []
+      };
+    }
+    const selectedResumeTarget = rankedTargets.find(
+      ({ input, score }) => score > 0 && Boolean(getSelectedFileName(input))
+    )?.input ?? null;
+    if (selectedResumeTarget) {
+      return {
+        alreadySatisfied: null,
+        targets: [selectedResumeTarget]
+      };
+    }
+    const usable = rankedTargets.filter(({ input }) => shouldUseFileInputForResume(input, inputs.length)).map(({ input }) => input);
+    return {
+      alreadySatisfied: null,
+      targets: usable.length > 0 ? usable : eligibleInputs.length === 1 ? eligibleInputs : []
+    };
+  }
 
   // src/content/sitePatterns.ts
   var CAREER_LISTING_TEXT_PATTERNS = [
@@ -2583,6 +2684,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             ]),
             ...collectCandidatesFromContainers(
               [
+                "[data-testid='job-card']",
                 "[data-cy*='search-card']",
                 "[data-testid*='search-card']",
                 "[class*='search-card']",
@@ -3301,6 +3403,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const currentSurfaceTexts = collectCurrentJobSurfaceTexts(site);
     for (const text of currentSurfaceTexts) {
       if (isStrongAppliedJobText(text)) {
+        if (site === "dice" && hasVisibleDiceApplySignal()) {
+          return false;
+        }
         return true;
       }
     }
@@ -3542,7 +3647,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const candidates = [];
     const customElements = Array.from(
       document.querySelectorAll(
-        "dhi-search-card, dhi-job-card, dhi-search-cards-widget .card, [data-testid='search-card'], [class*='search-card'], [class*='SearchCard']"
+        "dhi-search-card, dhi-job-card, dhi-search-cards-widget .card, [data-testid='job-card'], [data-testid='search-card'], [class*='search-card'], [class*='SearchCard']"
       )
     );
     for (const card of customElements) {
@@ -3563,7 +3668,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             const titleElement = root.querySelector(
               "h5, h3, h2, [class*='card-title'], [class*='job-title'], a"
             ) ?? null;
-            if (titleElement instanceof HTMLAnchorElement && shouldSkipDiceTitleCandidate(titleElement, card)) {
+            if (shouldSkipDiceTitleCandidate(titleElement ?? card, card)) {
               continue;
             }
             addJobCandidate(
@@ -3618,35 +3723,19 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return candidates;
   }
   function shouldSkipDiceTitleCandidate(titleAnchor, container) {
-    const metadata = cleanText(
-      [
-        titleAnchor.className,
-        titleAnchor.id,
-        titleAnchor.getAttribute("data-testid"),
-        titleAnchor.getAttribute("data-cy"),
-        titleAnchor.getAttribute("data-status"),
-        titleAnchor.getAttribute("aria-label"),
-        titleAnchor.getAttribute("title"),
-        container.className,
-        container.id,
-        container.getAttribute("data-testid"),
-        container.getAttribute("data-cy"),
-        container.getAttribute("data-status"),
-        container.getAttribute("aria-label"),
-        container.getAttribute("title")
-      ].filter(Boolean).join(" ")
-    ).toLowerCase();
+    const metadata = buildDiceCandidateMetadata(titleAnchor, container);
     if (/\b(applied|viewed|visited|seen|read)\b/.test(metadata)) {
       return true;
     }
     const inlineColorSignal = [
-      titleAnchor.getAttribute("style"),
+      titleAnchor?.getAttribute("style"),
       container.getAttribute("style")
     ].filter(Boolean).join(" ").toLowerCase();
     if (!inlineColorSignal.includes("color")) {
       return false;
     }
-    const color = window.getComputedStyle(titleAnchor).color;
+    const colorSource = titleAnchor ?? container;
+    const color = window.getComputedStyle(colorSource).color;
     if (!color) {
       return false;
     }
@@ -3660,6 +3749,74 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const max = Math.max(...channels);
     const min = Math.min(...channels);
     return !(max <= 140 && max - min <= 35);
+  }
+  function buildDiceCandidateMetadata(titleAnchor, container) {
+    const fragments = /* @__PURE__ */ new Set();
+    const addElementMetadata = (element) => {
+      if (!element) {
+        return;
+      }
+      const metadata = cleanText(
+        [
+          element.innerText || element.textContent || "",
+          extractDiceSemanticStatusTokens(
+            typeof element.className === "string" ? element.className : ""
+          ),
+          element.id,
+          element.getAttribute("data-testid"),
+          element.getAttribute("data-cy"),
+          element.getAttribute("data-status"),
+          element.getAttribute("aria-label"),
+          element.getAttribute("title")
+        ].filter(Boolean).join(" ")
+      );
+      if (metadata) {
+        fragments.add(metadata);
+      }
+    };
+    addElementMetadata(titleAnchor);
+    addElementMetadata(container);
+    const statusSelectors = [
+      "[data-status]",
+      "[data-testid]",
+      "[data-cy]",
+      "[aria-label]",
+      "[title]",
+      "[class*='applied']",
+      "[class*='viewed']",
+      "[class*='visited']",
+      "[class*='seen']",
+      "[class*='read']",
+      "[id*='applied']",
+      "[id*='viewed']",
+      "[id*='visited']",
+      "[id*='seen']",
+      "[id*='read']"
+    ];
+    for (const element of Array.from(
+      container.querySelectorAll(statusSelectors.join(", "))
+    ).slice(0, 32)) {
+      addElementMetadata(element);
+    }
+    return cleanText(Array.from(fragments).join(" ")).toLowerCase();
+  }
+  function extractDiceSemanticStatusTokens(className) {
+    if (!className) {
+      return "";
+    }
+    const styleUtilityPrefixes = /^(?:text|bg|border|outline|decoration|fill|stroke|ring|shadow|from|via|to)-/;
+    return className.split(/\s+/).map((token) => cleanText(token).toLowerCase()).filter((token) => {
+      if (!token || token.includes(":")) {
+        return false;
+      }
+      if (!/(applied|viewed|visited|seen|read)/.test(token)) {
+        return false;
+      }
+      if (styleUtilityPrefixes.test(token)) {
+        return false;
+      }
+      return /(?:^|[-_])(applied|viewed|visited|seen|read)(?:$|[-_])/.test(token);
+    }).join(" ");
   }
   function filterDiceViewedOrAppliedCandidates(candidates) {
     return candidates.filter((candidate) => {
@@ -4151,13 +4308,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function collectCurrentJobSurfaceTexts(site) {
     const primaryTexts = collectCurrentJobSurfaceTextsForSelectors(
-      getPrimaryCurrentJobSurfaceSelectors(site)
+      getPrimaryCurrentJobSurfaceSelectors(site),
+      site
     );
     if (primaryTexts.length > 0) {
       return primaryTexts;
     }
     const fallbackTexts = collectCurrentJobSurfaceTextsForSelectors(
-      getFallbackCurrentJobSurfaceSelectors()
+      getFallbackCurrentJobSurfaceSelectors(),
+      site
     );
     if (fallbackTexts.length > 0) {
       return fallbackTexts;
@@ -4228,32 +4387,130 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "article"
     ];
   }
-  function collectCurrentJobSurfaceTextsForSelectors(selectors) {
-    const texts = [];
+  function collectCurrentJobSurfaceElements(selectors) {
+    const elements = [];
     const seen = /* @__PURE__ */ new Set();
     for (const selector of selectors) {
-      let elements;
+      let matches;
       try {
-        elements = Array.from(document.querySelectorAll(selector));
+        matches = Array.from(document.querySelectorAll(selector));
       } catch {
         continue;
       }
-      for (const element of elements) {
-        if (!isReadableSurfaceElement(element)) {
+      for (const element of matches) {
+        if (seen.has(element)) {
           continue;
         }
-        if (element.closest("aside, nav, header, footer")) {
-          continue;
-        }
-        const text = cleanText(element.innerText || element.textContent || "").toLowerCase().slice(0, 12e3);
-        if (!text || text.length < 40 || seen.has(text)) {
-          continue;
-        }
-        seen.add(text);
-        texts.push(text);
+        seen.add(element);
+        elements.push(element);
       }
     }
+    return elements;
+  }
+  function collectCurrentJobSurfaceTextsForSelectors(selectors, site) {
+    const texts = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const element of collectCurrentJobSurfaceElements(selectors)) {
+      if (!isReadableSurfaceElement(element)) {
+        continue;
+      }
+      if (element.closest("aside, nav, header, footer")) {
+        continue;
+      }
+      const text = cleanText(getCurrentJobSurfaceText(element, site)).toLowerCase().slice(0, 12e3);
+      if (!text || text.length < 40 || seen.has(text)) {
+        continue;
+      }
+      seen.add(text);
+      texts.push(text);
+    }
     return texts.sort((a, b) => b.length - a.length).slice(0, 4);
+  }
+  function getCurrentJobSurfaceText(element, site) {
+    if (site !== "dice") {
+      return element.innerText || element.textContent || "";
+    }
+    const clone = element.cloneNode(true);
+    const diceNestedResultSelectors = [
+      "[aria-label='Job search results']",
+      "[data-testid='job-search-results']",
+      "dhi-search-card",
+      "dhi-job-card",
+      "dhi-search-cards-widget",
+      "a[data-testid='job-search-job-detail-link']",
+      "a[data-testid='job-search-job-card-link']"
+    ];
+    for (const nested of Array.from(
+      clone.querySelectorAll(diceNestedResultSelectors.join(", "))
+    )) {
+      const removalTarget = nested.matches(
+        "a[data-testid='job-search-job-detail-link'], a[data-testid='job-search-job-card-link']"
+      ) ? nested.closest(
+        "li, article, section, div, dhi-search-card, dhi-job-card"
+      ) ?? nested : nested;
+      if (removalTarget && removalTarget !== clone) {
+        removalTarget.remove();
+      }
+    }
+    return clone.innerText || clone.textContent || "";
+  }
+  function hasVisibleDiceApplySignal() {
+    const surfaceElements = collectCurrentJobSurfaceElements([
+      ...getPrimaryCurrentJobSurfaceSelectors("dice"),
+      ...getFallbackCurrentJobSurfaceSelectors()
+    ]);
+    const applySelectors = [
+      "[data-testid='apply-button']",
+      "[data-testid*='apply' i]",
+      "[data-cy='apply-button']",
+      "[data-cy*='apply']",
+      "apply-button-wc",
+      "button",
+      "a[href]",
+      "[role='button']",
+      "input[type='submit']",
+      "input[type='button']"
+    ];
+    for (const surface of surfaceElements) {
+      if (!isReadableSurfaceElement(surface)) {
+        continue;
+      }
+      for (const control of Array.from(
+        surface.querySelectorAll(applySelectors.join(", "))
+      )) {
+        if (!isReadableSurfaceElement(control)) {
+          continue;
+        }
+        if (isDiceNestedResultElement(control, surface)) {
+          continue;
+        }
+        const text = cleanText(
+          [
+            control.innerText || control.textContent || "",
+            control.getAttribute("aria-label"),
+            control.getAttribute("title"),
+            control.getAttribute("data-testid"),
+            control.getAttribute("data-cy")
+          ].filter(Boolean).join(" ")
+        ).toLowerCase();
+        if (!text || !text.includes("apply")) {
+          continue;
+        }
+        if (["save", "share", "alert", "job alert", "applied", "already applied"].some(
+          (token) => text.includes(token)
+        )) {
+          continue;
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+  function isDiceNestedResultElement(element, surface) {
+    const nestedResultContainer = element.closest(
+      "[aria-label='Job search results'], [data-testid='job-search-results'], dhi-search-card, dhi-job-card, dhi-search-cards-widget"
+    );
+    return Boolean(nestedResultContainer && nestedResultContainer !== surface);
   }
   function isListingOrCategoryUrl(lowerUrl) {
     try {
@@ -5286,9 +5543,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     };
   }
   function findDiceApplyAction() {
+    const inlineApplyUrl = extractDiceInlineApplyUrl();
+    if (inlineApplyUrl) {
+      return {
+        type: "navigate",
+        url: inlineApplyUrl,
+        description: "Dice apply page"
+      };
+    }
     const applyComponents = Array.from(
       document.querySelectorAll(
-        "apply-button-wc, [data-cy='apply-button'], [data-cy*='apply'], [class*='apply-button'], [class*='ApplyButton']"
+        "button[data-testid='apply-button'], a[data-testid='apply-button'], [data-testid*='apply-button'], apply-button-wc, [data-cy='apply-button'], [data-cy*='apply'], [class*='apply-button'], [class*='ApplyButton']"
       )
     );
     for (const component of applyComponents) {
@@ -5359,6 +5624,30 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     return null;
   }
+  function extractDiceInlineApplyUrl() {
+    const sources = [
+      ...Array.from(document.querySelectorAll("script:not([src])")).map(
+        (script) => script.textContent || ""
+      ),
+      document.documentElement?.innerHTML || ""
+    ];
+    for (const source of sources) {
+      const normalizedSource = source.replace(/\\u002F/gi, "/").replace(/\\u0026/gi, "&").replace(/\\\//g, "/");
+      const match = normalizedSource.match(
+        /(?:https?:\/\/[^"'\\\s<>{}]+)?\/job-applications\/[a-f0-9-]{8,}\/start-apply(?:[^\s"'\\<>{}]*)?/i
+      );
+      if (!match?.[0]) {
+        continue;
+      }
+      const normalizedUrl = normalizeUrl(
+        match[0].replace(/[\\'"]+$/g, "")
+      );
+      if (normalizedUrl) {
+        return normalizedUrl;
+      }
+    }
+    return null;
+  }
   function hasIndeedApplyIframe() {
     return Boolean(
       document.querySelector(
@@ -5394,7 +5683,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       const metadata = getElementActionMetadata(element);
       const lower = metadata.toLowerCase();
       const lowerText = text.toLowerCase();
-      if (!lower || lower.length > 140) {
+      if (!lower) {
         continue;
       }
       if (/submit\s*(my\s*)?application/i.test(lowerText) || /send\s*application/i.test(lowerText) || /confirm\s*and\s*submit/i.test(lowerText) || lowerText === "submit") {
@@ -5597,6 +5886,30 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           "[class*='review']",
           ...generic
         ];
+      case "dice":
+        return [
+          "button[data-testid*='continue']",
+          "button[data-testid*='next']",
+          "button[data-testid*='review']",
+          "button[data-testid*='apply']",
+          "[data-testid*='continue']",
+          "[data-testid*='next']",
+          "[data-testid*='review']",
+          "[data-testid*='apply']",
+          "[data-cy*='continue']",
+          "[data-cy*='next']",
+          "[data-cy*='review']",
+          "[data-cy*='apply']",
+          "[aria-label*='continue' i]",
+          "[aria-label*='next' i]",
+          "[aria-label*='review' i]",
+          "[aria-label*='apply' i]",
+          "[class*='continue']",
+          "[class*='next']",
+          "[class*='review']",
+          "[class*='apply']",
+          ...generic
+        ];
       default:
         return generic;
     }
@@ -5651,10 +5964,24 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         element.getAttribute("data-test"),
         element.getAttribute("data-testid"),
         element.getAttribute("data-cy"),
-        element.id,
-        element.className
+        extractActionSemanticTokens(element.id),
+        extractActionSemanticTokens(
+          typeof element.className === "string" ? element.className : ""
+        )
       ].filter(Boolean).join(" ")
     );
+  }
+  function extractActionSemanticTokens(value) {
+    if (!value) {
+      return "";
+    }
+    const tokenPattern = /(apply|application|continue|next|review|proceed|start|begin|resume|candidate|company|employer|external|zipapply|jobapply)/;
+    return value.split(/\s+/).map((token) => cleanText(token).toLowerCase()).filter((token) => {
+      if (!token || token.includes(":")) {
+        return false;
+      }
+      return tokenPattern.test(token);
+    }).join(" ");
   }
   function isLikelyApplicationContext(element) {
     if (element.closest(
@@ -5735,7 +6062,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (site === "ziprecruiter" && isZipRecruiterCandidatePortalUrl(url)) {
       return false;
     }
-    if (lower.includes("smartapply.indeed.com") || lower.includes("indeedapply") || lower.includes("zipapply") || lower.includes("easyapply") || lower.includes("easy-apply") || lower.includes("/apply") || lower.includes("application") || lower.includes("candidateexperience") || lower.includes("jobapply") || lower.includes("job_app") || lower.includes("applytojob")) {
+    if (lower.includes("smartapply.indeed.com") || lower.includes("indeedapply") || lower.includes("zipapply") || lower.includes("easyapply") || lower.includes("easy-apply") || lower.includes("/job-applications/") || lower.includes("start-apply") || lower.includes("/apply") || lower.includes("application") || lower.includes("candidateexperience") || lower.includes("jobapply") || lower.includes("job_app") || lower.includes("applytojob")) {
       return true;
     }
     if (site === "startup" || site === "other_sites") {
@@ -7280,6 +7607,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   // src/content.ts
   var MAX_AUTOFILL_STEPS = 15;
   var OVERLAY_AUTO_HIDE_MS = 1e4;
+  var OVERLAY_EDGE_MARGIN = 18;
+  var OVERLAY_DRAG_PADDING = 12;
   var MAX_STAGE_DEPTH = 10;
   var IS_TOP_FRAME = window.top === window;
   function createEmptyAutofillResult() {
@@ -7316,8 +7645,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   var extensionManagedResumeUploads = /* @__PURE__ */ new WeakMap();
   var overlay = {
     host: null,
+    panel: null,
     title: null,
-    text: null
+    text: null,
+    position: null
   };
   var applicationSurfaceCollectors = {
     collectAutofillFields: () => collectAutofillFields(),
@@ -7428,6 +7759,19 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function hasLikelyApplicationSurface2(site) {
     return hasLikelyApplicationSurface(site, applicationSurfaceCollectors);
+  }
+  function shouldTreatCurrentPageAsApplied(site) {
+    if (!isCurrentPageAppliedJob(site)) {
+      return false;
+    }
+    if (site !== "dice") {
+      return true;
+    }
+    if (hasLikelyApplicationSurface2(site)) {
+      return false;
+    }
+    const diceApplyAction = findDiceApplyAction() ?? findApplyAction(site, "job-page");
+    return !diceApplyAction;
   }
   function enterStageRetryScope(stage) {
     stageRetryState = getNextStageRetryState(
@@ -7734,18 +8078,22 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         "Add at least one search keyword in the extension before starting job board automation."
       );
     }
-    const items = targets.map((target) => ({
+    const jobSlots = distributeJobSlotsAcrossTargets(
+      settings.jobPageLimit,
+      targets.length
+    );
+    const items = targets.map((target, index) => ({
       url: target.url,
       site,
       stage: "collect-results",
       runId: currentRunId,
-      jobSlots: settings.jobPageLimit,
+      jobSlots: jobSlots[index],
       message: `Collecting ${target.label} job pages on ${getSiteLabel(site)}...`,
       label: target.label,
       resumeKind: target.resumeKind,
       profileId: currentProfileId,
       keyword: target.keyword
-    }));
+    })).filter((item) => (item.jobSlots ?? 0) > 0);
     const response = await spawnTabs(items);
     updateStatus(
       "completed",
@@ -7980,7 +8328,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return;
     }
     const urlAtStart = window.location.href;
-    if (isCurrentPageAppliedJob(site)) {
+    if (shouldTreatCurrentPageAsApplied(site)) {
       updateStatus(
         "completed",
         "Skipped - already applied.",
@@ -8082,9 +8430,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         if (action) break;
       }
       if (site === "dice") {
-        action = findApplyAction(site, "job-page");
-        if (action) break;
-        action = findDiceApplyAction();
+        action = findDiceApplyAction() ?? findApplyAction(site, "job-page");
         if (action) break;
       }
       action = findApplyAction(site, "job-page");
@@ -8463,7 +8809,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       );
       return;
     }
-    if (isCurrentPageAppliedJob(site)) {
+    if (shouldTreatCurrentPageAsApplied(site)) {
       updateStatus(
         "completed",
         "Skipped - already applied.",
@@ -8848,35 +9194,34 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   async function uploadResumeIfNeeded(settings) {
     const resume = pickResumeAsset(settings);
     if (!resume) return null;
+    const currentSite = detectSiteFromUrl(window.location.href);
+    if (currentSite === "dice") {
+      return null;
+    }
     const resumeUploadKey = getResumeAssetUploadKey(resume);
     const fileInputs = collectResumeFileInputs();
     if (fileInputs.length === 0) {
       const hiddenFileInputs = Array.from(
         document.querySelectorAll("input[type='file']")
       );
-      const rankedHiddenTargets = hiddenFileInputs.map((input, index) => ({
-        input,
-        index,
-        score: scoreResumeFileInputPreference(input, hiddenFileInputs.length)
-      })).sort(
-        (left, right) => right.score - left.score || left.index - right.index
-      );
-      const satisfiedHiddenTarget = rankedHiddenTargets.find(
-        ({ input, score }) => score > 0 && (extensionManagedResumeUploads.get(input) === resumeUploadKey || hasSelectedMatchingFile(input, resume.name))
-      );
+      const {
+        alreadySatisfied: satisfiedHiddenTarget,
+        targets: fallbackHiddenTargets
+      } = pickResumeUploadTargets({
+        inputs: hiddenFileInputs,
+        assetName: resume.name,
+        uploadKey: resumeUploadKey,
+        extensionManagedUploads: extensionManagedResumeUploads
+      });
       if (satisfiedHiddenTarget) {
-        if (extensionManagedResumeUploads.get(satisfiedHiddenTarget.input) !== resumeUploadKey) {
+        if (extensionManagedResumeUploads.get(satisfiedHiddenTarget) !== resumeUploadKey) {
           extensionManagedResumeUploads.set(
-            satisfiedHiddenTarget.input,
+            satisfiedHiddenTarget,
             resumeUploadKey
           );
         }
         return resume;
       }
-      const hiddenTargets = rankedHiddenTargets.filter(
-        (entry) => shouldUseFileInputForResume(entry.input, hiddenFileInputs.length)
-      ).map((entry) => entry.input);
-      const fallbackHiddenTargets = hiddenTargets.length > 0 ? hiddenTargets : hiddenFileInputs.length === 1 ? hiddenFileInputs : [];
       for (const input of fallbackHiddenTargets) {
         if (input.disabled) continue;
         const lastAttemptAt = recentResumeUploadAttempts.get(input) ?? 0;
@@ -8902,29 +9247,24 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
       return null;
     }
-    const rankedTargets = fileInputs.map((input, index) => ({
-      input,
-      index,
-      score: scoreResumeFileInputPreference(input, fileInputs.length)
-    })).sort(
-      (left, right) => right.score - left.score || left.index - right.index
-    );
-    const alreadySatisfiedTarget = rankedTargets.find(
-      ({ input, score }) => score > 0 && (extensionManagedResumeUploads.get(input) === resumeUploadKey || hasSelectedMatchingFile(input, resume.name))
-    );
+    const {
+      alreadySatisfied: alreadySatisfiedTarget,
+      targets
+    } = pickResumeUploadTargets({
+      inputs: fileInputs,
+      assetName: resume.name,
+      uploadKey: resumeUploadKey,
+      extensionManagedUploads: extensionManagedResumeUploads
+    });
     if (alreadySatisfiedTarget) {
-      if (extensionManagedResumeUploads.get(alreadySatisfiedTarget.input) !== resumeUploadKey) {
+      if (extensionManagedResumeUploads.get(alreadySatisfiedTarget) !== resumeUploadKey) {
         extensionManagedResumeUploads.set(
-          alreadySatisfiedTarget.input,
+          alreadySatisfiedTarget,
           resumeUploadKey
         );
       }
       return resume;
     }
-    const usable = rankedTargets.filter(
-      (entry) => shouldUseFileInputForResume(entry.input, fileInputs.length)
-    ).map((entry) => entry.input);
-    const targets = usable.length > 0 ? usable : fileInputs.length === 1 ? fileInputs : [];
     for (const input of targets) {
       const lastAttemptAt = recentResumeUploadAttempts.get(input) ?? 0;
       const now = Date.now();
@@ -8948,6 +9288,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
     }
     return null;
+  }
+  function distributeJobSlotsAcrossTargets(totalSlots, targetCount) {
+    const safeTargetCount = Math.max(0, Math.floor(targetCount));
+    const safeTotalSlots = Math.max(0, Math.floor(totalSlots));
+    const slots = new Array(safeTargetCount).fill(0);
+    for (let index = 0; index < safeTotalSlots; index += 1) {
+      if (safeTargetCount === 0) {
+        break;
+      }
+      slots[index % safeTargetCount] += 1;
+    }
+    return slots;
   }
   function pickResumeAsset(settings) {
     const desiredResumeKind = resolveResumeKindForJob({
@@ -9056,12 +9408,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function collectResumeUploadEventTargets(input) {
     const targets = /* @__PURE__ */ new Set();
+    const scopedContainer = findScopedResumeUploadContainer(input);
     const id = input.id.trim();
     if (id) {
       for (const label of Array.from(
         document.querySelectorAll(`label[for='${cssEscape(id)}']`)
       )) {
-        targets.add(label);
+        if (!scopedContainer || scopedContainer.contains(label)) {
+          targets.add(label);
+        }
       }
     }
     const candidates = [
@@ -9079,10 +9434,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       input.closest("[data-test*='resume']"),
       input.closest("[data-testid*='resume']"),
       input.closest("[data-testid*='upload']"),
-      input.form
+      scopedContainer
     ];
     for (const candidate of candidates) {
-      if (candidate instanceof HTMLElement && candidate !== input) {
+      if (candidate instanceof HTMLElement && candidate !== input && (!scopedContainer || scopedContainer.contains(candidate) || candidate === scopedContainer)) {
         targets.add(candidate);
       }
     }
@@ -9469,11 +9824,68 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     host.id = "remote-job-search-overlay-host";
     const shadow = host.attachShadow({ mode: "open" });
     const wrapper = document.createElement("section"), title = document.createElement("div"), text = document.createElement("div"), style = document.createElement("style");
-    style.textContent = `:host{all:initial}section{position:fixed;top:18px;right:18px;z-index:2147483647;width:min(340px,calc(100vw - 36px));padding:14px 16px;border-radius:16px;background:rgba(18,34,53,.94);color:#f6efe2;font-family:"Segoe UI",sans-serif;box-shadow:0 16px 40px rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(12px);transition:opacity .3s}.title{margin:0 0 6px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#f2b54b}.text{margin:0;font-size:13px;line-height:1.5;color:#f8f5ef}`;
+    style.textContent = `:host{all:initial}section{position:fixed;top:${OVERLAY_EDGE_MARGIN}px;right:${OVERLAY_EDGE_MARGIN}px;z-index:2147483647;width:min(340px,calc(100vw - 36px));padding:14px 16px;border-radius:16px;background:rgba(18,34,53,.94);color:#f6efe2;font-family:"Segoe UI",sans-serif;box-shadow:0 16px 40px rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(12px);transition:opacity .3s;cursor:grab;user-select:none;touch-action:none}.dragging{cursor:grabbing}.title{margin:0 0 6px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#f2b54b}.text{margin:0;font-size:13px;line-height:1.5;color:#f8f5ef}`;
     title.className = "title";
     text.className = "text";
+    wrapper.title = "Drag to move";
     wrapper.append(title, text);
     shadow.append(style, wrapper);
+    let dragPointerId = null;
+    let dragOffsetX = 0;
+    let dragOffsetY = 0;
+    const endOverlayDrag = (event) => {
+      if (dragPointerId === null) {
+        return;
+      }
+      if (event && event.pointerId === dragPointerId && typeof wrapper.releasePointerCapture === "function") {
+        try {
+          wrapper.releasePointerCapture(event.pointerId);
+        } catch {
+        }
+      }
+      dragPointerId = null;
+      wrapper.classList.remove("dragging");
+    };
+    wrapper.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+      const rect = wrapper.getBoundingClientRect();
+      dragPointerId = event.pointerId;
+      dragOffsetX = event.clientX - rect.left;
+      dragOffsetY = event.clientY - rect.top;
+      overlay.position = {
+        top: rect.top,
+        left: rect.left
+      };
+      wrapper.classList.add("dragging");
+      if (typeof wrapper.setPointerCapture === "function") {
+        try {
+          wrapper.setPointerCapture(event.pointerId);
+        } catch {
+        }
+      }
+      event.preventDefault();
+    });
+    wrapper.addEventListener("pointermove", (event) => {
+      if (dragPointerId === null || event.pointerId !== dragPointerId) {
+        return;
+      }
+      overlay.position = {
+        top: event.clientY - dragOffsetY,
+        left: event.clientX - dragOffsetX
+      };
+      syncOverlayPanelPosition();
+    });
+    wrapper.addEventListener("pointerup", (event) => {
+      endOverlayDrag(event);
+    });
+    wrapper.addEventListener("pointercancel", (event) => {
+      endOverlayDrag(event);
+    });
+    window.addEventListener("resize", () => {
+      syncOverlayPanelPosition();
+    });
     const mount = () => {
       if (!host.isConnected)
         document.documentElement.append(host);
@@ -9482,8 +9894,44 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       once: true
     }) : mount();
     overlay.host = host;
+    overlay.panel = wrapper;
     overlay.title = title;
     overlay.text = text;
+  }
+  function clampOverlayPosition(position, panel) {
+    const width = Math.max(
+      panel.offsetWidth,
+      Math.min(340, Math.max(220, window.innerWidth - OVERLAY_EDGE_MARGIN * 2))
+    );
+    const height = Math.max(panel.offsetHeight, 72);
+    const maxLeft = Math.max(
+      OVERLAY_DRAG_PADDING,
+      window.innerWidth - width - OVERLAY_DRAG_PADDING
+    );
+    const maxTop = Math.max(
+      OVERLAY_DRAG_PADDING,
+      window.innerHeight - height - OVERLAY_DRAG_PADDING
+    );
+    return {
+      left: Math.min(Math.max(position.left, OVERLAY_DRAG_PADDING), maxLeft),
+      top: Math.min(Math.max(position.top, OVERLAY_DRAG_PADDING), maxTop)
+    };
+  }
+  function syncOverlayPanelPosition() {
+    if (!overlay.panel) {
+      return;
+    }
+    if (!overlay.position) {
+      overlay.panel.style.top = `${OVERLAY_EDGE_MARGIN}px`;
+      overlay.panel.style.right = `${OVERLAY_EDGE_MARGIN}px`;
+      overlay.panel.style.left = "auto";
+      return;
+    }
+    const clamped = clampOverlayPosition(overlay.position, overlay.panel);
+    overlay.position = clamped;
+    overlay.panel.style.top = `${clamped.top}px`;
+    overlay.panel.style.left = `${clamped.left}px`;
+    overlay.panel.style.right = "auto";
   }
   function renderOverlay() {
     if (!IS_TOP_FRAME) {
@@ -9509,6 +9957,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return;
     }
     overlay.host.style.display = "block";
+    syncOverlayPanelPosition();
     if (status.phase === "completed" || status.phase === "error") {
       overlayHideTimerId = window.setTimeout(() => {
         if (overlay.host)

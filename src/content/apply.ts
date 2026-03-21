@@ -1044,9 +1044,18 @@ export function findGlassdoorApplyAction(): ApplyAction | null {
 }
 
 export function findDiceApplyAction(): ApplyAction | null {
+  const inlineApplyUrl = extractDiceInlineApplyUrl();
+  if (inlineApplyUrl) {
+    return {
+      type: "navigate",
+      url: inlineApplyUrl,
+      description: "Dice apply page",
+    };
+  }
+
   const applyComponents = Array.from(
     document.querySelectorAll<HTMLElement>(
-      "apply-button-wc, [data-cy='apply-button'], [data-cy*='apply'], [class*='apply-button'], [class*='ApplyButton']"
+      "button[data-testid='apply-button'], a[data-testid='apply-button'], [data-testid*='apply-button'], apply-button-wc, [data-cy='apply-button'], [data-cy*='apply'], [class*='apply-button'], [class*='ApplyButton']"
     )
   );
 
@@ -1135,6 +1144,37 @@ export function findDiceApplyAction(): ApplyAction | null {
   return null;
 }
 
+function extractDiceInlineApplyUrl(): string | null {
+  const sources = [
+    ...Array.from(document.querySelectorAll<HTMLScriptElement>("script:not([src])")).map(
+      (script) => script.textContent || ""
+    ),
+    document.documentElement?.innerHTML || "",
+  ];
+
+  for (const source of sources) {
+    const normalizedSource = source
+      .replace(/\\u002F/gi, "/")
+      .replace(/\\u0026/gi, "&")
+      .replace(/\\\//g, "/");
+    const match = normalizedSource.match(
+      /(?:https?:\/\/[^"'\\\s<>{}]+)?\/job-applications\/[a-f0-9-]{8,}\/start-apply(?:[^\s"'\\<>{}]*)?/i
+    );
+    if (!match?.[0]) {
+      continue;
+    }
+
+    const normalizedUrl = normalizeUrl(
+      match[0].replace(/[\\'"]+$/g, "")
+    );
+    if (normalizedUrl) {
+      return normalizedUrl;
+    }
+  }
+
+  return null;
+}
+
 export function hasIndeedApplyIframe(): boolean {
   return Boolean(
     document.querySelector(
@@ -1208,7 +1248,7 @@ export function findProgressionAction(
     const metadata = getElementActionMetadata(element);
     const lower = metadata.toLowerCase();
     const lowerText = text.toLowerCase();
-    if (!lower || lower.length > 140) {
+    if (!lower) {
       continue;
     }
 
@@ -1491,6 +1531,30 @@ function getProgressionCandidateSelectors(
         "[class*='review']",
         ...generic,
       ];
+    case "dice":
+      return [
+        "button[data-testid*='continue']",
+        "button[data-testid*='next']",
+        "button[data-testid*='review']",
+        "button[data-testid*='apply']",
+        "[data-testid*='continue']",
+        "[data-testid*='next']",
+        "[data-testid*='review']",
+        "[data-testid*='apply']",
+        "[data-cy*='continue']",
+        "[data-cy*='next']",
+        "[data-cy*='review']",
+        "[data-cy*='apply']",
+        "[aria-label*='continue' i]",
+        "[aria-label*='next' i]",
+        "[aria-label*='review' i]",
+        "[aria-label*='apply' i]",
+        "[class*='continue']",
+        "[class*='next']",
+        "[class*='review']",
+        "[class*='apply']",
+        ...generic,
+      ];
     default:
       return generic;
   }
@@ -1581,12 +1645,35 @@ function getElementActionMetadata(element: HTMLElement): string {
       element.getAttribute("data-test"),
       element.getAttribute("data-testid"),
       element.getAttribute("data-cy"),
-      element.id,
-      element.className,
+      extractActionSemanticTokens(element.id),
+      extractActionSemanticTokens(
+        typeof element.className === "string" ? element.className : ""
+      ),
     ]
       .filter(Boolean)
       .join(" ")
   );
+}
+
+function extractActionSemanticTokens(value: string): string {
+  if (!value) {
+    return "";
+  }
+
+  const tokenPattern =
+    /(apply|application|continue|next|review|proceed|start|begin|resume|candidate|company|employer|external|zipapply|jobapply)/;
+
+  return value
+    .split(/\s+/)
+    .map((token) => cleanText(token).toLowerCase())
+    .filter((token) => {
+      if (!token || token.includes(":")) {
+        return false;
+      }
+
+      return tokenPattern.test(token);
+    })
+    .join(" ");
 }
 
 function isLikelyApplicationContext(element: HTMLElement): boolean {
@@ -1721,6 +1808,8 @@ export function isLikelyApplyUrl(url: string, site: SiteKey): boolean {
     lower.includes("zipapply") ||
     lower.includes("easyapply") ||
     lower.includes("easy-apply") ||
+    lower.includes("/job-applications/") ||
+    lower.includes("start-apply") ||
     lower.includes("/apply") ||
     lower.includes("application") ||
     lower.includes("candidateexperience") ||

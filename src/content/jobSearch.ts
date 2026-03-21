@@ -205,6 +205,7 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
           ]),
           ...collectCandidatesFromContainers(
             [
+              "[data-testid='job-card']",
               "[data-cy*='search-card']",
               "[data-testid*='search-card']",
               "[class*='search-card']",
@@ -1216,6 +1217,9 @@ export function isCurrentPageAppliedJob(site: SiteKey | null = null): boolean {
 
   for (const text of currentSurfaceTexts) {
     if (isStrongAppliedJobText(text)) {
+      if (site === "dice" && hasVisibleDiceApplySignal()) {
+        return false;
+      }
       return true;
     }
   }
@@ -1564,7 +1568,7 @@ function collectDiceSearchCardCandidates(): JobCandidate[] {
   // Dice uses custom elements like dhi-search-card, dhi-job-card, etc.
   const customElements = Array.from(
     document.querySelectorAll<HTMLElement>(
-      "dhi-search-card, dhi-job-card, dhi-search-cards-widget .card, [data-testid='search-card'], [class*='search-card'], [class*='SearchCard']"
+      "dhi-search-card, dhi-job-card, dhi-search-cards-widget .card, [data-testid='job-card'], [data-testid='search-card'], [class*='search-card'], [class*='SearchCard']"
     )
   );
 
@@ -1590,10 +1594,7 @@ function collectDiceSearchCardCandidates(): JobCandidate[] {
             root.querySelector<HTMLElement>(
               "h5, h3, h2, [class*='card-title'], [class*='job-title'], a"
             ) ?? null;
-          if (
-            titleElement instanceof HTMLAnchorElement &&
-            shouldSkipDiceTitleCandidate(titleElement, card)
-          ) {
+          if (shouldSkipDiceTitleCandidate(titleElement ?? card, card)) {
             continue;
           }
           addJobCandidate(
@@ -1661,36 +1662,17 @@ function collectDiceSearchCardCandidates(): JobCandidate[] {
 }
 
 function shouldSkipDiceTitleCandidate(
-  titleAnchor: HTMLAnchorElement,
+  titleAnchor: HTMLElement | null,
   container: HTMLElement
 ): boolean {
-  const metadata = cleanText(
-    [
-      titleAnchor.className,
-      titleAnchor.id,
-      titleAnchor.getAttribute("data-testid"),
-      titleAnchor.getAttribute("data-cy"),
-      titleAnchor.getAttribute("data-status"),
-      titleAnchor.getAttribute("aria-label"),
-      titleAnchor.getAttribute("title"),
-      container.className,
-      container.id,
-      container.getAttribute("data-testid"),
-      container.getAttribute("data-cy"),
-      container.getAttribute("data-status"),
-      container.getAttribute("aria-label"),
-      container.getAttribute("title"),
-    ]
-      .filter(Boolean)
-      .join(" ")
-  ).toLowerCase();
+  const metadata = buildDiceCandidateMetadata(titleAnchor, container);
 
   if (/\b(applied|viewed|visited|seen|read)\b/.test(metadata)) {
     return true;
   }
 
   const inlineColorSignal = [
-    titleAnchor.getAttribute("style"),
+    titleAnchor?.getAttribute("style"),
     container.getAttribute("style"),
   ]
     .filter(Boolean)
@@ -1701,7 +1683,8 @@ function shouldSkipDiceTitleCandidate(
     return false;
   }
 
-  const color = window.getComputedStyle(titleAnchor).color;
+  const colorSource = titleAnchor ?? container;
+  const color = window.getComputedStyle(colorSource).color;
   if (!color) {
     return false;
   }
@@ -1718,6 +1701,97 @@ function shouldSkipDiceTitleCandidate(
   const min = Math.min(...channels);
 
   return !(max <= 140 && max - min <= 35);
+}
+
+function buildDiceCandidateMetadata(
+  titleAnchor: HTMLElement | null,
+  container: HTMLElement
+): string {
+  const fragments = new Set<string>();
+  const addElementMetadata = (element: HTMLElement | null | undefined) => {
+    if (!element) {
+      return;
+    }
+
+    const metadata = cleanText(
+      [
+        element.innerText || element.textContent || "",
+        extractDiceSemanticStatusTokens(
+          typeof element.className === "string" ? element.className : ""
+        ),
+        element.id,
+        element.getAttribute("data-testid"),
+        element.getAttribute("data-cy"),
+        element.getAttribute("data-status"),
+        element.getAttribute("aria-label"),
+        element.getAttribute("title"),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+
+    if (metadata) {
+      fragments.add(metadata);
+    }
+  };
+
+  addElementMetadata(titleAnchor);
+  addElementMetadata(container);
+
+  const statusSelectors = [
+    "[data-status]",
+    "[data-testid]",
+    "[data-cy]",
+    "[aria-label]",
+    "[title]",
+    "[class*='applied']",
+    "[class*='viewed']",
+    "[class*='visited']",
+    "[class*='seen']",
+    "[class*='read']",
+    "[id*='applied']",
+    "[id*='viewed']",
+    "[id*='visited']",
+    "[id*='seen']",
+    "[id*='read']",
+  ];
+
+  for (const element of Array.from(
+    container.querySelectorAll<HTMLElement>(statusSelectors.join(", "))
+  ).slice(0, 32)) {
+    addElementMetadata(element);
+  }
+
+  return cleanText(Array.from(fragments).join(" ")).toLowerCase();
+}
+
+function extractDiceSemanticStatusTokens(className: string): string {
+  if (!className) {
+    return "";
+  }
+
+  const styleUtilityPrefixes =
+    /^(?:text|bg|border|outline|decoration|fill|stroke|ring|shadow|from|via|to)-/;
+
+  return className
+    .split(/\s+/)
+    .map((token) => cleanText(token).toLowerCase())
+    .filter((token) => {
+      if (!token || token.includes(":")) {
+        return false;
+      }
+
+      if (!/(applied|viewed|visited|seen|read)/.test(token)) {
+        return false;
+      }
+
+      if (styleUtilityPrefixes.test(token)) {
+        return false;
+      }
+
+      return /(?:^|[-_])(applied|viewed|visited|seen|read)(?:$|[-_])/.test(token);
+    })
+    .join(" ");
 }
 
 function filterDiceViewedOrAppliedCandidates(
@@ -2426,14 +2500,16 @@ function dedupeJobCandidates(candidates: JobCandidate[]): JobCandidate[] {
 
 function collectCurrentJobSurfaceTexts(site: SiteKey | null): string[] {
   const primaryTexts = collectCurrentJobSurfaceTextsForSelectors(
-    getPrimaryCurrentJobSurfaceSelectors(site)
+    getPrimaryCurrentJobSurfaceSelectors(site),
+    site
   );
   if (primaryTexts.length > 0) {
     return primaryTexts;
   }
 
   const fallbackTexts = collectCurrentJobSurfaceTextsForSelectors(
-    getFallbackCurrentJobSurfaceSelectors()
+    getFallbackCurrentJobSurfaceSelectors(),
+    site
   );
   if (fallbackTexts.length > 0) {
     return fallbackTexts;
@@ -2517,39 +2593,172 @@ function getFallbackCurrentJobSurfaceSelectors(): string[] {
   ];
 }
 
-function collectCurrentJobSurfaceTextsForSelectors(selectors: string[]): string[] {
-  const texts: string[] = [];
-  const seen = new Set<string>();
+function collectCurrentJobSurfaceElements(selectors: string[]): HTMLElement[] {
+  const elements: HTMLElement[] = [];
+  const seen = new Set<HTMLElement>();
 
   for (const selector of selectors) {
-    let elements: HTMLElement[];
+    let matches: HTMLElement[];
     try {
-      elements = Array.from(document.querySelectorAll<HTMLElement>(selector));
+      matches = Array.from(document.querySelectorAll<HTMLElement>(selector));
     } catch {
       continue;
     }
 
-    for (const element of elements) {
-      if (!isReadableSurfaceElement(element)) {
-        continue;
-      }
-      if (element.closest("aside, nav, header, footer")) {
+    for (const element of matches) {
+      if (seen.has(element)) {
         continue;
       }
 
-      const text = cleanText(element.innerText || element.textContent || "")
-        .toLowerCase()
-        .slice(0, 12000);
-      if (!text || text.length < 40 || seen.has(text)) {
-        continue;
-      }
-
-      seen.add(text);
-      texts.push(text);
+      seen.add(element);
+      elements.push(element);
     }
   }
 
+  return elements;
+}
+
+function collectCurrentJobSurfaceTextsForSelectors(
+  selectors: string[],
+  site: SiteKey | null
+): string[] {
+  const texts: string[] = [];
+  const seen = new Set<string>();
+
+  for (const element of collectCurrentJobSurfaceElements(selectors)) {
+    if (!isReadableSurfaceElement(element)) {
+      continue;
+    }
+    if (element.closest("aside, nav, header, footer")) {
+      continue;
+    }
+
+    const text = cleanText(getCurrentJobSurfaceText(element, site))
+      .toLowerCase()
+      .slice(0, 12000);
+    if (!text || text.length < 40 || seen.has(text)) {
+      continue;
+    }
+
+    seen.add(text);
+    texts.push(text);
+  }
+
   return texts.sort((a, b) => b.length - a.length).slice(0, 4);
+}
+
+function getCurrentJobSurfaceText(
+  element: HTMLElement,
+  site: SiteKey | null
+): string {
+  if (site !== "dice") {
+    return element.innerText || element.textContent || "";
+  }
+
+  const clone = element.cloneNode(true) as HTMLElement;
+  const diceNestedResultSelectors = [
+    "[aria-label='Job search results']",
+    "[data-testid='job-search-results']",
+    "dhi-search-card",
+    "dhi-job-card",
+    "dhi-search-cards-widget",
+    "a[data-testid='job-search-job-detail-link']",
+    "a[data-testid='job-search-job-card-link']",
+  ];
+
+  for (const nested of Array.from(
+    clone.querySelectorAll<HTMLElement>(diceNestedResultSelectors.join(", "))
+  )) {
+    const removalTarget =
+      nested.matches(
+        "a[data-testid='job-search-job-detail-link'], a[data-testid='job-search-job-card-link']"
+      )
+        ? nested.closest<HTMLElement>(
+            "li, article, section, div, dhi-search-card, dhi-job-card"
+          ) ?? nested
+        : nested;
+
+    if (removalTarget && removalTarget !== clone) {
+      removalTarget.remove();
+    }
+  }
+
+  return clone.innerText || clone.textContent || "";
+}
+
+function hasVisibleDiceApplySignal(): boolean {
+  const surfaceElements = collectCurrentJobSurfaceElements([
+    ...getPrimaryCurrentJobSurfaceSelectors("dice"),
+    ...getFallbackCurrentJobSurfaceSelectors(),
+  ]);
+  const applySelectors = [
+    "[data-testid='apply-button']",
+    "[data-testid*='apply' i]",
+    "[data-cy='apply-button']",
+    "[data-cy*='apply']",
+    "apply-button-wc",
+    "button",
+    "a[href]",
+    "[role='button']",
+    "input[type='submit']",
+    "input[type='button']",
+  ];
+
+  for (const surface of surfaceElements) {
+    if (!isReadableSurfaceElement(surface)) {
+      continue;
+    }
+
+    for (const control of Array.from(
+      surface.querySelectorAll<HTMLElement>(applySelectors.join(", "))
+    )) {
+      if (!isReadableSurfaceElement(control)) {
+        continue;
+      }
+      if (isDiceNestedResultElement(control, surface)) {
+        continue;
+      }
+
+      const text = cleanText(
+        [
+          control.innerText || control.textContent || "",
+          control.getAttribute("aria-label"),
+          control.getAttribute("title"),
+          control.getAttribute("data-testid"),
+          control.getAttribute("data-cy"),
+        ]
+          .filter(Boolean)
+          .join(" ")
+      ).toLowerCase();
+
+      if (!text || !text.includes("apply")) {
+        continue;
+      }
+
+      if (
+        ["save", "share", "alert", "job alert", "applied", "already applied"].some(
+          (token) => text.includes(token)
+        )
+      ) {
+        continue;
+      }
+
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isDiceNestedResultElement(
+  element: HTMLElement,
+  surface: HTMLElement
+): boolean {
+  const nestedResultContainer = element.closest<HTMLElement>(
+    "[aria-label='Job search results'], [data-testid='job-search-results'], dhi-search-card, dhi-job-card, dhi-search-cards-widget"
+  );
+
+  return Boolean(nestedResultContainer && nestedResultContainer !== surface);
 }
 
 function isListingOrCategoryUrl(lowerUrl: string): boolean {

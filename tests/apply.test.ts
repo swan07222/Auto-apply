@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   findApplyAction,
   findCompanySiteAction,
+  findDiceApplyAction,
   findGlassdoorApplyAction,
   findMonsterApplyAction,
   findProgressionAction,
@@ -557,6 +558,47 @@ describe("application progression actions", () => {
     expect(action?.description).toBe("Apply Now");
   });
 
+  it("prefers Dice inline start-apply routes when the page embeds them", () => {
+    document.body.innerHTML = `
+      <script>
+        window.__DICE_JOB__ = {
+          startApplyUrl: "/job-applications/d32a5e6b-4beb-4314-9830-a5b0c943d59c/start-apply"
+        };
+      </script>
+      <button data-testid="apply-button">Apply Now</button>
+    `;
+
+    const action = findDiceApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe(
+        `${window.location.origin}/job-applications/d32a5e6b-4beb-4314-9830-a5b0c943d59c/start-apply`
+      );
+    }
+  });
+
+  it("finds Dice progression buttons even when utility classes make the raw metadata very long", () => {
+    document.body.innerHTML = `
+      <section role="dialog" aria-modal="true">
+        <div>Continue your Dice application</div>
+        <button
+          data-testid="continue-button"
+          class="outline-offset-2 outline-stroke-focus forced-colors:outline-[Highlight] relative inline-flex items-center justify-center self-center rounded-full p-[11px] align-middle font-medium [&_span:first-of-type_svg]:block border border-interaction bg-interaction text-white hover:border-interaction-hover hover:bg-interaction-hover pressed:border-interaction-active pressed:bg-interaction-active px-[23px] py-[7px] text-sm [&_span:first-of-type_svg]:h-5 [&_span:first-of-type_svg]:w-5 outline-0 min-h-9 min-w-[126px] w-full"
+        >
+          Continue
+        </button>
+      </section>
+    `;
+
+    const action = findProgressionAction("dice");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.text).toBe("Continue");
+  });
+
   it("prefers external apply links on generic career sites", () => {
     document.body.innerHTML = `
       <section>
@@ -641,6 +683,12 @@ describe("application progression actions", () => {
       isLikelyApplyUrl(
         "https://job-boards.greenhouse.io/example/jobs/1234567?gh_jid=1234567",
         "other_sites"
+      )
+    ).toBe(true);
+    expect(
+      isLikelyApplyUrl(
+        "https://www.dice.com/job-applications/d32a5e6b-4beb-4314-9830-a5b0c943d59c/start-apply",
+        "dice"
       )
     ).toBe(true);
     expect(isLikelyApplyUrl("https://example.com/jobs/123", "other_sites")).toBe(false);

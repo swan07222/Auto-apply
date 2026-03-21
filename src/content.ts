@@ -65,6 +65,7 @@ import {
 import {
   cssEscape,
   cleanText,
+  normalizeChoiceText,
 } from "./content/text";
 import {
   applyAnswerToCheckbox,
@@ -72,20 +73,24 @@ import {
   selectOptionByAnswer,
 } from "./content/choiceFill";
 import {
+  findDiceUploadPanel,
+  findPreferredDiceResumeMenuButton,
+  findDiceResumePanel,
+  findScopedResumeUploadContainer,
   getResumeAssetUploadKey,
-  hasSelectedMatchingFile,
   getSelectedFileName,
+  isLikelyCoverLetterFileInput,
+  pickResumeUploadTargets,
   pickResumeAssetForUpload,
   resolveResumeKindForJob,
-  scoreResumeFileInputPreference,
   shouldAttemptResumeUpload,
-  shouldUseFileInputForResume,
 } from "./content/resumeUpload";
 import {
   collectDeepMatches,
   getActionText,
   getNavigationUrl,
   isExternalUrl,
+  isElementVisible,
   normalizeUrl,
   performClickAction,
   isElementInteractive,
@@ -161,10 +166,17 @@ type ClaimedJobOpeningsResult = {
   limit: number;
 };
 
+type OverlayPosition = {
+  top: number;
+  left: number;
+};
+
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
 
 const MAX_AUTOFILL_STEPS = 15;
 const OVERLAY_AUTO_HIDE_MS = 10_000;
+const OVERLAY_EDGE_MARGIN = 18;
+const OVERLAY_DRAG_PADDING = 12;
 const MAX_STAGE_DEPTH = 10;
 const IS_TOP_FRAME = window.top === window;
 
@@ -218,12 +230,16 @@ const extensionManagedResumeUploads = new WeakMap<
 
 const overlay: {
   host: HTMLDivElement | null;
+  panel: HTMLElement | null;
   title: HTMLDivElement | null;
   text: HTMLDivElement | null;
+  position: OverlayPosition | null;
 } = {
   host: null,
+  panel: null,
   title: null,
   text: null,
+  position: null,
 };
 
 const applicationSurfaceCollectors = {
@@ -369,6 +385,24 @@ function hasLikelyApplicationPageContent(): boolean {
 
 function hasLikelyApplicationSurface(site: SiteKey): boolean {
   return detectLikelyApplicationSurface(site, applicationSurfaceCollectors);
+}
+
+function shouldTreatCurrentPageAsApplied(site: SiteKey): boolean {
+  if (!isCurrentPageAppliedJob(site)) {
+    return false;
+  }
+
+  if (site !== "dice") {
+    return true;
+  }
+
+  if (hasLikelyApplicationSurface(site)) {
+    return false;
+  }
+
+  const diceApplyAction =
+    findDiceApplyAction() ?? findApplyAction(site, "job-page");
+  return !diceApplyAction;
 }
 
 function enterStageRetryScope(stage: AutomationStage): number {
@@ -771,18 +805,24 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
       "Add at least one search keyword in the extension before starting job board automation."
     );
   }
-  const items: SpawnTabRequest[] = targets.map((target) => ({
-    url: target.url,
-    site,
-    stage: "collect-results" as const,
-    runId: currentRunId,
-    jobSlots: settings.jobPageLimit,
-    message: `Collecting ${target.label} job pages on ${getSiteLabel(site)}...`,
-    label: target.label,
-    resumeKind: target.resumeKind,
-    profileId: currentProfileId,
-    keyword: target.keyword,
-  }));
+  const jobSlots = distributeJobSlotsAcrossTargets(
+    settings.jobPageLimit,
+    targets.length
+  );
+  const items: SpawnTabRequest[] = targets
+    .map((target, index) => ({
+      url: target.url,
+      site,
+      stage: "collect-results" as const,
+      runId: currentRunId,
+      jobSlots: jobSlots[index],
+      message: `Collecting ${target.label} job pages on ${getSiteLabel(site)}...`,
+      label: target.label,
+      resumeKind: target.resumeKind,
+      profileId: currentProfileId,
+      keyword: target.keyword,
+    }))
+    .filter((item) => (item.jobSlots ?? 0) > 0);
 
   const response = await spawnTabs(items);
 
@@ -1100,7 +1140,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
   const urlAtStart = window.location.href;
 
-  if (isCurrentPageAppliedJob(site)) {
+  if (shouldTreatCurrentPageAsApplied(site)) {
     updateStatus(
       "completed",
       "Skipped - already applied.",
@@ -1222,13 +1262,10 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       if (action) break;
     }
 
-    // FIX: For Dice, try the generic apply finder with the site hint
+    // Prefer Dice's inline start-apply route or dedicated button finder
+    // before falling back to the generic scorer.
     if (site === "dice") {
-      action = findApplyAction(site, "job-page");
-      if (action) break;
-
-      // FIX: Also check Dice shadow DOM for apply buttons
-      action = findDiceApplyAction();
+      action = findDiceApplyAction() ?? findApplyAction(site, "job-page");
       if (action) break;
     }
 
@@ -1677,7 +1714,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     return;
   }
 
-  if (isCurrentPageAppliedJob(site)) {
+  if (shouldTreatCurrentPageAsApplied(site)) {
     updateStatus(
       "completed",
       "Skipped - already applied.",
@@ -2180,6 +2217,12 @@ async function uploadResumeIfNeeded(
 ): Promise<ResumeAsset | null> {
   const resume = pickResumeAsset(settings);
   if (!resume) return null;
+  const currentSite = detectSiteFromUrl(window.location.href);
+
+  if (currentSite === "dice") {
+    return null;
+  }
+
   const resumeUploadKey = getResumeAssetUploadKey(resume);
 
   const fileInputs = collectResumeFileInputs();
@@ -2190,44 +2233,25 @@ async function uploadResumeIfNeeded(
     const hiddenFileInputs = Array.from(
       document.querySelectorAll<HTMLInputElement>("input[type='file']")
     );
-    const rankedHiddenTargets = hiddenFileInputs
-      .map((input, index) => ({
-        input,
-        index,
-        score: scoreResumeFileInputPreference(input, hiddenFileInputs.length),
-      }))
-      .sort(
-        (left, right) =>
-          right.score - left.score || left.index - right.index
-      );
-    const satisfiedHiddenTarget = rankedHiddenTargets.find(
-      ({ input, score }) =>
-        score > 0 &&
-        (extensionManagedResumeUploads.get(input) === resumeUploadKey ||
-          hasSelectedMatchingFile(input, resume.name))
-    );
+    const {
+      alreadySatisfied: satisfiedHiddenTarget,
+      targets: fallbackHiddenTargets,
+    } = pickResumeUploadTargets({
+      inputs: hiddenFileInputs,
+      assetName: resume.name,
+      uploadKey: resumeUploadKey,
+      extensionManagedUploads: extensionManagedResumeUploads,
+    });
 
     if (satisfiedHiddenTarget) {
-      if (extensionManagedResumeUploads.get(satisfiedHiddenTarget.input) !== resumeUploadKey) {
+      if (extensionManagedResumeUploads.get(satisfiedHiddenTarget) !== resumeUploadKey) {
         extensionManagedResumeUploads.set(
-          satisfiedHiddenTarget.input,
+          satisfiedHiddenTarget,
           resumeUploadKey
         );
       }
       return resume;
     }
-
-    const hiddenTargets = rankedHiddenTargets
-      .filter((entry) =>
-        shouldUseFileInputForResume(entry.input, hiddenFileInputs.length)
-      )
-      .map((entry) => entry.input);
-    const fallbackHiddenTargets =
-      hiddenTargets.length > 0
-        ? hiddenTargets
-        : hiddenFileInputs.length === 1
-          ? hiddenFileInputs
-          : [];
 
     for (const input of fallbackHiddenTargets) {
       if (input.disabled) continue;
@@ -2256,48 +2280,25 @@ async function uploadResumeIfNeeded(
     return null;
   }
 
-  const rankedTargets = fileInputs
-    .map((input, index) => ({
-      input,
-      index,
-      score: scoreResumeFileInputPreference(input, fileInputs.length),
-    }))
-    .sort(
-      (left, right) =>
-        right.score - left.score || left.index - right.index
-    );
-
-  const alreadySatisfiedTarget = rankedTargets.find(
-    ({ input, score }) =>
-      score > 0 &&
-      (extensionManagedResumeUploads.get(input) === resumeUploadKey ||
-        hasSelectedMatchingFile(input, resume.name))
-  );
+  const {
+    alreadySatisfied: alreadySatisfiedTarget,
+    targets,
+  } = pickResumeUploadTargets({
+    inputs: fileInputs,
+    assetName: resume.name,
+    uploadKey: resumeUploadKey,
+    extensionManagedUploads: extensionManagedResumeUploads,
+  });
 
   if (alreadySatisfiedTarget) {
-    if (extensionManagedResumeUploads.get(alreadySatisfiedTarget.input) !== resumeUploadKey) {
+    if (extensionManagedResumeUploads.get(alreadySatisfiedTarget) !== resumeUploadKey) {
       extensionManagedResumeUploads.set(
-        alreadySatisfiedTarget.input,
+        alreadySatisfiedTarget,
         resumeUploadKey
       );
     }
     return resume;
   }
-
-  const usable = rankedTargets
-    .filter((entry) =>
-      shouldUseFileInputForResume(entry.input, fileInputs.length)
-    )
-    .map((entry) => entry.input);
-
-  // Keep a single-input fallback for simple forms, but avoid uploading the
-  // resume into every generic attachment/cover-letter field on multi-file pages.
-  const targets =
-    usable.length > 0
-      ? usable
-      : fileInputs.length === 1
-        ? fileInputs
-        : [];
 
   for (const input of targets) {
     const lastAttemptAt =
@@ -2325,6 +2326,328 @@ async function uploadResumeIfNeeded(
     } catch { /* ignore */ }
   }
   return null;
+}
+
+async function handleDiceResumeUpload(
+  resume: ResumeAsset,
+  resumeUploadKey: string
+): Promise<boolean> {
+  const resumePanel = findDiceUploadPanel("resume");
+  const coverLetterPanel = findDiceUploadPanel("cover_letter");
+
+  if (!resumePanel && !coverLetterPanel) {
+    return false;
+  }
+
+  // Dice flow: always do a cleanup pass first, then upload the resume.
+  if (coverLetterPanel) {
+    await clearDicePanelAttachment(coverLetterPanel);
+  }
+
+  if (resumePanel) {
+    await clearDicePanelAttachment(resumePanel);
+  }
+
+  await sleep(300);
+
+  const refreshedResumePanel = findDiceUploadPanel("resume") ?? resumePanel;
+  if (!refreshedResumePanel) {
+    return false;
+  }
+
+  const targets = collectDiceResumeReplacementInputs(refreshedResumePanel);
+  for (const input of targets) {
+    if (await tryUploadResumeToInput(input, resume, resumeUploadKey)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function clearDicePanelAttachment(panel: HTMLElement): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (!dicePanelLooksFilled(panel)) {
+      return;
+    }
+
+    const menuButton = findPreferredDiceResumeMenuButton(panel);
+    if (!menuButton) {
+      return;
+    }
+
+    performClickAction(menuButton);
+    await sleep(300);
+
+    const removeAction = findDicePanelRemoveAction(panel);
+    if (!removeAction) {
+      return;
+    }
+
+    performClickAction(removeAction);
+    await sleep(700);
+  }
+}
+
+function dicePanelLooksFilled(panel: HTMLElement): boolean {
+  const text = normalizeChoiceText(cleanText(panel.textContent).slice(0, 800));
+  if (!text) {
+    return false;
+  }
+
+  return (
+    text.includes("uploaded to application") ||
+    text.includes("uploaded to profile") ||
+    text.includes(".pdf") ||
+    text.includes(".doc") ||
+    text.includes(".docx") ||
+    text.includes(".rtf")
+  );
+}
+
+function distributeJobSlotsAcrossTargets(
+  totalSlots: number,
+  targetCount: number
+): number[] {
+  const safeTargetCount = Math.max(0, Math.floor(targetCount));
+  const safeTotalSlots = Math.max(0, Math.floor(totalSlots));
+  const slots = new Array<number>(safeTargetCount).fill(0);
+
+  for (let index = 0; index < safeTotalSlots; index += 1) {
+    if (safeTargetCount === 0) {
+      break;
+    }
+    slots[index % safeTargetCount] += 1;
+  }
+
+  return slots;
+}
+
+function findDicePanelRemoveAction(panel: HTMLElement): HTMLElement | null {
+  const panelRect = panel.getBoundingClientRect();
+  const candidates = collectDeepMatches<HTMLElement>(
+    "button, [role='button'], [role='menuitem'], li"
+  ).filter((element) => {
+    if (!isElementVisible(element)) {
+      return false;
+    }
+
+    const text = normalizeChoiceText(getActionText(element));
+    return (
+      text.includes("remove") ||
+      text.includes("delete") ||
+      text.includes("clear")
+    );
+  });
+
+  let best:
+    | {
+        element: HTMLElement;
+        score: number;
+      }
+    | undefined;
+
+  for (const candidate of candidates) {
+    const text = normalizeChoiceText(getActionText(candidate));
+    let score = 0;
+
+    if (text.includes("remove")) score += 90;
+    if (text.includes("delete")) score += 80;
+    if (text.includes("clear")) score += 70;
+
+    const rect = candidate.getBoundingClientRect();
+    const distance =
+      Math.abs(rect.top - panelRect.top) + Math.abs(rect.left - panelRect.right);
+    score -= Math.min(distance / 25, 30);
+
+    if (!best || score > best.score) {
+      best = {
+        element: candidate,
+        score,
+      };
+    }
+  }
+
+  return best?.element ?? null;
+}
+
+async function tryReplaceExistingDiceResume(
+  panel: HTMLElement,
+  resume: ResumeAsset,
+  resumeUploadKey: string
+): Promise<boolean> {
+  panel.scrollIntoView({
+    behavior: "smooth",
+    block: "center",
+  });
+  await sleep(250);
+
+  const menuButton = findPreferredDiceResumeMenuButton(panel);
+  if (!menuButton) {
+    return false;
+  }
+
+  performClickAction(menuButton);
+  await sleep(350);
+
+  const directTargets = collectDiceResumeReplacementInputs(panel);
+  for (const input of directTargets) {
+    if (await tryUploadResumeToInput(input, resume, resumeUploadKey)) {
+      return true;
+    }
+  }
+
+  const replaceAction = findDiceResumeReplaceAction(panel);
+  if (!replaceAction) {
+    return false;
+  }
+
+  performClickAction(replaceAction);
+  await sleep(450);
+
+  const targets = collectDiceResumeReplacementInputs(panel);
+  for (const input of targets) {
+    if (await tryUploadResumeToInput(input, resume, resumeUploadKey)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function collectDiceResumeReplacementInputs(
+  panel: HTMLElement
+): HTMLInputElement[] {
+  const panelInputs = Array.from(
+    panel.querySelectorAll<HTMLInputElement>("input[type='file']")
+  );
+  const visibleAndHiddenInputs = Array.from(
+    document.querySelectorAll<HTMLInputElement>("input[type='file']")
+  );
+  const strictTargets = pickResumeUploadTargets({
+    inputs: visibleAndHiddenInputs,
+    assetName: "",
+    uploadKey: "",
+    extensionManagedUploads: extensionManagedResumeUploads,
+  }).targets.filter((input) => {
+    const context = normalizeChoiceText(
+      cleanText(
+        [
+          input.name,
+          input.id,
+          input.getAttribute("aria-label"),
+          input.getAttribute("title"),
+          input.closest("label, section, article, div, form")?.textContent,
+        ]
+          .filter(Boolean)
+          .join(" ")
+      )
+    );
+
+    return (
+      panel.contains(input) ||
+      context.includes("resume") ||
+      context.includes("upload resume") ||
+      context.includes("replace resume")
+    );
+  });
+
+  const unique = new Set<HTMLInputElement>([...panelInputs, ...strictTargets]);
+  return Array.from(unique).filter(
+    (input) => !input.disabled && !isLikelyCoverLetterFileInput(input)
+  );
+}
+
+function findDiceResumeReplaceAction(
+  panel: HTMLElement
+): HTMLElement | null {
+  const candidates = collectDeepMatches<HTMLElement>(
+    "button, [role='button'], [role='menuitem'], li"
+  ).filter((element) => {
+    if (!isElementVisible(element)) {
+      return false;
+    }
+
+    const text = normalizeChoiceText(getActionText(element));
+    if (!text) {
+      return false;
+    }
+
+    return (
+      text.includes("replace") ||
+      text.includes("change resume") ||
+      text.includes("update resume") ||
+      text.includes("edit resume") ||
+      text.includes("upload new")
+    );
+  });
+
+  let best:
+    | {
+        element: HTMLElement;
+        score: number;
+      }
+    | undefined;
+
+  const panelRect = panel.getBoundingClientRect();
+
+  for (const candidate of candidates) {
+    const text = normalizeChoiceText(getActionText(candidate));
+    let score = 0;
+
+    if (text.includes("replace")) score += 90;
+    if (text.includes("change")) score += 60;
+    if (text.includes("update")) score += 55;
+    if (text.includes("edit")) score += 45;
+    if (text.includes("upload new")) score += 40;
+
+    const rect = candidate.getBoundingClientRect();
+    const distance =
+      Math.abs(rect.top - panelRect.top) + Math.abs(rect.left - panelRect.right);
+    score -= Math.min(distance / 25, 30);
+
+    if (!best || score > best.score) {
+      best = {
+        element: candidate,
+        score,
+      };
+    }
+  }
+
+  return best?.element ?? null;
+}
+
+async function tryUploadResumeToInput(
+  input: HTMLInputElement,
+  resume: ResumeAsset,
+  resumeUploadKey: string
+): Promise<boolean> {
+  const lastAttemptAt = recentResumeUploadAttempts.get(input) ?? 0;
+  const now = Date.now();
+  if (
+    !shouldAttemptResumeUpload(
+      input,
+      resume.name,
+      lastAttemptAt > 0 ? lastAttemptAt : null,
+      now,
+      undefined,
+      extensionManagedResumeUploads.get(input) === resumeUploadKey
+    )
+  ) {
+    return false;
+  }
+
+  recentResumeUploadAttempts.set(input, now);
+  try {
+    if (await setFileInputValue(input, resume)) {
+      extensionManagedResumeUploads.set(input, resumeUploadKey);
+      return true;
+    }
+  } catch {
+    // Ignore and let other candidate inputs try.
+  }
+
+  return false;
 }
 
 function pickResumeAsset(
@@ -2469,13 +2792,16 @@ function collectResumeUploadEventTargets(
   input: HTMLInputElement
 ): HTMLElement[] {
   const targets = new Set<HTMLElement>();
+  const scopedContainer = findScopedResumeUploadContainer(input);
 
   const id = input.id.trim();
   if (id) {
     for (const label of Array.from(
       document.querySelectorAll<HTMLElement>(`label[for='${cssEscape(id)}']`)
     )) {
-      targets.add(label);
+      if (!scopedContainer || scopedContainer.contains(label)) {
+        targets.add(label);
+      }
     }
   }
 
@@ -2494,11 +2820,15 @@ function collectResumeUploadEventTargets(
     input.closest("[data-test*='resume']"),
     input.closest("[data-testid*='resume']"),
     input.closest("[data-testid*='upload']"),
-    input.form,
+    scopedContainer,
   ];
 
   for (const candidate of candidates) {
-    if (candidate instanceof HTMLElement && candidate !== input) {
+    if (
+      candidate instanceof HTMLElement &&
+      candidate !== input &&
+      (!scopedContainer || scopedContainer.contains(candidate) || candidate === scopedContainer)
+    ) {
       targets.add(candidate);
     }
   }
@@ -3054,11 +3384,83 @@ function ensureOverlay(): void {
     title = document.createElement("div"),
     text = document.createElement("div"),
     style = document.createElement("style");
-  style.textContent = `:host{all:initial}section{position:fixed;top:18px;right:18px;z-index:2147483647;width:min(340px,calc(100vw - 36px));padding:14px 16px;border-radius:16px;background:rgba(18,34,53,.94);color:#f6efe2;font-family:"Segoe UI",sans-serif;box-shadow:0 16px 40px rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(12px);transition:opacity .3s}.title{margin:0 0 6px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#f2b54b}.text{margin:0;font-size:13px;line-height:1.5;color:#f8f5ef}`;
+  style.textContent = `:host{all:initial}section{position:fixed;top:${OVERLAY_EDGE_MARGIN}px;right:${OVERLAY_EDGE_MARGIN}px;z-index:2147483647;width:min(340px,calc(100vw - 36px));padding:14px 16px;border-radius:16px;background:rgba(18,34,53,.94);color:#f6efe2;font-family:"Segoe UI",sans-serif;box-shadow:0 16px 40px rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(12px);transition:opacity .3s;cursor:grab;user-select:none;touch-action:none}.dragging{cursor:grabbing}.title{margin:0 0 6px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#f2b54b}.text{margin:0;font-size:13px;line-height:1.5;color:#f8f5ef}`;
   title.className = "title";
   text.className = "text";
+  wrapper.title = "Drag to move";
   wrapper.append(title, text);
   shadow.append(style, wrapper);
+
+  let dragPointerId: number | null = null;
+  let dragOffsetX = 0;
+  let dragOffsetY = 0;
+  const endOverlayDrag = (event?: PointerEvent) => {
+    if (dragPointerId === null) {
+      return;
+    }
+
+    if (
+      event &&
+      event.pointerId === dragPointerId &&
+      typeof wrapper.releasePointerCapture === "function"
+    ) {
+      try {
+        wrapper.releasePointerCapture(event.pointerId);
+      } catch {
+        // Ignore capture release failures from detached states.
+      }
+    }
+
+    dragPointerId = null;
+    wrapper.classList.remove("dragging");
+  };
+
+  wrapper.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const rect = wrapper.getBoundingClientRect();
+    dragPointerId = event.pointerId;
+    dragOffsetX = event.clientX - rect.left;
+    dragOffsetY = event.clientY - rect.top;
+    overlay.position = {
+      top: rect.top,
+      left: rect.left,
+    };
+    wrapper.classList.add("dragging");
+    if (typeof wrapper.setPointerCapture === "function") {
+      try {
+        wrapper.setPointerCapture(event.pointerId);
+      } catch {
+        // Ignore capture failures from browsers that reject this state.
+      }
+    }
+    event.preventDefault();
+  });
+
+  wrapper.addEventListener("pointermove", (event) => {
+    if (dragPointerId === null || event.pointerId !== dragPointerId) {
+      return;
+    }
+
+    overlay.position = {
+      top: event.clientY - dragOffsetY,
+      left: event.clientX - dragOffsetX,
+    };
+    syncOverlayPanelPosition();
+  });
+
+  wrapper.addEventListener("pointerup", (event) => {
+    endOverlayDrag(event);
+  });
+  wrapper.addEventListener("pointercancel", (event) => {
+    endOverlayDrag(event);
+  });
+  window.addEventListener("resize", () => {
+    syncOverlayPanelPosition();
+  });
+
   const mount = () => {
     if (!host.isConnected)
       document.documentElement.append(host);
@@ -3069,8 +3471,52 @@ function ensureOverlay(): void {
       })
     : mount();
   overlay.host = host;
+  overlay.panel = wrapper;
   overlay.title = title;
   overlay.text = text;
+}
+
+function clampOverlayPosition(
+  position: OverlayPosition,
+  panel: HTMLElement
+): OverlayPosition {
+  const width = Math.max(
+    panel.offsetWidth,
+    Math.min(340, Math.max(220, window.innerWidth - OVERLAY_EDGE_MARGIN * 2))
+  );
+  const height = Math.max(panel.offsetHeight, 72);
+  const maxLeft = Math.max(
+    OVERLAY_DRAG_PADDING,
+    window.innerWidth - width - OVERLAY_DRAG_PADDING
+  );
+  const maxTop = Math.max(
+    OVERLAY_DRAG_PADDING,
+    window.innerHeight - height - OVERLAY_DRAG_PADDING
+  );
+
+  return {
+    left: Math.min(Math.max(position.left, OVERLAY_DRAG_PADDING), maxLeft),
+    top: Math.min(Math.max(position.top, OVERLAY_DRAG_PADDING), maxTop),
+  };
+}
+
+function syncOverlayPanelPosition(): void {
+  if (!overlay.panel) {
+    return;
+  }
+
+  if (!overlay.position) {
+    overlay.panel.style.top = `${OVERLAY_EDGE_MARGIN}px`;
+    overlay.panel.style.right = `${OVERLAY_EDGE_MARGIN}px`;
+    overlay.panel.style.left = "auto";
+    return;
+  }
+
+  const clamped = clampOverlayPosition(overlay.position, overlay.panel);
+  overlay.position = clamped;
+  overlay.panel.style.top = `${clamped.top}px`;
+  overlay.panel.style.left = `${clamped.left}px`;
+  overlay.panel.style.right = "auto";
 }
 
 function renderOverlay(): void {
@@ -3110,6 +3556,7 @@ function renderOverlay(): void {
     return;
   }
   overlay.host.style.display = "block";
+  syncOverlayPanelPosition();
   if (
     status.phase === "completed" ||
     status.phase === "error"

@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_SETTINGS, getJobDedupKey } from "../src/shared";
+import {
+  DEFAULT_SETTINGS,
+  getJobDedupKey,
+  getSpawnDedupKey,
+} from "../src/shared";
 import { createMockChromeStorageLocal } from "./helpers/mockChromeStorage";
 
 type BackgroundMessageListener = (
@@ -1356,6 +1360,85 @@ describe("background spawn quota handling", () => {
       expect.objectContaining({
         openedJobPages: 1,
         openedJobKeys: [getJobDedupKey(existingJobUrl)],
+      })
+    );
+  });
+
+  it("allows Dice to open a separate apply tab for the same claimed job when only the detail page is active", async () => {
+    const runId = "run-dice-apply-handoff";
+    const runStateKey = `remote-job-search-run:${runId}`;
+    const detailUrl =
+      "https://www.dice.com/job-detail/b80c4b11-d26a-4de7-aa69-e2ef924e2987";
+    const applyUrl =
+      "https://www.dice.com/job-applications/b80c4b11-d26a-4de7-aa69-e2ef924e2987/start-apply";
+    const createTabMock = vi.fn().mockResolvedValue({ id: 101 });
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 2,
+          openedJobPages: 1,
+          openedJobKeys: [getJobDedupKey(detailUrl)],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          updatedAt: 1,
+        },
+        "remote-job-search-session:42": {
+          tabId: 42,
+          site: "dice",
+          phase: "running",
+          message: "Opening Dice job page...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "open-apply",
+          runId,
+          claimedJobKey: getJobDedupKey(detailUrl),
+          openedUrlKey: getSpawnDedupKey(detailUrl),
+        },
+      },
+      createTabMock
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "spawn-tabs",
+        items: [
+          {
+            url: applyUrl,
+            site: "dice",
+            stage: "open-apply",
+            runId,
+            active: true,
+            claimedJobKey: getJobDedupKey(detailUrl),
+          },
+        ],
+      },
+      {
+        tab: {
+          id: 42,
+          index: 0,
+          url: detailUrl,
+        },
+      }
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      opened: 1,
+    });
+    expect(createTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: applyUrl,
+        active: true,
+      })
+    );
+    expect(chromeMock.local.state[runStateKey]).toEqual(
+      expect.objectContaining({
+        openedJobPages: 1,
+        openedJobKeys: [getJobDedupKey(detailUrl)],
       })
     );
   });

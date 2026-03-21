@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  findDiceUploadPanel,
+  findDiceResumeMenuButton,
+  findDiceResumePanel,
+  findScopedResumeUploadContainer,
   getResumeAssetUploadKey,
   getSelectedFileName,
   hasSelectedMatchingFile,
   inferResumeKindFromLabel,
+  isLikelyCoverLetterFileInput,
+  pickResumeUploadTargets,
   pickResumeAssetForUpload,
   resolveResumeKindForJob,
   scoreResumeFileInputPreference,
@@ -202,5 +208,215 @@ describe("resume upload helpers", () => {
 
     expect(scoreResumeFileInputPreference(coverInput, 2)).toBeLessThan(0);
     expect(scoreResumeFileInputPreference(resumeInput, 2)).toBeGreaterThan(0);
+  });
+
+  it("prefers the Dice resume panel over the cover-letter panel", () => {
+    document.body.innerHTML = `
+      <section class="dice-apply-form">
+        <div class="upload-panel cover-letter-panel">
+          <h3>Cover Letter</h3>
+          <label for="dice-cover">Upload cover letter</label>
+          <input id="dice-cover" name="coverLetterFile" type="file" />
+        </div>
+        <div class="upload-panel resume-panel">
+          <h3>Resume</h3>
+          <label for="dice-resume">Upload resume</label>
+          <input id="dice-resume" name="resumeFile" type="file" accept=".pdf,.doc,.docx" />
+        </div>
+      </section>
+    `;
+
+    const coverInput = document.querySelector("#dice-cover") as HTMLInputElement;
+    const resumeInput = document.querySelector("#dice-resume") as HTMLInputElement;
+
+    expect(scoreResumeFileInputPreference(coverInput, 2)).toBeLessThan(0);
+    expect(scoreResumeFileInputPreference(resumeInput, 2)).toBeGreaterThan(0);
+    expect(scoreResumeFileInputPreference(resumeInput, 2)).toBeGreaterThan(
+      scoreResumeFileInputPreference(coverInput, 2)
+    );
+  });
+
+  it("keeps targeting the populated resume field instead of the empty cover-letter field", () => {
+    document.body.innerHTML = `
+      <section>
+        <div>
+          <div>Resume</div>
+          <input id="resume-existing" name="resume" type="file" />
+        </div>
+        <div>
+          <div>Cover letter</div>
+          <input id="cover-empty" name="coverLetter" type="file" />
+        </div>
+      </section>
+    `;
+
+    const resumeInput = document.querySelector("#resume-existing") as HTMLInputElement;
+    const coverInput = document.querySelector("#cover-empty") as HTMLInputElement;
+
+    Object.defineProperty(resumeInput, "files", {
+      configurable: true,
+      value: [{ name: "site-profile-resume.pdf" }],
+    });
+
+    const selection = pickResumeUploadTargets({
+      inputs: [resumeInput, coverInput],
+      assetName: "custom-resume.pdf",
+      uploadKey: "custom-resume.pdf:1:1",
+      extensionManagedUploads: new Map(),
+    });
+
+    expect(selection.alreadySatisfied).toBeNull();
+    expect(selection.targets).toEqual([resumeInput]);
+  });
+
+  it("never treats the cover-letter uploader as a resume target", () => {
+    document.body.innerHTML = `
+      <section>
+        <div>
+          <div>Cover letter</div>
+          <label for="cover-only">Upload your cover letter</label>
+          <input id="cover-only" name="coverLetterFile" type="file" />
+        </div>
+      </section>
+    `;
+
+    const coverInput = document.querySelector("#cover-only") as HTMLInputElement;
+
+    expect(isLikelyCoverLetterFileInput(coverInput)).toBe(true);
+    expect(
+      pickResumeUploadTargets({
+        inputs: [coverInput],
+        assetName: "resume.pdf",
+        uploadKey: "resume.pdf:1:1",
+        extensionManagedUploads: new Map(),
+      }).targets
+    ).toEqual([]);
+  });
+
+  it("scopes resume upload events to the resume panel instead of the whole form", () => {
+    document.body.innerHTML = `
+      <form class="dice-apply-form">
+        <div class="panel resume-panel">
+          <div>Resume</div>
+          <label for="resume-file">Upload your resume</label>
+          <input id="resume-file" name="resumeFile" type="file" />
+        </div>
+        <div class="panel cover-panel">
+          <div>Cover letter</div>
+          <label for="cover-file">Upload your cover letter</label>
+          <input id="cover-file" name="coverLetterFile" type="file" />
+        </div>
+      </form>
+    `;
+
+    const resumeInput = document.querySelector("#resume-file") as HTMLInputElement;
+    const scoped = findScopedResumeUploadContainer(resumeInput);
+
+    expect(scoped).toBe(document.querySelector(".resume-panel"));
+    expect(scoped).not.toBe(document.querySelector("form"));
+  });
+
+  it("finds the existing Dice resume panel instead of the cover-letter panel", () => {
+    document.body.innerHTML = `
+      <section class="resume-cover-wrapper">
+        <div class="resume-card">
+          <div>Resume</div>
+          <div>Gary Cole Resume.pdf</div>
+          <div>Uploaded to application on 3/21/2026</div>
+          <button aria-label="More resume actions">...</button>
+        </div>
+        <div class="cover-card">
+          <div>Cover letter</div>
+          <div>Upload your cover letter</div>
+          <button aria-label="Upload cover letter">Upload</button>
+        </div>
+      </section>
+    `;
+
+    for (const element of Array.from(document.querySelectorAll<HTMLElement>(".resume-card, .cover-card, button"))) {
+      Object.defineProperty(element, "getBoundingClientRect", {
+        configurable: true,
+        value: () => ({
+          width: 200,
+          height: 40,
+          top: 0,
+          left: 0,
+          right: 200,
+          bottom: 40,
+        }),
+      });
+    }
+
+    const panel = findDiceResumePanel();
+
+    expect(panel).toBe(document.querySelector(".resume-card"));
+  });
+
+  it("finds both Dice resume and cover-letter panels by kind", () => {
+    document.body.innerHTML = `
+      <section class="resume-cover-wrapper">
+        <div class="resume-card">
+          <div>Resume</div>
+          <div>Upload your resume</div>
+        </div>
+        <div class="cover-card">
+          <div>Cover letter</div>
+          <div>Upload your cover letter</div>
+          <div>Optional</div>
+        </div>
+      </section>
+    `;
+
+    for (const element of Array.from(document.querySelectorAll<HTMLElement>(".resume-card, .cover-card"))) {
+      Object.defineProperty(element, "getBoundingClientRect", {
+        configurable: true,
+        value: () => ({
+          width: 200,
+          height: 60,
+          top: 0,
+          left: 0,
+          right: 200,
+          bottom: 60,
+        }),
+      });
+    }
+
+    expect(findDiceUploadPanel("resume")).toBe(
+      document.querySelector(".resume-card")
+    );
+    expect(findDiceUploadPanel("cover_letter")).toBe(
+      document.querySelector(".cover-card")
+    );
+  });
+
+  it("finds the three-dot Dice resume actions button", () => {
+    document.body.innerHTML = `
+      <div class="resume-card">
+        <div>Resume</div>
+        <div>Gary Cole Resume.pdf</div>
+        <div>Uploaded to application on 3/21/2026</div>
+        <button aria-label="More resume actions">...</button>
+        <button aria-label="Download resume">Download</button>
+      </div>
+    `;
+
+    const panel = document.querySelector(".resume-card") as HTMLElement;
+    for (const element of Array.from(panel.querySelectorAll<HTMLElement>("button")).concat(panel)) {
+      Object.defineProperty(element, "getBoundingClientRect", {
+        configurable: true,
+        value: () => ({
+          width: 120,
+          height: 32,
+          top: 0,
+          left: 0,
+          right: 120,
+          bottom: 32,
+        }),
+      });
+    }
+
+    const menuButton = findDiceResumeMenuButton(panel);
+
+    expect(menuButton).toBe(panel.querySelector("button[aria-label='More resume actions']"));
   });
 });

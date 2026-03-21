@@ -5,6 +5,7 @@ import {
   inferResumeKindFromTitle,
 } from "../shared";
 import { getFieldDescriptor, getQuestionText } from "./autofill";
+import { getActionText, isElementVisible } from "./dom";
 import { cleanText, normalizeChoiceText } from "./text";
 
 export function getSelectedFileName(input: HTMLInputElement): string {
@@ -283,4 +284,414 @@ export function shouldUseFileInputForResume(
   count: number
 ): boolean {
   return scoreResumeFileInputPreference(input, count) > 0;
+}
+
+export function isLikelyCoverLetterFileInput(
+  input: HTMLInputElement
+): boolean {
+  const context = normalizeChoiceText(
+    cleanText(
+      [
+        getFieldDescriptor(input, getQuestionText(input)),
+        input.getAttribute("aria-label"),
+        input.getAttribute("title"),
+        input.getAttribute("placeholder"),
+        input.name,
+        input.id,
+        input.className,
+        input.closest("label, fieldset, section, article, form, div")?.textContent,
+      ]
+        .filter(Boolean)
+        .join(" ")
+    ).slice(0, 800)
+  );
+
+  if (!context) {
+    return false;
+  }
+
+  return (
+    context.includes("cover letter") ||
+    context.includes("upload your cover letter") ||
+    context.includes("motivation letter") ||
+    context.includes("personal statement")
+  );
+}
+
+export function findDiceUploadPanel(
+  kind: "resume" | "cover_letter",
+  root: ParentNode = document
+): HTMLElement | null {
+  const candidates = Array.from(
+    root.querySelectorAll<HTMLElement>("section, article, div, li")
+  );
+
+  let best:
+    | {
+        element: HTMLElement;
+        score: number;
+      }
+    | undefined;
+
+  for (const candidate of candidates) {
+    if (!isElementVisible(candidate)) {
+      continue;
+    }
+
+    const text = normalizeChoiceText(cleanText(candidate.textContent).slice(0, 800));
+    if (!text) {
+      continue;
+    }
+
+    let score = 0;
+
+    if (kind === "resume") {
+      if (text.includes("resume")) score += 80;
+      if (text.includes("upload your resume")) score += 65;
+      if (text.includes("uploaded to application")) score += 60;
+      if (text.includes("uploaded to profile")) score += 55;
+      if (text.includes("cover letter")) score -= 120;
+      if (text.includes("upload your cover letter")) score -= 120;
+    } else {
+      if (text.includes("cover letter")) score += 90;
+      if (text.includes("upload your cover letter")) score += 70;
+      if (text.includes("optional")) score += 15;
+      if (text.includes("resume")) score -= 120;
+      if (text.includes("upload your resume")) score -= 120;
+    }
+
+    if (
+      text.includes(".pdf") ||
+      text.includes(".doc") ||
+      text.includes(".docx") ||
+      text.includes("uploaded to application") ||
+      text.includes("uploaded to profile")
+    ) {
+      score += 25;
+    }
+
+    score -= Math.min(Math.floor(text.length / 120), 12);
+
+    if (score <= 0) {
+      continue;
+    }
+
+    if (!best || score > best.score) {
+      best = {
+        element: candidate,
+        score,
+      };
+    }
+  }
+
+  return best?.element ?? null;
+}
+
+export function findDiceResumePanel(
+  root: ParentNode = document
+): HTMLElement | null {
+  return findDiceUploadPanel("resume", root);
+}
+
+export function findDiceResumeMenuButton(
+  panel: ParentNode
+): HTMLElement | null {
+  const buttons = Array.from(
+    panel.querySelectorAll<HTMLElement>("button, [role='button']")
+  ).filter((button) => isElementVisible(button));
+
+  let best:
+    | {
+        element: HTMLElement;
+        score: number;
+      }
+    | undefined;
+
+  for (const button of buttons) {
+    const rect = button.getBoundingClientRect();
+    const panelRect =
+      panel instanceof HTMLElement ? panel.getBoundingClientRect() : null;
+    const metadata = normalizeChoiceText(
+      cleanText(
+        [
+          getActionText(button),
+          button.getAttribute("aria-label"),
+          button.getAttribute("title"),
+          button.className,
+          button.getAttribute("data-testid"),
+          button.getAttribute("data-test"),
+          button.getAttribute("aria-haspopup"),
+        ]
+          .filter(Boolean)
+          .join(" ")
+      )
+    );
+
+    let score = 0;
+
+    if (
+      metadata.includes("more") ||
+      metadata.includes("options") ||
+      metadata.includes("actions") ||
+      metadata.includes("menu") ||
+      metadata.includes("ellipsis") ||
+      metadata.includes("kebab")
+    ) {
+      score += 70;
+    }
+    if (
+      metadata.includes("haspopup") ||
+      button.getAttribute("aria-haspopup") === "menu"
+    ) {
+      score += 30;
+    }
+    if (
+      metadata === "" ||
+      metadata === "..." ||
+      metadata === "…" ||
+      metadata === "⋯"
+    ) {
+      score += 18;
+    }
+    if (
+      metadata.includes("replace") ||
+      metadata.includes("remove") ||
+      metadata.includes("delete") ||
+      metadata.includes("download")
+    ) {
+      score -= 20;
+    }
+
+    if (score <= 0) {
+      continue;
+    }
+
+    if (!best || score > best.score) {
+      best = {
+        element: button,
+        score,
+      };
+    }
+  }
+
+  return best?.element ?? null;
+}
+
+export function findPreferredDiceResumeMenuButton(
+  panel: ParentNode
+): HTMLElement | null {
+  const buttons = Array.from(
+    panel.querySelectorAll<HTMLElement>("button, [role='button']")
+  ).filter((button) => isElementVisible(button));
+
+  let best:
+    | {
+        element: HTMLElement;
+        score: number;
+      }
+    | undefined;
+
+  const panelRect =
+    panel instanceof HTMLElement ? panel.getBoundingClientRect() : null;
+
+  for (const button of buttons) {
+    const rect = button.getBoundingClientRect();
+    const metadata = normalizeChoiceText(
+      cleanText(
+        [
+          getActionText(button),
+          button.getAttribute("aria-label"),
+          button.getAttribute("title"),
+          button.className,
+          button.getAttribute("data-testid"),
+          button.getAttribute("data-test"),
+          button.getAttribute("aria-haspopup"),
+        ]
+          .filter(Boolean)
+          .join(" ")
+      )
+    );
+
+    let score = 0;
+
+    if (
+      metadata.includes("more") ||
+      metadata.includes("options") ||
+      metadata.includes("actions") ||
+      metadata.includes("menu") ||
+      metadata.includes("ellipsis") ||
+      metadata.includes("kebab")
+    ) {
+      score += 70;
+    }
+    if (
+      metadata.includes("haspopup") ||
+      button.getAttribute("aria-haspopup") === "menu"
+    ) {
+      score += 30;
+    }
+    if (!metadata || metadata === "..." || metadata === "\u2026" || metadata === "\u22ef") {
+      score += 18;
+    }
+    if (
+      metadata.includes("replace") ||
+      metadata.includes("remove") ||
+      metadata.includes("delete") ||
+      metadata.includes("download")
+    ) {
+      score -= 20;
+    }
+    if (rect.width <= 48 && rect.height <= 48) {
+      score += 18;
+    }
+    if (panelRect) {
+      const distanceFromRight = Math.abs(panelRect.right - rect.right);
+      const distanceFromTop = Math.abs(panelRect.top - rect.top);
+      if (distanceFromRight <= 80) {
+        score += 22;
+      }
+      if (distanceFromTop <= 80) {
+        score += 10;
+      }
+    }
+
+    if (score <= 0) {
+      continue;
+    }
+
+    if (!best || score > best.score) {
+      best = {
+        element: button,
+        score,
+      };
+    }
+  }
+
+  return best?.element ?? findDiceResumeMenuButton(panel);
+}
+
+export function findScopedResumeUploadContainer(
+  input: HTMLInputElement
+): HTMLElement | null {
+  const ancestors = [
+    input.parentElement,
+    input.closest("label"),
+    input.closest("[class*='upload']"),
+    input.closest("[class*='resume']"),
+    input.closest("[class*='file']"),
+    input.closest("[class*='dropzone']"),
+    input.closest("[data-upload]"),
+    input.closest("[data-test*='upload']"),
+    input.closest("[data-test*='resume']"),
+    input.closest("[data-testid*='resume']"),
+    input.closest("[data-testid*='upload']"),
+    input.closest("section"),
+    input.closest("article"),
+    input.closest("fieldset"),
+    input.closest("form"),
+  ].filter((element): element is HTMLElement => element instanceof HTMLElement);
+
+  let best:
+    | {
+        element: HTMLElement;
+        score: number;
+      }
+    | undefined;
+
+  for (const element of ancestors) {
+    const text = normalizeChoiceText(cleanText(element.textContent).slice(0, 800));
+    let score = 0;
+
+    if (text.includes("resume")) score += 70;
+    if (text.includes("upload your resume")) score += 60;
+    if (text.includes("upload resume")) score += 55;
+    if (text.includes("cover letter")) score -= 120;
+    if (text.includes("upload your cover letter")) score -= 120;
+    if (text.includes("optional")) score -= 10;
+    score -= Math.min(Math.floor(text.length / 140), 10);
+
+    if (element.matches("[class*='resume'], [data-test*='resume'], [data-testid*='resume']")) {
+      score += 25;
+    }
+    if (element.matches("[class*='upload'], [class*='dropzone'], [data-upload]")) {
+      score += 10;
+    }
+    if (element.tagName === "FORM") {
+      score -= 35;
+    }
+
+    if (!best || score > best.score) {
+      best = {
+        element,
+        score,
+      };
+    }
+  }
+
+  return best && best.score > 0 ? best.element : null;
+}
+
+export function pickResumeUploadTargets(options: {
+  inputs: HTMLInputElement[];
+  assetName: string;
+  uploadKey: string;
+  extensionManagedUploads: Pick<WeakMap<HTMLInputElement, string>, "get">;
+}): {
+  alreadySatisfied: HTMLInputElement | null;
+  targets: HTMLInputElement[];
+} {
+  const { inputs, assetName, uploadKey, extensionManagedUploads } = options;
+  const eligibleInputs = inputs.filter((input) => !isLikelyCoverLetterFileInput(input));
+
+  const rankedTargets = eligibleInputs
+    .map((input, index) => ({
+      input,
+      index,
+      score: scoreResumeFileInputPreference(input, eligibleInputs.length),
+    }))
+    .sort(
+      (left, right) =>
+        right.score - left.score || left.index - right.index
+    );
+
+  const alreadySatisfiedTarget =
+    rankedTargets.find(
+      ({ input, score }) =>
+        score > 0 &&
+        (extensionManagedUploads.get(input) === uploadKey ||
+          hasSelectedMatchingFile(input, assetName))
+    )?.input ?? null;
+
+  if (alreadySatisfiedTarget) {
+    return {
+      alreadySatisfied: alreadySatisfiedTarget,
+      targets: [],
+    };
+  }
+
+  const selectedResumeTarget =
+    rankedTargets.find(
+      ({ input, score }) => score > 0 && Boolean(getSelectedFileName(input))
+    )?.input ?? null;
+
+  if (selectedResumeTarget) {
+    return {
+      alreadySatisfied: null,
+      targets: [selectedResumeTarget],
+    };
+  }
+
+  const usable = rankedTargets
+    .filter(({ input }) => shouldUseFileInputForResume(input, inputs.length))
+    .map(({ input }) => input);
+
+  return {
+    alreadySatisfied: null,
+    targets:
+      usable.length > 0
+        ? usable
+        : eligibleInputs.length === 1
+          ? eligibleInputs
+          : [],
+  };
 }
