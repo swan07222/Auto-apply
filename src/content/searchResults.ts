@@ -88,6 +88,10 @@ export function getJobResultCollectionTargetCount(
     return Math.max(30, normalizedLimit * 6);
   }
 
+  if (site === "dice") {
+    return Math.max(40, normalizedLimit * 8);
+  }
+
   if (isJobBoardSite(site)) {
     return Math.max(25, normalizedLimit * 4);
   }

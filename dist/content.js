@@ -240,12 +240,27 @@
         return `${hostname}${path}`;
       }
       if (hostname.includes("dice")) {
+        const pathParts = path.split("/").filter(Boolean);
         const m1 = path.match(/\/job-detail\/([a-f0-9-]{8,})/i);
         if (m1) return `dice:job:${m1[1].toLowerCase()}`;
         const m2 = path.match(/\/jobs\/detail\/([a-f0-9-]{8,})/i);
         if (m2) return `dice:job:${m2[1].toLowerCase()}`;
         const m3 = path.match(/\/([a-f0-9]{24,})/i);
         if (m3) return `dice:job:${m3[1].toLowerCase()}`;
+        if (pathParts[0] === "job-detail" && pathParts.length >= 2) {
+          const detailId = pathParts[pathParts.length - 1];
+          if (detailId && detailId.length >= 8) {
+            return `dice:job:${detailId.toLowerCase()}`;
+          }
+          return `dice:path:${path}`;
+        }
+        if (pathParts[0] === "jobs" && pathParts[1] === "detail" && pathParts.length >= 3) {
+          const detailId = pathParts[pathParts.length - 1];
+          if (detailId && detailId.length >= 8) {
+            return `dice:job:${detailId.toLowerCase()}`;
+          }
+          return `dice:path:${path}`;
+        }
       }
       if (hostname.includes("monster")) {
         path = path.replace(/\/job-opening\//, "/job-openings/");
@@ -2606,23 +2621,48 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           ])
         ]);
       case "ziprecruiter": {
-        const appliedKeys = collectZipRecruiterAppliedDedupKeys();
-        return dedupeJobCandidates([
-          ...collectCandidatesFromContainers(
-            [
-              "[data-testid*='job-card']",
-              "[data-testid*='job']",
-              "[class*='job_result']",
-              "[class*='jobList']",
-              "[class*='job-listing']",
-              "[class*='JobListing']",
-              "[class*='job_content']",
-              "[class*='JobContent']",
-              "article",
-              "section",
-              "li"
-            ],
-            [
+        return filterZipRecruiterAppliedCandidates(
+          dedupeJobCandidates([
+            ...collectCandidatesFromContainers(
+              [
+                "[data-testid*='job-card']",
+                "[data-testid*='job']",
+                "[class*='job_result']",
+                "[class*='jobList']",
+                "[class*='job-listing']",
+                "[class*='JobListing']",
+                "[class*='job_content']",
+                "[class*='JobContent']",
+                "article",
+                "section",
+                "li"
+              ],
+              [
+                "a[href*='/jobs/' i]",
+                "a[href*='/job/' i]",
+                "a[href*='/job-details/' i]",
+                "a[href*='/k/' i]",
+                "a[href*='jid=' i]",
+                "a[href*='/c/' i][href*='/job/' i]",
+                "a[data-testid*='job-title']",
+                "a[data-testid='job-title']",
+                "a[class*='job']",
+                "a[class*='job_link']",
+                // FIX: Additional ZipRecruiter anchor patterns
+                "a[href*='/t-']",
+                "a[href*='mid=']"
+              ],
+              [
+                "h1",
+                "h2",
+                "h3",
+                "[data-testid*='job-title']",
+                "[class*='job_title']",
+                "[class*='jobTitle']",
+                "[class*='job-title']"
+              ]
+            ),
+            ...collectCandidatesFromAnchors([
               "a[href*='/jobs/' i]",
               "a[href*='/job/' i]",
               "a[href*='/job-details/' i]",
@@ -2631,39 +2671,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
               "a[href*='/c/' i][href*='/job/' i]",
               "a[data-testid*='job-title']",
               "a[data-testid='job-title']",
-              "a[class*='job']",
-              "a[class*='job_link']",
-              // FIX: Additional ZipRecruiter anchor patterns
-              "a[href*='/t-']",
-              "a[href*='mid=']"
-            ],
-            [
-              "h1",
-              "h2",
-              "h3",
-              "[data-testid*='job-title']",
-              "[class*='job_title']",
-              "[class*='jobTitle']",
-              "[class*='job-title']"
-            ]
-          ),
-          ...collectCandidatesFromAnchors([
-            "a[href*='/jobs/' i]",
-            "a[href*='/job/' i]",
-            "a[href*='/job-details/' i]",
-            "a[href*='/k/' i]",
-            "a[href*='jid=' i]",
-            "a[href*='/c/' i][href*='/job/' i]",
-            "a[data-testid*='job-title']",
-            "a[data-testid='job-title']",
-            "a[href*='/t-']"
-          ]),
-          ...collectZipRecruiterCardCandidates(),
-          ...collectZipRecruiterDataAttributeCandidates()
-        ]).filter((candidate) => {
-          const key = getZipRecruiterCandidateKey(candidate.url);
-          return !key || !appliedKeys.has(key);
-        });
+              "a[href*='/t-']"
+            ]),
+            ...collectZipRecruiterCardCandidates(),
+            ...collectZipRecruiterDataAttributeCandidates()
+          ])
+        );
       }
       case "dice":
         return filterDiceViewedOrAppliedCandidates(
@@ -3409,6 +3422,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         return true;
       }
     }
+    if (site === "ziprecruiter" && hasVisibleZipRecruiterAppliedSignal()) {
+      return true;
+    }
     return false;
   }
   function getIndeedApplyPageText() {
@@ -3727,14 +3743,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (/\b(applied|viewed|visited|seen|read)\b/.test(metadata)) {
       return true;
     }
-    const inlineColorSignal = [
-      titleAnchor?.getAttribute("style"),
-      container.getAttribute("style")
-    ].filter(Boolean).join(" ").toLowerCase();
-    if (!inlineColorSignal.includes("color")) {
+    const colorSource = titleAnchor ?? container;
+    if (!shouldEvaluateDiceTitleColor(colorSource, container)) {
       return false;
     }
-    const colorSource = titleAnchor ?? container;
     const color = window.getComputedStyle(colorSource).color;
     if (!color) {
       return false;
@@ -3746,9 +3758,32 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return false;
     }
     const channels = match.slice(1, 4).map((value) => Number(value));
-    const max = Math.max(...channels);
-    const min = Math.min(...channels);
-    return !(max <= 140 && max - min <= 35);
+    return isDiceVisitedLikeColor(channels);
+  }
+  function shouldEvaluateDiceTitleColor(titleElement, container) {
+    if (titleElement !== container) {
+      return true;
+    }
+    const inlineColorSignal = [
+      titleElement.getAttribute("style"),
+      container.getAttribute("style")
+    ].filter(Boolean).join(" ").toLowerCase();
+    if (inlineColorSignal.includes("color")) {
+      return true;
+    }
+    const classSignal = [
+      typeof titleElement.className === "string" ? titleElement.className : "",
+      typeof container.className === "string" ? container.className : ""
+    ].join(" ").toLowerCase();
+    return /\b(text-|visited:|visited\b|applied\b|viewed\b|seen\b|read\b)/.test(
+      classSignal
+    );
+  }
+  function isDiceVisitedLikeColor(channels) {
+    const [red, green, blue] = channels;
+    const max = Math.max(red, green, blue);
+    const min = Math.min(red, green, blue);
+    return blue >= 120 && red >= 70 && blue > green && max - min >= 60;
   }
   function buildDiceCandidateMetadata(titleAnchor, container) {
     const fragments = /* @__PURE__ */ new Set();
@@ -3820,24 +3855,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function filterDiceViewedOrAppliedCandidates(candidates) {
     return candidates.filter((candidate) => {
-      const selectors = [
-        `a[href='${candidate.url}']`,
-        `a[href='${candidate.url.replace(/'/g, "\\'")}']`
-      ];
-      for (const selector of selectors) {
-        let anchors = [];
-        try {
-          anchors = Array.from(
-            document.querySelectorAll(selector)
-          );
-        } catch {
+      const candidateKey = getJobDedupKey(candidate.url);
+      const normalizedTitle = normalizeChoiceText(candidate.title);
+      for (const anchor of Array.from(document.querySelectorAll("a[href]"))) {
+        const anchorKey = getJobDedupKey(anchor.href);
+        const titleMatch = normalizedTitle && normalizeChoiceText(anchor.textContent || "") === normalizedTitle;
+        if (candidateKey ? anchorKey !== candidateKey : !titleMatch) {
           continue;
         }
-        for (const anchor of anchors) {
-          const container = anchor.closest("li, article, section, div") ?? anchor;
-          if (shouldSkipDiceTitleCandidate(anchor, container)) {
-            return false;
-          }
+        const container = anchor.closest("li, article, section, div, dhi-search-card, dhi-job-card") ?? anchor;
+        if (shouldSkipDiceTitleCandidate(anchor, container)) {
+          return false;
         }
       }
       return true;
@@ -3894,6 +3922,82 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       addKey(detailUrl.toString());
     }
     return keys;
+  }
+  function filterZipRecruiterAppliedCandidates(candidates) {
+    const appliedKeys = collectZipRecruiterAppliedDedupKeys();
+    return candidates.filter((candidate) => {
+      if (isAppliedJobText(candidate.contextText) || isAppliedJobText(candidate.title)) {
+        return false;
+      }
+      const key = getZipRecruiterCandidateKey(candidate.url);
+      if (key && appliedKeys.has(key)) {
+        return false;
+      }
+      for (const contextText of collectZipRecruiterCandidateDomContexts(candidate, key)) {
+        if (isAppliedJobText(contextText)) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }
+  function collectZipRecruiterCandidateDomContexts(candidate, candidateKey = getZipRecruiterCandidateKey(candidate.url)) {
+    const contexts = /* @__PURE__ */ new Set();
+    const seenContainers = /* @__PURE__ */ new Set();
+    const seenAnchors = /* @__PURE__ */ new Set();
+    const normalizedTitle = normalizeChoiceText(candidate.title);
+    const addContext = (container, anchor) => {
+      if (!container || seenContainers.has(container)) {
+        return;
+      }
+      seenContainers.add(container);
+      const contextText = buildZipRecruiterCandidateContext(container, anchor);
+      if (contextText) {
+        contexts.add(contextText);
+      }
+    };
+    const addAnchor = (anchor) => {
+      if (!anchor || seenAnchors.has(anchor)) {
+        return;
+      }
+      seenAnchors.add(anchor);
+      const container = anchor.closest(
+        "[id^='job-card-'], [data-job-id], [data-jid], [data-jobid], [data-job], article, li, section, div"
+      ) ?? anchor.parentElement;
+      addContext(container, anchor);
+    };
+    try {
+      const parsed = new URL(candidate.url, window.location.href);
+      const jid = parsed.searchParams.get("jid");
+      const lk = parsed.searchParams.get("lk");
+      if (lk) {
+        addContext(document.getElementById(`job-card-${lk}`));
+      }
+      if (jid) {
+        for (const selector of [
+          `[data-job-id='${jid}']`,
+          `[data-jid='${jid}']`,
+          `[data-jobid='${jid}']`,
+          `[data-job='${jid}']`
+        ]) {
+          for (const el of Array.from(document.querySelectorAll(selector))) {
+            addContext(el, el.querySelector("a[href]"));
+          }
+        }
+      }
+    } catch {
+    }
+    for (const anchor of Array.from(document.querySelectorAll("a[href]"))) {
+      const anchorKey = getZipRecruiterCandidateKey(anchor.href);
+      if (candidateKey && anchorKey === candidateKey) {
+        addAnchor(anchor);
+        continue;
+      }
+      if (normalizedTitle && normalizeChoiceText(anchor.textContent || "") === normalizedTitle) {
+        addAnchor(anchor);
+      }
+    }
+    return Array.from(contexts);
   }
   function getZipRecruiterCandidateKey(rawUrl) {
     try {
@@ -4502,6 +4606,66 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           continue;
         }
         return true;
+      }
+    }
+    return false;
+  }
+  function hasVisibleZipRecruiterAppliedSignal() {
+    const surfaceElements = collectCurrentJobSurfaceElements([
+      ...getPrimaryCurrentJobSurfaceSelectors("ziprecruiter"),
+      ...getFallbackCurrentJobSurfaceSelectors()
+    ]);
+    const appliedSelectors = [
+      "button",
+      "a[href]",
+      "[role='button']",
+      "input[type='submit']",
+      "input[type='button']"
+    ];
+    for (const surface of surfaceElements) {
+      if (!isReadableSurfaceElement(surface)) {
+        continue;
+      }
+      for (const control of Array.from(
+        surface.querySelectorAll(appliedSelectors.join(", "))
+      )) {
+        if (!isReadableSurfaceElement(control)) {
+          continue;
+        }
+        const text = cleanText(
+          [
+            control.innerText || control.textContent || "",
+            control.getAttribute("aria-label"),
+            control.getAttribute("title"),
+            control.getAttribute("value"),
+            control.getAttribute("data-testid"),
+            control.getAttribute("data-qa")
+          ].filter(Boolean).join(" ")
+        ).toLowerCase();
+        if (!text) {
+          continue;
+        }
+        if (/\b(not applied|apply now|ready to apply|applied scientist|applied research|applied machine|applied deep|applied data|applied ai)\b/.test(
+          text
+        )) {
+          continue;
+        }
+        if ([
+          /^\s*applied\s*$/i,
+          /\balready applied\b/i,
+          /\byou already applied\b/i,
+          /\byou applied\b/i,
+          /\bpreviously applied\b/i,
+          /\bapplication submitted\b/i,
+          /\bapplication complete\b/i,
+          /\bapplication received\b/i,
+          /\bapplied\s+\d+\s+(minute|hour|day|week|month)s?\s+ago\b/i
+        ].some((pattern) => pattern.test(text))) {
+          return true;
+        }
+        if (/\bapplied\b/i.test(text)) {
+          return true;
+        }
       }
     }
     return false;
@@ -5168,6 +5332,28 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       lowerUrl
     );
   }
+  function isAppliedStateActionText(text) {
+    const lower = text.toLowerCase().trim();
+    if (!lower) {
+      return false;
+    }
+    if (/\b(not applied|apply now|ready to apply|applied scientist|applied research|applied machine|applied deep|applied data|applied ai)\b/.test(
+      lower
+    )) {
+      return false;
+    }
+    return [
+      /^\s*applied\s*$/i,
+      /\balready applied\b/i,
+      /\byou already applied\b/i,
+      /\byou applied\b/i,
+      /\bpreviously applied\b/i,
+      /\bapplication submitted\b/i,
+      /\bapplication complete\b/i,
+      /\bapplication received\b/i,
+      /\bapplied\s+\d+\s+(minute|hour|day|week|month)s?\s+ago\b/i
+    ].some((pattern) => pattern.test(lower));
+  }
   function choosePreferredJobPageAction(best, bestDirect) {
     if (!best) {
       return bestDirect;
@@ -5322,7 +5508,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
       const text = (getActionText(actionElement) || getActionText(element)).trim();
       const lower = text.toLowerCase();
-      if (!lower || lower.includes("save") || lower.includes("share") || lower.includes("alert") || lower.includes("sign in") || lower.includes("job alert") || lower.includes("my jobs") || lower.includes("saved jobs")) {
+      if (!lower || isAppliedStateActionText(lower) || lower.includes("save") || lower.includes("share") || lower.includes("alert") || lower.includes("sign in") || lower.includes("job alert") || lower.includes("my jobs") || lower.includes("saved jobs")) {
         continue;
       }
       const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
@@ -5386,7 +5572,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         }
         const text = (getActionText(actionElement) || getActionText(element)).trim();
         const lower = text.toLowerCase();
-        if (!lower || [
+        if (!lower || isAppliedStateActionText(lower) || [
           "save",
           "share",
           "alert",
@@ -6848,6 +7034,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const normalizedLimit = Math.max(1, Math.floor(jobPageLimit));
     if (site === "startup" || site === "other_sites") {
       return Math.max(30, normalizedLimit * 6);
+    }
+    if (site === "dice") {
+      return Math.max(40, normalizedLimit * 8);
     }
     if (isJobBoardSite(site)) {
       return Math.max(25, normalizedLimit * 4);

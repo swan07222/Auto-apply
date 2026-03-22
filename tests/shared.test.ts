@@ -93,6 +93,19 @@ describe("shared automation target logic", () => {
     expect(firstUrl.searchParams.get("location")).toBeNull();
   });
 
+  it("dedupes equivalent Dice detail URLs that expose the same non-hex job id", () => {
+    expect(
+      getJobDedupKey(
+        "https://www.dice.com/job-detail/senior-full-stack-engineer/J3N8Q26P2F3YV4T6K1M"
+      )
+    ).toBe("dice:job:j3n8q26p2f3yv4t6k1m");
+    expect(
+      getJobDedupKey(
+        "https://www.dice.com/jobs/detail/J3N8Q26P2F3YV4T6K1M?searchlink=search%2F%3Fq%3Dfull-stack"
+      )
+    ).toBe("dice:job:j3n8q26p2f3yv4t6k1m");
+  });
+
   it("resolves startup region from candidate country", () => {
     expect(resolveStartupRegion("auto", "United States")).toBe("us");
     expect(resolveStartupRegion("auto", "United Kingdom")).toBe("uk");

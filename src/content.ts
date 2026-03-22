@@ -65,7 +65,6 @@ import {
 import {
   cssEscape,
   cleanText,
-  normalizeChoiceText,
 } from "./content/text";
 import {
   applyAnswerToCheckbox,
@@ -73,13 +72,9 @@ import {
   selectOptionByAnswer,
 } from "./content/choiceFill";
 import {
-  findDiceUploadPanel,
-  findPreferredDiceResumeMenuButton,
-  findDiceResumePanel,
   findScopedResumeUploadContainer,
   getResumeAssetUploadKey,
   getSelectedFileName,
-  isLikelyCoverLetterFileInput,
   pickResumeUploadTargets,
   pickResumeAssetForUpload,
   resolveResumeKindForJob,
@@ -90,7 +85,6 @@ import {
   getActionText,
   getNavigationUrl,
   isExternalUrl,
-  isElementVisible,
   normalizeUrl,
   performClickAction,
   isElementInteractive,
@@ -2328,83 +2322,6 @@ async function uploadResumeIfNeeded(
   return null;
 }
 
-async function handleDiceResumeUpload(
-  resume: ResumeAsset,
-  resumeUploadKey: string
-): Promise<boolean> {
-  const resumePanel = findDiceUploadPanel("resume");
-  const coverLetterPanel = findDiceUploadPanel("cover_letter");
-
-  if (!resumePanel && !coverLetterPanel) {
-    return false;
-  }
-
-  // Dice flow: always do a cleanup pass first, then upload the resume.
-  if (coverLetterPanel) {
-    await clearDicePanelAttachment(coverLetterPanel);
-  }
-
-  if (resumePanel) {
-    await clearDicePanelAttachment(resumePanel);
-  }
-
-  await sleep(300);
-
-  const refreshedResumePanel = findDiceUploadPanel("resume") ?? resumePanel;
-  if (!refreshedResumePanel) {
-    return false;
-  }
-
-  const targets = collectDiceResumeReplacementInputs(refreshedResumePanel);
-  for (const input of targets) {
-    if (await tryUploadResumeToInput(input, resume, resumeUploadKey)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-async function clearDicePanelAttachment(panel: HTMLElement): Promise<void> {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (!dicePanelLooksFilled(panel)) {
-      return;
-    }
-
-    const menuButton = findPreferredDiceResumeMenuButton(panel);
-    if (!menuButton) {
-      return;
-    }
-
-    performClickAction(menuButton);
-    await sleep(300);
-
-    const removeAction = findDicePanelRemoveAction(panel);
-    if (!removeAction) {
-      return;
-    }
-
-    performClickAction(removeAction);
-    await sleep(700);
-  }
-}
-
-function dicePanelLooksFilled(panel: HTMLElement): boolean {
-  const text = normalizeChoiceText(cleanText(panel.textContent).slice(0, 800));
-  if (!text) {
-    return false;
-  }
-
-  return (
-    text.includes("uploaded to application") ||
-    text.includes("uploaded to profile") ||
-    text.includes(".pdf") ||
-    text.includes(".doc") ||
-    text.includes(".docx") ||
-    text.includes(".rtf")
-  );
-}
-
 function distributeJobSlotsAcrossTargets(
   totalSlots: number,
   targetCount: number
@@ -2421,233 +2338,6 @@ function distributeJobSlotsAcrossTargets(
   }
 
   return slots;
-}
-
-function findDicePanelRemoveAction(panel: HTMLElement): HTMLElement | null {
-  const panelRect = panel.getBoundingClientRect();
-  const candidates = collectDeepMatches<HTMLElement>(
-    "button, [role='button'], [role='menuitem'], li"
-  ).filter((element) => {
-    if (!isElementVisible(element)) {
-      return false;
-    }
-
-    const text = normalizeChoiceText(getActionText(element));
-    return (
-      text.includes("remove") ||
-      text.includes("delete") ||
-      text.includes("clear")
-    );
-  });
-
-  let best:
-    | {
-        element: HTMLElement;
-        score: number;
-      }
-    | undefined;
-
-  for (const candidate of candidates) {
-    const text = normalizeChoiceText(getActionText(candidate));
-    let score = 0;
-
-    if (text.includes("remove")) score += 90;
-    if (text.includes("delete")) score += 80;
-    if (text.includes("clear")) score += 70;
-
-    const rect = candidate.getBoundingClientRect();
-    const distance =
-      Math.abs(rect.top - panelRect.top) + Math.abs(rect.left - panelRect.right);
-    score -= Math.min(distance / 25, 30);
-
-    if (!best || score > best.score) {
-      best = {
-        element: candidate,
-        score,
-      };
-    }
-  }
-
-  return best?.element ?? null;
-}
-
-async function tryReplaceExistingDiceResume(
-  panel: HTMLElement,
-  resume: ResumeAsset,
-  resumeUploadKey: string
-): Promise<boolean> {
-  panel.scrollIntoView({
-    behavior: "smooth",
-    block: "center",
-  });
-  await sleep(250);
-
-  const menuButton = findPreferredDiceResumeMenuButton(panel);
-  if (!menuButton) {
-    return false;
-  }
-
-  performClickAction(menuButton);
-  await sleep(350);
-
-  const directTargets = collectDiceResumeReplacementInputs(panel);
-  for (const input of directTargets) {
-    if (await tryUploadResumeToInput(input, resume, resumeUploadKey)) {
-      return true;
-    }
-  }
-
-  const replaceAction = findDiceResumeReplaceAction(panel);
-  if (!replaceAction) {
-    return false;
-  }
-
-  performClickAction(replaceAction);
-  await sleep(450);
-
-  const targets = collectDiceResumeReplacementInputs(panel);
-  for (const input of targets) {
-    if (await tryUploadResumeToInput(input, resume, resumeUploadKey)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function collectDiceResumeReplacementInputs(
-  panel: HTMLElement
-): HTMLInputElement[] {
-  const panelInputs = Array.from(
-    panel.querySelectorAll<HTMLInputElement>("input[type='file']")
-  );
-  const visibleAndHiddenInputs = Array.from(
-    document.querySelectorAll<HTMLInputElement>("input[type='file']")
-  );
-  const strictTargets = pickResumeUploadTargets({
-    inputs: visibleAndHiddenInputs,
-    assetName: "",
-    uploadKey: "",
-    extensionManagedUploads: extensionManagedResumeUploads,
-  }).targets.filter((input) => {
-    const context = normalizeChoiceText(
-      cleanText(
-        [
-          input.name,
-          input.id,
-          input.getAttribute("aria-label"),
-          input.getAttribute("title"),
-          input.closest("label, section, article, div, form")?.textContent,
-        ]
-          .filter(Boolean)
-          .join(" ")
-      )
-    );
-
-    return (
-      panel.contains(input) ||
-      context.includes("resume") ||
-      context.includes("upload resume") ||
-      context.includes("replace resume")
-    );
-  });
-
-  const unique = new Set<HTMLInputElement>([...panelInputs, ...strictTargets]);
-  return Array.from(unique).filter(
-    (input) => !input.disabled && !isLikelyCoverLetterFileInput(input)
-  );
-}
-
-function findDiceResumeReplaceAction(
-  panel: HTMLElement
-): HTMLElement | null {
-  const candidates = collectDeepMatches<HTMLElement>(
-    "button, [role='button'], [role='menuitem'], li"
-  ).filter((element) => {
-    if (!isElementVisible(element)) {
-      return false;
-    }
-
-    const text = normalizeChoiceText(getActionText(element));
-    if (!text) {
-      return false;
-    }
-
-    return (
-      text.includes("replace") ||
-      text.includes("change resume") ||
-      text.includes("update resume") ||
-      text.includes("edit resume") ||
-      text.includes("upload new")
-    );
-  });
-
-  let best:
-    | {
-        element: HTMLElement;
-        score: number;
-      }
-    | undefined;
-
-  const panelRect = panel.getBoundingClientRect();
-
-  for (const candidate of candidates) {
-    const text = normalizeChoiceText(getActionText(candidate));
-    let score = 0;
-
-    if (text.includes("replace")) score += 90;
-    if (text.includes("change")) score += 60;
-    if (text.includes("update")) score += 55;
-    if (text.includes("edit")) score += 45;
-    if (text.includes("upload new")) score += 40;
-
-    const rect = candidate.getBoundingClientRect();
-    const distance =
-      Math.abs(rect.top - panelRect.top) + Math.abs(rect.left - panelRect.right);
-    score -= Math.min(distance / 25, 30);
-
-    if (!best || score > best.score) {
-      best = {
-        element: candidate,
-        score,
-      };
-    }
-  }
-
-  return best?.element ?? null;
-}
-
-async function tryUploadResumeToInput(
-  input: HTMLInputElement,
-  resume: ResumeAsset,
-  resumeUploadKey: string
-): Promise<boolean> {
-  const lastAttemptAt = recentResumeUploadAttempts.get(input) ?? 0;
-  const now = Date.now();
-  if (
-    !shouldAttemptResumeUpload(
-      input,
-      resume.name,
-      lastAttemptAt > 0 ? lastAttemptAt : null,
-      now,
-      undefined,
-      extensionManagedResumeUploads.get(input) === resumeUploadKey
-    )
-  ) {
-    return false;
-  }
-
-  recentResumeUploadAttempts.set(input, now);
-  try {
-    if (await setFileInputValue(input, resume)) {
-      extensionManagedResumeUploads.set(input, resumeUploadKey);
-      return true;
-    }
-  } catch {
-    // Ignore and let other candidate inputs try.
-  }
-
-  return false;
 }
 
 function pickResumeAsset(

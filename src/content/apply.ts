@@ -497,6 +497,33 @@ function isDirectApplyActionCandidate(text: string, url: string | null): boolean
   );
 }
 
+function isAppliedStateActionText(text: string): boolean {
+  const lower = text.toLowerCase().trim();
+  if (!lower) {
+    return false;
+  }
+
+  if (
+    /\b(not applied|apply now|ready to apply|applied scientist|applied research|applied machine|applied deep|applied data|applied ai)\b/.test(
+      lower
+    )
+  ) {
+    return false;
+  }
+
+  return [
+    /^\s*applied\s*$/i,
+    /\balready applied\b/i,
+    /\byou already applied\b/i,
+    /\byou applied\b/i,
+    /\bpreviously applied\b/i,
+    /\bapplication submitted\b/i,
+    /\bapplication complete\b/i,
+    /\bapplication received\b/i,
+    /\bapplied\s+\d+\s+(minute|hour|day|week|month)s?\s+ago\b/i,
+  ].some((pattern) => pattern.test(lower));
+}
+
 function choosePreferredJobPageAction(
   best: ScoredApplyCandidate | undefined,
   bestDirect: ScoredApplyCandidate | undefined
@@ -735,6 +762,7 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
     const lower = text.toLowerCase();
     if (
       !lower ||
+      isAppliedStateActionText(lower) ||
       lower.includes("save") ||
       lower.includes("share") ||
       lower.includes("alert") ||
@@ -829,6 +857,7 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
       const lower = text.toLowerCase();
       if (
         !lower ||
+        isAppliedStateActionText(lower) ||
         [
           "save",
           "share",

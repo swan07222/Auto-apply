@@ -409,12 +409,27 @@
         return `${hostname}${path}`;
       }
       if (hostname.includes("dice")) {
+        const pathParts = path.split("/").filter(Boolean);
         const m1 = path.match(/\/job-detail\/([a-f0-9-]{8,})/i);
         if (m1) return `dice:job:${m1[1].toLowerCase()}`;
         const m2 = path.match(/\/jobs\/detail\/([a-f0-9-]{8,})/i);
         if (m2) return `dice:job:${m2[1].toLowerCase()}`;
         const m3 = path.match(/\/([a-f0-9]{24,})/i);
         if (m3) return `dice:job:${m3[1].toLowerCase()}`;
+        if (pathParts[0] === "job-detail" && pathParts.length >= 2) {
+          const detailId = pathParts[pathParts.length - 1];
+          if (detailId && detailId.length >= 8) {
+            return `dice:job:${detailId.toLowerCase()}`;
+          }
+          return `dice:path:${path}`;
+        }
+        if (pathParts[0] === "jobs" && pathParts[1] === "detail" && pathParts.length >= 3) {
+          const detailId = pathParts[pathParts.length - 1];
+          if (detailId && detailId.length >= 8) {
+            return `dice:job:${detailId.toLowerCase()}`;
+          }
+          return `dice:path:${path}`;
+        }
       }
       if (hostname.includes("monster")) {
         path = path.replace(/\/job-opening\//, "/job-openings/");

@@ -48,6 +48,8 @@ describe("search result collection", () => {
     expect(getJobResultCollectionTargetCount("other_sites", 8)).toBe(48);
     expect(getJobResultCollectionTargetCount("startup", 6)).toBe(36);
     expect(getJobResultCollectionTargetCount("indeed", 5)).toBe(25);
+    expect(getJobResultCollectionTargetCount("dice", 5)).toBe(40);
+    expect(getJobResultCollectionTargetCount("dice", 8)).toBe(64);
   });
 
   it("merges Monster embedded search results when the DOM alone does not satisfy the requested count", async () => {

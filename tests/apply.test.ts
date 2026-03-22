@@ -455,6 +455,18 @@ describe("application progression actions", () => {
     expect(action?.description).toBe("Apply Now");
   });
 
+  it("does not treat ZipRecruiter applied-state buttons as apply actions", () => {
+    document.body.innerHTML = `
+      <main data-testid="job-details">
+        <button data-testid="apply-button" aria-label="Applied">Applied</button>
+      </main>
+    `;
+
+    const action = findZipRecruiterApplyAction();
+
+    expect(action).toBeNull();
+  });
+
   it("finds Glassdoor employer-site apply links", () => {
     document.body.innerHTML = `
       <main>

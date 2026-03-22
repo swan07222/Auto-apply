@@ -558,6 +558,34 @@ describe("job search candidate filtering", () => {
     ]);
   });
 
+  it("skips ZipRecruiter generic result cards when applied state only exists in nearby metadata", () => {
+    document.body.innerHTML = `
+      <main>
+        <article class="job_result">
+          <h2>
+            <a href="https://www.ziprecruiter.com/jobs/front-end-engineer-1">Front End Engineer</a>
+          </h2>
+          <button type="button" aria-label="Applied"></button>
+        </article>
+        <article class="job_result">
+          <h2>
+            <a href="https://www.ziprecruiter.com/jobs/platform-engineer-2">Platform Engineer</a>
+          </h2>
+          <button type="button" aria-label="Save job"></button>
+        </article>
+      </main>
+    `;
+
+    const urls = pickRelevantJobUrls(
+      collectJobDetailCandidates("ziprecruiter"),
+      "ziprecruiter"
+    );
+
+    expect(urls).toEqual([
+      "https://www.ziprecruiter.com/jobs/platform-engineer-2",
+    ]);
+  });
+
   it("accepts Monster detail URLs and rejects listing URLs", () => {
     expect(
       isLikelyJobDetailUrl(
@@ -829,6 +857,32 @@ describe("job search candidate filtering", () => {
     ]);
   });
 
+  it("dedupes equivalent Dice card links that point to the same non-hex job id", () => {
+    document.body.innerHTML = `
+      <ul aria-label="Job search results">
+        <li>
+          <div class="card-shell">
+            <a
+              data-testid="job-search-job-card-link"
+              href="https://www.dice.com/jobs/detail/J3N8Q26P2F3YV4T6K1M?searchlink=search%2F%3Fq%3Dfull-stack"
+            ></a>
+            <a
+              data-testid="job-search-job-detail-link"
+              href="https://www.dice.com/job-detail/senior-full-stack-engineer/J3N8Q26P2F3YV4T6K1M"
+            >
+              Senior Full Stack Engineer
+            </a>
+            <p>Remote</p>
+          </div>
+        </li>
+      </ul>
+    `;
+
+    expect(pickRelevantJobUrls(collectJobDetailCandidates("dice"), "dice")).toEqual([
+      "https://www.dice.com/jobs/detail/J3N8Q26P2F3YV4T6K1M?searchlink=search%2F%3Fq%3Dfull-stack",
+    ]);
+  });
+
   it("skips Dice custom cards when applied state is only exposed through card metadata", () => {
     document.body.innerHTML = `
       <dhi-search-card data-id="applied-1">
@@ -906,6 +960,47 @@ describe("job search candidate filtering", () => {
 
     expect(pickRelevantJobUrls(collectJobDetailCandidates("dice"), "dice")).toEqual([
       "https://www.dice.com/job-detail/live-1",
+    ]);
+  });
+
+  it("skips Dice cards whose live title color is a visited-style purple even without inline metadata", () => {
+    document.head.innerHTML = `
+      <style>
+        .dice-applied-title { color: rgb(124, 58, 237); }
+        .dice-fresh-title { color: rgb(17, 24, 39); }
+      </style>
+    `;
+    document.body.innerHTML = `
+      <ul aria-label="Job search results">
+        <li>
+          <div class="card-shell">
+            <a
+              data-testid="job-search-job-detail-link"
+              href="https://www.dice.com/job-detail/applied-visual-1"
+              class="dice-applied-title"
+            >
+              Applied Visual Engineer
+            </a>
+            <p>Remote</p>
+          </div>
+        </li>
+        <li>
+          <div class="card-shell">
+            <a
+              data-testid="job-search-job-detail-link"
+              href="https://www.dice.com/job-detail/fresh-visual-2"
+              class="dice-fresh-title"
+            >
+              Fresh Visual Engineer
+            </a>
+            <p>Remote</p>
+          </div>
+        </li>
+      </ul>
+    `;
+
+    expect(pickRelevantJobUrls(collectJobDetailCandidates("dice"), "dice")).toEqual([
+      "https://www.dice.com/job-detail/fresh-visual-2",
     ]);
   });
 
@@ -1091,6 +1186,17 @@ describe("job search candidate filtering", () => {
 
     expect(isCurrentPageAppliedJob("ziprecruiter")).toBe(false);
     expect(isStrongAppliedJobText("Applied")).toBe(true);
+  });
+
+  it("treats ZipRecruiter detail pages with a visible Applied button as already applied", () => {
+    document.body.innerHTML = `
+      <main data-testid="job-details">
+        <h1>Front End Engineer</h1>
+        <button data-testid="apply-button" aria-label="Applied">Applied</button>
+      </main>
+    `;
+
+    expect(isCurrentPageAppliedJob("ziprecruiter")).toBe(true);
   });
 
   it("does not treat nested Dice result-card applied badges as the current job being applied", () => {

@@ -408,9 +408,6 @@ export function findDiceResumeMenuButton(
     | undefined;
 
   for (const button of buttons) {
-    const rect = button.getBoundingClientRect();
-    const panelRect =
-      panel instanceof HTMLElement ? panel.getBoundingClientRect() : null;
     const metadata = normalizeChoiceText(
       cleanText(
         [
