@@ -49402,8 +49402,6 @@
   }
   var AUTOMATION_SETTINGS_STORAGE_KEY = "remote-job-search-settings";
   var STARTUP_COMPANIES_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1e3;
-  var MIN_JOB_PAGE_LIMIT = 1;
-  var MAX_JOB_PAGE_LIMIT = 25;
   var DEFAULT_PROFILE = createAutomationProfile();
   var DEFAULT_SETTINGS = {
     jobPageLimit: 5,
@@ -49757,7 +49755,7 @@
   function clampJobPageLimit(raw) {
     const numeric = Number(raw);
     if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.jobPageLimit;
-    return Math.min(MAX_JOB_PAGE_LIMIT, Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric)));
+    return Math.min(25, Math.max(1, Math.round(numeric)));
   }
   function readString(value) {
     return typeof value === "string" ? value.trim() : "";

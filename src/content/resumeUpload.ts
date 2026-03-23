@@ -628,6 +628,30 @@ export function findScopedResumeUploadContainer(
   return best && best.score > 0 ? best.element : null;
 }
 
+export function scopeDiceResumeUploadInputs(
+  inputs: HTMLInputElement[],
+  root: ParentNode = document
+): HTMLInputElement[] {
+  const resumePanel = findDiceResumePanel(root);
+  if (!resumePanel) {
+    return inputs;
+  }
+
+  const scoped = inputs.filter((input) => {
+    if (resumePanel.contains(input)) {
+      return true;
+    }
+
+    const container = findScopedResumeUploadContainer(input);
+    return Boolean(
+      container &&
+      (container === resumePanel || resumePanel.contains(container))
+    );
+  });
+
+  return scoped.length > 0 ? scoped : inputs;
+}
+
 export function pickResumeUploadTargets(options: {
   inputs: HTMLInputElement[];
   assetName: string;

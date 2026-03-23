@@ -437,6 +437,12 @@ export function isJobBoardSite(
   );
 }
 
+export function shouldKeepManagedJobPageOpen(
+  site: SiteKey | "unsupported"
+): boolean {
+  return site === "ziprecruiter" || site === "dice";
+}
+
 export function getResumeKindLabel(resumeKind: ResumeKind): string {
   return RESUME_KIND_LABELS[resumeKind];
 }
@@ -1692,7 +1698,7 @@ function pickPrimaryResumeAssetFromLegacyResumes(
 function clampJobPageLimit(raw: unknown): number {
   const numeric = Number(raw);
   if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.jobPageLimit;
-  return Math.min(MAX_JOB_PAGE_LIMIT, Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric)));
+  return Math.min(25, Math.max(1, Math.round(numeric)));
 }
 
 function readString(value: unknown): string {

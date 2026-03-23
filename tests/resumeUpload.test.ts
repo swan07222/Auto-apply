@@ -14,6 +14,7 @@ import {
   pickResumeAssetForUpload,
   resolveResumeKindForJob,
   scoreResumeFileInputPreference,
+  scopeDiceResumeUploadInputs,
   shouldAttemptResumeUpload,
 } from "../src/content/resumeUpload";
 
@@ -314,6 +315,47 @@ describe("resume upload helpers", () => {
 
     expect(scoped).toBe(document.querySelector(".resume-panel"));
     expect(scoped).not.toBe(document.querySelector("form"));
+  });
+
+  it("limits Dice resume uploads to inputs inside the resume panel", () => {
+    document.body.innerHTML = `
+      <form class="dice-apply-form">
+        <div class="panel resume-panel">
+          <div>Resume</div>
+          <label for="dice-resume-file">Upload your resume</label>
+          <input id="dice-resume-file" name="resumeFile" type="file" />
+        </div>
+        <div class="panel cover-panel">
+          <div>Cover letter</div>
+          <label for="dice-cover-file">Upload your cover letter</label>
+          <input id="dice-cover-file" name="coverLetterFile" type="file" />
+        </div>
+      </form>
+    `;
+
+    const resumePanel = document.querySelector(".resume-panel") as HTMLElement;
+    const coverPanel = document.querySelector(".cover-panel") as HTMLElement;
+
+    for (const element of [resumePanel, coverPanel]) {
+      Object.defineProperty(element, "getBoundingClientRect", {
+        configurable: true,
+        value: () => ({
+          width: 200,
+          height: 60,
+          top: 0,
+          left: 0,
+          right: 200,
+          bottom: 60,
+        }),
+      });
+    }
+
+    const resumeInput = document.querySelector("#dice-resume-file") as HTMLInputElement;
+    const coverInput = document.querySelector("#dice-cover-file") as HTMLInputElement;
+
+    expect(scopeDiceResumeUploadInputs([resumeInput, coverInput])).toEqual([
+      resumeInput,
+    ]);
   });
 
   it("finds the existing Dice resume panel instead of the cover-letter panel", () => {

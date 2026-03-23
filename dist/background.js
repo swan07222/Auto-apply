@@ -117,8 +117,6 @@
   var STARTUP_COMPANIES_CACHE_STORAGE_KEY = "remote-job-search-startup-companies-cache";
   var STARTUP_COMPANIES_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1e3;
   var STARTUP_COMPANIES_REFRESH_ALARM = "remote-job-search-refresh-startup-companies";
-  var MIN_JOB_PAGE_LIMIT = 1;
-  var MAX_JOB_PAGE_LIMIT = 25;
   var DEFAULT_PROFILE = createAutomationProfile();
   var DEFAULT_SETTINGS = {
     jobPageLimit: 5,
@@ -198,6 +196,9 @@
   }
   function isJobBoardSite(site) {
     return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor";
+  }
+  function shouldKeepManagedJobPageOpen(site) {
+    return site === "ziprecruiter" || site === "dice";
   }
   function parseSearchKeywords(value) {
     const source = typeof value === "string" ? value : "";
@@ -653,7 +654,7 @@
   function clampJobPageLimit(raw) {
     const numeric = Number(raw);
     if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.jobPageLimit;
-    return Math.min(MAX_JOB_PAGE_LIMIT, Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric)));
+    return Math.min(25, Math.max(1, Math.round(numeric)));
   }
   function readString(value) {
     return typeof value === "string" ? value.trim() : "";
@@ -727,6 +728,8 @@
   var AUTOMATION_RUN_STORAGE_PREFIX = "remote-job-search-run:";
   var SESSION_STORAGE_PREFIX = "remote-job-search-session:";
   var ACTIVE_RUNS_STORAGE_KEY = "remote-job-search-active-runs";
+  var REVIEWED_JOB_KEYS_STORAGE_KEY = "remote-job-search-reviewed-job-keys";
+  var MAX_REVIEWED_JOB_KEYS = 5e3;
   var runLocks = /* @__PURE__ */ new Map();
   var pendingExtensionTabSpawns = /* @__PURE__ */ new Map();
   chrome.runtime.onMessage.addListener(
@@ -1002,6 +1005,8 @@
         if (!currentTab?.id) {
           return { ok: false, error: "Missing source tab." };
         }
+        const liveSourceTab = await getTabSafely(currentTab.id);
+        const sourceTab = liveSourceTab ?? currentTab;
         const sourceSession = await getSession(currentTab.id);
         let itemsToOpen = message.items;
         const failedJobOpeningItems = [];
@@ -1011,10 +1016,18 @@
         }
         itemsToOpen = deduplicateSpawnItems(itemsToOpen, message.maxJobPages);
         const {
+          items: unreviewedItemsToOpen,
+          skippedItems: skippedReviewedItems
+        } = await filterReviewedManagedSpawnItems(itemsToOpen);
+        itemsToOpen = unreviewedItemsToOpen;
+        const {
           items: filteredItemsToOpen,
           skippedItems: skippedAlreadyOpenItems
         } = await filterAlreadyOpenManagedSpawnItems(itemsToOpen);
         itemsToOpen = filteredItemsToOpen;
+        if (skippedReviewedItems.length > 0) {
+          await releaseJobOpeningsForItems(skippedReviewedItems);
+        }
         if (skippedAlreadyOpenItems.length > 0) {
           await releaseJobOpeningsForItems(skippedAlreadyOpenItems);
         }
@@ -1024,7 +1037,7 @@
             opened: 0
           };
         }
-        const baseIndex = currentTab.index ?? 0;
+        const baseIndex = sourceTab.index ?? currentTab.index ?? 0;
         reserveExtensionSpawnSlots(currentTab.id, itemsToOpen.length);
         let openedCount = 0;
         const queuedRunIds = /* @__PURE__ */ new Set();
@@ -1039,11 +1052,10 @@
           }
           let createdTab;
           try {
-            createdTab = await chrome.tabs.create({
-              url: item.url,
-              active: item.active ?? false,
-              index: baseIndex + offset + 1,
-              openerTabId: currentTab.id
+            createdTab = await createExtensionSpawnTab(item, {
+              sourceTabId: liveSourceTab?.id,
+              windowId: sourceTab.windowId,
+              index: baseIndex + offset + 1
             });
             openedCount += 1;
           } catch (error) {
@@ -1077,6 +1089,12 @@
             await setSession(session);
             if (shouldQueue && item.runId) {
               queuedRunIds.add(item.runId);
+            }
+          }
+          if (isManagedJobStage(item.stage)) {
+            const reviewedKey = item.claimedJobKey?.trim() || getJobDedupKey(item.url);
+            if (reviewedKey) {
+              await rememberReviewedJobKey(reviewedKey);
             }
           }
           await delay(getSpawnOpenDelayMs(item));
@@ -1687,11 +1705,13 @@
     }
     const session = await getSession(tabId);
     const runId = session?.runId;
+    const reviewedJobKeys = await getReviewedJobKeySet();
     if (!runId) {
       const settings = await readAutomationSettings();
       const approvedUrls = pickUniqueCandidateUrls(
         candidates,
-        Math.min(Math.max(0, requested), settings.jobPageLimit)
+        Math.min(Math.max(0, requested), settings.jobPageLimit),
+        reviewedJobKeys
       );
       return {
         ok: true,
@@ -1748,6 +1768,7 @@
       );
       const targetCount = Math.min(safeRequested, remainingBefore);
       const seenKeys = new Set(runState.openedJobKeys ?? []);
+      const reviewedJobKeys = await getReviewedJobKeySet();
       const approvedUrls = [];
       for (const candidate of candidates) {
         if (approvedUrls.length >= targetCount) {
@@ -1755,7 +1776,7 @@
         }
         const url = candidate.url.trim();
         const key = getJobDedupKey(url);
-        if (!url || !key || seenKeys.has(key)) {
+        if (!url || !key || seenKeys.has(key) || reviewedJobKeys.has(key)) {
           continue;
         }
         seenKeys.add(key);
@@ -2128,7 +2149,7 @@
     }
     return capped;
   }
-  function pickUniqueCandidateUrls(candidates, limit) {
+  function pickUniqueCandidateUrls(candidates, limit, reviewedJobKeys = /* @__PURE__ */ new Set()) {
     const approvedUrls = [];
     const seenKeys = /* @__PURE__ */ new Set();
     const safeLimit = Math.max(0, Math.floor(limit));
@@ -2138,7 +2159,7 @@
       }
       const url = candidate.url.trim();
       const key = getJobDedupKey(url);
-      if (!url || !key || seenKeys.has(key)) {
+      if (!url || !key || seenKeys.has(key) || reviewedJobKeys.has(key)) {
         continue;
       }
       seenKeys.add(key);
@@ -2173,9 +2194,6 @@
       result.push(newItem);
     }
     return result;
-  }
-  function shouldKeepManagedJobPageOpen(site) {
-    return site === "ziprecruiter" || site === "dice";
   }
   function isLikelyManagedApplyTarget(urlOrKey, site) {
     if (site === "unsupported") {
@@ -2267,12 +2285,130 @@
       skippedItems
     };
   }
+  async function filterReviewedManagedSpawnItems(items) {
+    const reviewedJobKeys = await getReviewedJobKeySet();
+    if (reviewedJobKeys.size === 0) {
+      return {
+        items,
+        skippedItems: []
+      };
+    }
+    const filtered = [];
+    const skippedItems = [];
+    for (const item of items) {
+      if (!isManagedJobStage(item.stage)) {
+        filtered.push(item);
+        continue;
+      }
+      const key = item.claimedJobKey?.trim() || getJobDedupKey(item.url);
+      if (key && reviewedJobKeys.has(key)) {
+        skippedItems.push(item);
+        continue;
+      }
+      filtered.push(item);
+    }
+    return {
+      items: filtered,
+      skippedItems
+    };
+  }
+  async function getReviewedJobKeySet() {
+    try {
+      const stored = await chrome.storage.local.get(REVIEWED_JOB_KEYS_STORAGE_KEY);
+      const raw = stored[REVIEWED_JOB_KEYS_STORAGE_KEY];
+      if (!Array.isArray(raw)) {
+        return /* @__PURE__ */ new Set();
+      }
+      return new Set(
+        raw.map((value) => typeof value === "string" ? value.trim() : "").filter(Boolean)
+      );
+    } catch {
+      return /* @__PURE__ */ new Set();
+    }
+  }
+  async function rememberReviewedJobKey(key) {
+    const normalizedKey = key.trim();
+    if (!normalizedKey) {
+      return;
+    }
+    const reviewed = await getReviewedJobKeySet();
+    if (reviewed.has(normalizedKey)) {
+      return;
+    }
+    reviewed.add(normalizedKey);
+    try {
+      await chrome.storage.local.set({
+        [REVIEWED_JOB_KEYS_STORAGE_KEY]: Array.from(reviewed).slice(
+          -MAX_REVIEWED_JOB_KEYS
+        )
+      });
+    } catch {
+    }
+  }
   async function getTabSafely(tabId) {
     try {
       return await chrome.tabs.get(tabId);
     } catch {
       return null;
     }
+  }
+  async function createExtensionSpawnTab(item, options) {
+    const primaryCreateProperties = {
+      url: item.url,
+      active: item.active ?? false,
+      index: options.index
+    };
+    if (options.sourceTabId !== void 0) {
+      primaryCreateProperties.openerTabId = options.sourceTabId;
+    }
+    try {
+      return await createTabWithTransientRetry(primaryCreateProperties);
+    } catch (error) {
+      if (!shouldRetryTabCreateWithoutOpener(error, options.sourceTabId)) {
+        throw error;
+      }
+    }
+    const fallbackCreateProperties = {
+      url: item.url,
+      active: item.active ?? false,
+      index: options.index
+    };
+    if (options.windowId !== void 0) {
+      fallbackCreateProperties.windowId = options.windowId;
+    }
+    return await createTabWithTransientRetry(fallbackCreateProperties);
+  }
+  async function createTabWithTransientRetry(properties, maxAttempts = 4) {
+    let lastError;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await chrome.tabs.create(properties);
+      } catch (error) {
+        lastError = error;
+        if (attempt >= maxAttempts || !isRetryableTabCreateError(error)) {
+          throw error;
+        }
+      }
+      await delay(250);
+    }
+    throw lastError instanceof Error ? lastError : new Error("Tab creation failed.");
+  }
+  function isRetryableTabCreateError(error) {
+    const message = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase();
+    if (!message) {
+      return false;
+    }
+    return message.includes("tabs cannot be edited right now") || message.includes("user may be dragging a tab");
+  }
+  function shouldRetryTabCreateWithoutOpener(error, sourceTabId) {
+    if (sourceTabId === void 0) {
+      return false;
+    }
+    const message = error instanceof Error ? error.message : String(error ?? "").trim();
+    if (!message) {
+      return false;
+    }
+    return message.includes(`No tab with id: ${sourceTabId}`) || message.includes("Tab not found") || message.includes("Invalid openerTabId");
   }
   async function resolvePreferredTab(preferredTabId, preferredKind = "web_page") {
     const candidates = [];

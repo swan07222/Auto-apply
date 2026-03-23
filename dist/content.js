@@ -55,8 +55,6 @@
   var VERIFICATION_TIMEOUT_MS = 3e5;
   var AUTOMATION_SETTINGS_STORAGE_KEY = "remote-job-search-settings";
   var STARTUP_COMPANIES_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1e3;
-  var MIN_JOB_PAGE_LIMIT = 1;
-  var MAX_JOB_PAGE_LIMIT = 25;
   var DEFAULT_PROFILE = createAutomationProfile();
   var DEFAULT_SETTINGS = {
     jobPageLimit: 5,
@@ -127,6 +125,9 @@
   }
   function isJobBoardSite(site) {
     return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor";
+  }
+  function shouldKeepManagedJobPageOpen(site) {
+    return site === "ziprecruiter" || site === "dice";
   }
   function getResumeKindLabel(resumeKind) {
     return RESUME_KIND_LABELS[resumeKind];
@@ -836,7 +837,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   function clampJobPageLimit(raw) {
     const numeric = Number(raw);
     if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.jobPageLimit;
-    return Math.min(MAX_JOB_PAGE_LIMIT, Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric)));
+    return Math.min(25, Math.max(1, Math.round(numeric)));
   }
   function readString(value) {
     return typeof value === "string" ? value.trim() : "";
@@ -2338,6 +2339,53 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     return context.includes("cover letter") || context.includes("upload your cover letter") || context.includes("motivation letter") || context.includes("personal statement");
   }
+  function findDiceUploadPanel(kind, root = document) {
+    const candidates = Array.from(
+      root.querySelectorAll("section, article, div, li")
+    );
+    let best;
+    for (const candidate of candidates) {
+      if (!isElementVisible(candidate)) {
+        continue;
+      }
+      const text = normalizeChoiceText(cleanText(candidate.textContent).slice(0, 800));
+      if (!text) {
+        continue;
+      }
+      let score = 0;
+      if (kind === "resume") {
+        if (text.includes("resume")) score += 80;
+        if (text.includes("upload your resume")) score += 65;
+        if (text.includes("uploaded to application")) score += 60;
+        if (text.includes("uploaded to profile")) score += 55;
+        if (text.includes("cover letter")) score -= 120;
+        if (text.includes("upload your cover letter")) score -= 120;
+      } else {
+        if (text.includes("cover letter")) score += 90;
+        if (text.includes("upload your cover letter")) score += 70;
+        if (text.includes("optional")) score += 15;
+        if (text.includes("resume")) score -= 120;
+        if (text.includes("upload your resume")) score -= 120;
+      }
+      if (text.includes(".pdf") || text.includes(".doc") || text.includes(".docx") || text.includes("uploaded to application") || text.includes("uploaded to profile")) {
+        score += 25;
+      }
+      score -= Math.min(Math.floor(text.length / 120), 12);
+      if (score <= 0) {
+        continue;
+      }
+      if (!best || score > best.score) {
+        best = {
+          element: candidate,
+          score
+        };
+      }
+    }
+    return best?.element ?? null;
+  }
+  function findDiceResumePanel(root = document) {
+    return findDiceUploadPanel("resume", root);
+  }
   function findScopedResumeUploadContainer(input) {
     const ancestors = [
       input.parentElement,
@@ -2384,6 +2432,22 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
     }
     return best && best.score > 0 ? best.element : null;
+  }
+  function scopeDiceResumeUploadInputs(inputs, root = document) {
+    const resumePanel = findDiceResumePanel(root);
+    if (!resumePanel) {
+      return inputs;
+    }
+    const scoped = inputs.filter((input) => {
+      if (resumePanel.contains(input)) {
+        return true;
+      }
+      const container = findScopedResumeUploadContainer(input);
+      return Boolean(
+        container && (container === resumePanel || resumePanel.contains(container))
+      );
+    });
+    return scoped.length > 0 ? scoped : inputs;
   }
   function pickResumeUploadTargets(options) {
     const { inputs, assetName, uploadKey, extensionManagedUploads } = options;
@@ -2929,7 +2993,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const recencyEligible = datePostedWindow === "any" ? valid : recencyFiltered;
     const eligible = site === "dice" ? recencyEligible.filter((candidate) => isExplicitlyRemoteDiceCandidate(candidate)) : filterCandidatesForRemotePreference(recencyEligible);
     const shouldKeywordFilter = searchKeywords.length > 0 && (site === "startup" || site === "other_sites");
-    const shouldStrictBoardKeywordFilter = searchKeywords.length > 0 && site === "dice";
     const boardKeywordMatchedCandidates = searchKeywords.length > 0 && (site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor") ? eligible.filter(
       (candidate) => scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0
     ) : [];
@@ -2940,11 +3003,11 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     );
     const keywordEligible = shouldKeywordFilter ? eligible.filter(
       (candidate) => matchesConfiguredSearchKeywords(candidate, searchKeywords)
-    ) : shouldStrictBoardKeywordFilter ? boardKeywordMatchedCandidates : shouldKeywordFilterBoardResults ? boardKeywordMatchedCandidates : eligible;
+    ) : shouldKeywordFilterBoardResults ? boardKeywordMatchedCandidates : eligible;
     const technicalEligible = site === "startup" || site === "other_sites" ? keywordEligible.filter(
       (candidate) => looksLikeTechnicalRoleTitle(candidate.title)
     ) : keywordEligible;
-    if ((shouldKeywordFilter || shouldStrictBoardKeywordFilter) && keywordEligible.length === 0) {
+    if (shouldKeywordFilter && keywordEligible.length === 0) {
       return [];
     }
     if (!resumeKind) {
@@ -3664,9 +3727,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     );
     for (const card of cards) {
       const titleAnchor = card.querySelector(
-        "a[data-testid='job-search-job-detail-link'], a[href*='/job-detail/'], a[href*='/jobs/detail/']"
+        "a[data-testid='job-search-job-detail-link']"
+      ) ?? card.querySelector(
+        "a[href*='/job-detail/'], a[href*='/jobs/detail/']"
       ) ?? null;
-      if (!titleAnchor?.href) {
+      const primaryUrlAnchor = card.querySelector(
+        "a[data-testid='job-search-job-card-link']"
+      ) ?? titleAnchor;
+      if (!titleAnchor?.href || !primaryUrlAnchor?.href) {
         continue;
       }
       const title = cleanText(
@@ -3682,7 +3750,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
       addJobCandidate(
         candidates,
-        titleAnchor.href,
+        primaryUrlAnchor.href,
         title,
         buildDiceCandidateContextText(card, titleAnchor)
       );
@@ -3698,10 +3766,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     );
     for (const card of customElements) {
       const root = card.shadowRoot ?? card;
-      const anchor = root.querySelector(
-        "a[href*='/job-detail/'], a[href*='/jobs/detail/'], a.card-title-link, a[class*='card-title'], a[class*='job-title'], a[href]"
-      );
-      if (!anchor?.href) {
+      const titleAnchor = root.querySelector(
+        "a[data-testid='job-search-job-detail-link']"
+      ) ?? root.querySelector(
+        "a[href*='/job-detail/'], a[href*='/jobs/detail/'], a.card-title-link, a[class*='card-title'], a[class*='job-title']"
+      ) ?? null;
+      const primaryUrlAnchor = root.querySelector(
+        "a[data-testid='job-search-job-card-link']"
+      ) ?? titleAnchor;
+      if (!titleAnchor?.href) {
         const dataId = card.getAttribute("data-id") || card.getAttribute("data-job-id");
         if (dataId) {
           const titleElement = root.querySelector(
@@ -3725,20 +3798,20 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         }
         continue;
       }
-      const href = anchor.href;
+      const href = primaryUrlAnchor?.href ?? titleAnchor.href;
       if (!href.includes("/job-detail/") && !href.includes("/jobs/detail/")) {
         continue;
       }
       const title = cleanText(
         root.querySelector(
           "h5, h3, h2, [class*='card-title'], [class*='job-title']"
-        )?.textContent || anchor.textContent || ""
+        )?.textContent || titleAnchor.textContent || ""
       );
-      const contextText = buildDiceCandidateContextText(card, anchor);
+      const contextText = buildDiceCandidateContextText(card, titleAnchor);
       if (!title || title.length < 3) {
         continue;
       }
-      if (shouldSkipDiceTitleCandidate(anchor, card)) {
+      if (shouldSkipDiceTitleCandidate(titleAnchor, card)) {
         continue;
       }
       addJobCandidate(candidates, href, title, contextText);
@@ -8097,7 +8170,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return waitForLikelyApplicationSurface(site, applicationSurfaceCollectors);
   }
   function shouldKeepJobPageOpen(site) {
-    return site === "ziprecruiter";
+    return shouldKeepManagedJobPageOpen(site);
   }
   async function openApplicationTargetInNewTab(url, site, description) {
     if (!await ensureApplicationTargetReachable(url, site, description)) {
@@ -9570,20 +9643,21 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const resume = pickResumeAsset(settings);
     if (!resume) return null;
     const currentSite = detectSiteFromUrl(window.location.href);
-    if (currentSite === "dice") {
-      return null;
-    }
     const resumeUploadKey = getResumeAssetUploadKey(resume);
-    const fileInputs = collectResumeFileInputs();
+    const diceResumePanel = currentSite === "dice" ? findDiceResumePanel() : null;
+    const fileInputs = currentSite === "dice" ? scopeDiceResumeUploadInputs(collectResumeFileInputs(), diceResumePanel ?? document) : collectResumeFileInputs();
     if (fileInputs.length === 0) {
       const hiddenFileInputs = Array.from(
-        document.querySelectorAll("input[type='file']")
+        (diceResumePanel ?? document).querySelectorAll(
+          "input[type='file']"
+        )
       );
+      const diceScopedHiddenInputs = currentSite === "dice" ? scopeDiceResumeUploadInputs(hiddenFileInputs, diceResumePanel ?? document) : hiddenFileInputs;
       const {
         alreadySatisfied: satisfiedHiddenTarget,
         targets: fallbackHiddenTargets
       } = pickResumeUploadTargets({
-        inputs: hiddenFileInputs,
+        inputs: diceScopedHiddenInputs,
         assetName: resume.name,
         uploadKey: resumeUploadKey,
         extensionManagedUploads: extensionManagedResumeUploads

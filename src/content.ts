@@ -31,6 +31,7 @@ import {
   parseSearchKeywords,
   readAutomationSettings,
   resolveAutomationSettingsForProfile,
+  shouldKeepManagedJobPageOpen,
   sleep,
   writeAutomationSettings,
   detectSiteFromUrl,
@@ -72,12 +73,14 @@ import {
   selectOptionByAnswer,
 } from "./content/choiceFill";
 import {
+  findDiceResumePanel,
   findScopedResumeUploadContainer,
   getResumeAssetUploadKey,
   getSelectedFileName,
   pickResumeUploadTargets,
   pickResumeAssetForUpload,
   resolveResumeKindForJob,
+  scopeDiceResumeUploadInputs,
   shouldAttemptResumeUpload,
 } from "./content/resumeUpload";
 import {
@@ -431,7 +434,7 @@ async function waitForLikelyApplicationSurface(site: SiteKey): Promise<boolean> 
 }
 
 function shouldKeepJobPageOpen(site: SiteKey | "unsupported"): boolean {
-  return site === "ziprecruiter";
+  return shouldKeepManagedJobPageOpen(site);
 }
 
 async function openApplicationTargetInNewTab(
@@ -2296,25 +2299,31 @@ async function uploadResumeIfNeeded(
   if (!resume) return null;
   const currentSite = detectSiteFromUrl(window.location.href);
 
-  if (currentSite === "dice") {
-    return null;
-  }
-
   const resumeUploadKey = getResumeAssetUploadKey(resume);
-
-  const fileInputs = collectResumeFileInputs();
+  const diceResumePanel =
+    currentSite === "dice" ? findDiceResumePanel() : null;
+  const fileInputs =
+    currentSite === "dice"
+      ? scopeDiceResumeUploadInputs(collectResumeFileInputs(), diceResumePanel ?? document)
+      : collectResumeFileInputs();
 
   // FIX: If no file inputs found via deep matching, also check for
   // visually-hidden file inputs that might be triggered by a button
   if (fileInputs.length === 0) {
     const hiddenFileInputs = Array.from(
-      document.querySelectorAll<HTMLInputElement>("input[type='file']")
+      (diceResumePanel ?? document).querySelectorAll<HTMLInputElement>(
+        "input[type='file']"
+      )
     );
+    const diceScopedHiddenInputs =
+      currentSite === "dice"
+        ? scopeDiceResumeUploadInputs(hiddenFileInputs, diceResumePanel ?? document)
+        : hiddenFileInputs;
     const {
       alreadySatisfied: satisfiedHiddenTarget,
       targets: fallbackHiddenTargets,
     } = pickResumeUploadTargets({
-      inputs: hiddenFileInputs,
+      inputs: diceScopedHiddenInputs,
       assetName: resume.name,
       uploadKey: resumeUploadKey,
       extensionManagedUploads: extensionManagedResumeUploads,

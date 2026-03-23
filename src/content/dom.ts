@@ -360,25 +360,6 @@ export function isElementVisible(el: HTMLElement): boolean {
   return true;
 }
 
-export function findFirstVisibleElement<T extends HTMLElement>(
-  selectors: string[]
-): T | null {
-  for (const selector of selectors) {
-    try {
-      for (const element of Array.from(document.querySelectorAll<T>(selector))) {
-        if (isElementVisible(element)) {
-          return element;
-        }
-      }
-    } catch {
-      // FIX: Skip invalid selectors
-      continue;
-    }
-  }
-
-  return null;
-}
-
 export function performClickAction(element: HTMLElement): void {
   const isNativeSubmitControl =
     (element instanceof HTMLButtonElement &&

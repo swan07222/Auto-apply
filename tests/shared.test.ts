@@ -20,6 +20,7 @@ import {
   resolveStartupTargetRegions,
   sanitizeStartupCompaniesPayload,
   sanitizeAutomationSettings,
+  shouldKeepManagedJobPageOpen,
 } from "../src/shared";
 
 describe("shared automation target logic", () => {
@@ -91,6 +92,12 @@ describe("shared automation target logic", () => {
     expect(firstUrl.searchParams.get("q")).toBe("software engineer");
     expect(firstUrl.searchParams.get("filters.workplaceTypes")).toBe("Remote");
     expect(firstUrl.searchParams.get("location")).toBeNull();
+  });
+
+  it("keeps Dice and ZipRecruiter job pages open when the apply flow moves to a new tab", () => {
+    expect(shouldKeepManagedJobPageOpen("dice")).toBe(true);
+    expect(shouldKeepManagedJobPageOpen("ziprecruiter")).toBe(true);
+    expect(shouldKeepManagedJobPageOpen("indeed")).toBe(false);
   });
 
   it("dedupes equivalent Dice detail URLs that expose the same non-hex job id", () => {

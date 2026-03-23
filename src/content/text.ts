@@ -12,25 +12,6 @@ export function cleanText(value: string | null | undefined): string {
     .trim();
 }
 
-export function truncateText(value: string, max: number): string {
-  if (!value) {
-    return "";
-  }
-
-  if (value.length <= max) {
-    return value;
-  }
-
-  // FIX: Try to truncate at word boundary
-  const truncated = value.slice(0, max - 3);
-  const lastSpace = truncated.lastIndexOf(" ");
-
-  if (lastSpace > max * 0.7) {
-    return `${truncated.slice(0, lastSpace).trim()}...`;
-  }
-
-  return `${truncated.trim()}...`;
-}
 
 export function normalizeChoiceText(value: string): string {
   if (!value) {
@@ -57,20 +38,6 @@ export function cssEscape(value: string): string {
   return value.replace(/["'\\#.:[\]()>+~=^$*|]/g, "\\$&");
 }
 
-// FIX: Add helper to extract numbers from text
-export function extractNumber(value: string): number | null {
-  if (!value) {
-    return null;
-  }
-
-  const match = value.match(/[\d,]+\.?\d*/);
-  if (!match) {
-    return null;
-  }
-
-  const num = parseFloat(match[0].replace(/,/g, ""));
-  return Number.isFinite(num) ? num : null;
-}
 
 // FIX: Add helper to compare text similarity
 export function textSimilarity(a: string, b: string): number {
@@ -150,37 +117,3 @@ export function looksLikeQuestion(text: string): boolean {
   return questionStarters.some((starter) => normalized.startsWith(starter));
 }
 
-// FIX: Add helper to extract email from text
-export function extractEmail(text: string): string | null {
-  if (!text) {
-    return null;
-  }
-
-  const match = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-  return match ? match[0] : null;
-}
-
-// FIX: Add helper to extract phone from text
-export function extractPhone(text: string): string | null {
-  if (!text) {
-    return null;
-  }
-
-  // Match various phone formats
-  const match = text.match(
-    /(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/
-  );
-  return match ? match[0] : null;
-}
-
-// FIX: Add helper to extract URL from text
-export function extractUrl(text: string): string | null {
-  if (!text) {
-    return null;
-  }
-
-  const match = text.match(
-    /https?:\/\/[^\s<>"{}|\\^`[\]]+/i
-  );
-  return match ? match[0] : null;
-}

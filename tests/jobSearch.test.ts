@@ -447,6 +447,34 @@ describe("job search candidate filtering", () => {
     ).toEqual(["https://www.dice.com/job-detail/frontend-1"]);
   });
 
+  it("still opens explicit remote Dice jobs when none of the visible cards closely match the label keyword", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://www.dice.com/job-detail/platform-1",
+        title: "Platform Engineer",
+        contextText: "Remote role based anywhere in the US.",
+      },
+      {
+        url: "https://www.dice.com/job-detail/backend-2",
+        title: "Backend Engineer",
+        contextText: "Remote role based anywhere in the US.",
+      },
+    ];
+
+    expect(
+      pickRelevantJobUrls(
+        candidates,
+        "dice",
+        undefined,
+        "any",
+        ["full stack python"]
+      )
+    ).toEqual([
+      "https://www.dice.com/job-detail/platform-1",
+      "https://www.dice.com/job-detail/backend-2",
+    ]);
+  });
+
   it("accepts ZipRecruiter jobs-search URLs when they pin a specific job", () => {
     expect(
       isLikelyJobDetailUrl(
