@@ -123,6 +123,12 @@
     }
     return SUPPORTED_SITE_LABELS[site];
   }
+  function resolveSessionSite(sessionSite, detectedSite) {
+    if (!detectedSite) {
+      return sessionSite;
+    }
+    return detectedSite;
+  }
   function isJobBoardSite(site) {
     return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor";
   }
@@ -8787,10 +8793,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     );
   }
   function resolveCurrentSiteKey() {
+    const detectedSite = detectSiteFromUrl(window.location.href);
+    if (detectedSite) {
+      return detectedSite;
+    }
     if (status.site && status.site !== "unsupported") {
       return status.site;
     }
-    return detectSiteFromUrl(window.location.href);
+    return null;
   }
   function hasUsableApplicationSignalsForSite(site) {
     if (site && hasLikelyApplicationSurface2(site)) {
@@ -9044,7 +9054,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         childApplicationTabOpened = false;
         stageRetryState = createStageRetryState();
         if (message.session) {
-          status = message.session;
+          status = {
+            ...message.session,
+            site: resolveSessionSite(message.session.site, detectedSite)
+          };
           currentStage = message.session.stage;
           currentLabel = message.session.label;
           currentResumeKind = message.session.resumeKind;
@@ -9128,7 +9141,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           unchangedCount = 0;
           lastSessionState = sessionStateKey;
         }
-        status = s;
+        status = {
+          ...s,
+          site: resolveSessionSite(s.site, detectedSite)
+        };
         currentStage = s.stage;
         currentLabel = s.label;
         currentResumeKind = s.resumeKind;
