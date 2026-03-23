@@ -1082,13 +1082,7 @@ export function findDiceApplyAction(): ApplyAction | null {
     };
   }
 
-  const applyComponents = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      "button[data-testid='apply-button'], a[data-testid='apply-button'], [data-testid*='apply-button'], apply-button-wc, [data-cy='apply-button'], [data-cy*='apply'], [class*='apply-button'], [class*='ApplyButton']"
-    )
-  );
-
-  for (const component of applyComponents) {
+  for (const component of collectDiceApplyComponents()) {
     const root = component.shadowRoot ?? component;
 
     const button = root.querySelector<HTMLElement>(
@@ -1171,6 +1165,79 @@ export function findDiceApplyAction(): ApplyAction | null {
   }
 
   return null;
+}
+
+function collectDiceApplyComponents(): HTMLElement[] {
+  const selectors =
+    "button[data-testid='apply-button'], a[data-testid='apply-button'], [data-testid*='apply-button'], apply-button-wc, [data-cy='apply-button'], [data-cy*='apply'], [class*='apply-button'], [class*='ApplyButton']";
+  const scopedMatches: HTMLElement[] = [];
+  const scopedSeen = new Set<HTMLElement>();
+
+  for (const surface of collectDiceCurrentJobSurfaces()) {
+    for (const component of Array.from(
+      surface.querySelectorAll<HTMLElement>(selectors)
+    )) {
+      if (scopedSeen.has(component) || isDiceNestedResultElement(component, surface)) {
+        continue;
+      }
+
+      scopedSeen.add(component);
+      scopedMatches.push(component);
+    }
+  }
+
+  if (scopedMatches.length > 0) {
+    return scopedMatches;
+  }
+
+  return Array.from(document.querySelectorAll<HTMLElement>(selectors));
+}
+
+function collectDiceCurrentJobSurfaces(): HTMLElement[] {
+  const selectors = [
+    "[data-testid*='job-details' i]",
+    "[data-testid*='jobDetail' i]",
+    "[class*='job-details']",
+    "[class*='jobDetail']",
+    "[class*='job-description']",
+    "[class*='jobDescription']",
+    "[role='main']",
+    "main",
+    "article",
+  ];
+  const surfaces: HTMLElement[] = [];
+  const seen = new Set<HTMLElement>();
+
+  for (const selector of selectors) {
+    let matches: HTMLElement[];
+    try {
+      matches = Array.from(document.querySelectorAll<HTMLElement>(selector));
+    } catch {
+      continue;
+    }
+
+    for (const match of matches) {
+      if (seen.has(match)) {
+        continue;
+      }
+
+      seen.add(match);
+      surfaces.push(match);
+    }
+  }
+
+  return surfaces;
+}
+
+function isDiceNestedResultElement(
+  element: HTMLElement,
+  surface: HTMLElement
+): boolean {
+  const nestedResultContainer = element.closest<HTMLElement>(
+    "[aria-label='Job search results'], [data-testid='job-search-results'], dhi-search-card, dhi-job-card, dhi-search-cards-widget"
+  );
+
+  return Boolean(nestedResultContainer && nestedResultContainer !== surface);
 }
 
 function extractDiceInlineApplyUrl(): string | null {

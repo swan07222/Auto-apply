@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+// Note: describe, expect, it, afterEach are provided globally by vitest (globals: true)
+// vi must be imported for mocking
+import { vi } from "vitest";
 
 import {
   AUTOMATION_SETTINGS_STORAGE_KEY,
@@ -88,7 +90,7 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
 
       switch (message.type) {
         case "get-tab-session":
-          return { ok: true };
+          return { ok: true, session: { site: "indeed", phase: "idle", message: "Ready on Indeed.", updatedAt: Date.now() } };
         case "start-startup-automation":
           return { ok: true, opened: 3, regionLabel: "US" };
         case "start-other-sites-automation":

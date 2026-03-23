@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+// Note: describe, expect, it, afterEach are provided globally by vitest (globals: true)
+// vi must be imported for mocking
+import { vi } from "vitest";
 
 import {
   findStandaloneApplicationFrameUrl,

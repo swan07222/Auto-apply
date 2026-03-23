@@ -263,9 +263,12 @@
         }
       }
       if (hostname.includes("monster")) {
-        path = path.replace(/\/job-opening\//, "/job-openings/");
+        const normalizedPath = path.replace(/\/job-opening\//, "/job-openings/");
         const jobId = parsed.searchParams.get("jobid") ?? parsed.searchParams.get("job_id");
-        if (jobId) return `${hostname}${path}?jobid=${jobId.toLowerCase()}`;
+        if (jobId) {
+          return `${hostname}${normalizedPath}?jobid=${jobId.toLowerCase()}`;
+        }
+        return `${hostname}${normalizedPath}`;
       }
       if (hostname.includes("glassdoor")) {
         const jobListingId = parsed.searchParams.get("jl") ?? parsed.searchParams.get("jobListingId") ?? parsed.searchParams.get("joblistingid");
@@ -289,10 +292,47 @@
   }
   function inferResumeKindFromTitle(title) {
     const lower = title.toLowerCase();
-    if (/\b(front\s*end|frontend|ui\s+engineer|ui\s+developer|react|angular|vue|css)\b/.test(lower)) {
+    const frontendPatterns = [
+      /\bfront\s*end\b/,
+      /\bfrontend\b/,
+      /\bui\s+engineer\b/,
+      /\bui\s+developer\b/,
+      /\breact\b(?!native)/,
+      // Exclude React Native which could be mobile
+      /\bangular\b/,
+      /\bvue\b(?!\.js)/,
+      // Be more specific about Vue
+      /\bcss\s*(engineer|developer)?\b/
+      // More specific CSS matching
+    ];
+    if (frontendPatterns.some((pattern) => pattern.test(lower))) {
       return "front_end";
     }
-    if (/\b(back\s*end|backend|server|api\b|platform\s+engineer|python|java\b|golang|rust|node\.?js|ruby|rails|django|spring)\b/.test(lower)) {
+    const backendPatterns = [
+      /\bback\s*end\b/,
+      /\bbackend\b/,
+      /\bserver\s+(engineer|developer|side)\b/,
+      /\bapi\s+(engineer|developer|architect)\b/,
+      // More specific API matching
+      /\bplatform\s+engineer\b/,
+      /\bpython\b(?!script)/,
+      // Exclude Python-related false positives
+      /\bjava\b(?!script|scripting)/,
+      // Exclude JavaScript
+      /\bgolang\b/,
+      /\brust\b/,
+      /\bnode\.?js\b/,
+      /\bruby\b(?!onrails)/,
+      // Be specific about Ruby
+      /\brails\b/,
+      /\bdjango\b/,
+      /\bspring\b(?!boot)?\s*(framework)?\b/,
+      // More specific Spring matching
+      /\bdata\s+engineer\b/,
+      /\bml\s+engineer\b/,
+      /\bmachine\s+learning\s+engineer\b/
+    ];
+    if (backendPatterns.some((pattern) => pattern.test(lower))) {
       return "back_end";
     }
     return "full_stack";
@@ -2682,52 +2722,11 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         return filterDiceViewedOrAppliedCandidates(
           dedupeJobCandidates([
             ...collectDiceListItemCandidates(),
-            // FIX: Dice uses custom web components — collect from shadow DOM
-            ...collectDiceSearchCardCandidates(),
-            ...collectCandidatesFromAnchors([
-              "a[href*='/job-detail/']",
-              "a[href*='/jobs/detail/']",
-              "a[data-cy*='job']",
-              "a[data-id]",
-              // FIX: Additional Dice selectors
-              "a.card-title-link",
-              "a[class*='card-title']",
-              "a[class*='job-title']",
-              "a[data-testid*='job']"
-            ]),
-            ...collectCandidatesFromContainers(
-              [
-                "[data-testid='job-card']",
-                "[data-cy*='search-card']",
-                "[data-testid*='search-card']",
-                "[class*='search-card']",
-                "[class*='SearchCard']",
-                "[class*='job-card']",
-                "[class*='JobCard']",
-                ".dhi-search-cards-widget .card",
-                "article",
-                "li"
-              ],
-              [
-                "a[href*='/job-detail/']",
-                "a[href*='/jobs/detail/']",
-                "a[data-cy*='job']",
-                "a.card-title-link",
-                "a[class*='card-title']",
-                "a[class*='job-title']"
-              ],
-              [
-                "h1",
-                "h2",
-                "h3",
-                "h5",
-                "[data-cy*='title']",
-                "[class*='card-title']",
-                "[class*='job-title']",
-                "[class*='jobTitle']",
-                "a.card-title-link"
-              ]
-            )
+            // Prefer Dice-specific collectors over the generic fallbacks.
+            // Live Dice cards expose multiple anchors per card (overlay, apply, title),
+            // and the broad fallback collectors can re-ingest the same job with noisy
+            // context from outside the card.
+            ...collectDiceSearchCardCandidates()
           ])
         );
       case "monster":
@@ -2928,8 +2927,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     );
     const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
     const recencyEligible = datePostedWindow === "any" ? valid : recencyFiltered;
-    const eligible = filterCandidatesForRemotePreference(recencyEligible);
+    const eligible = site === "dice" ? recencyEligible.filter((candidate) => isExplicitlyRemoteDiceCandidate(candidate)) : filterCandidatesForRemotePreference(recencyEligible);
     const shouldKeywordFilter = searchKeywords.length > 0 && (site === "startup" || site === "other_sites");
+    const shouldStrictBoardKeywordFilter = searchKeywords.length > 0 && site === "dice";
     const boardKeywordMatchedCandidates = searchKeywords.length > 0 && (site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor") ? eligible.filter(
       (candidate) => scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0
     ) : [];
@@ -2940,11 +2940,11 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     );
     const keywordEligible = shouldKeywordFilter ? eligible.filter(
       (candidate) => matchesConfiguredSearchKeywords(candidate, searchKeywords)
-    ) : shouldKeywordFilterBoardResults ? boardKeywordMatchedCandidates : eligible;
+    ) : shouldStrictBoardKeywordFilter ? boardKeywordMatchedCandidates : shouldKeywordFilterBoardResults ? boardKeywordMatchedCandidates : eligible;
     const technicalEligible = site === "startup" || site === "other_sites" ? keywordEligible.filter(
       (candidate) => looksLikeTechnicalRoleTitle(candidate.title)
     ) : keywordEligible;
-    if (shouldKeywordFilter && keywordEligible.length === 0) {
+    if ((shouldKeywordFilter || shouldStrictBoardKeywordFilter) && keywordEligible.length === 0) {
       return [];
     }
     if (!resumeKind) {
@@ -3039,6 +3039,19 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       score -= 3;
     }
     return score;
+  }
+  function isExplicitlyRemoteDiceCandidate(candidate) {
+    const haystack = normalizeChoiceText(
+      `${candidate.title} ${candidate.contextText} ${candidate.url}`
+    );
+    if (/\b(hybrid|hybrid only|hybrid remote|remote hybrid|onsite|on site|in office|in-office|office based|office-based|local only|must be onsite)\b/.test(
+      haystack
+    )) {
+      return false;
+    }
+    return /\b(remote|fully remote|100 remote|work from home|distributed|anywhere|remote first|home based|home-based|remote us|remote usa)\b/.test(
+      haystack
+    );
   }
   function isLikelyJobDetailUrl(site, url, text, contextText = "") {
     if (!site) {
@@ -3335,9 +3348,21 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return false;
     }
     const normalized = cleanText(text).toLowerCase();
-    if (/\b(not applied|apply now|ready to apply|applied (machine|deep|data|ai)|applied scientist|applied research)\b/.test(
-      normalized
-    )) {
+    const appliedRolePatterns = [
+      /\bapplied\s+scientist\b/,
+      /\bapplied\s+research\b/,
+      /\bapplied\s+machine\s+learning\b/,
+      /\bapplied\s+deep\s+learning\b/,
+      /\bapplied\s+data\s+scientist\b/,
+      /\bapplied\s+ai\b/,
+      /\bapplied\s+ml\b/,
+      /\bapplied\s+researcher\b/,
+      /\bapplied\s+engineer\b/
+    ];
+    if (appliedRolePatterns.some((pattern) => pattern.test(normalized))) {
+      return false;
+    }
+    if (/\b(not applied|apply now|ready to apply)\b/.test(normalized)) {
       return false;
     }
     return [
@@ -3502,8 +3527,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       minAttemptsBeforeEarlyStop = 22;
       stableThreshold = 8;
     } else if (site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "glassdoor") {
-      minAttemptsBeforeEarlyStop = site === "indeed" ? 12 : 14;
-      stableThreshold = site === "indeed" ? 6 : 8;
+      if (site === "dice") {
+        minAttemptsBeforeEarlyStop = 18;
+        stableThreshold = 10;
+      } else {
+        minAttemptsBeforeEarlyStop = site === "indeed" ? 12 : 14;
+        stableThreshold = site === "indeed" ? 6 : 8;
+      }
     }
     return attempt >= minAttemptsBeforeEarlyStop && stablePasses >= stableThreshold;
   }
@@ -3629,7 +3659,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const candidates = [];
     const cards = Array.from(
       document.querySelectorAll(
-        "[aria-label='Job search results'] li, [aria-label='Job search results'] article, [data-testid='job-search-results'] li, [data-testid='job-search-results'] article, li, article"
+        "[aria-label='Job search results'] [data-testid='job-card'], [data-testid='job-search-results'] [data-testid='job-card'], [data-testid='job-card'], [aria-label='Job search results'] li, [aria-label='Job search results'] article, [data-testid='job-search-results'] li, [data-testid='job-search-results'] article"
       )
     );
     for (const card of cards) {
@@ -3654,7 +3684,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         candidates,
         titleAnchor.href,
         title,
-        buildCandidateContextText(card, titleAnchor)
+        buildDiceCandidateContextText(card, titleAnchor)
       );
     }
     return candidates;
@@ -3674,16 +3704,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       if (!anchor?.href) {
         const dataId = card.getAttribute("data-id") || card.getAttribute("data-job-id");
         if (dataId) {
+          const titleElement = root.querySelector(
+            "h5, h3, h2, [class*='card-title'], [class*='job-title'], a"
+          ) ?? null;
           const title2 = cleanText(
-            root.querySelector(
-              "h5, h3, h2, [class*='card-title'], [class*='job-title'], a"
-            )?.textContent || ""
+            titleElement?.textContent || ""
           );
-          const contextText2 = cleanText(card.innerText || card.textContent || "");
+          const contextText2 = buildDiceCandidateContextText(card, titleElement);
           if (title2) {
-            const titleElement = root.querySelector(
-              "h5, h3, h2, [class*='card-title'], [class*='job-title'], a"
-            ) ?? null;
             if (shouldSkipDiceTitleCandidate(titleElement ?? card, card)) {
               continue;
             }
@@ -3706,7 +3734,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           "h5, h3, h2, [class*='card-title'], [class*='job-title']"
         )?.textContent || anchor.textContent || ""
       );
-      const contextText = cleanText(card.innerText || card.textContent || "");
+      const contextText = buildDiceCandidateContextText(card, anchor);
       if (!title || title.length < 3) {
         continue;
       }
@@ -3727,7 +3755,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       );
       for (const anchor of shadowAnchors) {
         const title = cleanText(anchor.textContent || "");
-        const contextText = cleanText(host.innerText || host.textContent || "");
+        const contextText = buildDiceCandidateContextText(host, anchor);
         if (shouldSkipDiceTitleCandidate(anchor, host)) {
           continue;
         }
@@ -4334,6 +4362,37 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (anchorText) {
       contexts.add(anchorText);
     }
+    return Array.from(contexts).sort((left, right) => right.length - left.length)[0] ?? "";
+  }
+  function buildDiceCandidateContextText(card, titleAnchor) {
+    const contexts = /* @__PURE__ */ new Set();
+    const addContext = (element) => {
+      if (!element) {
+        return;
+      }
+      const text = cleanText(
+        [
+          element.innerText || element.textContent || "",
+          element.getAttribute("aria-label") || "",
+          element.getAttribute("title") || "",
+          element.getAttribute("data-status") || ""
+        ].filter(Boolean).join(" ")
+      );
+      if (text) {
+        contexts.add(text);
+      }
+    };
+    addContext(card);
+    if (titleAnchor) {
+      let current = titleAnchor.parentElement;
+      for (let depth = 0; current && current !== card && depth < 6; depth += 1) {
+        if (current.getAttribute("role") === "main" || current.getAttribute("role") === "article" || current.hasAttribute("data-testid") || /(?:job|card|content|detail|result|listing)/i.test(current.className || "")) {
+          addContext(current);
+        }
+        current = current.parentElement;
+      }
+    }
+    addContext(titleAnchor);
     return Array.from(contexts).sort((left, right) => right.length - left.length)[0] ?? "";
   }
   function extractMonsterEmbeddedAppliedSignal(record) {
@@ -5737,12 +5796,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         description: "Dice apply page"
       };
     }
-    const applyComponents = Array.from(
-      document.querySelectorAll(
-        "button[data-testid='apply-button'], a[data-testid='apply-button'], [data-testid*='apply-button'], apply-button-wc, [data-cy='apply-button'], [data-cy*='apply'], [class*='apply-button'], [class*='ApplyButton']"
-      )
-    );
-    for (const component of applyComponents) {
+    for (const component of collectDiceApplyComponents()) {
       const root = component.shadowRoot ?? component;
       const button = root.querySelector(
         "a[href], button, input[type='submit'], [role='button']"
@@ -5809,6 +5863,63 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
     }
     return null;
+  }
+  function collectDiceApplyComponents() {
+    const selectors = "button[data-testid='apply-button'], a[data-testid='apply-button'], [data-testid*='apply-button'], apply-button-wc, [data-cy='apply-button'], [data-cy*='apply'], [class*='apply-button'], [class*='ApplyButton']";
+    const scopedMatches = [];
+    const scopedSeen = /* @__PURE__ */ new Set();
+    for (const surface of collectDiceCurrentJobSurfaces()) {
+      for (const component of Array.from(
+        surface.querySelectorAll(selectors)
+      )) {
+        if (scopedSeen.has(component) || isDiceNestedResultElement2(component, surface)) {
+          continue;
+        }
+        scopedSeen.add(component);
+        scopedMatches.push(component);
+      }
+    }
+    if (scopedMatches.length > 0) {
+      return scopedMatches;
+    }
+    return Array.from(document.querySelectorAll(selectors));
+  }
+  function collectDiceCurrentJobSurfaces() {
+    const selectors = [
+      "[data-testid*='job-details' i]",
+      "[data-testid*='jobDetail' i]",
+      "[class*='job-details']",
+      "[class*='jobDetail']",
+      "[class*='job-description']",
+      "[class*='jobDescription']",
+      "[role='main']",
+      "main",
+      "article"
+    ];
+    const surfaces = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const selector of selectors) {
+      let matches;
+      try {
+        matches = Array.from(document.querySelectorAll(selector));
+      } catch {
+        continue;
+      }
+      for (const match of matches) {
+        if (seen.has(match)) {
+          continue;
+        }
+        seen.add(match);
+        surfaces.push(match);
+      }
+    }
+    return surfaces;
+  }
+  function isDiceNestedResultElement2(element, surface) {
+    const nestedResultContainer = element.closest(
+      "[aria-label='Job search results'], [data-testid='job-search-results'], dhi-search-card, dhi-job-card, dhi-search-cards-widget"
+    );
+    return Boolean(nestedResultContainer && nestedResultContainer !== surface);
   }
   function extractDiceInlineApplyUrl() {
     const sources = [
@@ -7986,7 +8097,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return waitForLikelyApplicationSurface(site, applicationSurfaceCollectors);
   }
   function shouldKeepJobPageOpen(site) {
-    return site === "ziprecruiter" || site === "dice";
+    return site === "ziprecruiter";
   }
   async function openApplicationTargetInNewTab(url, site, description) {
     if (!await ensureApplicationTargetReachable(url, site, description)) {
@@ -8146,14 +8257,22 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return false;
     }
   );
-  document.addEventListener("change", handlePotentialAnswerMemory, true);
-  document.addEventListener("input", handlePotentialAnswerMemory, true);
-  document.addEventListener("blur", handlePotentialAnswerMemory, true);
-  document.addEventListener("focusout", handlePotentialAnswerMemory, true);
-  document.addEventListener("click", handlePotentialChoiceAnswerMemory, true);
-  document.addEventListener("click", handlePotentialManualReviewPause, true);
-  window.addEventListener("pagehide", flushPendingAnswersOnPageHide);
-  document.addEventListener("visibilitychange", flushPendingAnswersOnPageHide, true);
+  var eventListenersInitialized = false;
+  function initializeEventListeners() {
+    if (eventListenersInitialized) {
+      return;
+    }
+    eventListenersInitialized = true;
+    document.addEventListener("change", handlePotentialAnswerMemory, true);
+    document.addEventListener("input", handlePotentialAnswerMemory, true);
+    document.addEventListener("blur", handlePotentialAnswerMemory, true);
+    document.addEventListener("focusout", handlePotentialAnswerMemory, true);
+    document.addEventListener("click", handlePotentialChoiceAnswerMemory, true);
+    document.addEventListener("click", handlePotentialManualReviewPause, true);
+    window.addEventListener("pagehide", flushPendingAnswersOnPageHide);
+    document.addEventListener("visibilitychange", flushPendingAnswersOnPageHide, true);
+  }
+  initializeEventListeners();
   void resumeAutomationIfNeeded().catch(() => {
   });
   renderOverlay();
@@ -8162,6 +8281,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     childApplicationTabOpened = false;
     stageRetryState = createStageRetryState();
     const maxAttempts = detectedSite ? 30 : 18;
+    let lastSessionState = null;
+    let unchangedCount = 0;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       let response = null;
       try {
@@ -8183,6 +8304,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           }
           return;
         }
+        const sessionStateKey = `${s.stage}:${s.phase}:${s.controllerFrameId ?? "none"}:${s.runId ?? "none"}`;
+        if (sessionStateKey === lastSessionState) {
+          unchangedCount += 1;
+          if (unchangedCount >= 3 && !response.shouldResume) {
+            return;
+          }
+        } else {
+          unchangedCount = 0;
+          lastSessionState = sessionStateKey;
+        }
         status = s;
         currentStage = s.stage;
         currentLabel = s.label;
@@ -8193,7 +8324,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         currentJobSlots = s.jobSlots;
         renderOverlay();
         if (response.shouldResume) {
-          await ensureAutomationRunning();
+          const freshResponse = await chrome.runtime.sendMessage({
+            type: "get-tab-session",
+            tabId: -1
+          }).catch(() => null);
+          if (freshResponse?.session?.shouldResume ?? response.shouldResume) {
+            await ensureAutomationRunning();
+          }
           return;
         }
         if (s.stage === "autofill-form" && typeof s.controllerFrameId !== "number" && attempt < maxAttempts - 1) {
@@ -8451,13 +8588,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       };
     });
     const response = await spawnTabs(items, effectiveLimit);
+    const requestedOpenCount = items.length;
+    const reopenedSlots = Math.max(0, requestedOpenCount - response.opened);
+    const remainingSlotsAfterSpawn = claimResult.remaining + reopenedSlots;
     const extra = jobUrls.length > approvedUrls.length ? ` (opened ${approvedUrls.length} unique jobs from ${jobUrls.length} found)` : "";
     const openedMessage = `Opened ${response.opened} job tabs from ${labelPrefix}${getSiteLabel(site)} search${extra}.`;
-    if (claimResult.remaining > 0) {
+    if (remainingSlotsAfterSpawn > 0) {
       if (await continueCollectResultsOnNextPage({
         site,
-        remainingSlots: claimResult.remaining,
-        progressMessage: `${openedMessage} Continuing to the next results page for ${claimResult.remaining} more job${claimResult.remaining === 1 ? "" : "s"}...`,
+        remainingSlots: remainingSlotsAfterSpawn,
+        progressMessage: `${openedMessage} Continuing to the next results page for ${remainingSlotsAfterSpawn} more job${remainingSlotsAfterSpawn === 1 ? "" : "s"}...`,
         fallbackMessage: `${openedMessage} No additional results pages were available.`
       })) {
         return;
@@ -8578,10 +8718,49 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       site === "dice" || site === "monster" || site === "glassdoor" ? 4e3 : 2500
     );
     throwIfRateLimited(site);
+    const SCROLL_TOP = 0;
+    const SCROLL_SMALL = 300;
+    const SCROLL_MEDIUM = 600;
+    const SCROLL_HALF_PAGE = -1;
+    const SCROLL_RESET = -2;
+    const SCROLL_BOTTOM = -3;
+    const SCROLL_LARGE = 200;
+    const SCROLL_POSITIONS = [
+      SCROLL_TOP,
+      // Start at top
+      SCROLL_SMALL,
+      // Small scroll down
+      SCROLL_MEDIUM,
+      // Medium scroll down
+      SCROLL_HALF_PAGE,
+      // Scroll to half page
+      SCROLL_RESET,
+      // Reset to top
+      SCROLL_TOP,
+      // Check top again
+      SCROLL_BOTTOM,
+      // Scroll to bottom
+      SCROLL_LARGE
+      // Small scroll for final check
+    ];
     let action = null;
-    const scrollPositions = [0, 300, 600, -1, -2, 0, -3, 200];
-    for (let attempt = 0; attempt < 35; attempt += 1) {
+    let navigationDetected = false;
+    const urlChangeObserver = new MutationObserver(() => {
       if (window.location.href !== urlAtStart) {
+        navigationDetected = true;
+      }
+    });
+    urlChangeObserver.observe(document.documentElement, {
+      childList: true,
+      subtree: true
+    });
+    const cleanupObserver = () => {
+      urlChangeObserver.disconnect();
+    };
+    for (let attempt = 0; attempt < 35; attempt += 1) {
+      const hasNavigated = window.location.href !== urlAtStart || navigationDetected;
+      if (hasNavigated) {
+        cleanupObserver();
         await sleep(2500);
         await waitForHumanVerificationToClear();
         throwIfRateLimited(site);
@@ -8640,21 +8819,27 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         await runAutofillStage(site);
         return;
       }
-      if (attempt < scrollPositions.length) {
-        const pos = scrollPositions[attempt];
-        if (pos === -1)
-          window.scrollTo({
-            top: document.body.scrollHeight / 2,
-            behavior: "smooth"
-          });
-        else if (pos === -2)
-          window.scrollTo({ top: 0, behavior: "smooth" });
-        else if (pos === -3)
-          window.scrollTo({
-            top: document.body.scrollHeight,
-            behavior: "smooth"
-          });
-        else window.scrollTo({ top: pos, behavior: "smooth" });
+      if (attempt < SCROLL_POSITIONS.length) {
+        const pos = SCROLL_POSITIONS[attempt];
+        switch (pos) {
+          case SCROLL_HALF_PAGE:
+            window.scrollTo({
+              top: document.body.scrollHeight / 2,
+              behavior: "smooth"
+            });
+            break;
+          case SCROLL_RESET:
+            window.scrollTo({ top: 0, behavior: "smooth" });
+            break;
+          case SCROLL_BOTTOM:
+            window.scrollTo({
+              top: document.body.scrollHeight,
+              behavior: "smooth"
+            });
+            break;
+          default:
+            window.scrollTo({ top: pos, behavior: "smooth" });
+        }
       } else if (attempt % 4 === 0) {
         window.scrollTo({
           top: document.body.scrollHeight * Math.random(),
@@ -8663,6 +8848,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
       await sleep(700);
     }
+    cleanupObserver();
     if (!action) {
       if (hasLikelyApplicationForm2()) {
         currentStage = "autofill-form";
@@ -9500,6 +9686,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   async function setFileInputValue(input, asset) {
     if (input.disabled) return false;
+    const hasDataTransferSupport = typeof DataTransfer === "function";
+    const hasFileApiSupport = typeof File === "function";
+    if (!hasDataTransferSupport || !hasFileApiSupport) {
+      updateStatus(
+        "error",
+        "Resume upload requires a browser with File and DataTransfer API support. Please upload your resume manually.",
+        false,
+        "autofill-form"
+      );
+      return false;
+    }
     try {
       const resp = await fetch(asset.dataUrl);
       const blob = await resp.blob();
@@ -9512,11 +9709,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         HTMLInputElement.prototype,
         "files"
       );
-      if (filesDescriptor?.set) {
-        filesDescriptor.set.call(input, transfer.files);
-      } else {
-        input.files = transfer.files;
+      if (!filesDescriptor?.set) {
+        updateStatus(
+          "error",
+          "This browser does not support programmatic resume upload. Please upload your resume manually.",
+          false,
+          "autofill-form"
+        );
+        return false;
       }
+      filesDescriptor.set.call(input, transfer.files);
       input.dispatchEvent(new Event("input", { bubbles: true }));
       input.dispatchEvent(new Event("change", { bubbles: true }));
       const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
@@ -9590,8 +9792,22 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         await sleep(900);
         success = Boolean(input.files?.length) || getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase();
       }
+      if (!success) {
+        updateStatus(
+          "error",
+          "Resume upload was not accepted by the page. Please upload your resume manually.",
+          false,
+          "autofill-form"
+        );
+      }
       return success;
-    } catch {
+    } catch (error) {
+      updateStatus(
+        "error",
+        `Resume upload failed: ${error instanceof Error ? error.message : "Unknown error"}. Please upload manually.`,
+        false,
+        "autofill-form"
+      );
       return false;
     }
   }
@@ -9831,7 +10047,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       throw new Error(
         response?.error ?? "Could not open tabs."
       );
-    return { opened: response.opened };
+    const opened = typeof response.opened === "number" ? Math.max(0, Math.floor(response.opened)) : 0;
+    return { opened };
   }
   async function claimJobOpenings(urls, requested) {
     const uniqueMap = /* @__PURE__ */ new Map();
@@ -9859,11 +10076,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         candidates
       });
       if (response?.ok && Array.isArray(response.approvedUrls)) {
+        const validatedApprovedUrls = response.approvedUrls.filter(
+          (u) => typeof u === "string"
+        );
         return {
-          approvedUrls: response.approvedUrls,
+          approvedUrls: validatedApprovedUrls,
           remaining: Number.isFinite(Number(response.remaining)) ? Math.max(0, Math.floor(Number(response.remaining))) : Math.max(
             0,
-            safeRequested - response.approvedUrls.length
+            safeRequested - validatedApprovedUrls.length
           ),
           limit: Number.isFinite(Number(response.limit)) ? Math.max(0, Math.floor(Number(response.limit))) : safeRequested
         };
@@ -10189,29 +10409,48 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     manualReviewPauseUntil = Date.now() + 15e3;
   }
+  var MAX_ANSWER_FLUSH_RETRIES = 3;
+  var ANSWER_FLUSH_RETRY_DELAY_MS = 500;
   async function flushPendingAnswers() {
     answerFlushPromise = answerFlushPromise.then(async () => {
       while (pendingAnswers.size > 0) {
         const batch = new Map(pendingAnswers);
         pendingAnswers.clear();
-        try {
-          await writeAutomationSettings((current) => ({
-            activeProfileId: currentProfileId ?? current.activeProfileId,
-            answers: {
-              ...resolveAutomationSettingsForProfile(
-                current,
-                currentProfileId
-              ).answers,
-              ...Object.fromEntries(batch)
+        let retryCount = 0;
+        let success = false;
+        while (!success && retryCount < MAX_ANSWER_FLUSH_RETRIES) {
+          try {
+            await writeAutomationSettings((current) => ({
+              activeProfileId: currentProfileId ?? current.activeProfileId,
+              answers: {
+                ...resolveAutomationSettingsForProfile(
+                  current,
+                  currentProfileId
+                ).answers,
+                ...Object.fromEntries(batch)
+              }
+            }));
+            success = true;
+          } catch (error) {
+            retryCount += 1;
+            if (retryCount >= MAX_ANSWER_FLUSH_RETRIES) {
+              for (const [key, value] of batch.entries()) {
+                if (!pendingAnswers.has(key)) {
+                  pendingAnswers.set(key, value);
+                }
+              }
+              try {
+                const fallbackKey = "remote-job-search-pending-answers-fallback";
+                const existingRaw = localStorage.getItem(fallbackKey);
+                const existing = existingRaw ? JSON.parse(existingRaw) : [];
+                existing.push(...Array.from(batch.entries()));
+                localStorage.setItem(fallbackKey, JSON.stringify(existing));
+              } catch {
+              }
+              break;
             }
-          }));
-        } catch {
-          for (const [key, value] of batch.entries()) {
-            if (!pendingAnswers.has(key)) {
-              pendingAnswers.set(key, value);
-            }
+            await sleep(ANSWER_FLUSH_RETRY_DELAY_MS * retryCount);
           }
-          break;
         }
       }
     });

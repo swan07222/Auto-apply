@@ -1480,8 +1480,11 @@ async function extractResumeTextFromFile(file: File): Promise<string> {
         extractPrintableTextFromArrayBuffer(await file.arrayBuffer())
       );
     }
-  } catch {
-    // Fall back to empty extracted text while still saving the file asset.
+  } catch (error) {
+    // FIX: Log extraction errors instead of silently swallowing them
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.warn(`[Auto-apply] Resume text extraction failed for ${file.name}: ${errorMessage}`);
+    // Still return empty text to allow file to be saved, but user won't get answer suggestions
   }
 
   return "";
@@ -1575,7 +1578,13 @@ function readFileAsDataUrl(file: File): Promise<string> {
       reject(new Error("Could not read the selected file."));
     };
     reader.onerror = () => {
-      reject(reader.error ?? new Error("Could not read the selected file."));
+      // FIX: Properly handle DOMError instead of using ?? operator
+      const error = reader.error;
+      if (error) {
+        reject(new Error(`File read error: ${error.message || String(error)}`));
+      } else {
+        reject(new Error("Could not read the selected file."));
+      }
     };
     reader.readAsDataURL(file);
   });
@@ -1602,12 +1611,15 @@ function updateOverviewPreview(): void {
   regionPreview.textContent = getRegionPreviewLabel();
 }
 
-// FIX: Map HTML select values to SearchMode correctly
+// FIX: Validate HTML select values against SearchMode type
 // The HTML has: "job_board", "startup_careers", "other_job_sites"
 function getSelectedSearchMode(): SearchMode {
   const value = searchModeInput.value;
+  // FIX: Validate against known SearchMode values instead of returning directly
   if (value === "startup_careers") return "startup_careers";
   if (value === "other_job_sites") return "other_job_sites";
+  if (value === "job_board") return "job_board";
+  // Fallback to default if invalid value
   return "job_board";
 }
 

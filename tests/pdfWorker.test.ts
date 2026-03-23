@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+// Note: describe, expect, it, beforeEach are provided globally by vitest (globals: true)
+// vi must be imported for mocking
+import { vi } from "vitest";
 
 import {
   ensurePdfJsWorkerPort,

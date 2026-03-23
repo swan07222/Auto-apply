@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+// Note: describe, expect, it are provided globally by vitest (globals: true)
 
 import {
   collectJobDetailCandidates,
@@ -422,6 +422,31 @@ describe("job search candidate filtering", () => {
     ).toEqual([]);
   });
 
+  it("keeps Dice results aligned to the configured keyword instead of falling back to unrelated titles", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://www.dice.com/job-detail/frontend-1",
+        title: "Frontend Engineer",
+        contextText: "Remote role based anywhere in the US.",
+      },
+      {
+        url: "https://www.dice.com/job-detail/backend-2",
+        title: "Backend Engineer",
+        contextText: "Remote role based anywhere in the US.",
+      },
+    ];
+
+    expect(
+      pickRelevantJobUrls(
+        candidates,
+        "dice",
+        undefined,
+        "any",
+        ["frontend engineer"]
+      )
+    ).toEqual(["https://www.dice.com/job-detail/frontend-1"]);
+  });
+
   it("accepts ZipRecruiter jobs-search URLs when they pin a specific job", () => {
     expect(
       isLikelyJobDetailUrl(
@@ -819,6 +844,56 @@ describe("job search candidate filtering", () => {
     expect(remoteCandidate?.contextText).toContain("Remote or Scottsdale, Arizona");
     expect(pickRelevantJobUrls(candidates, "dice")).toEqual([
       "https://www.dice.com/job-detail/remote-1",
+    ]);
+  });
+
+  it("keeps live-style Dice job cards unique and remote-only even when each card exposes overlay and apply links", () => {
+    document.body.innerHTML = `
+      <section aria-label="Job search results">
+        <div data-testid="job-card" role="article">
+          <a
+            data-testid="job-search-job-card-link"
+            href="https://www.dice.com/job-detail/remote-live-1"
+          ></a>
+          <div class="content" role="main" aria-label="Details for Backend Software Engineer position">
+            <a href="https://www.dice.com/job-detail/remote-live-1">Easy Apply</a>
+            <div class="self-stretch">
+              <a
+                data-testid="job-search-job-detail-link"
+                href="https://www.dice.com/job-detail/remote-live-1"
+                aria-label="Backend Software Engineer"
+              >
+                Backend Software Engineer
+              </a>
+            </div>
+            <p>Remote or Virginia</p>
+          </div>
+        </div>
+        <div data-testid="job-card" role="article">
+          <a
+            data-testid="job-search-job-card-link"
+            href="https://www.dice.com/job-detail/hybrid-live-2"
+          ></a>
+          <div class="content" role="main" aria-label="Details for Experienced Software Engineer (Hybrid Only) position">
+            <a href="https://www.dice.com/job-detail/hybrid-live-2">Apply Now</a>
+            <div class="self-stretch">
+              <a
+                data-testid="job-search-job-detail-link"
+                href="https://www.dice.com/job-detail/hybrid-live-2"
+                aria-label="Experienced Software Engineer (Hybrid Only)"
+              >
+                Experienced Software Engineer (Hybrid Only)
+              </a>
+            </div>
+            <p>Flexible Hybrid Work Schedule in Baltimore</p>
+          </div>
+        </div>
+      </section>
+    `;
+
+    expect(collectJobDetailCandidates("dice")).toHaveLength(2);
+    expect(pickRelevantJobUrls(collectJobDetailCandidates("dice"), "dice")).toEqual([
+      "https://www.dice.com/job-detail/remote-live-1",
     ]);
   });
 
@@ -1268,6 +1343,8 @@ describe("job search candidate filtering", () => {
 
   it("waits for enough job results until slower boards exhaust their later recovery passes", () => {
     expect(shouldFinishJobResultScan(1, 5, 0, 2, "dice")).toBe(false);
+    expect(shouldFinishJobResultScan(4, 8, 8, 16, "dice")).toBe(false);
+    expect(shouldFinishJobResultScan(4, 8, 10, 18, "dice")).toBe(true);
     expect(shouldFinishJobResultScan(5, 5, 0, 2, "dice")).toBe(true);
     expect(shouldFinishJobResultScan(4, 8, 6, 5, "indeed")).toBe(false);
     expect(shouldFinishJobResultScan(4, 8, 6, 12, "indeed")).toBe(true);

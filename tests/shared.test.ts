@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+// Note: describe, expect, it are provided globally by vitest (globals: true)
 
 import {
   DEFAULT_SETTINGS,

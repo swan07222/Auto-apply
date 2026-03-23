@@ -776,9 +776,14 @@ export function getJobDedupKey(url: string): string {
 
     // ── Monster normalisation ──
     if (hostname.includes("monster")) {
-      path = path.replace(/\/job-opening\//, "/job-openings/");
+      // FIX: Normalize path consistently for all Monster URLs
+      const normalizedPath = path.replace(/\/job-opening\//, "/job-openings/");
       const jobId = parsed.searchParams.get("jobid") ?? parsed.searchParams.get("job_id");
-      if (jobId) return `${hostname}${path}?jobid=${jobId.toLowerCase()}`;
+      if (jobId) {
+        return `${hostname}${normalizedPath}?jobid=${jobId.toLowerCase()}`;
+      }
+      // Return normalized path even without job ID for consistent dedup
+      return `${hostname}${normalizedPath}`;
     }
 
     if (hostname.includes("glassdoor")) {
@@ -829,16 +834,48 @@ export function getSpawnDedupKey(url: string): string {
 
 export function inferResumeKindFromTitle(title: string): ResumeKind {
   const lower = title.toLowerCase();
-  if (
-    /\b(front\s*end|frontend|ui\s+engineer|ui\s+developer|react|angular|vue|css)\b/.test(lower)
-  ) {
+  
+  // FIX: Frontend patterns - check frontend first to catch "frontend" before "end"
+  const frontendPatterns = [
+    /\bfront\s*end\b/,
+    /\bfrontend\b/,
+    /\bui\s+engineer\b/,
+    /\bui\s+developer\b/,
+    /\breact\b(?!native)/,  // Exclude React Native which could be mobile
+    /\bangular\b/,
+    /\bvue\b(?!\.js)/,  // Be more specific about Vue
+    /\bcss\s*(engineer|developer)?\b/,  // More specific CSS matching
+  ];
+  
+  if (frontendPatterns.some(pattern => pattern.test(lower))) {
     return "front_end";
   }
-  if (
-    /\b(back\s*end|backend|server|api\b|platform\s+engineer|python|java\b|golang|rust|node\.?js|ruby|rails|django|spring)\b/.test(lower)
-  ) {
+  
+  // FIX: Backend patterns - use negative lookahead to avoid false positives
+  const backendPatterns = [
+    /\bback\s*end\b/,
+    /\bbackend\b/,
+    /\bserver\s+(engineer|developer|side)\b/,
+    /\bapi\s+(engineer|developer|architect)\b/,  // More specific API matching
+    /\bplatform\s+engineer\b/,
+    /\bpython\b(?!script)/,  // Exclude Python-related false positives
+    /\bjava\b(?!script|scripting)/,  // Exclude JavaScript
+    /\bgolang\b/,
+    /\brust\b/,
+    /\bnode\.?js\b/,
+    /\bruby\b(?!onrails)/,  // Be specific about Ruby
+    /\brails\b/,
+    /\bdjango\b/,
+    /\bspring\b(?!boot)?\s*(framework)?\b/,  // More specific Spring matching
+    /\bdata\s+engineer\b/,
+    /\bml\s+engineer\b/,
+    /\bmachine\s+learning\s+engineer\b/,
+  ];
+  
+  if (backendPatterns.some(pattern => pattern.test(lower))) {
     return "back_end";
   }
+  
   return "full_stack";
 }
 

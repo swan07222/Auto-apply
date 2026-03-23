@@ -305,8 +305,18 @@ async function extractMonsterSearchResults(tabId: number): Promise<{
           ...parsedJsonScripts,
         ].filter((value) => value !== undefined && value !== null);
 
-        const visited = new WeakSet<object>();
+        // FIX: Use Set with object IDs instead of WeakSet to prevent GC issues during traversal
+        const visitedObjectIds = new Set<string>();
         const candidateArrays: unknown[][] = [];
+        let objectIdCounter = 0;
+
+        const getObjectId = (obj: object): string => {
+          const existingId = (obj as { __visitId?: string }).__visitId;
+          if (existingId) return existingId;
+          const newId = `obj_${objectIdCounter++}`;
+          (obj as { __visitId?: string }).__visitId = newId;
+          return newId;
+        };
 
         const visit = (value: unknown, depth: number): void => {
           if (depth > 6 || visitedCount > 800) {
@@ -331,10 +341,11 @@ async function extractMonsterSearchResults(tabId: number): Promise<{
           }
 
           const obj = value as Record<string, unknown>;
-          if (visited.has(obj)) {
+          const objId = getObjectId(obj);
+          if (visitedObjectIds.has(objId)) {
             return;
           }
-          visited.add(obj);
+          visitedObjectIds.add(objId);
           visitedCount += 1;
 
           for (const key of preferredKeys) {
@@ -497,7 +508,7 @@ async function handleMessage(
       }
 
       // FIX: Deduplicate items before opening — uses getSpawnDedupKey to preserve query params
-      itemsToOpen = deduplicateSpawnItems(itemsToOpen);
+      itemsToOpen = deduplicateSpawnItems(itemsToOpen, message.maxJobPages);
       const {
         items: filteredItemsToOpen,
         skippedItems: skippedAlreadyOpenItems,
@@ -544,11 +555,14 @@ async function handleMessage(
           });
           openedCount += 1;
         } catch (error: unknown) {
+          // FIX: Log tab creation errors for debugging instead of silently swallowing
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          console.error(`[Auto-apply] Tab creation failed for ${item.url}: ${errorMessage}`);
+          
           releaseExtensionSpawnSlots(currentTab.id, 1);
           if (item.stage === "open-apply" || item.stage === "autofill-form") {
             failedJobOpeningItems.push(item);
           }
-          // FIX: Don't throw on individual tab creation failure - continue with others
           continue;
         }
 
@@ -1223,8 +1237,16 @@ async function probeUrlForHardFailure(
       return { reason: "unreachable" };
     }
 
-    const finalUrl = response.url.toLowerCase();
+    // FIX: Safely handle response.url which may be empty or throw
+    let finalUrl = "";
+    try {
+      finalUrl = response.url?.toLowerCase() ?? "";
+    } catch {
+      // Response URL may not be available in some contexts
+    }
+    
     if (
+      finalUrl &&
       ["/404", "not-found", "page-not-found", "/error", "/unavailable"].some((token) =>
         finalUrl.includes(token)
       )
@@ -2117,24 +2139,36 @@ function pickUniqueCandidateUrls(
 }
 
 // FIX: Dedup spawn items using getSpawnDedupKey so different search URLs are preserved
-function deduplicateSpawnItems(items: SpawnTabRequest[]): SpawnTabRequest[] {
+function deduplicateSpawnItems(items: SpawnTabRequest[], maxJobSlots?: number): SpawnTabRequest[] {
   const seen = new Set<string>();
   const result: SpawnTabRequest[] = [];
+  let totalJobSlots = 0;
 
   for (const item of items) {
     const key = getSpawnDedupKey(item.url);
     if (!key || seen.has(key)) {
       // If duplicate, aggregate job slots to the first occurrence
-      if (key && item.jobSlots) {
+      if (key && item.jobSlots && item.jobSlots > 0) {
         const existing = result.find((r) => getSpawnDedupKey(r.url) === key);
         if (existing && existing.jobSlots !== undefined) {
-          existing.jobSlots += item.jobSlots;
+          // FIX: Cap aggregated job slots to prevent exceeding limit
+          const remainingSlots = maxJobSlots !== undefined
+            ? Math.max(0, maxJobSlots - totalJobSlots)
+            : item.jobSlots;
+          existing.jobSlots = Math.min(
+            existing.jobSlots + item.jobSlots,
+            remainingSlots
+          );
         }
       }
       continue;
     }
     seen.add(key);
-    result.push({ ...item });
+    const newItem = { ...item };
+    if (newItem.jobSlots !== undefined && newItem.jobSlots > 0) {
+      totalJobSlots += newItem.jobSlots;
+    }
+    result.push(newItem);
   }
 
   return result;
@@ -2270,6 +2304,7 @@ async function filterAlreadyOpenManagedSpawnItems(
         existingApplyClaimedKeys
       )
     ) {
+      // Skip this item but DON'T release the slot - the claimed job is already being processed
       continue;
     }
 

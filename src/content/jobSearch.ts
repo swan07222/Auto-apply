@@ -187,52 +187,11 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
       return filterDiceViewedOrAppliedCandidates(
         dedupeJobCandidates([
           ...collectDiceListItemCandidates(),
-          // FIX: Dice uses custom web components — collect from shadow DOM
+          // Prefer Dice-specific collectors over the generic fallbacks.
+          // Live Dice cards expose multiple anchors per card (overlay, apply, title),
+          // and the broad fallback collectors can re-ingest the same job with noisy
+          // context from outside the card.
           ...collectDiceSearchCardCandidates(),
-          ...collectCandidatesFromAnchors([
-            "a[href*='/job-detail/']",
-            "a[href*='/jobs/detail/']",
-            "a[data-cy*='job']",
-            "a[data-id]",
-            // FIX: Additional Dice selectors
-            "a.card-title-link",
-            "a[class*='card-title']",
-            "a[class*='job-title']",
-            "a[data-testid*='job']",
-          ]),
-          ...collectCandidatesFromContainers(
-            [
-              "[data-testid='job-card']",
-              "[data-cy*='search-card']",
-              "[data-testid*='search-card']",
-              "[class*='search-card']",
-              "[class*='SearchCard']",
-              "[class*='job-card']",
-              "[class*='JobCard']",
-              ".dhi-search-cards-widget .card",
-              "article",
-              "li",
-            ],
-            [
-              "a[href*='/job-detail/']",
-              "a[href*='/jobs/detail/']",
-              "a[data-cy*='job']",
-              "a.card-title-link",
-              "a[class*='card-title']",
-              "a[class*='job-title']",
-            ],
-            [
-              "h1",
-              "h2",
-              "h3",
-              "h5",
-              "[data-cy*='title']",
-              "[class*='card-title']",
-              "[class*='job-title']",
-              "[class*='jobTitle']",
-              "a.card-title-link",
-            ]
-          ),
         ])
       );
 
@@ -490,10 +449,15 @@ export function pickRelevantJobUrls(
 
   const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
   const recencyEligible = datePostedWindow === "any" ? valid : recencyFiltered;
-  const eligible = filterCandidatesForRemotePreference(recencyEligible);
+  const eligible =
+    site === "dice"
+      ? recencyEligible.filter((candidate) => isExplicitlyRemoteDiceCandidate(candidate))
+      : filterCandidatesForRemotePreference(recencyEligible);
   const shouldKeywordFilter =
     searchKeywords.length > 0 &&
     (site === "startup" || site === "other_sites");
+  const shouldStrictBoardKeywordFilter =
+    searchKeywords.length > 0 && site === "dice";
   const boardKeywordMatchedCandidates =
     searchKeywords.length > 0 &&
     (site === "indeed" ||
@@ -516,6 +480,8 @@ export function pickRelevantJobUrls(
       ? eligible.filter((candidate) =>
           matchesConfiguredSearchKeywords(candidate, searchKeywords)
         )
+      : shouldStrictBoardKeywordFilter
+        ? boardKeywordMatchedCandidates
       : shouldKeywordFilterBoardResults
         ? boardKeywordMatchedCandidates
       : eligible;
@@ -526,7 +492,10 @@ export function pickRelevantJobUrls(
         )
       : keywordEligible;
 
-  if (shouldKeywordFilter && keywordEligible.length === 0) {
+  if (
+    (shouldKeywordFilter || shouldStrictBoardKeywordFilter) &&
+    keywordEligible.length === 0
+  ) {
     return [];
   }
 
@@ -681,6 +650,24 @@ function scoreRemotePreference(candidate: JobCandidate): number {
   }
 
   return score;
+}
+
+function isExplicitlyRemoteDiceCandidate(candidate: JobCandidate): boolean {
+  const haystack = normalizeChoiceText(
+    `${candidate.title} ${candidate.contextText} ${candidate.url}`
+  );
+
+  if (
+    /\b(hybrid|hybrid only|hybrid remote|remote hybrid|onsite|on site|in office|in-office|office based|office-based|local only|must be onsite)\b/.test(
+      haystack
+    )
+  ) {
+    return false;
+  }
+
+  return /\b(remote|fully remote|100 remote|work from home|distributed|anywhere|remote first|home based|home-based|remote us|remote usa)\b/.test(
+    haystack
+  );
 }
 
 export function isLikelyJobDetailUrl(
@@ -1122,10 +1109,28 @@ export function isAppliedJobText(text: string): boolean {
   }
 
   const normalized = cleanText(text).toLowerCase();
+  
+  // FIX: Explicitly exclude "Applied" role titles to prevent false positives
+  // These are job titles, not application status indicators
+  const appliedRolePatterns = [
+    /\bapplied\s+scientist\b/,
+    /\bapplied\s+research\b/,
+    /\bapplied\s+machine\s+learning\b/,
+    /\bapplied\s+deep\s+learning\b/,
+    /\bapplied\s+data\s+scientist\b/,
+    /\bapplied\s+ai\b/,
+    /\bapplied\s+ml\b/,
+    /\bapplied\s+researcher\b/,
+    /\bapplied\s+engineer\b/,
+  ];
+  
+  if (appliedRolePatterns.some(pattern => pattern.test(normalized))) {
+    return false;
+  }
+  
+  // Exclude other non-applied-status patterns
   if (
-    /\b(not applied|apply now|ready to apply|applied (machine|deep|data|ai)|applied scientist|applied research)\b/.test(
-      normalized
-    )
+    /\b(not applied|apply now|ready to apply)\b/.test(normalized)
   ) {
     return false;
   }
@@ -1352,8 +1357,13 @@ export function shouldFinishJobResultScan(
     site === "dice" ||
     site === "glassdoor"
   ) {
-    minAttemptsBeforeEarlyStop = site === "indeed" ? 12 : 14;
-    stableThreshold = site === "indeed" ? 6 : 8;
+    if (site === "dice") {
+      minAttemptsBeforeEarlyStop = 18;
+      stableThreshold = 10;
+    } else {
+      minAttemptsBeforeEarlyStop = site === "indeed" ? 12 : 14;
+      stableThreshold = site === "indeed" ? 6 : 8;
+    }
   }
 
   return attempt >= minAttemptsBeforeEarlyStop && stablePasses >= stableThreshold;
@@ -1522,7 +1532,7 @@ function collectDiceListItemCandidates(): JobCandidate[] {
   const candidates: JobCandidate[] = [];
   const cards = Array.from(
     document.querySelectorAll<HTMLElement>(
-      "[aria-label='Job search results'] li, [aria-label='Job search results'] article, [data-testid='job-search-results'] li, [data-testid='job-search-results'] article, li, article"
+      "[aria-label='Job search results'] [data-testid='job-card'], [data-testid='job-search-results'] [data-testid='job-card'], [data-testid='job-card'], [aria-label='Job search results'] li, [aria-label='Job search results'] article, [data-testid='job-search-results'] li, [data-testid='job-search-results'] article"
     )
   );
 
@@ -1555,7 +1565,7 @@ function collectDiceListItemCandidates(): JobCandidate[] {
       candidates,
       titleAnchor.href,
       title,
-      buildCandidateContextText(card, titleAnchor)
+      buildDiceCandidateContextText(card, titleAnchor)
     );
   }
 
@@ -1584,17 +1594,15 @@ function collectDiceSearchCardCandidates(): JobCandidate[] {
       // Check data attributes for job URL
       const dataId = card.getAttribute("data-id") || card.getAttribute("data-job-id");
       if (dataId) {
-        const title = cleanText(
+        const titleElement =
           root.querySelector<HTMLElement>(
             "h5, h3, h2, [class*='card-title'], [class*='job-title'], a"
-          )?.textContent || ""
+          ) ?? null;
+        const title = cleanText(
+          titleElement?.textContent || ""
         );
-        const contextText = cleanText(card.innerText || card.textContent || "");
+        const contextText = buildDiceCandidateContextText(card, titleElement);
         if (title) {
-          const titleElement =
-            root.querySelector<HTMLElement>(
-              "h5, h3, h2, [class*='card-title'], [class*='job-title'], a"
-            ) ?? null;
           if (shouldSkipDiceTitleCandidate(titleElement ?? card, card)) {
             continue;
           }
@@ -1621,7 +1629,7 @@ function collectDiceSearchCardCandidates(): JobCandidate[] {
       anchor.textContent ||
       ""
     );
-    const contextText = cleanText(card.innerText || card.textContent || "");
+    const contextText = buildDiceCandidateContextText(card, anchor);
 
     if (!title || title.length < 3) {
       continue;
@@ -1649,7 +1657,7 @@ function collectDiceSearchCardCandidates(): JobCandidate[] {
 
     for (const anchor of shadowAnchors) {
       const title = cleanText(anchor.textContent || "");
-      const contextText = cleanText(host.innerText || host.textContent || "");
+      const contextText = buildDiceCandidateContextText(host, anchor);
       if (shouldSkipDiceTitleCandidate(anchor, host)) {
         continue;
       }
@@ -2518,6 +2526,57 @@ function buildCandidateContextText(
   if (anchorText) {
     contexts.add(anchorText);
   }
+
+  return (
+    Array.from(contexts).sort((left, right) => right.length - left.length)[0] ??
+    ""
+  );
+}
+
+function buildDiceCandidateContextText(
+  card: HTMLElement,
+  titleAnchor?: HTMLElement | null
+): string {
+  const contexts = new Set<string>();
+
+  const addContext = (element: HTMLElement | null | undefined) => {
+    if (!element) {
+      return;
+    }
+
+    const text = cleanText(
+      [
+        element.innerText || element.textContent || "",
+        element.getAttribute("aria-label") || "",
+        element.getAttribute("title") || "",
+        element.getAttribute("data-status") || "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+    if (text) {
+      contexts.add(text);
+    }
+  };
+
+  addContext(card);
+
+  if (titleAnchor) {
+    let current = titleAnchor.parentElement;
+    for (let depth = 0; current && current !== card && depth < 6; depth += 1) {
+      if (
+        current.getAttribute("role") === "main" ||
+        current.getAttribute("role") === "article" ||
+        current.hasAttribute("data-testid") ||
+        /(?:job|card|content|detail|result|listing)/i.test(current.className || "")
+      ) {
+        addContext(current);
+      }
+      current = current.parentElement;
+    }
+  }
+
+  addContext(titleAnchor);
 
   return (
     Array.from(contexts).sort((left, right) => right.length - left.length)[0] ??

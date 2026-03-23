@@ -1,8 +1,13 @@
-import { afterAll, afterEach, beforeAll, vi } from "vitest";
+// vitest setup file - do NOT import from vitest
+// setupFiles are loaded before the test runner context
+// Use global hooks that are injected by vitest
+
+/* eslint-disable no-restricted-globals */
 
 let originalConsoleError: typeof console.error;
 let originalStderrWrite: typeof process.stderr.write;
 
+// @ts-expect-error - beforeAll is injected by vitest
 beforeAll(() => {
   const originalButtonClick = HTMLButtonElement.prototype.click;
   const originalInputClick = HTMLInputElement.prototype.click;
@@ -68,16 +73,18 @@ beforeAll(() => {
     },
   });
 
+  // Create native mock for scrollTo
   Object.defineProperty(window, "scrollTo", {
     configurable: true,
     writable: true,
-    value: vi.fn(),
+    value: function() {},
   });
 
+  // Create native mock for scrollIntoView
   Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
     configurable: true,
     writable: true,
-    value: vi.fn(),
+    value: function() {},
   });
 
   Object.defineProperty(HTMLFormElement.prototype, "requestSubmit", {
@@ -146,42 +153,47 @@ beforeAll(() => {
     });
   }
 
+  // Create native mock for matchMedia
+  const createMatchMediaMock = () => ({
+    matches: false,
+    media: "",
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => {},
+  });
+  
   if (typeof window.matchMedia !== "function") {
     Object.defineProperty(window, "matchMedia", {
       configurable: true,
       writable: true,
-      value: vi.fn().mockImplementation((query: string) => ({
-        matches: false,
-        media: query,
-        onchange: null,
-        addListener: vi.fn(),
-        removeListener: vi.fn(),
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        dispatchEvent: vi.fn(),
-      })),
+      value: createMatchMediaMock,
     });
   }
 
+  // Create native mock for requestAnimationFrame
   if (typeof globalThis.requestAnimationFrame !== "function") {
     Object.defineProperty(globalThis, "requestAnimationFrame", {
       configurable: true,
       writable: true,
-      value: vi.fn((callback: FrameRequestCallback) =>
-        globalThis.setTimeout(() => callback(Date.now()), 16)
-      ),
+      value: (callback: FrameRequestCallback) =>
+        globalThis.setTimeout(() => callback(Date.now()), 16),
     });
   }
 
+  // Create native mock for cancelAnimationFrame
   if (typeof globalThis.cancelAnimationFrame !== "function") {
     Object.defineProperty(globalThis, "cancelAnimationFrame", {
       configurable: true,
       writable: true,
-      value: vi.fn((id: number) => globalThis.clearTimeout(id)),
+      value: (id: number) => globalThis.clearTimeout(id),
     });
   }
 });
 
+// @ts-expect-error - afterAll is injected by vitest
 afterAll(() => {
   if (originalConsoleError) {
     Object.defineProperty(console, "error", {
@@ -200,9 +212,15 @@ afterAll(() => {
   }
 });
 
+// @ts-expect-error - afterEach is injected by vitest
 afterEach(() => {
   document.head.innerHTML = "";
   document.body.innerHTML = "";
   window.history.replaceState({}, "", "/");
-  vi.restoreAllMocks();
+  
+  // @ts-expect-error - vi is injected by vitest
+  if (typeof vi !== "undefined" && vi.restoreAllMocks) {
+    // @ts-expect-error
+    vi.restoreAllMocks();
+  }
 });

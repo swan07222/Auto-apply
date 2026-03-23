@@ -431,7 +431,7 @@ async function waitForLikelyApplicationSurface(site: SiteKey): Promise<boolean> 
 }
 
 function shouldKeepJobPageOpen(site: SiteKey | "unsupported"): boolean {
-  return site === "ziprecruiter" || site === "dice";
+  return site === "ziprecruiter";
 }
 
 async function openApplicationTargetInNewTab(
@@ -640,14 +640,26 @@ chrome.runtime.onMessage.addListener(
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
 
-document.addEventListener("change", handlePotentialAnswerMemory, true);
-document.addEventListener("input", handlePotentialAnswerMemory, true);
-document.addEventListener("blur", handlePotentialAnswerMemory, true);
-document.addEventListener("focusout", handlePotentialAnswerMemory, true);
-document.addEventListener("click", handlePotentialChoiceAnswerMemory, true);
-document.addEventListener("click", handlePotentialManualReviewPause, true);
-window.addEventListener("pagehide", flushPendingAnswersOnPageHide);
-document.addEventListener("visibilitychange", flushPendingAnswersOnPageHide, true);
+// FIX: Prevent duplicate event listener registration
+let eventListenersInitialized = false;
+
+function initializeEventListeners(): void {
+  if (eventListenersInitialized) {
+    return;
+  }
+  eventListenersInitialized = true;
+
+  document.addEventListener("change", handlePotentialAnswerMemory, true);
+  document.addEventListener("input", handlePotentialAnswerMemory, true);
+  document.addEventListener("blur", handlePotentialAnswerMemory, true);
+  document.addEventListener("focusout", handlePotentialAnswerMemory, true);
+  document.addEventListener("click", handlePotentialChoiceAnswerMemory, true);
+  document.addEventListener("click", handlePotentialManualReviewPause, true);
+  window.addEventListener("pagehide", flushPendingAnswersOnPageHide);
+  document.addEventListener("visibilitychange", flushPendingAnswersOnPageHide, true);
+}
+
+initializeEventListeners();
 void resumeAutomationIfNeeded().catch(() => {});
 renderOverlay();
 
@@ -659,6 +671,8 @@ async function resumeAutomationIfNeeded(): Promise<void> {
   stageRetryState = createStageRetryState();
 
   const maxAttempts = detectedSite ? 30 : 18;
+  let lastSessionState: string | null = null;
+  let unchangedCount = 0;
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     let response: {
@@ -693,6 +707,17 @@ async function resumeAutomationIfNeeded(): Promise<void> {
         return;
       }
 
+      const sessionStateKey = `${s.stage}:${s.phase}:${s.controllerFrameId ?? "none"}:${s.runId ?? "none"}`;
+      if (sessionStateKey === lastSessionState) {
+        unchangedCount += 1;
+        if (unchangedCount >= 3 && !response.shouldResume) {
+          return;
+        }
+      } else {
+        unchangedCount = 0;
+        lastSessionState = sessionStateKey;
+      }
+
       status = s;
       currentStage = s.stage;
       currentLabel = s.label;
@@ -704,7 +729,13 @@ async function resumeAutomationIfNeeded(): Promise<void> {
       renderOverlay();
 
       if (response.shouldResume) {
-        await ensureAutomationRunning();
+        const freshResponse = await chrome.runtime.sendMessage({
+          type: "get-tab-session",
+          tabId: -1,
+        }).catch(() => null);
+        if (freshResponse?.session?.shouldResume ?? response.shouldResume) {
+          await ensureAutomationRunning();
+        }
         return;
       }
 
@@ -1040,6 +1071,9 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   });
 
   const response = await spawnTabs(items, effectiveLimit);
+  const requestedOpenCount = items.length;
+  const reopenedSlots = Math.max(0, requestedOpenCount - response.opened);
+  const remainingSlotsAfterSpawn = claimResult.remaining + reopenedSlots;
 
   const extra =
     jobUrls.length > approvedUrls.length
@@ -1047,12 +1081,12 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
       : "";
   const openedMessage = `Opened ${response.opened} job tabs from ${labelPrefix}${getSiteLabel(site)} search${extra}.`;
 
-  if (claimResult.remaining > 0) {
+  if (remainingSlotsAfterSpawn > 0) {
     if (
       await continueCollectResultsOnNextPage({
         site,
-        remainingSlots: claimResult.remaining,
-        progressMessage: `${openedMessage} Continuing to the next results page for ${claimResult.remaining} more job${claimResult.remaining === 1 ? "" : "s"}...`,
+        remainingSlots: remainingSlotsAfterSpawn,
+        progressMessage: `${openedMessage} Continuing to the next results page for ${remainingSlotsAfterSpawn} more job${remainingSlotsAfterSpawn === 1 ? "" : "s"}...`,
         fallbackMessage: `${openedMessage} No additional results pages were available.`,
       })
     ) {
@@ -1208,11 +1242,51 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   );
   throwIfRateLimited(site);
 
+  // FIX: Named constants for scroll positions instead of magic numbers
+  const SCROLL_TOP = 0;
+  const SCROLL_SMALL = 300;
+  const SCROLL_MEDIUM = 600;
+  const SCROLL_HALF_PAGE = -1;
+  const SCROLL_RESET = -2;
+  const SCROLL_BOTTOM = -3;
+  const SCROLL_LARGE = 200;
+  
+  const SCROLL_POSITIONS = [
+    SCROLL_TOP,      // Start at top
+    SCROLL_SMALL,    // Small scroll down
+    SCROLL_MEDIUM,   // Medium scroll down
+    SCROLL_HALF_PAGE,// Scroll to half page
+    SCROLL_RESET,    // Reset to top
+    SCROLL_TOP,      // Check top again
+    SCROLL_BOTTOM,   // Scroll to bottom
+    SCROLL_LARGE,    // Small scroll for final check
+  ];
+
   let action: ApplyAction | null = null;
-  const scrollPositions = [0, 300, 600, -1, -2, 0, -3, 200];
+  
+  // FIX: Use MutationObserver for more reliable navigation detection
+  let navigationDetected = false;
+  const urlChangeObserver = new MutationObserver(() => {
+    if (window.location.href !== urlAtStart) {
+      navigationDetected = true;
+    }
+  });
+  urlChangeObserver.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
+
+  // FIX: Ensure observer is disconnected on function exit
+  const cleanupObserver = () => {
+    urlChangeObserver.disconnect();
+  };
 
   for (let attempt = 0; attempt < 35; attempt += 1) {
-    if (window.location.href !== urlAtStart) {
+    // Check both direct URL comparison and MutationObserver detection
+    const hasNavigated = window.location.href !== urlAtStart || navigationDetected;
+
+    if (hasNavigated) {
+      cleanupObserver();
       await sleep(2500);
       await waitForHumanVerificationToClear();
       throwIfRateLimited(site);
@@ -1284,21 +1358,27 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       return;
     }
 
-    if (attempt < scrollPositions.length) {
-      const pos = scrollPositions[attempt];
-      if (pos === -1)
-        window.scrollTo({
-          top: document.body.scrollHeight / 2,
-          behavior: "smooth",
-        });
-      else if (pos === -2)
-        window.scrollTo({ top: 0, behavior: "smooth" });
-      else if (pos === -3)
-        window.scrollTo({
-          top: document.body.scrollHeight,
-          behavior: "smooth",
-        });
-      else window.scrollTo({ top: pos, behavior: "smooth" });
+    if (attempt < SCROLL_POSITIONS.length) {
+      const pos = SCROLL_POSITIONS[attempt];
+      switch (pos) {
+        case SCROLL_HALF_PAGE:
+          window.scrollTo({
+            top: document.body.scrollHeight / 2,
+            behavior: "smooth",
+          });
+          break;
+        case SCROLL_RESET:
+          window.scrollTo({ top: 0, behavior: "smooth" });
+          break;
+        case SCROLL_BOTTOM:
+          window.scrollTo({
+            top: document.body.scrollHeight,
+            behavior: "smooth",
+          });
+          break;
+        default:
+          window.scrollTo({ top: pos, behavior: "smooth" });
+      }
     } else if (attempt % 4 === 0) {
       window.scrollTo({
         top: document.body.scrollHeight * Math.random(),
@@ -1308,6 +1388,9 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
     await sleep(700);
   }
+
+  // FIX: Clean up observer when loop exits without navigation
+  cleanupObserver();
 
   if (!action) {
     if (hasLikelyApplicationForm()) {
@@ -2357,6 +2440,21 @@ async function setFileInputValue(
   asset: ResumeAsset
 ): Promise<boolean> {
   if (input.disabled) return false;
+  
+  // FIX: Feature detection for DataTransfer API support
+  const hasDataTransferSupport = typeof DataTransfer === "function";
+  const hasFileApiSupport = typeof File === "function";
+  
+  if (!hasDataTransferSupport || !hasFileApiSupport) {
+    updateStatus(
+      "error",
+      "Resume upload requires a browser with File and DataTransfer API support. Please upload your resume manually.",
+      false,
+      "autofill-form"
+    );
+    return false;
+  }
+  
   try {
     const resp = await fetch(asset.dataUrl);
     const blob = await resp.blob();
@@ -2367,34 +2465,39 @@ async function setFileInputValue(
     const transfer = new DataTransfer();
     transfer.items.add(file);
 
-    // FIX: Try multiple approaches to set the files property
+    // FIX: Check if files property can be set
     const filesDescriptor = Object.getOwnPropertyDescriptor(
       HTMLInputElement.prototype,
       "files"
     );
-    if (filesDescriptor?.set) {
-      filesDescriptor.set.call(input, transfer.files);
-    } else {
-      input.files = transfer.files;
+    
+    if (!filesDescriptor?.set) {
+      updateStatus(
+        "error",
+        "This browser does not support programmatic resume upload. Please upload your resume manually.",
+        false,
+        "autofill-form"
+      );
+      return false;
     }
+    
+    filesDescriptor.set.call(input, transfer.files);
 
-    // FIX: Dispatch a comprehensive set of events to ensure frameworks detect the change
+    // Dispatch events to notify frameworks
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
 
-    // FIX: Some React-based forms need these additional events
     const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
       HTMLInputElement.prototype,
       "value"
     );
     if (nativeInputValueSetter?.set) {
-      // Trigger React's synthetic event system
       input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
     }
 
     input.dispatchEvent(new Event("blur", { bubbles: true }));
 
-    // Some upload widgets listen for drag-and-drop instead of the raw input events.
+    // Some upload widgets listen for drag-and-drop
     try {
       input.dispatchEvent(
         new DragEvent("dragenter", {
@@ -2472,8 +2575,23 @@ async function setFileInputValue(
         getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase();
     }
 
+    if (!success) {
+      updateStatus(
+        "error",
+        "Resume upload was not accepted by the page. Please upload your resume manually.",
+        false,
+        "autofill-form"
+      );
+    }
+
     return success;
-  } catch {
+  } catch (error) {
+    updateStatus(
+      "error",
+      `Resume upload failed: ${error instanceof Error ? error.message : "Unknown error"}. Please upload manually.`,
+      false,
+      "autofill-form"
+    );
     return false;
   }
 }
@@ -2809,7 +2927,11 @@ async function spawnTabs(
     throw new Error(
       response?.error ?? "Could not open tabs."
     );
-  return { opened: response.opened as number };
+  // FIX: Validate response.opened is a number instead of unsafe cast
+  const opened = typeof response.opened === "number" 
+    ? Math.max(0, Math.floor(response.opened)) 
+    : 0;
+  return { opened };
 }
 
 async function claimJobOpenings(
@@ -2848,13 +2970,17 @@ async function claimJobOpenings(
       response?.ok &&
       Array.isArray(response.approvedUrls)
     ) {
+      // FIX: Validate array elements are strings instead of unsafe cast
+      const validatedApprovedUrls = response.approvedUrls.filter(
+        (u: unknown): u is string => typeof u === "string"
+      );
       return {
-        approvedUrls: response.approvedUrls as string[],
+        approvedUrls: validatedApprovedUrls,
         remaining: Number.isFinite(Number(response.remaining))
           ? Math.max(0, Math.floor(Number(response.remaining)))
           : Math.max(
               0,
-              safeRequested - (response.approvedUrls as string[]).length
+              safeRequested - validatedApprovedUrls.length
             ),
         limit: Number.isFinite(Number(response.limit))
           ? Math.max(0, Math.floor(Number(response.limit)))
@@ -3147,6 +3273,7 @@ function ensureOverlay(): void {
   wrapper.addEventListener("pointercancel", (event) => {
     endOverlayDrag(event);
   });
+
   window.addEventListener("resize", () => {
     syncOverlayPanelPosition();
   });
@@ -3324,30 +3451,51 @@ function handlePotentialManualReviewPause(event: Event): void {
   manualReviewPauseUntil = Date.now() + 15_000;
 }
 
+const MAX_ANSWER_FLUSH_RETRIES = 3;
+const ANSWER_FLUSH_RETRY_DELAY_MS = 500;
+
 async function flushPendingAnswers(): Promise<void> {
   answerFlushPromise = answerFlushPromise.then(async () => {
     while (pendingAnswers.size > 0) {
       const batch = new Map(pendingAnswers);
       pendingAnswers.clear();
 
-      try {
-        await writeAutomationSettings((current) => ({
-          activeProfileId: currentProfileId ?? current.activeProfileId,
-          answers: {
-            ...resolveAutomationSettingsForProfile(
-              current,
-              currentProfileId
-            ).answers,
-            ...Object.fromEntries(batch),
-          },
-        }));
-      } catch {
-        for (const [key, value] of batch.entries()) {
-          if (!pendingAnswers.has(key)) {
-            pendingAnswers.set(key, value);
+      let retryCount = 0;
+      let success = false;
+
+      while (!success && retryCount < MAX_ANSWER_FLUSH_RETRIES) {
+        try {
+          await writeAutomationSettings((current) => ({
+            activeProfileId: currentProfileId ?? current.activeProfileId,
+            answers: {
+              ...resolveAutomationSettingsForProfile(
+                current,
+                currentProfileId
+              ).answers,
+              ...Object.fromEntries(batch),
+            },
+          }));
+          success = true;
+        } catch (error) {
+          retryCount += 1;
+          if (retryCount >= MAX_ANSWER_FLUSH_RETRIES) {
+            for (const [key, value] of batch.entries()) {
+              if (!pendingAnswers.has(key)) {
+                pendingAnswers.set(key, value);
+              }
+            }
+            try {
+              const fallbackKey = "remote-job-search-pending-answers-fallback";
+              const existingRaw = localStorage.getItem(fallbackKey);
+              const existing = existingRaw ? JSON.parse(existingRaw) : [];
+              existing.push(...Array.from(batch.entries()));
+              localStorage.setItem(fallbackKey, JSON.stringify(existing));
+            } catch {
+            }
+            break;
           }
+          await sleep(ANSWER_FLUSH_RETRY_DELAY_MS * retryCount);
         }
-        break;
       }
     }
   });

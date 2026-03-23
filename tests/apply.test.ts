@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+// Note: describe, expect, it are provided globally by vitest (globals: true)
 
 import {
   findApplyAction,
@@ -589,6 +589,34 @@ describe("application progression actions", () => {
         `${window.location.origin}/job-applications/d32a5e6b-4beb-4314-9830-a5b0c943d59c/start-apply`
       );
     }
+  });
+
+  it("ignores Dice apply controls that only belong to nested result cards", () => {
+    document.body.innerHTML = `
+      <main class="job-details-pane">
+        <section class="job-description">
+          <h1>Senior Platform Engineer</h1>
+          <button data-testid="apply-button">Apply for this job</button>
+        </section>
+        <section aria-label="Job search results">
+          <article>
+            <a
+              data-testid="job-search-job-detail-link"
+              href="https://www.dice.com/job-detail/another-role"
+            >
+              Another Role
+            </a>
+            <button data-testid="apply-button">Apply to similar job</button>
+          </article>
+        </section>
+      </main>
+    `;
+
+    const action = findDiceApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply for this job");
   });
 
   it("finds Dice progression buttons even when utility classes make the raw metadata very long", () => {

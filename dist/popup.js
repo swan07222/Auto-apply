@@ -51155,7 +51155,9 @@
           extractPrintableTextFromArrayBuffer(await file.arrayBuffer())
         );
       }
-    } catch {
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.warn(`[Auto-apply] Resume text extraction failed for ${file.name}: ${errorMessage}`);
     }
     return "";
   }
@@ -51226,7 +51228,12 @@
         reject2(new Error("Could not read the selected file."));
       };
       reader.onerror = () => {
-        reject2(reader.error ?? new Error("Could not read the selected file."));
+        const error = reader.error;
+        if (error) {
+          reject2(new Error(`File read error: ${error.message || String(error)}`));
+        } else {
+          reject2(new Error("Could not read the selected file."));
+        }
       };
       reader.readAsDataURL(file);
     });
@@ -51248,6 +51255,7 @@
     const value = searchModeInput.value;
     if (value === "startup_careers") return "startup_careers";
     if (value === "other_job_sites") return "other_job_sites";
+    if (value === "job_board") return "job_board";
     return "job_board";
   }
   function getSelectedStartupRegion() {

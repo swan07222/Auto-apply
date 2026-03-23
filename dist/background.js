@@ -432,9 +432,12 @@
         }
       }
       if (hostname.includes("monster")) {
-        path = path.replace(/\/job-opening\//, "/job-openings/");
+        const normalizedPath = path.replace(/\/job-opening\//, "/job-openings/");
         const jobId = parsed.searchParams.get("jobid") ?? parsed.searchParams.get("job_id");
-        if (jobId) return `${hostname}${path}?jobid=${jobId.toLowerCase()}`;
+        if (jobId) {
+          return `${hostname}${normalizedPath}?jobid=${jobId.toLowerCase()}`;
+        }
+        return `${hostname}${normalizedPath}`;
       }
       if (hostname.includes("glassdoor")) {
         const jobListingId = parsed.searchParams.get("jl") ?? parsed.searchParams.get("jobListingId") ?? parsed.searchParams.get("joblistingid");
@@ -852,8 +855,16 @@
             window.__NUXT__,
             ...parsedJsonScripts
           ].filter((value) => value !== void 0 && value !== null);
-          const visited = /* @__PURE__ */ new WeakSet();
+          const visitedObjectIds = /* @__PURE__ */ new Set();
           const candidateArrays = [];
+          let objectIdCounter = 0;
+          const getObjectId = (obj) => {
+            const existingId = obj.__visitId;
+            if (existingId) return existingId;
+            const newId = `obj_${objectIdCounter++}`;
+            obj.__visitId = newId;
+            return newId;
+          };
           const visit = (value, depth) => {
             if (depth > 6 || visitedCount > 800) {
               return;
@@ -873,10 +884,11 @@
               return;
             }
             const obj = value;
-            if (visited.has(obj)) {
+            const objId = getObjectId(obj);
+            if (visitedObjectIds.has(objId)) {
               return;
             }
-            visited.add(obj);
+            visitedObjectIds.add(objId);
             visitedCount += 1;
             for (const key of preferredKeys) {
               if (key in obj) {
@@ -997,7 +1009,7 @@
           const cap = Math.max(0, Math.floor(message.maxJobPages));
           itemsToOpen = capJobOpeningItems(itemsToOpen, cap);
         }
-        itemsToOpen = deduplicateSpawnItems(itemsToOpen);
+        itemsToOpen = deduplicateSpawnItems(itemsToOpen, message.maxJobPages);
         const {
           items: filteredItemsToOpen,
           skippedItems: skippedAlreadyOpenItems
@@ -1035,6 +1047,8 @@
             });
             openedCount += 1;
           } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error(`[Auto-apply] Tab creation failed for ${item.url}: ${errorMessage}`);
             releaseExtensionSpawnSlots(currentTab.id, 1);
             if (item.stage === "open-apply" || item.stage === "autofill-form") {
               failedJobOpeningItems.push(item);
@@ -1525,8 +1539,12 @@
       if (contentType && !contentType.includes("text/html")) {
         return { reason: "unreachable" };
       }
-      const finalUrl = response.url.toLowerCase();
-      if (["/404", "not-found", "page-not-found", "/error", "/unavailable"].some(
+      let finalUrl = "";
+      try {
+        finalUrl = response.url?.toLowerCase() ?? "";
+      } catch {
+      }
+      if (finalUrl && ["/404", "not-found", "page-not-found", "/error", "/unavailable"].some(
         (token) => finalUrl.includes(token)
       )) {
         return { reason: "not_found" };
@@ -2128,22 +2146,31 @@
     }
     return approvedUrls;
   }
-  function deduplicateSpawnItems(items) {
+  function deduplicateSpawnItems(items, maxJobSlots) {
     const seen = /* @__PURE__ */ new Set();
     const result = [];
+    let totalJobSlots = 0;
     for (const item of items) {
       const key = getSpawnDedupKey(item.url);
       if (!key || seen.has(key)) {
-        if (key && item.jobSlots) {
+        if (key && item.jobSlots && item.jobSlots > 0) {
           const existing = result.find((r) => getSpawnDedupKey(r.url) === key);
           if (existing && existing.jobSlots !== void 0) {
-            existing.jobSlots += item.jobSlots;
+            const remainingSlots = maxJobSlots !== void 0 ? Math.max(0, maxJobSlots - totalJobSlots) : item.jobSlots;
+            existing.jobSlots = Math.min(
+              existing.jobSlots + item.jobSlots,
+              remainingSlots
+            );
           }
         }
         continue;
       }
       seen.add(key);
-      result.push({ ...item });
+      const newItem = { ...item };
+      if (newItem.jobSlots !== void 0 && newItem.jobSlots > 0) {
+        totalJobSlots += newItem.jobSlots;
+      }
+      result.push(newItem);
     }
     return result;
   }
