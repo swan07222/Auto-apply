@@ -334,6 +334,52 @@ function throwIfRateLimited(site: SiteKey): void {
   );
 }
 
+function resolveCurrentSiteKey(): SiteKey | null {
+  if (status.site && status.site !== "unsupported") {
+    return status.site;
+  }
+
+  return detectSiteFromUrl(window.location.href);
+}
+
+function hasUsableApplicationSignalsForSite(site: SiteKey | null): boolean {
+  if (site && hasLikelyApplicationSurface(site)) {
+    return true;
+  }
+
+  return (
+    hasLikelyApplicationForm() ||
+    hasLikelyApplicationPageContent() ||
+    Boolean(findStandaloneApplicationFrameUrl())
+  );
+}
+
+async function confirmBrokenPageReason(
+  reason: BrokenPageReason | null
+): Promise<BrokenPageReason | null> {
+  if (reason !== "not_found") {
+    return reason;
+  }
+
+  const site = resolveCurrentSiteKey();
+  if (hasUsableApplicationSignalsForSite(site)) {
+    return null;
+  }
+
+  await sleep(site === "monster" ? 2_500 : 1_200);
+
+  const refreshedReason = detectBrokenPageReason(document);
+  if (refreshedReason !== "not_found") {
+    return refreshedReason;
+  }
+
+  if (hasUsableApplicationSignalsForSite(site)) {
+    return null;
+  }
+
+  return "not_found";
+}
+
 async function waitForReadyProgressionAction(
   site: SiteKey,
   timeoutMs: number
@@ -2198,7 +2244,9 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
 // ─── WAITING HELPERS ─────────────────────────────────────────────────────────
 
 async function waitForHumanVerificationToClear(): Promise<void> {
-  const brokenReason = detectBrokenPageReason(document);
+  const brokenReason = await confirmBrokenPageReason(
+    detectBrokenPageReason(document)
+  );
   if (brokenReason === "access_denied") {
     throw new Error(
       `The page returned an access-denied error instead of a usable application page.`
@@ -2239,7 +2287,9 @@ async function waitForHumanVerificationToClear(): Promise<void> {
   let lastReminderAt = Date.now();
 
   while (getManualBlockKind()) {
-    const pendingBrokenReason = detectBrokenPageReason(document);
+    const pendingBrokenReason = await confirmBrokenPageReason(
+      detectBrokenPageReason(document)
+    );
     if (pendingBrokenReason === "access_denied") {
       throw new Error(
         `The page returned an access-denied error instead of a usable application page.`

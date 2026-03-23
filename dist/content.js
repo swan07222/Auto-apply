@@ -394,6 +394,18 @@
 ${bodyText}
 ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
+  function hasLikelyApplyContinuationSignal(doc) {
+    return Array.from(
+      doc.querySelectorAll(
+        "button, a[href], [role='button'], input[type='submit'], input[type='button']"
+      )
+    ).some((element) => {
+      const text = element instanceof HTMLInputElement ? `${element.value} ${element.getAttribute("aria-label") || ""} ${element.getAttribute("title") || ""}` : `${element.innerText || element.textContent || ""} ${element.getAttribute("aria-label") || ""} ${element.getAttribute("title") || ""}`;
+      return /\b(apply|continue application|continue to application|apply now|easy apply)\b/.test(
+        text.toLowerCase().replace(/\s+/g, " ").trim()
+      );
+    });
+  }
   function detectBrokenPageReason(doc) {
     const text = getDocumentTextSnapshot(doc);
     if (!text) {
@@ -436,11 +448,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "requested page could not be found"
     ].some((phrase) => text.includes(phrase));
     const hasLikelyApplicationSignals = hasLikelyApplicationFormSignals(doc) || hasLikelyApplicationStepSignals(doc);
+    const hasLikelyApplyContinuationSignals = hasLikelyApplyContinuationSignal(doc);
     const hasLikelyJobOrApplyContentSignal = /\bapply\b|\bapplication\b|\bjob\b|\bjob details\b|\bjob description\b/.test(
       bodyText
     ) || /\bjobs?\b|\bcareers?\b|\bapply\b/.test(title);
     const isMinimalPage = bodyText.length > 0 && bodyText.length < 1200;
-    if (hasNotFoundTextSignal || hasNotFoundTitleSignal || hasNotFoundUrlSignal && isMinimalPage && !hasLikelyApplicationSignals && !hasLikelyJobOrApplyContentSignal) {
+    const hasUsablePageSignals = hasLikelyApplicationSignals || hasLikelyApplyContinuationSignals || hasLikelyJobOrApplyContentSignal && !isMinimalPage;
+    if ((hasNotFoundTextSignal || hasNotFoundTitleSignal) && !hasUsablePageSignals) {
+      return "not_found";
+    }
+    if (hasNotFoundUrlSignal && isMinimalPage && !hasLikelyApplicationSignals && !hasLikelyApplyContinuationSignals && !hasLikelyJobOrApplyContentSignal) {
       return "not_found";
     }
     return null;
@@ -683,8 +700,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const queuedWrite = automationSettingsWriteQueue.then(async () => {
       const current = await readAutomationSettings();
       const nextRaw = typeof update === "function" ? update(current) : update;
-      const merged = mergeAutomationSettings(current, nextRaw);
-      const sanitized = sanitizeAutomationSettings(merged);
+      const sanitized = applyAutomationSettingsUpdate(current, nextRaw);
       await chrome.storage.local.set({ [AUTOMATION_SETTINGS_STORAGE_KEY]: sanitized });
       return sanitized;
     });
@@ -694,7 +710,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     );
     return queuedWrite;
   }
-  function mergeAutomationSettings(current, update) {
+  function applyAutomationSettingsUpdate(current, update) {
     const source = isRecord(update) ? update : {};
     const profiles = "profiles" in source ? sanitizeAutomationProfiles(source.profiles) : cloneAutomationProfiles(current.profiles);
     let activeProfileId = readString(source.activeProfileId) || current.activeProfileId;
@@ -5777,6 +5793,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   function findMonsterApplyAction() {
     const scopedElements = collectMonsterApplyCandidates();
     const elements = scopedElements.length > 0 ? scopedElements : collectDeepMatchesFromSelectors(getApplyCandidateSelectors("monster"));
+    const viableCandidates = [];
     let best;
     let bestDirect;
     for (const element of elements) {
@@ -5787,6 +5804,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       if (score < 35) {
         continue;
       }
+      viableCandidates.push({
+        element: actionElement,
+        score,
+        url,
+        text,
+        top: getMonsterActionTop(actionElement)
+      });
       if (!best || score > best.score) {
         best = {
           element: actionElement,
@@ -5803,6 +5827,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           text
         };
       }
+    }
+    const preferredPrimaryApply = choosePreferredMonsterPrimaryApplyCandidate(
+      viableCandidates
+    );
+    if (preferredPrimaryApply) {
+      best = preferredPrimaryApply;
+      bestDirect = preferredPrimaryApply;
     }
     best = choosePreferredJobPageAction(best, bestDirect);
     if (!best) {
@@ -5822,13 +5853,48 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       description: best.text || "Monster apply button"
     };
   }
+  function getMonsterActionTop(element) {
+    const rect = element.getBoundingClientRect();
+    return Number.isFinite(rect.top) ? rect.top : 0;
+  }
+  function choosePreferredMonsterPrimaryApplyCandidate(candidates) {
+    const primaryApplyCandidates = candidates.filter(
+      (candidate) => /^(quick apply|apply|apply now|easy apply)$/i.test(candidate.text.trim())
+    );
+    if (primaryApplyCandidates.length < 2) {
+      return void 0;
+    }
+    return primaryApplyCandidates.sort((left, right) => {
+      if (left.top !== right.top) {
+        return left.top - right.top;
+      }
+      if (left.score !== right.score) {
+        return right.score - left.score;
+      }
+      const position = left.element.compareDocumentPosition(right.element);
+      if (position & Node.DOCUMENT_POSITION_FOLLOWING) {
+        return -1;
+      }
+      if (position & Node.DOCUMENT_POSITION_PRECEDING) {
+        return 1;
+      }
+      return 0;
+    })[0];
+  }
   function collectMonsterApplyCandidates() {
     const selectors = getApplyCandidateSelectors("monster");
+    const genericActionSelectors = [
+      "a[href]",
+      "button",
+      "input[type='submit']",
+      "input[type='button']",
+      "[role='button']"
+    ];
     const surfaces = collectCurrentJobSurfaceMatches("monster");
     const matches = [];
     const seen = /* @__PURE__ */ new Set();
     for (const surface of surfaces) {
-      for (const selector of selectors) {
+      for (const selector of [...selectors, ...genericActionSelectors]) {
         let scopedMatches;
         try {
           scopedMatches = Array.from(surface.querySelectorAll(selector));
@@ -5844,7 +5910,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         }
       }
       for (const host of collectShadowHosts(surface)) {
-        for (const selector of selectors) {
+        for (const selector of [...selectors, ...genericActionSelectors]) {
           let shadowMatches;
           try {
             shadowMatches = Array.from(
@@ -5930,7 +5996,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (lowerUrl.includes("/job-openings/") && lowerUrl.includes("/apply")) score += 35;
     if (lowerUrl.includes("job-openings.monster.com")) score += 28;
     if (lowerUrl.includes("candidate") || lowerUrl.includes("application")) score += 18;
-    if (actionElement.closest("header, nav, footer")) score -= 40;
+    if (actionElement.closest("header, nav, footer") && !actionElement.closest("[data-testid*='job'], [class*='job'], [class*='Job']")) {
+      score -= 40;
+    }
     if (actionElement.closest("aside")) score -= 12;
     if (actionElement.closest("main, article, [role='main'], section")) score += 12;
     if (actionElement.closest("[data-testid*='job'], [class*='job'], [class*='Job']")) score += 10;
@@ -6289,6 +6357,61 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         };
       }
     }
+    let bestSurfaceAction;
+    for (const surface of collectDiceCurrentJobSurfaces()) {
+      for (const candidate of Array.from(
+        surface.querySelectorAll(
+          "a[href], button, input[type='submit'], input[type='button'], [role='button']"
+        )
+      )) {
+        if (isDiceNestedResultElement2(candidate, surface)) {
+          continue;
+        }
+        const actionElement = getClickableApplyElement(candidate);
+        if (!isElementVisible(actionElement)) {
+          continue;
+        }
+        const text = cleanText(
+          getActionText(actionElement) || getActionText(candidate) || actionElement.getAttribute("aria-label") || candidate.getAttribute("aria-label") || actionElement.getAttribute("title") || candidate.getAttribute("title") || ""
+        );
+        const url = getNavigationUrl(actionElement) ?? getNavigationUrl(candidate);
+        let score = scoreApplyElement(text, url, actionElement, "job-page");
+        if (score < 0) {
+          continue;
+        }
+        if (/^quick apply$/i.test(text)) {
+          score += 18;
+        }
+        if (actionElement.closest("main, article, [role='main'], section")) {
+          score += 8;
+        }
+        if (score < 55) {
+          continue;
+        }
+        if (!bestSurfaceAction || score > bestSurfaceAction.score) {
+          bestSurfaceAction = {
+            element: actionElement,
+            text,
+            url,
+            score
+          };
+        }
+      }
+    }
+    if (bestSurfaceAction) {
+      if (bestSurfaceAction.url) {
+        return {
+          type: "navigate",
+          url: bestSurfaceAction.url,
+          description: bestSurfaceAction.text || "Dice apply button"
+        };
+      }
+      return {
+        type: "click",
+        element: bestSurfaceAction.element,
+        description: bestSurfaceAction.text || "Dice apply button"
+      };
+    }
     const allHosts = Array.from(document.querySelectorAll("*")).filter(
       (element) => element.shadowRoot
     );
@@ -6422,6 +6545,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return true;
     }
     return nestedResultContainer !== surface;
+  }
+  function isDiceNestedResultElement2(element, surface) {
+    const nestedResultContainer = element.closest(
+      getDiceNestedResultSelectors().join(", ")
+    );
+    return Boolean(nestedResultContainer && nestedResultContainer !== surface);
   }
   function extractDiceInlineApplyUrl() {
     const sources = [
@@ -8413,6 +8542,36 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       `${getSiteLabel(site)} temporarily rate limited this run. Wait a few minutes and try again.`
     );
   }
+  function resolveCurrentSiteKey() {
+    if (status.site && status.site !== "unsupported") {
+      return status.site;
+    }
+    return detectSiteFromUrl(window.location.href);
+  }
+  function hasUsableApplicationSignalsForSite(site) {
+    if (site && hasLikelyApplicationSurface2(site)) {
+      return true;
+    }
+    return hasLikelyApplicationForm2() || hasLikelyApplicationPageContent2() || Boolean(findStandaloneApplicationFrameUrl2());
+  }
+  async function confirmBrokenPageReason(reason) {
+    if (reason !== "not_found") {
+      return reason;
+    }
+    const site = resolveCurrentSiteKey();
+    if (hasUsableApplicationSignalsForSite(site)) {
+      return null;
+    }
+    await sleep(site === "monster" ? 2500 : 1200);
+    const refreshedReason = detectBrokenPageReason(document);
+    if (refreshedReason !== "not_found") {
+      return refreshedReason;
+    }
+    if (hasUsableApplicationSignalsForSite(site)) {
+      return null;
+    }
+    return "not_found";
+  }
   async function waitForReadyProgressionAction2(site, timeoutMs) {
     return waitForReadyProgressionAction(site, timeoutMs);
   }
@@ -9900,7 +10059,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     );
   }
   async function waitForHumanVerificationToClear() {
-    const brokenReason = detectBrokenPageReason(document);
+    const brokenReason = await confirmBrokenPageReason(
+      detectBrokenPageReason(document)
+    );
     if (brokenReason === "access_denied") {
       throw new Error(
         `The page returned an access-denied error instead of a usable application page.`
@@ -9934,7 +10095,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     );
     let lastReminderAt = Date.now();
     while (getManualBlockKind()) {
-      const pendingBrokenReason = detectBrokenPageReason(document);
+      const pendingBrokenReason = await confirmBrokenPageReason(
+        detectBrokenPageReason(document)
+      );
       if (pendingBrokenReason === "access_denied") {
         throw new Error(
           `The page returned an access-denied error instead of a usable application page.`

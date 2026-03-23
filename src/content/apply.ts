@@ -552,6 +552,13 @@ export function findMonsterApplyAction(): ApplyAction | null {
     scopedElements.length > 0
       ? scopedElements
       : collectDeepMatchesFromSelectors(getApplyCandidateSelectors("monster"));
+  const viableCandidates: Array<{
+    element: HTMLElement;
+    score: number;
+    url: string | null;
+    text: string;
+    top: number;
+  }> = [];
   let best:
     | {
         element: HTMLElement;
@@ -576,6 +583,14 @@ export function findMonsterApplyAction(): ApplyAction | null {
       continue;
     }
 
+    viableCandidates.push({
+      element: actionElement,
+      score,
+      url,
+      text,
+      top: getMonsterActionTop(actionElement),
+    });
+
     if (!best || score > best.score) {
       best = {
         element: actionElement,
@@ -595,6 +610,14 @@ export function findMonsterApplyAction(): ApplyAction | null {
         text,
       };
     }
+  }
+
+  const preferredPrimaryApply = choosePreferredMonsterPrimaryApplyCandidate(
+    viableCandidates
+  );
+  if (preferredPrimaryApply) {
+    best = preferredPrimaryApply;
+    bestDirect = preferredPrimaryApply;
   }
 
   best = choosePreferredJobPageAction(best, bestDirect);
@@ -618,14 +641,71 @@ export function findMonsterApplyAction(): ApplyAction | null {
   };
 }
 
+function getMonsterActionTop(element: HTMLElement): number {
+  const rect = element.getBoundingClientRect();
+  return Number.isFinite(rect.top) ? rect.top : 0;
+}
+
+function choosePreferredMonsterPrimaryApplyCandidate(
+  candidates: Array<{
+    element: HTMLElement;
+    score: number;
+    url: string | null;
+    text: string;
+    top: number;
+  }>
+):
+  | {
+      element: HTMLElement;
+      score: number;
+      url: string | null;
+      text: string;
+      top: number;
+    }
+  | undefined {
+  const primaryApplyCandidates = candidates.filter((candidate) =>
+    /^(quick apply|apply|apply now|easy apply)$/i.test(candidate.text.trim())
+  );
+
+  if (primaryApplyCandidates.length < 2) {
+    return undefined;
+  }
+
+  return primaryApplyCandidates.sort((left, right) => {
+    if (left.top !== right.top) {
+      return left.top - right.top;
+    }
+
+    if (left.score !== right.score) {
+      return right.score - left.score;
+    }
+
+    const position = left.element.compareDocumentPosition(right.element);
+    if (position & Node.DOCUMENT_POSITION_FOLLOWING) {
+      return -1;
+    }
+    if (position & Node.DOCUMENT_POSITION_PRECEDING) {
+      return 1;
+    }
+    return 0;
+  })[0];
+}
+
 function collectMonsterApplyCandidates(): HTMLElement[] {
   const selectors = getApplyCandidateSelectors("monster");
+  const genericActionSelectors = [
+    "a[href]",
+    "button",
+    "input[type='submit']",
+    "input[type='button']",
+    "[role='button']",
+  ];
   const surfaces = collectCurrentJobSurfaceMatches("monster");
   const matches: HTMLElement[] = [];
   const seen = new Set<HTMLElement>();
 
   for (const surface of surfaces) {
-    for (const selector of selectors) {
+    for (const selector of [...selectors, ...genericActionSelectors]) {
       let scopedMatches: HTMLElement[];
       try {
         scopedMatches = Array.from(surface.querySelectorAll<HTMLElement>(selector));
@@ -644,7 +724,7 @@ function collectMonsterApplyCandidates(): HTMLElement[] {
     }
 
     for (const host of collectShadowHosts(surface)) {
-      for (const selector of selectors) {
+      for (const selector of [...selectors, ...genericActionSelectors]) {
         let shadowMatches: HTMLElement[];
         try {
           shadowMatches = Array.from(
@@ -773,7 +853,12 @@ function scoreMonsterApplyCandidate(
   if (lowerUrl.includes("job-openings.monster.com")) score += 28;
   if (lowerUrl.includes("candidate") || lowerUrl.includes("application")) score += 18;
 
-  if (actionElement.closest("header, nav, footer")) score -= 40;
+  if (
+    actionElement.closest("header, nav, footer") &&
+    !actionElement.closest("[data-testid*='job'], [class*='job'], [class*='Job']")
+  ) {
+    score -= 40;
+  }
   if (actionElement.closest("aside")) score -= 12;
   if (actionElement.closest("main, article, [role='main'], section")) score += 12;
   if (actionElement.closest("[data-testid*='job'], [class*='job'], [class*='Job']")) score += 10;
@@ -1277,6 +1362,84 @@ export function findDiceApplyAction(): ApplyAction | null {
         description: cleanText(getActionText(component)) || "Dice apply button",
       };
     }
+  }
+
+  let bestSurfaceAction:
+    | {
+        element: HTMLElement;
+        text: string;
+        url: string | null;
+        score: number;
+      }
+    | undefined;
+
+  for (const surface of collectDiceCurrentJobSurfaces()) {
+    for (const candidate of Array.from(
+      surface.querySelectorAll<HTMLElement>(
+        "a[href], button, input[type='submit'], input[type='button'], [role='button']"
+      )
+    )) {
+      if (isDiceNestedResultElement(candidate, surface)) {
+        continue;
+      }
+
+      const actionElement = getClickableApplyElement(candidate);
+      if (!isElementVisible(actionElement)) {
+        continue;
+      }
+
+      const text = cleanText(
+        getActionText(actionElement) ||
+          getActionText(candidate) ||
+          actionElement.getAttribute("aria-label") ||
+          candidate.getAttribute("aria-label") ||
+          actionElement.getAttribute("title") ||
+          candidate.getAttribute("title") ||
+          ""
+      );
+      const url = getNavigationUrl(actionElement) ?? getNavigationUrl(candidate);
+      let score = scoreApplyElement(text, url, actionElement, "job-page");
+
+      if (score < 0) {
+        continue;
+      }
+
+      if (/^quick apply$/i.test(text)) {
+        score += 18;
+      }
+      if (actionElement.closest("main, article, [role='main'], section")) {
+        score += 8;
+      }
+
+      if (score < 55) {
+        continue;
+      }
+
+      if (!bestSurfaceAction || score > bestSurfaceAction.score) {
+        bestSurfaceAction = {
+          element: actionElement,
+          text,
+          url,
+          score,
+        };
+      }
+    }
+  }
+
+  if (bestSurfaceAction) {
+    if (bestSurfaceAction.url) {
+      return {
+        type: "navigate",
+        url: bestSurfaceAction.url,
+        description: bestSurfaceAction.text || "Dice apply button",
+      };
+    }
+
+    return {
+      type: "click",
+      element: bestSurfaceAction.element,
+      description: bestSurfaceAction.text || "Dice apply button",
+    };
   }
 
   const allHosts = Array.from(document.querySelectorAll<HTMLElement>("*")).filter(

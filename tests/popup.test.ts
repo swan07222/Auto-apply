@@ -369,6 +369,30 @@ describe("popup workflow", () => {
     });
   });
 
+  it("ignores malformed background sessions and falls back to the current tab context", async () => {
+    const popup = await createPopupHarness({
+      runtimeSendMessage: (message) => {
+        if (message.type === "get-tab-session") {
+          return {
+            ok: true,
+            session: {
+              site: "indeed",
+              phase: "broken",
+              message: "Corrupted session",
+              updatedAt: "yesterday",
+            },
+          };
+        }
+
+        return { ok: true };
+      },
+    });
+
+    expect(popup.siteName.textContent).toBe("Indeed");
+    expect(popup.statusText.textContent).toBe("Ready on Indeed.");
+    expect(popup.startButton.disabled).toBe(false);
+  });
+
   it("saves trimmed candidate details and normalized keywords through the popup form", async () => {
     const popup = await createPopupHarness();
 

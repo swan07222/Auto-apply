@@ -479,6 +479,22 @@ describe("shared automation target logic", () => {
     expect(detectBrokenPageReason(document)).toBeNull();
   });
 
+  it("does not treat Monster pages with not-found copy as broken when a real apply action is still present", () => {
+    window.history.replaceState({}, "", "/job-openings/frontend-engineer-remote--alpha123/apply");
+    document.title = "Monster Jobs";
+    document.body.innerHTML = `
+      <main>
+        <header>Employers / Post Job</header>
+        <p>Page not found</p>
+        <h1>Frontend Engineer</h1>
+        <p>Continue your application for this role.</p>
+        <button>Continue Application</button>
+      </main>
+    `;
+
+    expect(detectBrokenPageReason(document)).toBeNull();
+  });
+
   it("does not treat application forms with embedded captcha markers as verification pages", () => {
     document.title = "Apply";
     document.body.innerHTML = `

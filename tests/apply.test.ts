@@ -324,6 +324,165 @@ describe("application progression actions", () => {
     expect(action?.description).toBe("Apply Now");
   });
 
+  it("finds plain Monster quick-apply buttons on the current job surface", () => {
+    document.body.innerHTML = `
+      <main class="job-detail-panel">
+        <a href="/jobs">Back to Results</a>
+        <section class="job-description">
+          <header>
+            <h1>Senior DevOps Engineer</h1>
+            <button type="button">Quick Apply</button>
+          </header>
+          <p>Remote USA</p>
+        </section>
+      </main>
+    `;
+
+    const action = findMonsterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Quick Apply");
+  });
+
+  it("prefers the top-most Monster quick-apply button on apply-button style pages", () => {
+    document.body.innerHTML = `
+      <main class="job-detail-panel">
+        <section class="job-description">
+          <header>
+            <button id="top-quick-apply" type="button">Quick Apply</button>
+          </header>
+          <div class="job-body">
+            <button id="lower-quick-apply" type="button">Quick Apply</button>
+          </div>
+        </section>
+      </main>
+    `;
+
+    const topButton = document.querySelector("#top-quick-apply") as HTMLButtonElement;
+    const lowerButton = document.querySelector(
+      "#lower-quick-apply"
+    ) as HTMLButtonElement;
+
+    Object.defineProperty(topButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 80,
+          left: 0,
+          width: 120,
+          height: 40,
+          right: 120,
+          bottom: 120,
+          x: 0,
+          y: 80,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(lowerButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 520,
+          left: 0,
+          width: 120,
+          height: 40,
+          right: 120,
+          bottom: 560,
+          x: 0,
+          y: 520,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+
+    const action = findMonsterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    if (action?.type === "click") {
+      expect(action.element).toBe(topButton);
+    }
+  });
+
+  it("prefers the top-most Monster apply button when related-job apply cards are below it", () => {
+    document.body.innerHTML = `
+      <main class="job-detail-panel">
+        <section class="job-description">
+          <header>
+            <button id="top-apply" type="button">Apply</button>
+          </header>
+        </section>
+        <section class="related-jobs">
+          <article>
+            <button id="lower-apply-one" type="button">Apply</button>
+          </article>
+          <article>
+            <button id="lower-apply-two" type="button">Apply</button>
+          </article>
+        </section>
+      </main>
+    `;
+
+    const topButton = document.querySelector("#top-apply") as HTMLButtonElement;
+    const lowerButtonOne = document.querySelector("#lower-apply-one") as HTMLButtonElement;
+    const lowerButtonTwo = document.querySelector("#lower-apply-two") as HTMLButtonElement;
+
+    Object.defineProperty(topButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 90,
+          left: 0,
+          width: 120,
+          height: 40,
+          right: 120,
+          bottom: 130,
+          x: 0,
+          y: 90,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(lowerButtonOne, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 460,
+          left: 0,
+          width: 120,
+          height: 40,
+          right: 120,
+          bottom: 500,
+          x: 0,
+          y: 460,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(lowerButtonTwo, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 720,
+          left: 0,
+          width: 120,
+          height: 40,
+          right: 120,
+          bottom: 760,
+          x: 0,
+          y: 720,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+
+    const action = findMonsterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    if (action?.type === "click") {
+      expect(action.element).toBe(topButton);
+    }
+    expect(action?.description).toBe("Apply");
+  });
+
   it("keeps same-site Monster apply targets click-based so site scripts can continue the flow", () => {
     document.body.innerHTML = `
       <main class="job-detail-panel">
@@ -639,6 +798,27 @@ describe("application progression actions", () => {
     expect(action).not.toBeNull();
     expect(action?.type).toBe("click");
     expect(action?.description).toBe("Apply Now");
+  });
+
+  it("finds plain Dice quick-apply buttons on the current job detail surface", () => {
+    document.body.innerHTML = `
+      <main class="job-details-pane">
+        <a href="/jobs" class="back-link">Back to Results</a>
+        <section class="job-description">
+          <header>
+            <h1>Senior DevOps Engineer</h1>
+            <button type="button">Quick Apply</button>
+          </header>
+          <p>Remote USA</p>
+        </section>
+      </main>
+    `;
+
+    const action = findApplyAction("dice", "job-page");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Quick Apply");
   });
 
   it("prefers Dice inline start-apply routes when the page embeds them", () => {

@@ -49584,22 +49584,7 @@
     const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
     return sanitizeAutomationSettings(stored[AUTOMATION_SETTINGS_STORAGE_KEY]);
   }
-  async function writeAutomationSettings(update) {
-    const queuedWrite = automationSettingsWriteQueue.then(async () => {
-      const current = await readAutomationSettings();
-      const nextRaw = typeof update === "function" ? update(current) : update;
-      const merged = mergeAutomationSettings(current, nextRaw);
-      const sanitized = sanitizeAutomationSettings(merged);
-      await chrome.storage.local.set({ [AUTOMATION_SETTINGS_STORAGE_KEY]: sanitized });
-      return sanitized;
-    });
-    automationSettingsWriteQueue = queuedWrite.then(
-      () => void 0,
-      () => void 0
-    );
-    return queuedWrite;
-  }
-  function mergeAutomationSettings(current, update) {
+  function applyAutomationSettingsUpdate(current, update) {
     const source = isRecord(update) ? update : {};
     const profiles = "profiles" in source ? sanitizeAutomationProfiles(source.profiles) : cloneAutomationProfiles(current.profiles);
     let activeProfileId = readString(source.activeProfileId) || current.activeProfileId;
@@ -50228,6 +50213,7 @@
     updateModeUi();
     updateOverviewPreview();
     updateSiteNameDisplay();
+    applyLocalStatusPreview();
     try {
       await refreshStatus();
     } catch {
@@ -50434,12 +50420,23 @@
           type: "get-tab-session",
           tabId: activeTabId
         });
-        bgSession2 = backgroundResponse?.session;
+        bgSession2 = parseAutomationStatus(backgroundResponse?.session);
       } catch {
       }
-      if (bgSession2 && bgSession2.site === "startup" && bgSession2.phase !== "idle") {
-        applyStatus(bgSession2);
-        startButton.disabled = isBusy(bgSession2.phase);
+      if (bgSession2 && bgSession2.site === "startup") {
+        if (bgSession2.phase !== "idle") {
+          applyStatus(bgSession2);
+          startButton.disabled = isBusy(bgSession2.phase);
+          return;
+        }
+        applyStatus(
+          createStatus(
+            "startup",
+            "idle",
+            bgSession2.message || `Ready to open startup career pages for ${getStartupRegionLabel()} companies.`
+          )
+        );
+        startButton.disabled = false;
         return;
       }
       applyStatus(
@@ -50470,12 +50467,23 @@
           type: "get-tab-session",
           tabId: activeTabId
         });
-        bgSession2 = backgroundResponse?.session;
+        bgSession2 = parseAutomationStatus(backgroundResponse?.session);
       } catch {
       }
-      if (bgSession2 && bgSession2.site === "other_sites" && bgSession2.phase !== "idle") {
-        applyStatus(bgSession2);
-        startButton.disabled = isBusy(bgSession2.phase);
+      if (bgSession2 && bgSession2.site === "other_sites") {
+        if (bgSession2.phase !== "idle") {
+          applyStatus(bgSession2);
+          startButton.disabled = isBusy(bgSession2.phase);
+          return;
+        }
+        applyStatus(
+          createStatus(
+            "other_sites",
+            "idle",
+            bgSession2.message || `Ready to open other job site searches for ${getStartupRegionLabel()}.`
+          )
+        );
+        startButton.disabled = false;
         return;
       }
       applyStatus(
@@ -50501,11 +50509,17 @@
         type: "get-tab-session",
         tabId: activeTabId
       });
-      bgSession = backgroundResponse?.session;
+      bgSession = parseAutomationStatus(backgroundResponse?.session);
     } catch {
     }
-    if (bgSession && bgSession.site === activeJobBoardSite && bgSession.phase !== "idle") {
-      applyStatus(bgSession);
+    if (bgSession && bgSession.site === activeJobBoardSite) {
+      applyStatus(
+        bgSession.phase === "idle" ? createStatus(
+          activeJobBoardSite ?? "unsupported",
+          "idle",
+          bgSession.message || (activeJobBoardSite ? `Ready on ${getSiteLabel(activeJobBoardSite)}.` : "Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab to start.")
+        ) : bgSession
+      );
       startButton.disabled = !activeJobBoardSite || isBusy(bgSession.phase);
       return;
     }
@@ -50513,6 +50527,70 @@
     if (contentStatus && contentStatus.phase !== "idle" && contentStatus.site === activeJobBoardSite) {
       applyStatus(contentStatus);
       startButton.disabled = !activeJobBoardSite || isBusy(contentStatus.phase);
+      return;
+    }
+    if (!activeJobBoardSite) {
+      applyStatus(
+        createStatus(
+          "unsupported",
+          "error",
+          "Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab to start."
+        )
+      );
+      startButton.disabled = true;
+      return;
+    }
+    applyStatus(
+      createStatus(
+        activeJobBoardSite,
+        "idle",
+        `Ready on ${getSiteLabel(activeJobBoardSite)}.`
+      )
+    );
+    startButton.disabled = false;
+  }
+  function applyLocalStatusPreview() {
+    const searchMode = getSelectedSearchMode();
+    const activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
+    const hasKeywords = getConfiguredKeywords().length > 0;
+    if (!hasKeywords) {
+      applyStatus(
+        createStatus(
+          searchMode === "job_board" ? activeJobBoardSite ?? "unsupported" : searchMode === "startup_careers" ? "startup" : "other_sites",
+          "error",
+          "Add at least one search keyword before starting automation."
+        )
+      );
+      startButton.disabled = true;
+      return;
+    }
+    if (searchMode === "startup_careers") {
+      applyStatus(
+        createStatus(
+          "startup",
+          "idle",
+          `Ready to open startup career pages for ${getStartupRegionLabel()} companies.`
+        )
+      );
+      startButton.disabled = false;
+      return;
+    }
+    if (searchMode === "other_job_sites") {
+      applyStatus(
+        createStatus(
+          "other_sites",
+          "idle",
+          `Ready to open other job site searches for ${getStartupRegionLabel()}.`
+        )
+      );
+      startButton.disabled = false;
+      return;
+    }
+    if (!activeTabId) {
+      applyStatus(
+        createStatus("unsupported", "error", "No active tab was found.")
+      );
+      startButton.disabled = true;
       return;
     }
     if (!activeJobBoardSite) {
@@ -50622,12 +50700,21 @@
       }
     };
   }
+  async function persistSettings(update) {
+    const nextRaw = typeof update === "function" ? update(settings) : update;
+    const nextSettings = applyAutomationSettingsUpdate(settings, nextRaw);
+    await chrome.storage.local.set({
+      [AUTOMATION_SETTINGS_STORAGE_KEY]: nextSettings
+    });
+    settings = nextSettings;
+    return nextSettings;
+  }
   async function saveCurrentSettings(showFeedback) {
     saveButton.disabled = true;
     setSettingsStatus("Saving settings...", "muted", true);
     try {
       const selectedProfileId = getSelectedProfileId();
-      settings = await writeAutomationSettings(
+      settings = await persistSettings(
         (current) => buildFormSettingsUpdate(current, selectedProfileId, selectedProfileId)
       );
       populateSettingsForm(settings);
@@ -50656,7 +50743,7 @@
     setSettingsStatus("Switching profile...", "muted", true);
     try {
       const previousProfileId = settings.activeProfileId;
-      settings = await writeAutomationSettings(
+      settings = await persistSettings(
         (current) => buildFormSettingsUpdate(current, previousProfileId, normalizedProfileId)
       );
       populateSettingsForm(settings);
@@ -50682,7 +50769,7 @@
     const profileId = createProfileId();
     setSettingsStatus(`Creating "${name}"...`, "muted", true);
     try {
-      settings = await writeAutomationSettings((current) => ({
+      settings = await persistSettings((current) => ({
         profiles: {
           ...current.profiles,
           [profileId]: createAutomationProfile(profileId, name)
@@ -50711,7 +50798,7 @@
     }
     setSettingsStatus(`Renaming "${activeProfile.name}"...`, "muted", true);
     try {
-      settings = await writeAutomationSettings((current) => ({
+      settings = await persistSettings((current) => ({
         activeProfileId: activeProfile.id,
         profiles: {
           ...current.profiles,
@@ -50755,7 +50842,7 @@
     const nextProfileId = remainingProfiles[0]?.id ?? settings.activeProfileId;
     setSettingsStatus(`Deleting "${activeProfile.name}"...`, "muted", true);
     try {
-      settings = await writeAutomationSettings((current) => {
+      settings = await persistSettings((current) => {
         const nextProfiles = { ...current.profiles };
         delete nextProfiles[activeProfile.id];
         return {
@@ -50782,7 +50869,7 @@
     clearAnswersButton.disabled = true;
     setSettingsStatus("Clearing remembered answers...", "muted", true);
     try {
-      settings = await writeAutomationSettings({
+      settings = await persistSettings({
         activeProfileId: getSelectedProfileId(),
         answers: {}
       });
@@ -50805,7 +50892,7 @@
     }
     setSettingsStatus("Removing remembered answer...", "muted", true);
     try {
-      settings = await writeAutomationSettings((current) => {
+      settings = await persistSettings((current) => {
         const selectedProfileId = getSelectedProfileId();
         const scopedCurrent = resolveAutomationSettingsForProfile(
           current,
@@ -50849,7 +50936,7 @@
     }
     setSettingsStatus("Updating remembered answer...", "muted", true);
     try {
-      settings = await writeAutomationSettings((current) => {
+      settings = await persistSettings((current) => {
         const selectedProfileId = getSelectedProfileId();
         const scopedCurrent = resolveAutomationSettingsForProfile(
           current,
@@ -50884,7 +50971,7 @@
     }
     setSettingsStatus("Saving custom preference answer...", "muted", true);
     try {
-      settings = await writeAutomationSettings((current) => {
+      settings = await persistSettings((current) => {
         const selectedProfileId = getSelectedProfileId();
         const scopedCurrent = resolveAutomationSettingsForProfile(
           current,
@@ -50923,7 +51010,7 @@
     }
     setSettingsStatus("Updating custom preference answer...", "muted", true);
     try {
-      settings = await writeAutomationSettings((current) => {
+      settings = await persistSettings((current) => {
         const selectedProfileId = getSelectedProfileId();
         const scopedCurrent = resolveAutomationSettingsForProfile(
           current,
@@ -50954,7 +51041,7 @@
     }
     setSettingsStatus("Removing custom preference answer...", "muted", true);
     try {
-      settings = await writeAutomationSettings((current) => {
+      settings = await persistSettings((current) => {
         const selectedProfileId = getSelectedProfileId();
         const scopedCurrent = resolveAutomationSettingsForProfile(
           current,
@@ -50991,7 +51078,7 @@
     setSettingsStatus("Saving profile resume...", "muted", true);
     try {
       const asset = await readFileAsResumeAsset(file);
-      settings = await writeAutomationSettings({
+      settings = await persistSettings({
         activeProfileId: getSelectedProfileId(),
         resume: asset
       });
@@ -51008,32 +51095,37 @@
     }
   }
   function populateSettingsForm(nextSettings) {
-    const activeProfile = getActiveAutomationProfile(nextSettings);
-    renderProfileOptions(nextSettings.profiles, nextSettings.activeProfileId);
+    const scopedSettings = resolveAutomationSettingsForProfile(
+      nextSettings,
+      nextSettings.activeProfileId
+    );
+    const activeProfile = getActiveAutomationProfile(scopedSettings);
+    settings = scopedSettings;
+    renderProfileOptions(scopedSettings.profiles, scopedSettings.activeProfileId);
     profilePreview.textContent = activeProfile.name;
-    searchModeInput.value = nextSettings.searchMode;
-    startupRegionInput.value = nextSettings.startupRegion;
-    datePostedWindowInput.value = nextSettings.datePostedWindow;
-    searchKeywordsInput.value = nextSettings.searchKeywords;
-    jobLimitInput.value = String(nextSettings.jobPageLimit);
-    autoUploadInput.checked = nextSettings.autoUploadResumes;
-    fullNameInput.value = nextSettings.candidate.fullName;
-    emailInput.value = nextSettings.candidate.email;
-    phoneInput.value = nextSettings.candidate.phone;
-    cityInput.value = nextSettings.candidate.city;
-    stateInput.value = nextSettings.candidate.state;
-    countryInput.value = nextSettings.candidate.country;
-    linkedinInput.value = nextSettings.candidate.linkedinUrl;
-    portfolioInput.value = nextSettings.candidate.portfolioUrl;
-    currentCompanyInput.value = nextSettings.candidate.currentCompany;
-    yearsExperienceInput.value = nextSettings.candidate.yearsExperience;
-    workAuthorizationInput.value = nextSettings.candidate.workAuthorization;
-    needsSponsorshipInput.value = nextSettings.candidate.needsSponsorship;
-    willingToRelocateInput.value = nextSettings.candidate.willingToRelocate;
-    renderRememberedAnswers(nextSettings.answers);
-    renderPreferenceAnswers(nextSettings.preferenceAnswers);
-    resumeNameLabel.textContent = nextSettings.resume ? `${nextSettings.resume.name} (${formatFileSize(nextSettings.resume.size)})` : "No file saved";
-    deleteProfileButton.disabled = Object.keys(nextSettings.profiles).length <= 1;
+    searchModeInput.value = scopedSettings.searchMode;
+    startupRegionInput.value = scopedSettings.startupRegion;
+    datePostedWindowInput.value = scopedSettings.datePostedWindow;
+    searchKeywordsInput.value = scopedSettings.searchKeywords;
+    jobLimitInput.value = String(scopedSettings.jobPageLimit);
+    autoUploadInput.checked = scopedSettings.autoUploadResumes;
+    fullNameInput.value = activeProfile.candidate.fullName;
+    emailInput.value = activeProfile.candidate.email;
+    phoneInput.value = activeProfile.candidate.phone;
+    cityInput.value = activeProfile.candidate.city;
+    stateInput.value = activeProfile.candidate.state;
+    countryInput.value = activeProfile.candidate.country;
+    linkedinInput.value = activeProfile.candidate.linkedinUrl;
+    portfolioInput.value = activeProfile.candidate.portfolioUrl;
+    currentCompanyInput.value = activeProfile.candidate.currentCompany;
+    yearsExperienceInput.value = activeProfile.candidate.yearsExperience;
+    workAuthorizationInput.value = activeProfile.candidate.workAuthorization;
+    needsSponsorshipInput.value = activeProfile.candidate.needsSponsorship;
+    willingToRelocateInput.value = activeProfile.candidate.willingToRelocate;
+    renderRememberedAnswers(activeProfile.answers);
+    renderPreferenceAnswers(activeProfile.preferenceAnswers);
+    resumeNameLabel.textContent = activeProfile.resume ? `${activeProfile.resume.name} (${formatFileSize(activeProfile.resume.size)})` : "No file saved";
+    deleteProfileButton.disabled = Object.keys(scopedSettings.profiles).length <= 1;
     updateOverviewPreview();
   }
   function renderProfileOptions(profiles, activeProfileId) {
@@ -51238,6 +51330,26 @@
   }
   function createEmptySettings() {
     return sanitizeAutomationSettings({});
+  }
+  function parseAutomationStatus(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return void 0;
+    }
+    const candidate = value;
+    const isSupportedSite = candidate.site === "unsupported" || candidate.site === "indeed" || candidate.site === "ziprecruiter" || candidate.site === "dice" || candidate.site === "monster" || candidate.site === "glassdoor" || candidate.site === "startup" || candidate.site === "other_sites";
+    const isSupportedPhase = candidate.phase === "idle" || candidate.phase === "running" || candidate.phase === "waiting_for_verification" || candidate.phase === "completed" || candidate.phase === "error";
+    if (!isSupportedSite || !isSupportedPhase || typeof candidate.message !== "string" || !Number.isFinite(candidate.updatedAt)) {
+      return void 0;
+    }
+    const site = candidate.site;
+    const phase = candidate.phase;
+    const updatedAt = candidate.updatedAt;
+    return {
+      site,
+      phase,
+      message: candidate.message,
+      updatedAt
+    };
   }
   function updateModeUi() {
     const searchMode = getSelectedSearchMode();

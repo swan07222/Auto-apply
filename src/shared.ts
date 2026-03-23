@@ -957,6 +957,27 @@ function getDocumentTextSnapshot(doc: Document): string {
     .slice(0, 8000);
 }
 
+function hasLikelyApplyContinuationSignal(doc: Document): boolean {
+  return Array.from(
+    doc.querySelectorAll<HTMLElement | HTMLInputElement>(
+      "button, a[href], [role='button'], input[type='submit'], input[type='button']"
+    )
+  ).some((element) => {
+    const text =
+      element instanceof HTMLInputElement
+        ? `${element.value} ${element.getAttribute("aria-label") || ""} ${
+            element.getAttribute("title") || ""
+          }`
+        : `${element.innerText || element.textContent || ""} ${
+            element.getAttribute("aria-label") || ""
+          } ${element.getAttribute("title") || ""}`;
+
+    return /\b(apply|continue application|continue to application|apply now|easy apply)\b/.test(
+      text.toLowerCase().replace(/\s+/g, " ").trim()
+    );
+  });
+}
+
 export function detectBrokenPageReason(doc: Document): BrokenPageReason | null {
   const text = getDocumentTextSnapshot(doc);
   if (!text) {
@@ -1036,20 +1057,32 @@ export function detectBrokenPageReason(doc: Document): BrokenPageReason | null {
   const hasLikelyApplicationSignals =
     hasLikelyApplicationFormSignals(doc) ||
     hasLikelyApplicationStepSignals(doc);
+  const hasLikelyApplyContinuationSignals =
+    hasLikelyApplyContinuationSignal(doc);
   const hasLikelyJobOrApplyContentSignal =
     /\bapply\b|\bapplication\b|\bjob\b|\bjob details\b|\bjob description\b/.test(
       bodyText
     ) ||
     /\bjobs?\b|\bcareers?\b|\bapply\b/.test(title);
   const isMinimalPage = bodyText.length > 0 && bodyText.length < 1200;
+  const hasUsablePageSignals =
+    hasLikelyApplicationSignals ||
+    hasLikelyApplyContinuationSignals ||
+    (hasLikelyJobOrApplyContentSignal && !isMinimalPage);
 
   if (
-    hasNotFoundTextSignal ||
-    hasNotFoundTitleSignal ||
+    (hasNotFoundTextSignal || hasNotFoundTitleSignal) &&
+    !hasUsablePageSignals
+  ) {
+    return "not_found";
+  }
+
+  if (
     (
       hasNotFoundUrlSignal &&
       isMinimalPage &&
       !hasLikelyApplicationSignals &&
+      !hasLikelyApplyContinuationSignals &&
       !hasLikelyJobOrApplyContentSignal
     )
   ) {
@@ -1478,8 +1511,7 @@ export async function writeAutomationSettings(
   const queuedWrite = automationSettingsWriteQueue.then(async () => {
     const current = await readAutomationSettings();
     const nextRaw = typeof update === "function" ? update(current) : update;
-    const merged = mergeAutomationSettings(current, nextRaw);
-    const sanitized = sanitizeAutomationSettings(merged);
+    const sanitized = applyAutomationSettingsUpdate(current, nextRaw);
     await chrome.storage.local.set({ [AUTOMATION_SETTINGS_STORAGE_KEY]: sanitized });
     return sanitized;
   });
@@ -1492,7 +1524,7 @@ export async function writeAutomationSettings(
   return queuedWrite;
 }
 
-function mergeAutomationSettings(
+export function applyAutomationSettingsUpdate(
   current: AutomationSettings,
   update: Partial<AutomationSettings> | AutomationSettings
 ): AutomationSettings {

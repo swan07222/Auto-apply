@@ -308,18 +308,8 @@ async function extractMonsterSearchResults(tabId: number): Promise<{
           ...parsedJsonScripts,
         ].filter((value) => value !== undefined && value !== null);
 
-        // FIX: Use Set with object IDs instead of WeakSet to prevent GC issues during traversal
-        const visitedObjectIds = new Set<string>();
+        const visitedObjects = new WeakSet<object>();
         const candidateArrays: unknown[][] = [];
-        let objectIdCounter = 0;
-
-        const getObjectId = (obj: object): string => {
-          const existingId = (obj as { __visitId?: string }).__visitId;
-          if (existingId) return existingId;
-          const newId = `obj_${objectIdCounter++}`;
-          (obj as { __visitId?: string }).__visitId = newId;
-          return newId;
-        };
 
         const visit = (value: unknown, depth: number): void => {
           if (depth > 6 || visitedCount > 800) {
@@ -344,11 +334,10 @@ async function extractMonsterSearchResults(tabId: number): Promise<{
           }
 
           const obj = value as Record<string, unknown>;
-          const objId = getObjectId(obj);
-          if (visitedObjectIds.has(objId)) {
+          if (visitedObjects.has(obj)) {
             return;
           }
-          visitedObjectIds.add(objId);
+          visitedObjects.add(obj);
           visitedCount += 1;
 
           for (const key of preferredKeys) {
@@ -2228,6 +2217,7 @@ function pickUniqueCandidateUrls(
 function deduplicateSpawnItems(items: SpawnTabRequest[], maxJobSlots?: number): SpawnTabRequest[] {
   const seen = new Set<string>();
   const result: SpawnTabRequest[] = [];
+  const resultIndexByKey = new Map<string, number>();
   let totalJobSlots = 0;
 
   for (const item of items) {
@@ -2235,21 +2225,23 @@ function deduplicateSpawnItems(items: SpawnTabRequest[], maxJobSlots?: number): 
     if (!key || seen.has(key)) {
       // If duplicate, aggregate job slots to the first occurrence
       if (key && item.jobSlots && item.jobSlots > 0) {
-        const existing = result.find((r) => getSpawnDedupKey(r.url) === key);
-        if (existing && existing.jobSlots !== undefined) {
-          // FIX: Cap aggregated job slots to prevent exceeding limit
-          const remainingSlots = maxJobSlots !== undefined
-            ? Math.max(0, maxJobSlots - totalJobSlots)
-            : item.jobSlots;
-          existing.jobSlots = Math.min(
-            existing.jobSlots + item.jobSlots,
-            remainingSlots
-          );
+        const existingIndex = resultIndexByKey.get(key);
+        const existing = existingIndex === undefined ? null : result[existingIndex];
+        if (existing) {
+          const currentSlots = Math.max(0, existing.jobSlots ?? 0);
+          const maxAllowedForItem =
+            maxJobSlots !== undefined
+              ? currentSlots + Math.max(0, maxJobSlots - totalJobSlots)
+              : currentSlots + item.jobSlots;
+          const nextSlots = Math.min(currentSlots + item.jobSlots, maxAllowedForItem);
+          totalJobSlots += Math.max(0, nextSlots - currentSlots);
+          existing.jobSlots = nextSlots;
         }
       }
       continue;
     }
     seen.add(key);
+    resultIndexByKey.set(key, result.length);
     const newItem = { ...item };
     if (newItem.jobSlots !== undefined && newItem.jobSlots > 0) {
       totalJobSlots += newItem.jobSlots;

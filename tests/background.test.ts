@@ -454,6 +454,63 @@ describe("background spawn quota handling", () => {
     });
   });
 
+  it("does not mutate Monster page-state objects while traversing nested results", async () => {
+    const chromeMock = createBackgroundChrome({}, vi.fn());
+    const monsterResults = [
+      {
+        canonicalUrl:
+          "https://www.monster.com/job-openings/frontend-engineer-remote--alpha123",
+        normalizedJobPosting: {
+          title: "Frontend Engineer",
+        },
+      },
+    ];
+    const nextData = {
+      props: {
+        pageProps: {
+          searchResults: {
+            jobResults: monsterResults,
+          },
+        },
+      },
+    };
+
+    chrome.scripting.executeScript = vi.fn().mockImplementation(({ func }) => {
+      (window as Window & { __NEXT_DATA__?: unknown }).__NEXT_DATA__ = nextData;
+
+      try {
+        return Promise.resolve([{ result: func() }]);
+      } finally {
+        delete (window as Window & { __NEXT_DATA__?: unknown }).__NEXT_DATA__;
+      }
+    });
+
+    await import("../src/background");
+
+    await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "extract-monster-search-results",
+      },
+      {
+        tab: {
+          id: 42,
+        },
+      }
+    );
+
+    expect("__visitId" in (nextData.props as Record<string, unknown>)).toBe(false);
+    expect(
+      "__visitId" in (nextData.props.pageProps as Record<string, unknown>)
+    ).toBe(false);
+    expect(
+      "__visitId" in (nextData.props.pageProps.searchResults as Record<string, unknown>)
+    ).toBe(false);
+    expect("__visitId" in (monsterResults[0] as Record<string, unknown>)).toBe(
+      false
+    );
+  });
+
   it("claims only the remaining configured number of job openings for a run", async () => {
     const runId = "run-claim-capped";
     const senderTabId = 42;
@@ -748,6 +805,52 @@ describe("background spawn quota handling", () => {
       })
     );
     expect(chrome.tabs.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not let duplicate spawn dedupe shrink an already-assigned job slot budget", async () => {
+    const firstUrl = "https://www.indeed.com/viewjob?jk=alpha123";
+    const createTabMock = vi.fn().mockResolvedValueOnce({ id: 101 });
+    const chromeMock = createBackgroundChrome({}, createTabMock);
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "spawn-tabs",
+        maxJobPages: 3,
+        items: [
+          {
+            url: firstUrl,
+            site: "indeed",
+            stage: "open-apply",
+            jobSlots: 2,
+          },
+          {
+            url: firstUrl,
+            site: "indeed",
+            stage: "open-apply",
+            jobSlots: 2,
+          },
+        ],
+      },
+      {
+        tab: {
+          id: 42,
+          index: 0,
+        },
+      }
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      opened: 1,
+    });
+    expect(chromeMock.local.state["remote-job-search-session:101"]).toEqual(
+      expect.objectContaining({
+        jobSlots: 3,
+      })
+    );
   });
 
   it("marks managed jobs as reviewed when a job tab is opened", async () => {
