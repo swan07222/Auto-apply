@@ -224,4 +224,32 @@ describe("progression helpers", () => {
     await expect(promise).resolves.toBe(true);
     expect(beforeAction).toHaveBeenCalledTimes(1);
   });
+
+  it("waits for a delayed Indeed progression action before giving up on the step", async () => {
+    vi.useFakeTimers();
+
+    document.body.innerHTML = `
+      <form>
+        <input aria-label="First name" value="Ada" />
+      </form>
+    `;
+
+    const promise = waitForReadyProgressionAction("indeed", 2_500);
+
+    window.setTimeout(() => {
+      const button = document.createElement("button");
+      button.textContent = "Continue";
+      button.setAttribute("data-testid", "continue-button");
+      document.body.appendChild(button);
+    }, 1200);
+
+    await vi.advanceTimersByTimeAsync(1500);
+
+    await expect(promise).resolves.toEqual(
+      expect.objectContaining({
+        type: "click",
+        text: "Continue",
+      })
+    );
+  });
 });

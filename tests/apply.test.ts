@@ -257,10 +257,8 @@ describe("application progression actions", () => {
     const action = findMonsterApplyAction();
 
     expect(action).not.toBeNull();
-    expect(action?.type).toBe("navigate");
-    if (action?.type === "navigate") {
-      expect(action.url).toBe("https://company.example.com/careers/apply");
-    }
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Monster apply button");
   });
 
   it("uses Monster shadow-dom apply controls when present", () => {
@@ -272,10 +270,8 @@ describe("application progression actions", () => {
     const action = findMonsterApplyAction();
 
     expect(action).not.toBeNull();
-    expect(action?.type).toBe("navigate");
-    if (action?.type === "navigate") {
-      expect(action.url).toBe("https://company.example.com/job/apply");
-    }
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply now");
   });
 
   it("ignores broken apply.monster URLs and uses the real Monster apply target", () => {
@@ -288,10 +284,8 @@ describe("application progression actions", () => {
     const action = findMonsterApplyAction();
 
     expect(action).not.toBeNull();
-    expect(action?.type).toBe("navigate");
-    if (action?.type === "navigate") {
-      expect(action.url).toBe("https://company.example.com/careers/apply/123");
-    }
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply now");
   });
 
   it("ignores Monster filter controls and prefers the real apply action", () => {
@@ -309,6 +303,63 @@ describe("application progression actions", () => {
     expect(action).not.toBeNull();
     expect(action?.type).toBe("click");
     expect(action?.description).toBe("Apply Now");
+  });
+
+  it("prefers Monster apply actions inside the current job surface over sidebar actions", () => {
+    document.body.innerHTML = `
+      <aside>
+        <button data-testid="svx_applyButton">Apply to recommended job</button>
+      </aside>
+      <main class="job-detail-panel">
+        <section class="job-description">
+          <button data-testid="svx_applyButton">Apply Now</button>
+        </section>
+      </main>
+    `;
+
+    const action = findMonsterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply Now");
+  });
+
+  it("keeps same-site Monster apply targets click-based so site scripts can continue the flow", () => {
+    document.body.innerHTML = `
+      <main class="job-detail-panel">
+        <section class="job-description">
+          <apply-button-wc
+            data-apply-url="https://www.monster.com/job-openings/frontend-engineer-remote--alpha123/apply"
+            aria-label="Apply now"
+          ></apply-button-wc>
+        </section>
+      </main>
+    `;
+
+    const action = findMonsterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply now");
+  });
+
+  it("keeps external Monster apply targets click-based so Monster can own the handoff", () => {
+    document.body.innerHTML = `
+      <main class="job-detail-panel">
+        <section class="job-description">
+          <apply-button-wc
+            data-apply-url="https://company.example.com/careers/apply/123"
+            aria-label="Apply now"
+          ></apply-button-wc>
+        </section>
+      </main>
+    `;
+
+    const action = findMonsterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply now");
   });
 
   it("falls back to clicking a Monster component when only a broken apply URL is exposed", () => {
@@ -447,6 +498,26 @@ describe("application progression actions", () => {
       <button data-testid="apply-button">Apply Now</button>
     `;
     document.body.appendChild(host);
+
+    const action = findZipRecruiterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply Now");
+  });
+
+  it("finds ZipRecruiter apply buttons from job-detail surfaces even when text is only exposed by aria-label metadata", () => {
+    document.body.innerHTML = `
+      <main class="jobDetailsPanel">
+        <button
+          data-testid="apply-button"
+          aria-label="Apply Now"
+        ></button>
+      </main>
+      <aside>
+        <button data-testid="apply-button">Save job</button>
+      </aside>
+    `;
 
     const action = findZipRecruiterApplyAction();
 
@@ -610,6 +681,38 @@ describe("application progression actions", () => {
           </article>
         </section>
       </main>
+    `;
+
+    const action = findDiceApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply for this job");
+  });
+
+  it("ignores Dice nested-result shadow apply controls and keeps the current job action", () => {
+    document.body.innerHTML = `
+      <main class="job-details-pane">
+        <section class="job-description">
+          <h1>Senior Platform Engineer</h1>
+          <div id="detail-host"></div>
+        </section>
+        <section aria-label="Job search results">
+          <dhi-search-card id="nested-card"></dhi-search-card>
+        </section>
+      </main>
+    `;
+
+    const detailHost = document.querySelector("#detail-host") as HTMLElement;
+    const detailShadow = detailHost.attachShadow({ mode: "open" });
+    detailShadow.innerHTML = `
+      <button data-testid="apply-button">Apply for this job</button>
+    `;
+
+    const nestedCard = document.querySelector("#nested-card") as HTMLElement;
+    const nestedShadow = nestedCard.attachShadow({ mode: "open" });
+    nestedShadow.innerHTML = `
+      <button data-testid="apply-button">Apply to similar job</button>
     `;
 
     const action = findDiceApplyAction();

@@ -1588,6 +1588,12 @@ describe("background spawn quota handling", () => {
       createTabMock
     );
 
+    chrome.tabs.get = vi.fn(async (tabId: number) => ({
+      id: tabId,
+      index: 0,
+      url: tabId === 77 ? url : releasedJobUrl,
+    }));
+
     await import("../src/background");
 
     const response = await dispatchBackgroundMessage(
@@ -1772,6 +1778,278 @@ describe("background spawn quota handling", () => {
       expect.objectContaining({
         openedJobPages: 1,
         openedJobKeys: [getJobDedupKey(detailUrl)],
+      })
+    );
+  });
+
+  it("does not let a completed Dice apply session block a fresh apply handoff", async () => {
+    const runId = "run-dice-completed-handoff";
+    const runStateKey = `remote-job-search-run:${runId}`;
+    const detailUrl =
+      "https://www.dice.com/job-detail/b80c4b11-d26a-4de7-aa69-e2ef924e2987";
+    const applyUrl =
+      "https://www.dice.com/job-applications/b80c4b11-d26a-4de7-aa69-e2ef924e2987/start-apply";
+    const createTabMock = vi.fn().mockResolvedValue({ id: 102 });
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 2,
+          openedJobPages: 1,
+          openedJobKeys: [getJobDedupKey(detailUrl)],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          updatedAt: 1,
+        },
+        "remote-job-search-session:42": {
+          tabId: 42,
+          site: "dice",
+          phase: "running",
+          message: "Opening Dice job page...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "open-apply",
+          runId,
+          claimedJobKey: getJobDedupKey(detailUrl),
+          openedUrlKey: getSpawnDedupKey(detailUrl),
+        },
+        "remote-job-search-session:77": {
+          tabId: 77,
+          site: "dice",
+          phase: "completed",
+          message: "Opened apply page in new tab.",
+          updatedAt: 2,
+          shouldResume: false,
+          stage: "open-apply",
+          runId,
+          claimedJobKey: getJobDedupKey(detailUrl),
+          openedUrlKey: getSpawnDedupKey(applyUrl),
+        },
+      },
+      createTabMock
+    );
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "spawn-tabs",
+        items: [
+          {
+            url: applyUrl,
+            site: "dice",
+            stage: "open-apply",
+            runId,
+            active: true,
+            claimedJobKey: getJobDedupKey(detailUrl),
+          },
+        ],
+      },
+      {
+        tab: {
+          id: 42,
+          index: 0,
+          url: detailUrl,
+        },
+      }
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      opened: 1,
+    });
+    expect(createTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: applyUrl,
+        active: true,
+      })
+    );
+  });
+
+  it("does not let a stale missing Dice apply tab block a fresh apply handoff", async () => {
+    const runId = "run-dice-stale-handoff";
+    const runStateKey = `remote-job-search-run:${runId}`;
+    const detailUrl =
+      "https://www.dice.com/job-detail/b80c4b11-d26a-4de7-aa69-e2ef924e2987";
+    const applyUrl =
+      "https://www.dice.com/job-applications/b80c4b11-d26a-4de7-aa69-e2ef924e2987/start-apply";
+    const createTabMock = vi.fn().mockResolvedValue({ id: 103 });
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 2,
+          openedJobPages: 1,
+          openedJobKeys: [getJobDedupKey(detailUrl)],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          updatedAt: 1,
+        },
+        "remote-job-search-session:42": {
+          tabId: 42,
+          site: "dice",
+          phase: "running",
+          message: "Opening Dice job page...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "open-apply",
+          runId,
+          claimedJobKey: getJobDedupKey(detailUrl),
+          openedUrlKey: getSpawnDedupKey(detailUrl),
+        },
+        "remote-job-search-session:77": {
+          tabId: 77,
+          site: "dice",
+          phase: "running",
+          message: "Continuing Dice application in a new tab...",
+          updatedAt: 2,
+          shouldResume: true,
+          stage: "open-apply",
+          runId,
+          claimedJobKey: getJobDedupKey(detailUrl),
+          openedUrlKey: getSpawnDedupKey(applyUrl),
+        },
+      },
+      createTabMock
+    );
+
+    chrome.tabs.get = vi.fn(async (tabId: number) => {
+      if (tabId === 77) {
+        throw new Error("No tab with id: 77");
+      }
+
+      return {
+        id: tabId,
+        index: 0,
+        url: detailUrl,
+      };
+    });
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "spawn-tabs",
+        items: [
+          {
+            url: applyUrl,
+            site: "dice",
+            stage: "open-apply",
+            runId,
+            active: true,
+            claimedJobKey: getJobDedupKey(detailUrl),
+          },
+        ],
+      },
+      {
+        tab: {
+          id: 42,
+          index: 0,
+          url: detailUrl,
+        },
+      }
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      opened: 1,
+    });
+    expect(createTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: applyUrl,
+        active: true,
+      })
+    );
+  });
+
+  it("does not let a live Dice tab on a non-apply URL block a fresh apply handoff", async () => {
+    const runId = "run-dice-live-non-apply";
+    const runStateKey = `remote-job-search-run:${runId}`;
+    const detailUrl =
+      "https://www.dice.com/job-detail/b80c4b11-d26a-4de7-aa69-e2ef924e2987";
+    const applyUrl =
+      "https://www.dice.com/job-applications/b80c4b11-d26a-4de7-aa69-e2ef924e2987/start-apply";
+    const createTabMock = vi.fn().mockResolvedValue({ id: 104 });
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 2,
+          openedJobPages: 1,
+          openedJobKeys: [getJobDedupKey(detailUrl)],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          updatedAt: 1,
+        },
+        "remote-job-search-session:42": {
+          tabId: 42,
+          site: "dice",
+          phase: "running",
+          message: "Opening Dice job page...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "open-apply",
+          runId,
+          claimedJobKey: getJobDedupKey(detailUrl),
+          openedUrlKey: getSpawnDedupKey(detailUrl),
+        },
+        "remote-job-search-session:77": {
+          tabId: 77,
+          site: "dice",
+          phase: "running",
+          message: "Continuing Dice application in a new tab...",
+          updatedAt: 2,
+          shouldResume: true,
+          stage: "open-apply",
+          runId,
+          claimedJobKey: getJobDedupKey(detailUrl),
+          openedUrlKey: getSpawnDedupKey(applyUrl),
+        },
+      },
+      createTabMock
+    );
+
+    chrome.tabs.get = vi.fn(async (tabId: number) => ({
+      id: tabId,
+      index: 0,
+      url: detailUrl,
+    }));
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "spawn-tabs",
+        items: [
+          {
+            url: applyUrl,
+            site: "dice",
+            stage: "open-apply",
+            runId,
+            active: true,
+            claimedJobKey: getJobDedupKey(detailUrl),
+          },
+        ],
+      },
+      {
+        tab: {
+          id: 42,
+          index: 0,
+          url: detailUrl,
+        },
+      }
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      opened: 1,
+    });
+    expect(createTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: applyUrl,
+        active: true,
       })
     );
   });

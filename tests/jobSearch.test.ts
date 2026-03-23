@@ -1374,11 +1374,11 @@ describe("job search candidate filtering", () => {
     expect(shouldFinishJobResultScan(4, 8, 8, 16, "dice")).toBe(false);
     expect(shouldFinishJobResultScan(4, 8, 10, 18, "dice")).toBe(true);
     expect(shouldFinishJobResultScan(5, 5, 0, 2, "dice")).toBe(true);
-    expect(shouldFinishJobResultScan(4, 8, 6, 5, "indeed")).toBe(false);
-    expect(shouldFinishJobResultScan(4, 8, 6, 12, "indeed")).toBe(true);
-    expect(shouldFinishJobResultScan(3, 5, 6, 8, "ziprecruiter")).toBe(false);
-    expect(shouldFinishJobResultScan(3, 5, 7, 14, "ziprecruiter")).toBe(false);
-    expect(shouldFinishJobResultScan(3, 5, 8, 14, "ziprecruiter")).toBe(true);
+    expect(shouldFinishJobResultScan(4, 8, 8, 12, "indeed")).toBe(false);
+    expect(shouldFinishJobResultScan(4, 8, 8, 16, "indeed")).toBe(true);
+    expect(shouldFinishJobResultScan(3, 5, 8, 14, "ziprecruiter")).toBe(false);
+    expect(shouldFinishJobResultScan(3, 5, 9, 18, "ziprecruiter")).toBe(false);
+    expect(shouldFinishJobResultScan(3, 5, 10, 18, "ziprecruiter")).toBe(true);
     expect(shouldFinishJobResultScan(2, 5, 7, 20, "startup")).toBe(false);
     expect(shouldFinishJobResultScan(2, 5, 8, 22, "startup")).toBe(true);
   });

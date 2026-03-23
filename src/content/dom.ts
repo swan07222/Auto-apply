@@ -52,6 +52,27 @@ export function collectDeepMatches<T extends Element>(
   return results;
 }
 
+export function findFirstVisibleElement<T extends HTMLElement>(
+  selectors: string[]
+): T | null {
+  for (const selector of selectors) {
+    let matches: T[];
+    try {
+      matches = Array.from(document.querySelectorAll<T>(selector));
+    } catch {
+      continue;
+    }
+
+    for (const element of matches) {
+      if (isElementVisible(element)) {
+        return element;
+      }
+    }
+  }
+
+  return null;
+}
+
 export function getClickableApplyElement(el: HTMLElement): HTMLElement {
   // FIX: Check shadow DOM first
   if (el.shadowRoot) {

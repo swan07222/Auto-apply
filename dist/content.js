@@ -400,6 +400,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return null;
     }
     const lowerUrl = doc.location?.href?.toLowerCase() ?? "";
+    const title = (doc.title ?? "").toLowerCase();
+    const bodyText = (doc.body?.innerText ?? doc.body?.textContent ?? "").toLowerCase().replace(/\s+/g, " ").trim();
     const hasAccessDeniedSignal = text.includes("access denied") || text.includes("accessdenied");
     const hasXmlErrorSignal = text.includes("this xml file does not appear to have any style information associated with it") || text.includes("<error>") || text.includes("requestid") || text.includes("hostid");
     if (hasAccessDeniedSignal && hasXmlErrorSignal) {
@@ -418,6 +420,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "/unavailable",
       "/error"
     ].some((token) => lowerUrl.includes(token));
+    const hasNotFoundTitleSignal = /\b404\b/.test(title) || [
+      "page not found",
+      "not found",
+      "does not exist",
+      "unavailable"
+    ].some((phrase) => title.includes(phrase));
     const hasNotFoundTextSignal = /\b404\b/.test(text) && /\b(not found|page not found)\b/.test(text) || [
       "page not found",
       "the page you were looking for doesn't exist",
@@ -427,7 +435,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "the page you requested could not be found",
       "requested page could not be found"
     ].some((phrase) => text.includes(phrase));
-    if (hasNotFoundUrlSignal || hasNotFoundTextSignal) {
+    const hasLikelyApplicationSignals = hasLikelyApplicationFormSignals(doc) || hasLikelyApplicationStepSignals(doc);
+    const hasLikelyJobOrApplyContentSignal = /\bapply\b|\bapplication\b|\bjob\b|\bjob details\b|\bjob description\b/.test(
+      bodyText
+    ) || /\bjobs?\b|\bcareers?\b|\bapply\b/.test(title);
+    const isMinimalPage = bodyText.length > 0 && bodyText.length < 1200;
+    if (hasNotFoundTextSignal || hasNotFoundTitleSignal || hasNotFoundUrlSignal && isMinimalPage && !hasLikelyApplicationSignals && !hasLikelyJobOrApplyContentSignal) {
       return "not_found";
     }
     return null;
@@ -2621,6 +2634,345 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return tokens.map((token) => `a[href*='${token}']`);
   }
 
+  // src/content/sites/common.ts
+  var GENERIC_APPLY_CANDIDATE_SELECTORS = [
+    "a[href*='apply']",
+    "a[href*='application']",
+    "a[href]",
+    "a[role='button']",
+    "button",
+    "input[type='submit']",
+    "input[type='button']",
+    "[aria-label*='apply' i]",
+    "[title*='apply' i]",
+    "[data-test*='apply' i]",
+    "[data-test*='application' i]",
+    "[data-testid*='apply']",
+    "[data-automation*='apply']",
+    "[class*='apply']",
+    "[id*='apply']",
+    "form button",
+    "form a[href]"
+  ];
+  var GENERIC_CURRENT_JOB_SURFACE_SELECTORS = [
+    "[data-testid*='job-detail' i]",
+    "[data-testid*='jobDetail' i]",
+    "[data-testid*='job-description' i]",
+    "[data-testid*='jobDescription' i]",
+    "[class*='job-detail']",
+    "[class*='jobDetail']",
+    "[class*='job_description']",
+    "[class*='jobDescription']",
+    "[class*='description']"
+  ];
+  var CAREER_SITE_JOB_LINK_SELECTORS = Array.from(
+    /* @__PURE__ */ new Set([
+      "a[href*='builtin.com/job/']",
+      "a[href*='/jobs/']",
+      "a[href*='/job/']",
+      "a[href*='/role/']",
+      "a[href*='/roles/']",
+      "a[href*='/positions/']",
+      "a[href*='/position/']",
+      "a[href*='/opportunity/']",
+      "a[href*='/opportunities/']",
+      "a[href*='/careers/']",
+      "a[href*='/career/']",
+      "a[href*='/openings/']",
+      "a[href*='/opening/']",
+      "a[href*='/vacancies/']",
+      "a[href*='/vacancy/']",
+      "a[href*='/job-posting/']",
+      "a[href*='/job-postings/']",
+      "a[href*='/requisition/']",
+      "a[href*='/req/']",
+      ...buildHrefContainsSelectors(JOB_DETAIL_ATS_URL_TOKENS)
+    ])
+  );
+  var DICE_NESTED_RESULT_SELECTORS = [
+    "[aria-label='Job search results']",
+    "[data-testid='job-search-results']",
+    "dhi-search-card",
+    "dhi-job-card",
+    "dhi-search-cards-widget"
+  ];
+  var DICE_LIST_CARD_SELECTORS = [
+    "[aria-label='Job search results'] [data-testid='job-card']",
+    "[data-testid='job-search-results'] [data-testid='job-card']",
+    "[data-testid='job-card']",
+    "[aria-label='Job search results'] li",
+    "[aria-label='Job search results'] article",
+    "[data-testid='job-search-results'] li",
+    "[data-testid='job-search-results'] article"
+  ];
+  var DICE_SEARCH_CARD_SELECTORS = [
+    "dhi-search-card",
+    "dhi-job-card",
+    "dhi-search-cards-widget .card",
+    "[data-testid='job-card']",
+    "[data-testid='search-card']",
+    "[class*='search-card']",
+    "[class*='SearchCard']"
+  ];
+
+  // src/content/sites/dice/index.ts
+  var diceSiteProfile = {
+    key: "dice",
+    applyCandidateSelectors: [
+      "[data-cy*='apply']",
+      "[class*='apply']",
+      "apply-button-wc",
+      ...GENERIC_APPLY_CANDIDATE_SELECTORS
+    ],
+    currentJobSurfaceSelectors: [
+      "[data-testid*='job-details' i]",
+      "[data-testid*='jobDetail' i]",
+      "[class*='job-details']",
+      "[class*='jobDetail']",
+      "[class*='job-description']",
+      "[class*='jobDescription']"
+    ],
+    resultCollectionMinimum: 40,
+    resultCollectionMultiplier: 8,
+    resultSurfaceSettleMs: 1400,
+    diceNestedResultSelectors: [...DICE_NESTED_RESULT_SELECTORS],
+    diceListCardSelectors: [...DICE_LIST_CARD_SELECTORS],
+    diceSearchCardSelectors: [...DICE_SEARCH_CARD_SELECTORS]
+  };
+
+  // src/content/sites/glassdoor/index.ts
+  var glassdoorSiteProfile = {
+    key: "glassdoor",
+    applyCandidateSelectors: [
+      "a[data-test*='apply' i]",
+      "button[data-test*='apply' i]",
+      "[data-test*='easy-apply' i]",
+      "[data-test*='employer-site' i]",
+      "[data-test*='apply-button' i]",
+      "[class*='easyApply']",
+      "[class*='easy-apply']",
+      "[class*='applyButton']",
+      "[class*='apply-button']",
+      "a[href*='easyapply' i]",
+      "a[href*='easy-apply' i]",
+      ...GENERIC_APPLY_CANDIDATE_SELECTORS
+    ],
+    currentJobSurfaceSelectors: [
+      "[data-test*='job-details' i]",
+      "[data-test*='jobdetail' i]",
+      "[data-test*='job-description' i]",
+      "[data-test*='jobdescription' i]",
+      "[class*='jobDetails']",
+      "[class*='JobDetails']",
+      "[class*='job-description']",
+      "[class*='jobDescription']"
+    ],
+    resultCollectionMinimum: 25,
+    resultCollectionMultiplier: 4,
+    resultSurfaceSettleMs: 1600
+  };
+
+  // src/content/sites/indeed/index.ts
+  var indeedSiteProfile = {
+    key: "indeed",
+    applyCandidateSelectors: [
+      "a[href*='smartapply.indeed.com']",
+      "a[href*='indeedapply']",
+      "[data-tn-element*='company']",
+      "[data-testid*='company']",
+      "[data-testid*='apply']",
+      "[id*='apply']",
+      "button[id*='apply']",
+      "a[href*='clk']",
+      "#applyButtonLinkContainer a",
+      "[class*='jobsearch-IndeedApplyButton']",
+      "[class*='ia-IndeedApplyButton']",
+      ...GENERIC_APPLY_CANDIDATE_SELECTORS
+    ],
+    currentJobSurfaceSelectors: [...GENERIC_CURRENT_JOB_SURFACE_SELECTORS],
+    resultCollectionMinimum: 25,
+    resultCollectionMultiplier: 4,
+    resultSurfaceSettleMs: 1400
+  };
+
+  // src/content/sites/monster/index.ts
+  var monsterSiteProfile = {
+    key: "monster",
+    applyCandidateSelectors: [
+      "apply-button-wc",
+      "monster-apply-button",
+      "[data-testid*='apply' i]",
+      "[data-testid='svx_applyButton']",
+      "[data-track*='apply' i]",
+      "[data-evt*='apply' i]",
+      "[data-action*='apply' i]",
+      "[data-link*='apply' i]",
+      "[data-url*='apply' i]",
+      "[aria-label*='apply' i]",
+      "[aria-label*='company site' i]",
+      "[class*='apply']",
+      "button[class*='Apply']",
+      "a[class*='Apply']",
+      "[class*='applyBtn']",
+      "[class*='apply-btn']",
+      "[class*='ApplyButton']",
+      "[class*='apply-button']",
+      "[id*='applyBtn']",
+      "[id*='apply-btn']",
+      "[data-testid*='Apply']",
+      "a[href*='/apply']",
+      "a[href*='apply.monster']",
+      "a[href*='job-openings'][href*='apply']",
+      ...GENERIC_APPLY_CANDIDATE_SELECTORS
+    ],
+    currentJobSurfaceSelectors: [
+      "[data-testid*='job-detail' i]",
+      "[data-testid*='jobDetail' i]",
+      "[class*='job-detail']",
+      "[class*='jobDetail']",
+      "[class*='job-description']",
+      "[class*='jobDescription']"
+    ],
+    resultCollectionMinimum: 25,
+    resultCollectionMultiplier: 4,
+    resultSurfaceSettleMs: 1e3
+  };
+
+  // src/content/sites/other_sites/index.ts
+  var otherSitesProfile = {
+    key: "other_sites",
+    applyCandidateSelectors: [
+      "#apply_button",
+      ".application-link",
+      "button[data-qa='btn-apply']",
+      "button[data-qa*='apply']",
+      "a[data-qa*='apply']",
+      "button[data-testid*='apply']",
+      "a[data-testid*='apply']",
+      "button[data-ui='apply-button']",
+      "a[data-ui='apply-button']",
+      ...buildHrefContainsSelectors(ATS_APPLICATION_SELECTOR_TOKENS),
+      "[class*='application']",
+      "[id*='application']",
+      "[class*='apply']",
+      "[class*='easyApply']",
+      "[class*='easy-apply']",
+      "[data-role*='apply' i]",
+      ...GENERIC_APPLY_CANDIDATE_SELECTORS
+    ],
+    currentJobSurfaceSelectors: [...GENERIC_CURRENT_JOB_SURFACE_SELECTORS],
+    resultCollectionMinimum: 30,
+    resultCollectionMultiplier: 6,
+    resultSurfaceSettleMs: 1600,
+    careerJobLinkSelectors: [...CAREER_SITE_JOB_LINK_SELECTORS]
+  };
+
+  // src/content/sites/startup/index.ts
+  var startupSiteProfile = {
+    key: "startup",
+    applyCandidateSelectors: [
+      "#apply_button",
+      ".application-link",
+      "button[data-qa='btn-apply']",
+      "button[data-qa*='apply']",
+      "a[data-qa*='apply']",
+      "button[data-testid*='apply']",
+      "a[data-testid*='apply']",
+      "button[data-ui='apply-button']",
+      "a[data-ui='apply-button']",
+      ...buildHrefContainsSelectors(ATS_APPLICATION_SELECTOR_TOKENS),
+      "[class*='application']",
+      "[id*='application']",
+      "[class*='apply']",
+      ...GENERIC_APPLY_CANDIDATE_SELECTORS
+    ],
+    currentJobSurfaceSelectors: [...GENERIC_CURRENT_JOB_SURFACE_SELECTORS],
+    resultCollectionMinimum: 30,
+    resultCollectionMultiplier: 6,
+    resultSurfaceSettleMs: 1600,
+    careerJobLinkSelectors: [...CAREER_SITE_JOB_LINK_SELECTORS]
+  };
+
+  // src/content/sites/ziprecruiter/index.ts
+  var zipRecruiterSiteProfile = {
+    key: "ziprecruiter",
+    applyCandidateSelectors: [
+      "a[href*='zipapply']",
+      "a[href*='jobapply']",
+      "a[href*='candidate']",
+      "[data-testid*='apply']",
+      "[data-qa*='apply']",
+      "[data-testid*='company-apply']",
+      "[data-qa*='company-apply']",
+      "[class*='apply']",
+      "[class*='quickApply']",
+      "[class*='quick-apply']",
+      "[class*='company-apply']",
+      "[class*='companyApply']",
+      "button[data-testid='apply-button']",
+      "button[data-testid='one-click-apply']",
+      "[class*='apply_button']",
+      "[class*='applyButton']",
+      "a[href*='/apply/']",
+      ...GENERIC_APPLY_CANDIDATE_SELECTORS
+    ],
+    currentJobSurfaceSelectors: [
+      "[data-testid*='job-details' i]",
+      "[data-testid*='jobDetail' i]",
+      "[data-testid*='job-description' i]",
+      "[class*='jobDetails']",
+      "[class*='job-details']",
+      "[class*='jobDescription']",
+      "[class*='job_description']"
+    ],
+    resultCollectionMinimum: 25,
+    resultCollectionMultiplier: 4,
+    resultSurfaceSettleMs: 1400
+  };
+
+  // src/content/sites/index.ts
+  var SITE_PROFILES = {
+    indeed: indeedSiteProfile,
+    ziprecruiter: zipRecruiterSiteProfile,
+    dice: diceSiteProfile,
+    monster: monsterSiteProfile,
+    glassdoor: glassdoorSiteProfile,
+    startup: startupSiteProfile,
+    other_sites: otherSitesProfile
+  };
+  function getSiteContentProfile(site) {
+    return site ? SITE_PROFILES[site] : null;
+  }
+  function getSiteApplyCandidateSelectors(site) {
+    return getSiteContentProfile(site)?.applyCandidateSelectors ?? [];
+  }
+  function getPrimaryCurrentJobSurfaceSelectors(site) {
+    return getSiteContentProfile(site)?.currentJobSurfaceSelectors ?? [];
+  }
+  function getCareerSiteJobLinkSelectors(site) {
+    return SITE_PROFILES[site].careerJobLinkSelectors ?? [];
+  }
+  function getDiceNestedResultSelectors() {
+    return SITE_PROFILES.dice.diceNestedResultSelectors ?? [];
+  }
+  function getDiceListCardSelectors() {
+    return SITE_PROFILES.dice.diceListCardSelectors ?? [];
+  }
+  function getDiceSearchCardSelectors() {
+    return SITE_PROFILES.dice.diceSearchCardSelectors ?? [];
+  }
+  function getSiteJobResultCollectionTargetCount(site, jobPageLimit) {
+    const profile = SITE_PROFILES[site];
+    const normalizedLimit = Math.max(1, Math.floor(jobPageLimit));
+    return Math.max(
+      profile.resultCollectionMinimum,
+      normalizedLimit * profile.resultCollectionMultiplier
+    );
+  }
+  function getSiteResultSurfaceSettleMs(site) {
+    return SITE_PROFILES[site].resultSurfaceSettleMs;
+  }
+
   // src/content/jobSearch.ts
   var JOB_DETAIL_QUERY_PARAMS = [
     "gh_jid",
@@ -2663,29 +3015,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "see all openings",
       "see our jobs",
       "view open roles"
-    ])
-  );
-  var STARTUP_OTHER_SITE_LINK_SELECTORS = Array.from(
-    /* @__PURE__ */ new Set([
-      "a[href*='/jobs/']",
-      "a[href*='/job/']",
-      "a[href*='/role/']",
-      "a[href*='/roles/']",
-      "a[href*='/positions/']",
-      "a[href*='/position/']",
-      "a[href*='/opportunity/']",
-      "a[href*='/opportunities/']",
-      "a[href*='/careers/']",
-      "a[href*='/career/']",
-      "a[href*='/openings/']",
-      "a[href*='/opening/']",
-      "a[href*='/vacancies/']",
-      "a[href*='/vacancy/']",
-      "a[href*='/job-posting/']",
-      "a[href*='/job-postings/']",
-      "a[href*='/requisition/']",
-      "a[href*='/req/']",
-      ...buildHrefContainsSelectors(JOB_DETAIL_ATS_URL_TOKENS)
     ])
   );
   function isElementLike2(value) {
@@ -2946,10 +3275,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
               "section",
               "li"
             ],
-            STARTUP_OTHER_SITE_LINK_SELECTORS,
+            getCareerSiteJobLinkSelectors("other_sites"),
             ["h1", "h2", "h3", "h4", "[data-testid*='title']", "[class*='title']"]
           ),
-          ...collectCandidatesFromAnchors(STARTUP_OTHER_SITE_LINK_SELECTORS),
+          ...collectCandidatesFromAnchors(getCareerSiteJobLinkSelectors("other_sites")),
           ...collectFallbackJobCandidates()
         ]);
     }
@@ -3594,8 +3923,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         minAttemptsBeforeEarlyStop = 18;
         stableThreshold = 10;
       } else {
-        minAttemptsBeforeEarlyStop = site === "indeed" ? 12 : 14;
-        stableThreshold = site === "indeed" ? 6 : 8;
+        minAttemptsBeforeEarlyStop = site === "indeed" ? 16 : 18;
+        stableThreshold = site === "indeed" ? 8 : 10;
       }
     }
     return attempt >= minAttemptsBeforeEarlyStop && stablePasses >= stableThreshold;
@@ -3699,7 +4028,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function collectFocusedAtsLinkCandidates() {
     const candidates = [];
-    for (const selector of STARTUP_OTHER_SITE_LINK_SELECTORS) {
+    for (const selector of getCareerSiteJobLinkSelectors("other_sites")) {
       try {
         for (const anchor of Array.from(document.querySelectorAll(selector))) {
           if (!hasJobDetailAtsUrl(anchor.href)) {
@@ -3722,7 +4051,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const candidates = [];
     const cards = Array.from(
       document.querySelectorAll(
-        "[aria-label='Job search results'] [data-testid='job-card'], [data-testid='job-search-results'] [data-testid='job-card'], [data-testid='job-card'], [aria-label='Job search results'] li, [aria-label='Job search results'] article, [data-testid='job-search-results'] li, [data-testid='job-search-results'] article"
+        getDiceListCardSelectors().join(", ")
       )
     );
     for (const card of cards) {
@@ -3761,7 +4090,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const candidates = [];
     const customElements = Array.from(
       document.querySelectorAll(
-        "dhi-search-card, dhi-job-card, dhi-search-cards-widget .card, [data-testid='job-card'], [data-testid='search-card'], [class*='search-card'], [class*='SearchCard']"
+        getDiceSearchCardSelectors().join(", ")
       )
     );
     for (const card of customElements) {
@@ -4570,52 +4899,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const styles = window.getComputedStyle(element);
     return styles.visibility !== "hidden" && styles.display !== "none" && styles.opacity !== "0";
   }
-  function getPrimaryCurrentJobSurfaceSelectors(site) {
-    switch (site) {
-      case "ziprecruiter":
-        return [
-          "[data-testid*='job-details' i]",
-          "[data-testid*='jobDetail' i]",
-          "[data-testid*='job-description' i]",
-          "[class*='jobDetails']",
-          "[class*='job-details']",
-          "[class*='jobDescription']",
-          "[class*='job_description']"
-        ];
-      case "dice":
-        return [
-          "[data-testid*='job-details' i]",
-          "[data-testid*='jobDetail' i]",
-          "[class*='job-details']",
-          "[class*='jobDetail']",
-          "[class*='job-description']",
-          "[class*='jobDescription']"
-        ];
-      case "glassdoor":
-        return [
-          "[data-test*='job-details' i]",
-          "[data-test*='jobdetail' i]",
-          "[data-test*='job-description' i]",
-          "[data-test*='jobdescription' i]",
-          "[class*='jobDetails']",
-          "[class*='JobDetails']",
-          "[class*='job-description']",
-          "[class*='jobDescription']"
-        ];
-      default:
-        return [
-          "[data-testid*='job-detail' i]",
-          "[data-testid*='jobDetail' i]",
-          "[data-testid*='job-description' i]",
-          "[data-testid*='jobDescription' i]",
-          "[class*='job-detail']",
-          "[class*='jobDetail']",
-          "[class*='job_description']",
-          "[class*='jobDescription']",
-          "[class*='description']"
-        ];
-    }
-  }
   function getFallbackCurrentJobSurfaceSelectors() {
     return [
       "[role='main']",
@@ -4668,11 +4951,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     const clone = element.cloneNode(true);
     const diceNestedResultSelectors = [
-      "[aria-label='Job search results']",
-      "[data-testid='job-search-results']",
-      "dhi-search-card",
-      "dhi-job-card",
-      "dhi-search-cards-widget",
+      ...getDiceNestedResultSelectors(),
       "a[data-testid='job-search-job-detail-link']",
       "a[data-testid='job-search-job-card-link']"
     ];
@@ -4804,7 +5083,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function isDiceNestedResultElement(element, surface) {
     const nestedResultContainer = element.closest(
-      "[aria-label='Job search results'], [data-testid='job-search-results'], dhi-search-card, dhi-job-card, dhi-search-cards-widget"
+      getDiceNestedResultSelectors().join(", ")
     );
     return Boolean(nestedResultContainer && nestedResultContainer !== surface);
   }
@@ -5496,7 +5775,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return best;
   }
   function findMonsterApplyAction() {
-    const elements = collectDeepMatchesFromSelectors(getApplyCandidateSelectors("monster"));
+    const scopedElements = collectMonsterApplyCandidates();
+    const elements = scopedElements.length > 0 ? scopedElements : collectDeepMatchesFromSelectors(getApplyCandidateSelectors("monster"));
     let best;
     let bestDirect;
     for (const element of elements) {
@@ -5526,36 +5806,90 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     best = choosePreferredJobPageAction(best, bestDirect);
     if (!best) {
-      const extractedUrl2 = findExternalApplyUrlInDocument();
-      if (extractedUrl2) {
+      const extractedUrl = findExternalApplyUrlInDocument();
+      if (extractedUrl) {
         return {
           type: "navigate",
-          url: extractedUrl2,
-          description: describeApplyTarget(extractedUrl2, "Apply")
+          url: extractedUrl,
+          description: describeApplyTarget(extractedUrl, "Apply")
         };
       }
       return null;
-    }
-    if (best.url && shouldPreferApplyNavigation(best.url, best.text, "monster")) {
-      return {
-        type: "navigate",
-        url: best.url,
-        description: describeApplyTarget(best.url, best.text)
-      };
-    }
-    const extractedUrl = extractLikelyApplyUrl(best.element) ?? findExternalApplyUrlInDocument();
-    if (extractedUrl && shouldPreferApplyNavigation(extractedUrl, best.text, "monster")) {
-      return {
-        type: "navigate",
-        url: extractedUrl,
-        description: describeApplyTarget(extractedUrl, best.text)
-      };
     }
     return {
       type: "click",
       element: best.element,
       description: best.text || "Monster apply button"
     };
+  }
+  function collectMonsterApplyCandidates() {
+    const selectors = getApplyCandidateSelectors("monster");
+    const surfaces = collectCurrentJobSurfaceMatches("monster");
+    const matches = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const surface of surfaces) {
+      for (const selector of selectors) {
+        let scopedMatches;
+        try {
+          scopedMatches = Array.from(surface.querySelectorAll(selector));
+        } catch {
+          continue;
+        }
+        for (const element of scopedMatches) {
+          if (seen.has(element)) {
+            continue;
+          }
+          seen.add(element);
+          matches.push(element);
+        }
+      }
+      for (const host of collectShadowHosts(surface)) {
+        for (const selector of selectors) {
+          let shadowMatches;
+          try {
+            shadowMatches = Array.from(
+              host.shadowRoot?.querySelectorAll(selector) ?? []
+            );
+          } catch {
+            continue;
+          }
+          for (const element of shadowMatches) {
+            if (seen.has(element)) {
+              continue;
+            }
+            seen.add(element);
+            matches.push(element);
+          }
+        }
+      }
+    }
+    return matches;
+  }
+  function collectCurrentJobSurfaceMatches(site) {
+    const selectors = [
+      ...getPrimaryCurrentJobSurfaceSelectors(site),
+      "[role='main']",
+      "main",
+      "article"
+    ];
+    const matches = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const selector of selectors) {
+      let elements;
+      try {
+        elements = Array.from(document.querySelectorAll(selector));
+      } catch {
+        continue;
+      }
+      for (const element of elements) {
+        if (seen.has(element)) {
+          continue;
+        }
+        seen.add(element);
+        matches.push(element);
+      }
+    }
+    return matches;
   }
   function scoreMonsterApplyCandidate(sourceElement, actionElement, text, url) {
     const attrs = [
@@ -5631,14 +5965,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "a[href*='jobapply']",
       "a[href*='candidate']"
     ];
+    const scopedElements = collectZipRecruiterApplyCandidates(selectors);
+    const candidateElements = scopedElements.length > 0 ? scopedElements : collectDeepMatchesFromSelectors(selectors);
     let best;
     let bestDirect;
-    for (const element of collectDeepMatchesFromSelectors(selectors)) {
+    for (const element of candidateElements) {
       const actionElement = getClickableApplyElement(element);
       if (!isElementVisible(actionElement)) {
         continue;
       }
-      const text = (getActionText(actionElement) || getActionText(element)).trim();
+      const text = cleanText(
+        getActionText(actionElement) || getActionText(element) || actionElement.getAttribute("aria-label") || actionElement.getAttribute("title") || actionElement.getAttribute("value") || actionElement.getAttribute("data-testid") || actionElement.getAttribute("data-qa") || element.getAttribute("aria-label") || element.getAttribute("title") || element.getAttribute("value") || element.getAttribute("data-testid") || element.getAttribute("data-qa") || ""
+      );
       const lower = text.toLowerCase();
       if (!lower || isAppliedStateActionText(lower) || lower.includes("save") || lower.includes("share") || lower.includes("alert") || lower.includes("sign in") || lower.includes("job alert") || lower.includes("my jobs") || lower.includes("saved jobs")) {
         continue;
@@ -5670,6 +6008,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         continue;
       }
       let score = 0;
+      if (hasDirectApplySignal) score += 72;
+      if (hasExplicitCompanyApplySignal) score += 58;
       if (lower === "apply now" || lower === "apply") score += 118;
       if (lower.includes("1-click apply") || lower.includes("1 click apply")) score += 116;
       if (lower.includes("quick apply") || lower.includes("easy apply")) score += 112;
@@ -5702,7 +6042,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         if (!isElementVisible(actionElement)) {
           continue;
         }
-        const text = (getActionText(actionElement) || getActionText(element)).trim();
+        const text = cleanText(
+          getActionText(actionElement) || getActionText(element) || actionElement.getAttribute("aria-label") || actionElement.getAttribute("title") || actionElement.getAttribute("value") || actionElement.getAttribute("data-testid") || actionElement.getAttribute("data-qa") || element.getAttribute("aria-label") || element.getAttribute("title") || element.getAttribute("value") || element.getAttribute("data-testid") || element.getAttribute("data-qa") || ""
+        );
         const lower = text.toLowerCase();
         if (!lower || isAppliedStateActionText(lower) || [
           "save",
@@ -5745,8 +6087,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           continue;
         }
         let score = 0;
-        if (hasDirectApplySignal) score += 75;
-        if (hasExplicitCompanyApplySignal) score += 60;
+        if (hasDirectApplySignal) score += 85;
+        if (hasExplicitCompanyApplySignal) score += 68;
         if (/\bapply\b/.test(lower)) score += 20;
         if (url && shouldPreferApplyNavigation(url, text, "ziprecruiter")) score += 35;
         if (url && /zipapply|jobapply|\/apply\/|candidateexperience/i.test(url)) score += 30;
@@ -5777,6 +6119,48 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       element: best.element,
       description: best.text || "ZipRecruiter apply"
     };
+  }
+  function collectZipRecruiterApplyCandidates(selectors) {
+    const surfaces = collectCurrentJobSurfaceMatches("ziprecruiter");
+    const matches = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const surface of surfaces) {
+      for (const selector of selectors) {
+        let scopedMatches;
+        try {
+          scopedMatches = Array.from(surface.querySelectorAll(selector));
+        } catch {
+          continue;
+        }
+        for (const element of scopedMatches) {
+          if (seen.has(element)) {
+            continue;
+          }
+          seen.add(element);
+          matches.push(element);
+        }
+      }
+      for (const host of collectShadowHosts(surface)) {
+        for (const selector of selectors) {
+          let shadowMatches;
+          try {
+            shadowMatches = Array.from(
+              host.shadowRoot?.querySelectorAll(selector) ?? []
+            );
+          } catch {
+            continue;
+          }
+          for (const element of shadowMatches) {
+            if (seen.has(element)) {
+              continue;
+            }
+            seen.add(element);
+            matches.push(element);
+          }
+        }
+      }
+    }
+    return matches;
   }
   function findGlassdoorApplyAction() {
     const selectors = [
@@ -5941,21 +6325,50 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const selectors = "button[data-testid='apply-button'], a[data-testid='apply-button'], [data-testid*='apply-button'], apply-button-wc, [data-cy='apply-button'], [data-cy*='apply'], [class*='apply-button'], [class*='ApplyButton']";
     const scopedMatches = [];
     const scopedSeen = /* @__PURE__ */ new Set();
-    for (const surface of collectDiceCurrentJobSurfaces()) {
+    const surfaces = collectDiceCurrentJobSurfaces();
+    for (const surface of surfaces) {
       for (const component of Array.from(
         surface.querySelectorAll(selectors)
       )) {
-        if (scopedSeen.has(component) || isDiceNestedResultElement2(component, surface)) {
+        if (scopedSeen.has(component) || isDiceNestedResultContainer(component, surface)) {
           continue;
         }
         scopedSeen.add(component);
         scopedMatches.push(component);
       }
+      for (const host of collectShadowHosts(surface)) {
+        if (isDiceNestedResultContainer(host, surface)) {
+          continue;
+        }
+        for (const component of Array.from(
+          host.shadowRoot?.querySelectorAll(selectors) ?? []
+        )) {
+          if (scopedSeen.has(component)) {
+            continue;
+          }
+          scopedSeen.add(component);
+          scopedMatches.push(component);
+        }
+      }
     }
     if (scopedMatches.length > 0) {
       return scopedMatches;
     }
-    return Array.from(document.querySelectorAll(selectors));
+    const fallbackMatches = Array.from(document.querySelectorAll(selectors));
+    for (const host of collectShadowHosts(document.body ?? document.documentElement)) {
+      if (isDiceNestedResultContainer(host)) {
+        continue;
+      }
+      for (const component of Array.from(
+        host.shadowRoot?.querySelectorAll(selectors) ?? []
+      )) {
+        if (!scopedSeen.has(component)) {
+          scopedSeen.add(component);
+          fallbackMatches.push(component);
+        }
+      }
+    }
+    return fallbackMatches.filter((component) => !isDiceNestedResultContainer(component));
   }
   function collectDiceCurrentJobSurfaces() {
     const selectors = [
@@ -5988,11 +6401,27 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     return surfaces;
   }
-  function isDiceNestedResultElement2(element, surface) {
-    const nestedResultContainer = element.closest(
-      "[aria-label='Job search results'], [data-testid='job-search-results'], dhi-search-card, dhi-job-card, dhi-search-cards-widget"
-    );
-    return Boolean(nestedResultContainer && nestedResultContainer !== surface);
+  function collectShadowHosts(root) {
+    const hosts = [];
+    if (root instanceof HTMLElement && root.shadowRoot) {
+      hosts.push(root);
+    }
+    for (const element of Array.from(root.querySelectorAll("*"))) {
+      if (element.shadowRoot) {
+        hosts.push(element);
+      }
+    }
+    return hosts;
+  }
+  function isDiceNestedResultContainer(element, surface) {
+    const nestedResultContainer = element.matches(getDiceNestedResultSelectors().join(", ")) ? element : element.closest(getDiceNestedResultSelectors().join(", "));
+    if (!nestedResultContainer) {
+      return false;
+    }
+    if (!surface) {
+      return true;
+    }
+    return nestedResultContainer !== surface;
   }
   function extractDiceInlineApplyUrl() {
     const sources = [
@@ -6650,109 +7079,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "form button",
       "form a[href]"
     ];
-    switch (site) {
-      case "indeed":
-        return [
-          "a[href*='smartapply.indeed.com']",
-          "a[href*='indeedapply']",
-          "[data-tn-element*='company']",
-          "[data-testid*='company']",
-          "[data-testid*='apply']",
-          "[id*='apply']",
-          "button[id*='apply']",
-          "a[href*='clk']",
-          "#applyButtonLinkContainer a",
-          "[class*='jobsearch-IndeedApplyButton']",
-          "[class*='ia-IndeedApplyButton']",
-          ...generic
-        ];
-      case "ziprecruiter":
-        return [
-          "a[href*='zipapply']",
-          "a[href*='jobapply']",
-          "a[href*='candidate']",
-          "[data-testid*='apply']",
-          "[data-qa*='apply']",
-          "[data-testid*='company-apply']",
-          "[data-qa*='company-apply']",
-          "[class*='apply']",
-          "[class*='quickApply']",
-          "[class*='quick-apply']",
-          "[class*='company-apply']",
-          "[class*='companyApply']",
-          "button[data-testid='apply-button']",
-          "button[data-testid='one-click-apply']",
-          "[class*='apply_button']",
-          "[class*='applyButton']",
-          "a[href*='/apply/']",
-          ...generic
-        ];
-      case "dice":
-        return ["[data-cy*='apply']", "[class*='apply']", "apply-button-wc", ...generic];
-      case "monster":
-        return [
-          "apply-button-wc",
-          "monster-apply-button",
-          "[data-testid*='apply' i]",
-          "[data-testid='svx_applyButton']",
-          "[data-track*='apply' i]",
-          "[data-evt*='apply' i]",
-          "[data-action*='apply' i]",
-          "[data-link*='apply' i]",
-          "[data-url*='apply' i]",
-          "[aria-label*='apply' i]",
-          "[aria-label*='company site' i]",
-          "[class*='apply']",
-          "button[class*='Apply']",
-          "a[class*='Apply']",
-          "[class*='applyBtn']",
-          "[class*='apply-btn']",
-          "[class*='ApplyButton']",
-          "[class*='apply-button']",
-          "[id*='applyBtn']",
-          "[id*='apply-btn']",
-          "[data-testid*='Apply']",
-          "a[href*='/apply']",
-          "a[href*='apply.monster']",
-          "a[href*='job-openings'][href*='apply']",
-          ...generic
-        ];
-      case "glassdoor":
-        return [
-          "a[data-test*='apply' i]",
-          "button[data-test*='apply' i]",
-          "[data-test*='easy-apply' i]",
-          "[data-test*='employer-site' i]",
-          "[data-test*='apply-button' i]",
-          "[class*='easyApply']",
-          "[class*='easy-apply']",
-          "[class*='applyButton']",
-          "[class*='apply-button']",
-          "a[href*='easyapply' i]",
-          "a[href*='easy-apply' i]",
-          ...generic
-        ];
-      case "startup":
-      case "other_sites":
-        return [
-          "#apply_button",
-          ".application-link",
-          "button[data-qa='btn-apply']",
-          "button[data-qa*='apply']",
-          "a[data-qa*='apply']",
-          "button[data-testid*='apply']",
-          "a[data-testid*='apply']",
-          "button[data-ui='apply-button']",
-          "a[data-ui='apply-button']",
-          ...buildHrefContainsSelectors(ATS_APPLICATION_SELECTOR_TOKENS),
-          "[class*='application']",
-          "[id*='application']",
-          "[class*='apply']",
-          ...generic
-        ];
-      default:
-        return generic;
-    }
+    const siteSelectors = getSiteApplyCandidateSelectors(site);
+    return siteSelectors.length > 0 ? siteSelectors : generic;
   }
   function describeApplyTarget(url, text) {
     if (url.toLowerCase().includes("smartapply.indeed.com")) {
@@ -7215,17 +7543,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     await waitForDomSettle(700, 250);
   }
   function getJobResultCollectionTargetCount(site, jobPageLimit) {
-    const normalizedLimit = Math.max(1, Math.floor(jobPageLimit));
-    if (site === "startup" || site === "other_sites") {
-      return Math.max(30, normalizedLimit * 6);
-    }
-    if (site === "dice") {
-      return Math.max(40, normalizedLimit * 8);
-    }
-    if (isJobBoardSite(site)) {
-      return Math.max(25, normalizedLimit * 4);
-    }
-    return normalizedLimit;
+    return getSiteJobResultCollectionTargetCount(site, jobPageLimit);
   }
   async function waitForJobDetailUrls({
     site,
@@ -7383,8 +7701,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return merged;
   }
   async function waitForResultSurfaceSettle(site) {
-    const maxWaitMs = site === "startup" || site === "other_sites" || site === "glassdoor" ? 1600 : site === "indeed" || site === "dice" || site === "ziprecruiter" ? 1400 : 1e3;
-    await waitForDomSettle(maxWaitMs, 350);
+    await waitForDomSettle(getSiteResultSurfaceSettleMs(site), 350);
   }
   async function waitForDomSettle(maxWaitMs, quietWindowMs) {
     const observer = new MutationObserver(() => {
@@ -8172,6 +8489,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   function shouldKeepJobPageOpen(site) {
     return shouldKeepManagedJobPageOpen(site);
   }
+  function shouldPreferMonsterClickContinuation(site, url) {
+    if (site !== "monster" || !url) {
+      return false;
+    }
+    try {
+      const parsed = new URL(url, window.location.href);
+      return parsed.hostname.toLowerCase().includes("monster");
+    } catch {
+      return false;
+    }
+  }
   async function openApplicationTargetInNewTab(url, site, description) {
     if (!await ensureApplicationTargetReachable(url, site, description)) {
       return;
@@ -8191,6 +8519,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
     ]);
     if (response.opened <= 0) {
+      if (site === "dice") {
+        updateStatus(
+          "running",
+          `${description} looked blocked by a stale handoff. Opening it in this tab instead...`,
+          true,
+          "open-apply"
+        );
+        navigateCurrentTab(url);
+        return;
+      }
       updateStatus(
         "completed",
         `${description} is already open in another tab. Keeping this job page open.`,
@@ -8977,7 +9315,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const anchorElement = action.element.closest("a") ?? (action.element instanceof HTMLAnchorElement ? action.element : null);
     if (anchorElement?.href) {
       const href = normalizeUrl(anchorElement.href);
-      if (href && href !== urlBeforeClick && !href.startsWith("javascript:") && shouldPreferApplyNavigation(
+      if (href && href !== urlBeforeClick && !href.startsWith("javascript:") && !shouldPreferMonsterClickContinuation(site, href) && shouldPreferApplyNavigation(
         href,
         getActionText(action.element),
         site
@@ -9008,6 +9346,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             }
           ]);
           if (response.opened <= 0) {
+            if (site === "dice") {
+              updateStatus(
+                "running",
+                "New-tab handoff looked stale. Opening the application in this tab instead...",
+                true,
+                "open-apply"
+              );
+              navigateCurrentTab(href);
+              return;
+            }
             updateStatus(
               "completed",
               "Apply page is already open in another tab.",
@@ -9156,6 +9504,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     let retryAction = null;
     if (site === "monster") {
       retryAction = findMonsterApplyAction();
+    } else if (site === "ziprecruiter") {
+      retryAction = findZipRecruiterApplyAction();
     } else if (site === "dice") {
       retryAction = findDiceApplyAction() ?? findApplyAction(site, "job-page");
     } else {
@@ -9486,6 +9836,23 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         noProgressCount = 0;
         await sleep(site === "indeed" ? 1500 : 1e3);
         continue;
+      }
+      if (site === "indeed" || site === "ziprecruiter") {
+        const delayedProgression = await waitForReadyProgressionAction2(
+          site,
+          site === "indeed" ? 2500 : 2e3
+        );
+        if (delayedProgression) {
+          noProgressCount = 0;
+          const shouldContinue = await handleProgressionAction2(
+            site,
+            delayedProgression
+          );
+          if (shouldContinue) {
+            continue;
+          }
+          return;
+        }
       }
       noProgressCount += 1;
       if (noProgressCount >= 4) break;

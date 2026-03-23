@@ -437,6 +437,22 @@ function shouldKeepJobPageOpen(site: SiteKey | "unsupported"): boolean {
   return shouldKeepManagedJobPageOpen(site);
 }
 
+function shouldPreferMonsterClickContinuation(
+  site: SiteKey,
+  url: string | null | undefined
+): boolean {
+  if (site !== "monster" || !url) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(url, window.location.href);
+    return parsed.hostname.toLowerCase().includes("monster");
+  } catch {
+    return false;
+  }
+}
+
 async function openApplicationTargetInNewTab(
   url: string,
   site: SiteKey,
@@ -462,6 +478,17 @@ async function openApplicationTargetInNewTab(
   ]);
 
   if (response.opened <= 0) {
+    if (site === "dice") {
+      updateStatus(
+        "running",
+        `${description} looked blocked by a stale handoff. Opening it in this tab instead...`,
+        true,
+        "open-apply"
+      );
+      navigateCurrentTab(url);
+      return;
+    }
+
     updateStatus(
       "completed",
       `${description} is already open in another tab. Keeping this job page open.`,
@@ -1467,6 +1494,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       href &&
       href !== urlBeforeClick &&
       !href.startsWith("javascript:") &&
+      !shouldPreferMonsterClickContinuation(site, href) &&
       shouldPreferApplyNavigation(
         href,
         getActionText(action.element),
@@ -1500,6 +1528,17 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
           },
         ]);
         if (response.opened <= 0) {
+          if (site === "dice") {
+            updateStatus(
+              "running",
+              "New-tab handoff looked stale. Opening the application in this tab instead...",
+              true,
+              "open-apply"
+            );
+            navigateCurrentTab(href);
+            return;
+          }
+
           updateStatus(
             "completed",
             "Apply page is already open in another tab.",
@@ -1669,6 +1708,8 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   let retryAction: ApplyAction | null = null;
   if (site === "monster") {
     retryAction = findMonsterApplyAction();
+  } else if (site === "ziprecruiter") {
+    retryAction = findZipRecruiterApplyAction();
   } else if (site === "dice") {
     retryAction = findDiceApplyAction() ?? findApplyAction(site, "job-page");
   } else {
@@ -2071,6 +2112,24 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       noProgressCount = 0;
       await sleep(site === "indeed" ? 1_500 : 1_000);
       continue;
+    }
+
+    if (site === "indeed" || site === "ziprecruiter") {
+      const delayedProgression = await waitForReadyProgressionAction(
+        site,
+        site === "indeed" ? 2_500 : 2_000
+      );
+      if (delayedProgression) {
+        noProgressCount = 0;
+        const shouldContinue = await handleProgressionAction(
+          site,
+          delayedProgression
+        );
+        if (shouldContinue) {
+          continue;
+        }
+        return;
+      }
     }
 
     noProgressCount += 1;

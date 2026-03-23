@@ -7,11 +7,16 @@ import { cleanText, normalizeChoiceText } from "./text";
 import { normalizeUrl } from "./dom";
 import {
   CAREER_LISTING_TEXT_PATTERNS,
-  JOB_DETAIL_ATS_URL_TOKENS,
-  buildHrefContainsSelectors,
   hasJobDetailAtsUrl,
   hasKnownAtsHost,
 } from "./sitePatterns";
+import {
+  getCareerSiteJobLinkSelectors,
+  getDiceListCardSelectors,
+  getDiceNestedResultSelectors,
+  getDiceSearchCardSelectors,
+  getPrimaryCurrentJobSurfaceSelectors,
+} from "./sites";
 
 const JOB_DETAIL_QUERY_PARAMS = [
   "gh_jid",
@@ -56,30 +61,6 @@ const CAREER_LISTING_CTA_TEXTS = Array.from(
     "see all openings",
     "see our jobs",
     "view open roles",
-  ])
-);
-
-const STARTUP_OTHER_SITE_LINK_SELECTORS = Array.from(
-  new Set([
-    "a[href*='/jobs/']",
-    "a[href*='/job/']",
-    "a[href*='/role/']",
-    "a[href*='/roles/']",
-    "a[href*='/positions/']",
-    "a[href*='/position/']",
-    "a[href*='/opportunity/']",
-    "a[href*='/opportunities/']",
-    "a[href*='/careers/']",
-    "a[href*='/career/']",
-    "a[href*='/openings/']",
-    "a[href*='/opening/']",
-    "a[href*='/vacancies/']",
-    "a[href*='/vacancy/']",
-    "a[href*='/job-posting/']",
-    "a[href*='/job-postings/']",
-    "a[href*='/requisition/']",
-    "a[href*='/req/']",
-    ...buildHrefContainsSelectors(JOB_DETAIL_ATS_URL_TOKENS),
   ])
 );
 
@@ -350,10 +331,10 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "section",
             "li",
           ],
-          STARTUP_OTHER_SITE_LINK_SELECTORS,
+          getCareerSiteJobLinkSelectors("other_sites"),
           ["h1", "h2", "h3", "h4", "[data-testid*='title']", "[class*='title']"]
         ),
-        ...collectCandidatesFromAnchors(STARTUP_OTHER_SITE_LINK_SELECTORS),
+        ...collectCandidatesFromAnchors(getCareerSiteJobLinkSelectors("other_sites")),
         ...collectFallbackJobCandidates(),
       ]);
 
@@ -1354,8 +1335,8 @@ export function shouldFinishJobResultScan(
       minAttemptsBeforeEarlyStop = 18;
       stableThreshold = 10;
     } else {
-      minAttemptsBeforeEarlyStop = site === "indeed" ? 12 : 14;
-      stableThreshold = site === "indeed" ? 6 : 8;
+      minAttemptsBeforeEarlyStop = site === "indeed" ? 16 : 18;
+      stableThreshold = site === "indeed" ? 8 : 10;
     }
   }
 
@@ -1494,7 +1475,7 @@ function collectCandidatesFromAnchors(selectors: string[]): JobCandidate[] {
 function collectFocusedAtsLinkCandidates(): JobCandidate[] {
   const candidates: JobCandidate[] = [];
 
-  for (const selector of STARTUP_OTHER_SITE_LINK_SELECTORS) {
+  for (const selector of getCareerSiteJobLinkSelectors("other_sites")) {
     try {
       for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>(selector))) {
         if (!hasJobDetailAtsUrl(anchor.href)) {
@@ -1525,7 +1506,7 @@ function collectDiceListItemCandidates(): JobCandidate[] {
   const candidates: JobCandidate[] = [];
   const cards = Array.from(
     document.querySelectorAll<HTMLElement>(
-      "[aria-label='Job search results'] [data-testid='job-card'], [data-testid='job-search-results'] [data-testid='job-card'], [data-testid='job-card'], [aria-label='Job search results'] li, [aria-label='Job search results'] article, [data-testid='job-search-results'] li, [data-testid='job-search-results'] article"
+      getDiceListCardSelectors().join(", ")
     )
   );
 
@@ -1580,7 +1561,7 @@ function collectDiceSearchCardCandidates(): JobCandidate[] {
   // Dice uses custom elements like dhi-search-card, dhi-job-card, etc.
   const customElements = Array.from(
     document.querySelectorAll<HTMLElement>(
-      "dhi-search-card, dhi-job-card, dhi-search-cards-widget .card, [data-testid='job-card'], [data-testid='search-card'], [class*='search-card'], [class*='SearchCard']"
+      getDiceSearchCardSelectors().join(", ")
     )
   );
 
@@ -2741,53 +2722,6 @@ function isReadableSurfaceElement(element: HTMLElement): boolean {
   );
 }
 
-function getPrimaryCurrentJobSurfaceSelectors(site: SiteKey | null): string[] {
-  switch (site) {
-    case "ziprecruiter":
-      return [
-        "[data-testid*='job-details' i]",
-        "[data-testid*='jobDetail' i]",
-        "[data-testid*='job-description' i]",
-        "[class*='jobDetails']",
-        "[class*='job-details']",
-        "[class*='jobDescription']",
-        "[class*='job_description']",
-      ];
-    case "dice":
-      return [
-        "[data-testid*='job-details' i]",
-        "[data-testid*='jobDetail' i]",
-        "[class*='job-details']",
-        "[class*='jobDetail']",
-        "[class*='job-description']",
-        "[class*='jobDescription']",
-      ];
-    case "glassdoor":
-      return [
-        "[data-test*='job-details' i]",
-        "[data-test*='jobdetail' i]",
-        "[data-test*='job-description' i]",
-        "[data-test*='jobdescription' i]",
-        "[class*='jobDetails']",
-        "[class*='JobDetails']",
-        "[class*='job-description']",
-        "[class*='jobDescription']",
-      ];
-    default:
-      return [
-        "[data-testid*='job-detail' i]",
-        "[data-testid*='jobDetail' i]",
-        "[data-testid*='job-description' i]",
-        "[data-testid*='jobDescription' i]",
-        "[class*='job-detail']",
-        "[class*='jobDetail']",
-        "[class*='job_description']",
-        "[class*='jobDescription']",
-        "[class*='description']",
-      ];
-  }
-}
-
 function getFallbackCurrentJobSurfaceSelectors(): string[] {
   return [
     "[role='main']",
@@ -2860,11 +2794,7 @@ function getCurrentJobSurfaceText(
 
   const clone = element.cloneNode(true) as HTMLElement;
   const diceNestedResultSelectors = [
-    "[aria-label='Job search results']",
-    "[data-testid='job-search-results']",
-    "dhi-search-card",
-    "dhi-job-card",
-    "dhi-search-cards-widget",
+    ...getDiceNestedResultSelectors(),
     "a[data-testid='job-search-job-detail-link']",
     "a[data-testid='job-search-job-card-link']",
   ];
@@ -3033,7 +2963,7 @@ function isDiceNestedResultElement(
   surface: HTMLElement
 ): boolean {
   const nestedResultContainer = element.closest<HTMLElement>(
-    "[aria-label='Job search results'], [data-testid='job-search-results'], dhi-search-card, dhi-job-card, dhi-search-cards-widget"
+    getDiceNestedResultSelectors().join(", ")
   );
 
   return Boolean(nestedResultContainer && nestedResultContainer !== surface);

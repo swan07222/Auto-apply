@@ -464,6 +464,21 @@ describe("shared automation target logic", () => {
     expect(isProbablyHumanVerificationPage(document)).toBe(false);
   });
 
+  it("does not treat a normal Monster page as not-found just because the URL contains an error token", () => {
+    window.history.replaceState({}, "", "/job-openings/frontend-engineer/error-tracker");
+    document.title = "Monster Jobs";
+    document.body.innerHTML = `
+      <main>
+        <header>Employers / Post Job</header>
+        <h1>Frontend Engineer</h1>
+        <p>Apply for this role.</p>
+        <button>Apply Now</button>
+      </main>
+    `;
+
+    expect(detectBrokenPageReason(document)).toBeNull();
+  });
+
   it("does not treat application forms with embedded captcha markers as verification pages", () => {
     document.title = "Apply";
     document.body.innerHTML = `

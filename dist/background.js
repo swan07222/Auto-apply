@@ -1166,7 +1166,8 @@
       resumeKind: message.resumeKind ?? existingSession?.resumeKind,
       profileId: message.profileId ?? existingSession?.profileId,
       controllerFrameId,
-      claimedJobKey: existingSession?.claimedJobKey
+      claimedJobKey: existingSession?.claimedJobKey,
+      openedUrlKey: existingSession?.openedUrlKey
     };
     await setSession(nextSession);
     if (isFinal && nextSession.runId && isRateLimitedSession(nextSession)) {
@@ -1224,7 +1225,7 @@
     );
     childSession.jobSlots = openerSession.jobSlots;
     childSession.claimedJobKey = openerSession.claimedJobKey;
-    childSession.openedUrlKey = openerSession.openedUrlKey;
+    childSession.openedUrlKey = getSpawnDedupKey(getTabUrl(tab)) ?? openerSession.openedUrlKey;
     await setSession(childSession);
     try {
       await chrome.tabs.sendMessage(openerTabId, {
@@ -1982,6 +1983,43 @@
       (value) => typeof value === "object" && value !== null && !Array.isArray(value) && "runId" in value && value.runId === runId
     );
   }
+  async function listLiveSessionsForRunId(runId) {
+    const sessions = await listSessionsForRunId(runId);
+    const liveSessions = [];
+    for (const session of sessions) {
+      const liveTab = await getTabSafely(session.tabId);
+      if (liveTab) {
+        liveSessions.push(session);
+        continue;
+      }
+      await removeSession(session.tabId);
+    }
+    return liveSessions;
+  }
+  async function listLiveRunSessionInfos(runId) {
+    const sessions = await listLiveSessionsForRunId(runId);
+    const infos = [];
+    for (const session of sessions) {
+      const liveTab = await getTabSafely(session.tabId);
+      if (!liveTab) {
+        await removeSession(session.tabId);
+        continue;
+      }
+      const liveUrl = getTabUrl(liveTab);
+      const urlKey = getSpawnDedupKey(liveUrl) ?? session.openedUrlKey ?? "";
+      const applyTarget = isLikelyManagedApplyTarget(
+        liveUrl || session.openedUrlKey || "",
+        session.site
+      );
+      infos.push({
+        session,
+        liveUrl,
+        urlKey,
+        isApplyTarget: applyTarget
+      });
+    }
+    return infos;
+  }
   async function resumePendingJobSessionsForRunId(runId) {
     const sessionsToResume = await withRunLock(runId, async () => {
       const runState = await getRunState(runId);
@@ -2234,17 +2272,21 @@
       let existingClaimedKeys = existingClaimedKeysByRunId.get(item.runId);
       let existingApplyClaimedKeys = existingApplyClaimedKeysByRunId.get(item.runId);
       if (!existingUrlKeys || !existingClaimedKeys || !existingApplyClaimedKeys) {
-        const existingSessions = await listSessionsForRunId(item.runId);
+        const existingSessions = await listLiveRunSessionInfos(item.runId);
         existingUrlKeys = new Set(
-          existingSessions.filter((session) => session.phase !== "error").map((session) => session.openedUrlKey || "").filter(Boolean)
+          existingSessions.filter(
+            ({ session }) => session.phase !== "error" && session.phase !== "completed"
+          ).map(({ urlKey: urlKey2 }) => urlKey2).filter(Boolean)
         );
         existingClaimedKeys = new Set(
-          existingSessions.filter((session) => session.phase !== "error").map((session) => session.claimedJobKey || "").filter(Boolean)
+          existingSessions.filter(
+            ({ session }) => session.phase !== "error" && session.phase !== "completed"
+          ).map(({ session }) => session.claimedJobKey || "").filter(Boolean)
         );
         existingApplyClaimedKeys = new Set(
-          existingSessions.filter((session) => session.phase !== "error").filter(
-            (session) => isLikelyManagedApplyTarget(session.openedUrlKey || "", session.site)
-          ).map((session) => session.claimedJobKey || "").filter(Boolean)
+          existingSessions.filter(
+            ({ session }) => session.phase !== "error" && session.phase !== "completed"
+          ).filter(({ isApplyTarget }) => isApplyTarget).map(({ session }) => session.claimedJobKey || "").filter(Boolean)
         );
         existingUrlKeysByRunId.set(item.runId, existingUrlKeys);
         existingClaimedKeysByRunId.set(item.runId, existingClaimedKeys);
@@ -2347,7 +2389,11 @@
   }
   async function getTabSafely(tabId) {
     try {
-      return await chrome.tabs.get(tabId);
+      const tab = await chrome.tabs.get(tabId);
+      if (tab && typeof tab === "object") {
+        return tab;
+      }
+      return { id: tabId };
     } catch {
       return null;
     }

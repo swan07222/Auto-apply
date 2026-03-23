@@ -5,7 +5,6 @@ import {
   SiteKey,
   getJobDedupKey,
   getSiteLabel,
-  isJobBoardSite,
   sleep,
 } from "../shared";
 import {
@@ -30,6 +29,10 @@ import {
   PRIORITY_CAREER_LISTING_URL_PATTERNS,
   includesAnyToken,
 } from "./sitePatterns";
+import {
+  getSiteJobResultCollectionTargetCount,
+  getSiteResultSurfaceSettleMs,
+} from "./sites";
 import { cleanText } from "./text";
 
 type SearchResultsPageAction = {
@@ -82,21 +85,7 @@ export function getJobResultCollectionTargetCount(
   site: SiteKey,
   jobPageLimit: number
 ): number {
-  const normalizedLimit = Math.max(1, Math.floor(jobPageLimit));
-
-  if (site === "startup" || site === "other_sites") {
-    return Math.max(30, normalizedLimit * 6);
-  }
-
-  if (site === "dice") {
-    return Math.max(40, normalizedLimit * 8);
-  }
-
-  if (isJobBoardSite(site)) {
-    return Math.max(25, normalizedLimit * 4);
-  }
-
-  return normalizedLimit;
+  return getSiteJobResultCollectionTargetCount(site, jobPageLimit);
 }
 
 export async function waitForJobDetailUrls({
@@ -303,14 +292,7 @@ function mergeJobUrlLists(...lists: string[][]): string[] {
 }
 
 async function waitForResultSurfaceSettle(site: SiteKey): Promise<void> {
-  const maxWaitMs =
-    site === "startup" || site === "other_sites" || site === "glassdoor"
-      ? 1_600
-      : site === "indeed" || site === "dice" || site === "ziprecruiter"
-        ? 1_400
-        : 1_000;
-
-  await waitForDomSettle(maxWaitMs, 350);
+  await waitForDomSettle(getSiteResultSurfaceSettleMs(site), 350);
 }
 
 async function waitForDomSettle(

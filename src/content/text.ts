@@ -117,3 +117,52 @@ export function looksLikeQuestion(text: string): boolean {
   return questionStarters.some((starter) => normalized.startsWith(starter));
 }
 
+export function truncateText(value: string, maxLength: number): string {
+  const text = cleanText(value);
+  const safeLength = Math.max(0, Math.floor(maxLength));
+
+  if (!text || safeLength <= 0 || text.length <= safeLength) {
+    return text;
+  }
+
+  if (safeLength <= 3) {
+    return ".".repeat(Math.max(0, safeLength));
+  }
+
+  const visibleLength = safeLength - 3;
+  const truncated = text.slice(0, visibleLength).trimEnd();
+  const boundary = truncated.lastIndexOf(" ");
+  const preferred =
+    boundary >= visibleLength - 2 ? truncated.slice(0, boundary) : truncated;
+
+  return `${preferred.trimEnd()}...`;
+}
+
+export function extractNumber(value: string): number | null {
+  const match = cleanText(value).match(/-?\d[\d,]*(?:\.\d+)?/);
+  if (!match) {
+    return null;
+  }
+
+  const numeric = Number.parseFloat(match[0].replace(/,/g, ""));
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+export function extractEmail(value: string): string | null {
+  return (
+    cleanText(value).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ??
+    null
+  );
+}
+
+export function extractPhone(value: string): string | null {
+  const match = cleanText(value).match(
+    /(?:\+\d{1,2}\s*)?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}/
+  );
+  return match?.[0] ?? null;
+}
+
+export function extractUrl(value: string): string | null {
+  return cleanText(value).match(/https?:\/\/[^\s"'<>]+/i)?.[0] ?? null;
+}
+

@@ -963,6 +963,11 @@ export function detectBrokenPageReason(doc: Document): BrokenPageReason | null {
     return null;
   }
   const lowerUrl = doc.location?.href?.toLowerCase() ?? "";
+  const title = (doc.title ?? "").toLowerCase();
+  const bodyText = (doc.body?.innerText ?? doc.body?.textContent ?? "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
 
   const hasAccessDeniedSignal =
     text.includes("access denied") ||
@@ -1008,6 +1013,14 @@ export function detectBrokenPageReason(doc: Document): BrokenPageReason | null {
     "/unavailable",
     "/error",
   ].some((token) => lowerUrl.includes(token));
+  const hasNotFoundTitleSignal =
+    /\b404\b/.test(title) ||
+    [
+      "page not found",
+      "not found",
+      "does not exist",
+      "unavailable",
+    ].some((phrase) => title.includes(phrase));
   const hasNotFoundTextSignal =
     /\b404\b/.test(text) &&
       /\b(not found|page not found)\b/.test(text) ||
@@ -1020,8 +1033,26 @@ export function detectBrokenPageReason(doc: Document): BrokenPageReason | null {
       "the page you requested could not be found",
       "requested page could not be found",
     ].some((phrase) => text.includes(phrase));
+  const hasLikelyApplicationSignals =
+    hasLikelyApplicationFormSignals(doc) ||
+    hasLikelyApplicationStepSignals(doc);
+  const hasLikelyJobOrApplyContentSignal =
+    /\bapply\b|\bapplication\b|\bjob\b|\bjob details\b|\bjob description\b/.test(
+      bodyText
+    ) ||
+    /\bjobs?\b|\bcareers?\b|\bapply\b/.test(title);
+  const isMinimalPage = bodyText.length > 0 && bodyText.length < 1200;
 
-  if (hasNotFoundUrlSignal || hasNotFoundTextSignal) {
+  if (
+    hasNotFoundTextSignal ||
+    hasNotFoundTitleSignal ||
+    (
+      hasNotFoundUrlSignal &&
+      isMinimalPage &&
+      !hasLikelyApplicationSignals &&
+      !hasLikelyJobOrApplyContentSignal
+    )
+  ) {
     return "not_found";
   }
 

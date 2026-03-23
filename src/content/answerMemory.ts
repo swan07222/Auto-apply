@@ -217,6 +217,31 @@ export function findBestSavedAnswerMatch(
   return best && best.score >= 0.78 ? best.answer : null;
 }
 
+export function getRelevantSavedAnswers(
+  question: string,
+  answers: Record<string, SavedAnswer>
+): SavedAnswer[] {
+  const lookupTokens = buildLookupTokenSet(question);
+  const lookupIntents = detectQuestionIntents(question);
+
+  return Object.values(answers)
+    .filter((answer) => {
+      const candidateTokens = buildLookupTokenSet(answer.question);
+      const candidateIntents = detectQuestionIntents(answer.question);
+
+      if (!hasCompatibleQuestionIntents(lookupIntents, candidateIntents)) {
+        return false;
+      }
+
+      return (
+        textSimilarity(question, answer.question) >= 0.78 ||
+        calculateTokenOverlap(lookupTokens, candidateTokens) >= 0.5 ||
+        (lookupIntents.size > 0 && candidateIntents.size > 0)
+      );
+    })
+    .sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
 function buildAnswerLookupKeys(
   question: string,
   descriptor = ""

@@ -723,6 +723,7 @@ async function updateSessionFromMessage(
     profileId: message.profileId ?? existingSession?.profileId,
     controllerFrameId,
     claimedJobKey: existingSession?.claimedJobKey,
+    openedUrlKey: existingSession?.openedUrlKey,
   };
 
   await setSession(nextSession);
@@ -811,7 +812,9 @@ async function attachSessionToSiteOpenedChildTab(
 
   childSession.jobSlots = openerSession.jobSlots;
   childSession.claimedJobKey = openerSession.claimedJobKey;
-  childSession.openedUrlKey = openerSession.openedUrlKey;
+  childSession.openedUrlKey =
+    getSpawnDedupKey(getTabUrl(tab as BackgroundSourceTab)) ??
+    openerSession.openedUrlKey;
 
   await setSession(childSession);
 
@@ -1899,6 +1902,64 @@ async function listSessionsForRunId(runId: string): Promise<AutomationSession[]>
     );
 }
 
+async function listLiveSessionsForRunId(runId: string): Promise<AutomationSession[]> {
+  const sessions = await listSessionsForRunId(runId);
+  const liveSessions: AutomationSession[] = [];
+
+  for (const session of sessions) {
+    const liveTab = await getTabSafely(session.tabId);
+    if (liveTab) {
+      liveSessions.push(session);
+      continue;
+    }
+
+    await removeSession(session.tabId);
+  }
+
+  return liveSessions;
+}
+
+type LiveRunSessionInfo = {
+  session: AutomationSession;
+  liveUrl: string;
+  urlKey: string;
+  isApplyTarget: boolean;
+};
+
+async function listLiveRunSessionInfos(
+  runId: string
+): Promise<LiveRunSessionInfo[]> {
+  const sessions = await listLiveSessionsForRunId(runId);
+  const infos: LiveRunSessionInfo[] = [];
+
+  for (const session of sessions) {
+    const liveTab = await getTabSafely(session.tabId);
+    if (!liveTab) {
+      await removeSession(session.tabId);
+      continue;
+    }
+
+    const liveUrl = getTabUrl(liveTab);
+    const urlKey =
+      getSpawnDedupKey(liveUrl) ??
+      session.openedUrlKey ??
+      "";
+    const applyTarget = isLikelyManagedApplyTarget(
+      liveUrl || session.openedUrlKey || "",
+      session.site
+    );
+
+    infos.push({
+      session,
+      liveUrl,
+      urlKey,
+      isApplyTarget: applyTarget,
+    });
+  }
+
+  return infos;
+}
+
 async function resumePendingJobSessionsForRunId(runId: string): Promise<void> {
   const sessionsToResume = await withRunLock(runId, async () => {
     const runState = await getRunState(runId);
@@ -2289,26 +2350,33 @@ async function filterAlreadyOpenManagedSpawnItems(
       !existingClaimedKeys ||
       !existingApplyClaimedKeys
     ) {
-      const existingSessions = await listSessionsForRunId(item.runId);
+      const existingSessions = await listLiveRunSessionInfos(item.runId);
       existingUrlKeys = new Set(
         existingSessions
-          .filter((session) => session.phase !== "error")
-          .map((session) => session.openedUrlKey || "")
+          .filter(
+            ({ session }) =>
+              session.phase !== "error" && session.phase !== "completed"
+          )
+          .map(({ urlKey }) => urlKey)
           .filter(Boolean)
       );
       existingClaimedKeys = new Set(
         existingSessions
-          .filter((session) => session.phase !== "error")
-          .map((session) => session.claimedJobKey || "")
+          .filter(
+            ({ session }) =>
+              session.phase !== "error" && session.phase !== "completed"
+          )
+          .map(({ session }) => session.claimedJobKey || "")
           .filter(Boolean)
       );
       existingApplyClaimedKeys = new Set(
         existingSessions
-          .filter((session) => session.phase !== "error")
-          .filter((session) =>
-            isLikelyManagedApplyTarget(session.openedUrlKey || "", session.site)
+          .filter(
+            ({ session }) =>
+              session.phase !== "error" && session.phase !== "completed"
           )
-          .map((session) => session.claimedJobKey || "")
+          .filter(({ isApplyTarget }) => isApplyTarget)
+          .map(({ session }) => session.claimedJobKey || "")
           .filter(Boolean)
       );
       existingUrlKeysByRunId.set(item.runId, existingUrlKeys);
@@ -2443,7 +2511,12 @@ type BackgroundSourceTab = chrome.tabs.Tab & { pendingUrl?: string };
 
 async function getTabSafely(tabId: number): Promise<BackgroundSourceTab | null> {
   try {
-    return (await chrome.tabs.get(tabId)) as BackgroundSourceTab;
+    const tab = await chrome.tabs.get(tabId);
+    if (tab && typeof tab === "object") {
+      return tab as BackgroundSourceTab;
+    }
+
+    return { id: tabId } as BackgroundSourceTab;
   } catch {
     return null;
   }
