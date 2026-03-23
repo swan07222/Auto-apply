@@ -829,7 +829,7 @@ async function startAutomationForTab(
     return {
       ok: false,
       error:
-        "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, Monster, or Glassdoor page and try again.",
+        "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In page and try again.",
     };
   }
 
@@ -842,7 +842,8 @@ async function startAutomationForTab(
   if (!isJobBoardSite(site)) {
     return {
       ok: false,
-      error: "Open an Indeed, ZipRecruiter, Dice, Monster, or Glassdoor page first.",
+      error:
+        "Open an Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In page first.",
     };
   }
 
@@ -2852,6 +2853,10 @@ function getReadableSiteName(site: SiteKey | "unsupported"): string {
       return "Monster";
     case "glassdoor":
       return "Glassdoor";
+    case "greenhouse":
+      return "Greenhouse";
+    case "builtin":
+      return "Built In";
     case "startup":
       return "Startup Careers";
     case "other_sites":

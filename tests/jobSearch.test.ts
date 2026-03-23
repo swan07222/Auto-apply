@@ -1202,6 +1202,126 @@ describe("job search candidate filtering", () => {
     expect(urls).toEqual(["https://example.com/careers/jobs/platform-engineer-123"]);
   });
 
+  it("keeps Greenhouse board extraction focused on the matching job row instead of the whole department block", () => {
+    document.body.innerHTML = `
+      <section class="department">
+        <h2>Engineering</h2>
+        <div class="job-row">
+          <a href="https://job-boards.greenhouse.io/vercel/jobs/5431123004">
+            Software Engineer, Accounts
+          </a>
+          <span>Remote - United States</span>
+        </div>
+        <div class="job-row">
+          <a href="https://job-boards.greenhouse.io/vercel/jobs/5798406004">
+            Account Executive, Startups
+          </a>
+          <span>Remote - United States</span>
+        </div>
+      </section>
+    `;
+
+    expect(
+      pickRelevantJobUrls(
+        collectJobDetailCandidates("greenhouse"),
+        "greenhouse",
+        undefined,
+        "any",
+        ["software engineer"]
+      )
+    ).toEqual(["https://job-boards.greenhouse.io/vercel/jobs/5431123004"]);
+  });
+
+  it("collects MyGreenhouse view-job cards and opens the matching technical roles", () => {
+    document.body.innerHTML = `
+      <section class="results-grid">
+        <article class="job-card">
+          <h3>Full Stack Engineer</h3>
+          <p>Remote</p>
+          <a href="https://my.greenhouse.io/view_job?job_id=5431123004">View job</a>
+        </article>
+        <article class="job-card">
+          <h3>Account Executive</h3>
+          <p>Remote</p>
+          <a href="https://my.greenhouse.io/view_job?job_id=5798406004">View job</a>
+        </article>
+      </section>
+    `;
+
+    expect(
+      pickRelevantJobUrls(
+        collectJobDetailCandidates("greenhouse"),
+        "greenhouse",
+        undefined,
+        "any",
+        ["full stack"]
+      )
+    ).toEqual(["https://my.greenhouse.io/view_job?job_id=5431123004"]);
+  });
+
+  it("keeps only the explicit remote Built In result when sparse cards mix with a known remote signal", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://builtin.com/job/software-engineer/8472985",
+        title: "Software Engineer",
+        contextText: "Software Engineer",
+      },
+      {
+        url: "https://builtin.com/job/platform-engineer/8472986",
+        title: "Platform Engineer",
+        contextText: "Platform Engineer",
+      },
+      {
+        url: "https://builtin.com/job/frontend-engineer/8472987",
+        title: "Frontend Engineer",
+        contextText: "Remote - United States",
+      },
+    ];
+
+    expect(pickRelevantJobUrls(candidates, "builtin")).toEqual([
+      "https://builtin.com/job/frontend-engineer/8472987",
+    ]);
+  });
+
+  it("keeps only explicit remote Greenhouse and Built In results when hybrid or onsite signals are present", () => {
+    const greenhouseCandidates: JobCandidate[] = [
+      {
+        url: "https://my.greenhouse.io/view_job?job_id=5431123004",
+        title: "Full Stack Engineer",
+        contextText: "Remote - United States",
+      },
+      {
+        url: "https://my.greenhouse.io/view_job?job_id=5798406004",
+        title: "Full Stack Engineer",
+        contextText: "Hybrid - San Francisco",
+      },
+    ];
+    const builtInCandidates: JobCandidate[] = [
+      {
+        url: "https://builtin.com/job/software-engineer/8472985",
+        title: "Software Engineer",
+        contextText: "Remote",
+      },
+      {
+        url: "https://builtin.com/job/platform-engineer/8472986",
+        title: "Platform Engineer",
+        contextText: "In-Office or Remote",
+      },
+      {
+        url: "https://builtin.com/job/frontend-engineer/8472987",
+        title: "Frontend Engineer",
+        contextText: "Hybrid",
+      },
+    ];
+
+    expect(pickRelevantJobUrls(greenhouseCandidates, "greenhouse")).toEqual([
+      "https://my.greenhouse.io/view_job?job_id=5431123004",
+    ]);
+    expect(pickRelevantJobUrls(builtInCandidates, "builtin")).toEqual([
+      "https://builtin.com/job/software-engineer/8472985",
+    ]);
+  });
+
   it("keeps startup and other-site fallback scans focused on technical roles even without a selected track", () => {
     const candidates: JobCandidate[] = [
       {

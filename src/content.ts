@@ -885,7 +885,7 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
 
   const targets = buildSearchTargets(
     site,
-    window.location.origin,
+    window.location.href,
     settings.searchKeywords
   );
   if (targets.length === 0) {
@@ -960,7 +960,10 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
 
   // FIX: Dice needs longer render wait – its custom web components load slowly
   const renderWaitMs =
-    site === "startup" || site === "other_sites"
+    site === "startup" ||
+    site === "other_sites" ||
+    site === "greenhouse" ||
+    site === "builtin"
       ? 5000
       : site === "indeed" ||
           site === "dice" ||
@@ -973,10 +976,27 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   await sleep(renderWaitMs);
   throwIfRateLimited(site);
 
+  if (
+    site === "greenhouse" &&
+    currentLabel &&
+    (await searchMyGreenhousePortal(currentLabel))
+  ) {
+    updateStatus(
+      "running",
+      `Opened ${currentLabel} Greenhouse results. Collecting job pages...`,
+      true,
+      "collect-results"
+    );
+    await waitForMyGreenhouseSearchResults(12_000);
+    throwIfRateLimited(site);
+  }
+
   // FIX: Scroll for Dice too – its cards may lazy-load
   if (
     site === "startup" ||
     site === "other_sites" ||
+    site === "greenhouse" ||
+    site === "builtin" ||
     site === "indeed" ||
     site === "dice" ||
     site === "ziprecruiter" ||
@@ -1080,7 +1100,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     filteredJobUrls,
     effectiveLimit
   );
-  const approvedUrls = claimResult.approvedUrls;
+  const approvedUrls = claimResult.approvedUrls.slice(0, effectiveLimit);
 
   if (approvedUrls.length === 0) {
     if (
@@ -1142,7 +1162,8 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   const response = await spawnTabs(items, effectiveLimit);
   const requestedOpenCount = items.length;
   const reopenedSlots = Math.max(0, requestedOpenCount - response.opened);
-  const remainingSlotsAfterSpawn = claimResult.remaining + reopenedSlots;
+  const remainingSlotsAfterSpawn =
+    Math.max(0, effectiveLimit - response.opened) + reopenedSlots;
 
   const extra =
     jobUrls.length > approvedUrls.length
@@ -1184,6 +1205,19 @@ async function continueCollectResultsOnNextPage(options: {
 
   if (safeRemainingSlots <= 0) {
     return false;
+  }
+
+  if (site === "greenhouse" && isMyGreenhousePortalHost()) {
+    updateStatus(
+      "completed",
+      fallbackMessage,
+      false,
+      "collect-results",
+      undefined,
+      safeRemainingSlots
+    );
+    await closeCurrentTab();
+    return true;
   }
 
   updateStatus(
@@ -3255,6 +3289,187 @@ function navigateCurrentTab(url: string): void {
 }
 
 // ─── STATUS / OVERLAY ────────────────────────────────────────────────────────
+
+async function searchMyGreenhousePortal(keyword: string): Promise<boolean> {
+  if (!isMyGreenhousePortalPage() || hasMyGreenhouseSearchResults()) {
+    return false;
+  }
+
+  const titleInput = findMyGreenhouseKeywordInput();
+  const locationInput = findMyGreenhouseLocationInput();
+  const searchButton = findMyGreenhouseSearchButton();
+  const normalizedKeyword = cleanText(keyword);
+
+  if (!titleInput || !searchButton || !normalizedKeyword) {
+    return false;
+  }
+
+  if (cleanText(titleInput.value) !== normalizedKeyword) {
+    setTextControlValue(titleInput, normalizedKeyword);
+  }
+  if (locationInput && cleanText(locationInput.value).toLowerCase() !== "remote") {
+    setTextControlValue(locationInput, "Remote");
+  }
+
+  try {
+    titleInput.focus();
+  } catch {
+    // Ignore focus failures.
+  }
+
+  performClickAction(searchButton);
+  return true;
+}
+
+async function waitForMyGreenhouseSearchResults(timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+
+  while (Date.now() < deadline) {
+    if (hasMyGreenhouseSearchResults()) {
+      return;
+    }
+
+    await sleep(250);
+  }
+}
+
+function isMyGreenhousePortalPage(): boolean {
+  if (!isMyGreenhousePortalHost()) {
+    return false;
+  }
+
+  return Boolean(findMyGreenhouseKeywordInput() && findMyGreenhouseSearchButton());
+}
+
+function isMyGreenhousePortalHost(): boolean {
+  try {
+    const parsed = new URL(window.location.href);
+    return parsed.hostname.toLowerCase().replace(/^www\./, "") === "my.greenhouse.io";
+  } catch {
+    return false;
+  }
+}
+
+function hasMyGreenhouseSearchResults(): boolean {
+  if (!isMyGreenhousePortalHost()) {
+    return false;
+  }
+
+  for (const element of Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "a[href], button, [role='button'], [role='link'], input[type='button'], input[type='submit']"
+    )
+  )) {
+    if (!isElementInteractive(element)) {
+      continue;
+    }
+
+    const text = cleanText(
+      [
+        element.innerText || element.textContent || "",
+        element.getAttribute("aria-label"),
+        element.getAttribute("title"),
+        element.getAttribute("value"),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    ).toLowerCase();
+
+    if (text === "view job" || text.startsWith("view job ")) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function findMyGreenhouseKeywordInput(): HTMLInputElement | null {
+  return findFirstInteractiveElement<HTMLInputElement>([
+    "input[placeholder*='job title' i]",
+    "input[aria-label*='job title' i]",
+    "input[name*='job' i]",
+    "input[name*='title' i]",
+    "input[type='search']",
+  ]);
+}
+
+function findMyGreenhouseLocationInput(): HTMLInputElement | null {
+  return findFirstInteractiveElement<HTMLInputElement>([
+    "input[placeholder*='location' i]",
+    "input[aria-label*='location' i]",
+    "input[name*='location' i]",
+    "input[id*='location' i]",
+  ]);
+}
+
+function findMyGreenhouseSearchButton(): HTMLElement | null {
+  for (const candidate of Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "button, [role='button'], input[type='submit'], input[type='button']"
+    )
+  )) {
+    if (!isElementInteractive(candidate)) {
+      continue;
+    }
+
+    const text = cleanText(
+      [
+        candidate.innerText || candidate.textContent || "",
+        candidate.getAttribute("aria-label"),
+        candidate.getAttribute("title"),
+        candidate.getAttribute("value"),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    ).toLowerCase();
+
+    if (text === "search" || text.startsWith("search ")) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function findFirstInteractiveElement<T extends HTMLElement>(
+  selectors: string[]
+): T | null {
+  for (const selector of selectors) {
+    try {
+      for (const element of Array.from(document.querySelectorAll<T>(selector))) {
+        if (isElementInteractive(element)) {
+          return element;
+        }
+      }
+    } catch {
+      // Ignore invalid selectors.
+    }
+  }
+
+  return null;
+}
+
+function setTextControlValue(
+  input: HTMLInputElement | HTMLTextAreaElement,
+  value: string
+): void {
+  const prototype = Object.getPrototypeOf(input) as
+    | HTMLInputElement
+    | HTMLTextAreaElement
+    | undefined;
+  const descriptor = prototype
+    ? Object.getOwnPropertyDescriptor(prototype, "value")
+    : null;
+
+  if (descriptor?.set) {
+    descriptor.set.call(input, value);
+  } else {
+    input.value = value;
+  }
+
+  input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+}
 
 function updateStatus(
   phase: AutomationPhase,

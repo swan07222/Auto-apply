@@ -7,6 +7,8 @@
     dice: "Dice",
     monster: "Monster",
     glassdoor: "Glassdoor",
+    greenhouse: "Greenhouse",
+    builtin: "Built In",
     startup: "Startup Careers",
     other_sites: "Other Job Sites"
   };
@@ -92,6 +94,12 @@
     if (bare === "dice.com" || bare.endsWith(".dice.com")) {
       return "dice";
     }
+    if (bare === "builtin.com" || bare.endsWith(".builtin.com")) {
+      return "builtin";
+    }
+    if (bare === "greenhouse.io" || bare.endsWith(".greenhouse.io")) {
+      return "greenhouse";
+    }
     const hostParts = bare.split(".");
     for (let i = 0; i < hostParts.length; i++) {
       if (hostParts[i] === "monster") {
@@ -130,7 +138,7 @@
     return detectedSite;
   }
   function isJobBoardSite(site) {
-    return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor";
+    return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor" || site === "greenhouse" || site === "builtin";
   }
   function shouldKeepManagedJobPageOpen(site) {
     return site === "ziprecruiter" || site === "dice";
@@ -154,12 +162,12 @@
     }
     return Array.from(deduped.values());
   }
-  function buildSearchTargets(site, _origin, searchKeywords) {
+  function buildSearchTargets(site, currentUrl, searchKeywords) {
     return dedupeSearchTargets(
       parseSearchKeywords(searchKeywords).map((keyword) => ({
         label: keyword,
         keyword,
-        url: buildSingleSearchUrl(site, keyword)
+        url: buildSingleSearchUrl(site, keyword, currentUrl)
       }))
     );
   }
@@ -202,7 +210,9 @@
     ziprecruiter: "https://www.ziprecruiter.com",
     dice: "https://www.dice.com",
     monster: "https://www.monster.com",
-    glassdoor: "https://www.glassdoor.com"
+    glassdoor: "https://www.glassdoor.com",
+    greenhouse: "https://job-boards.greenhouse.io",
+    builtin: "https://builtin.com"
   };
   var IDENTIFYING_PARAMS = [
     "jk",
@@ -358,7 +368,46 @@
     url.searchParams.set("locId", "1");
     return url.toString();
   }
-  function buildSingleSearchUrl(site, query) {
+  function buildBuiltInSearchUrl(query, baseOrigin) {
+    const url = new URL("/jobs/remote", baseOrigin);
+    url.searchParams.set("search", query);
+    return url.toString();
+  }
+  function isMyGreenhousePortalUrl(currentUrl) {
+    try {
+      const parsed = new URL(currentUrl);
+      return parsed.hostname.toLowerCase().replace(/^www\./, "") === "my.greenhouse.io";
+    } catch {
+      return false;
+    }
+  }
+  function resolveGreenhouseBoardBaseUrl(currentUrl, fallbackOrigin) {
+    try {
+      const parsed = new URL(currentUrl);
+      const normalizedPath = parsed.pathname.replace(/\/+$/, "");
+      const jobsIndex = normalizedPath.toLowerCase().indexOf("/jobs/");
+      const boardPath = jobsIndex >= 0 ? normalizedPath.slice(0, jobsIndex) : normalizedPath || "/";
+      return new URL(boardPath || "/", `${parsed.protocol}//${parsed.host}`).toString();
+    } catch {
+      return fallbackOrigin;
+    }
+  }
+  function buildGreenhouseSearchUrl(query, currentUrl, fallbackOrigin) {
+    if (isMyGreenhousePortalUrl(currentUrl)) {
+      try {
+        const parsed = new URL(currentUrl);
+        return new URL(parsed.pathname || "/", `${parsed.protocol}//${parsed.host}`).toString();
+      } catch {
+        return currentUrl;
+      }
+    }
+    const url = new URL(
+      resolveGreenhouseBoardBaseUrl(currentUrl, fallbackOrigin)
+    );
+    url.searchParams.set("keyword", query);
+    return url.toString();
+  }
+  function buildSingleSearchUrl(site, query, currentUrl) {
     const baseOrigin = CANONICAL_JOB_BOARD_ORIGINS[site];
     switch (site) {
       case "indeed": {
@@ -384,6 +433,12 @@
       }
       case "glassdoor": {
         return buildGlassdoorSearchUrl(query, baseOrigin);
+      }
+      case "greenhouse": {
+        return buildGreenhouseSearchUrl(query, currentUrl, baseOrigin);
+      }
+      case "builtin": {
+        return buildBuiltInSearchUrl(query, baseOrigin);
       }
     }
   }
@@ -475,6 +530,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const title = doc.title.toLowerCase();
     const bodyText = (doc.body?.innerText ?? "").toLowerCase().slice(0, 6e3);
     const bodyLength = (doc.body?.innerText ?? "").trim().length;
+    const iframeMetadata = Array.from(doc.querySelectorAll("iframe")).map(
+      (frame) => [
+        frame.getAttribute("title"),
+        frame.getAttribute("aria-label"),
+        frame.getAttribute("name"),
+        frame.getAttribute("src")
+      ].filter(Boolean).join(" ").toLowerCase()
+    ).join(" ").slice(0, 4e3);
+    const combinedText = `${title} ${bodyText} ${iframeMetadata}`;
     const strongPhrases = [
       "verify you are human",
       "verification required",
@@ -490,7 +554,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "performance and security by cloudflare",
       "security service to protect against malicious bots"
     ];
-    if (strongPhrases.some((phrase) => title.includes(phrase) || bodyText.includes(phrase))) {
+    if (strongPhrases.some((phrase) => combinedText.includes(phrase))) {
       return true;
     }
     const isMinimalPage = bodyLength < 800;
@@ -504,7 +568,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         "ray id",
         "cloudflare"
       ];
-      if (weakPhrases.some((phrase) => title.includes(phrase) || bodyText.includes(phrase))) {
+      if (weakPhrases.some((phrase) => combinedText.includes(phrase))) {
         return true;
       }
     }
@@ -513,6 +577,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         [
           "iframe[src*='captcha']",
           "iframe[title*='challenge']",
+          "iframe[title*='verification' i]",
+          "iframe[aria-label*='verification' i]",
           "#px-captcha",
           ".cf-turnstile",
           ".g-recaptcha",
@@ -2762,6 +2828,35 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     diceSearchCardSelectors: [...DICE_SEARCH_CARD_SELECTORS]
   };
 
+  // src/content/sites/builtin/index.ts
+  var builtInSiteProfile = {
+    key: "builtin",
+    applyCandidateSelectors: [
+      "a[href*='builtin.com/job/']",
+      "a[aria-label*='apply' i]",
+      "a[title*='apply' i]",
+      ".job-post-sticky-bar-btn",
+      ...buildHrefContainsSelectors(ATS_APPLICATION_SELECTOR_TOKENS),
+      "[class*='application']",
+      "[id*='application']",
+      "[class*='apply']",
+      "[class*='easyApply']",
+      "[class*='easy-apply']",
+      "[data-role*='apply' i]",
+      ...GENERIC_APPLY_CANDIDATE_SELECTORS
+    ],
+    currentJobSurfaceSelectors: [
+      "[class*='job-post']",
+      "[class*='job-details']",
+      "[class*='job-detail']",
+      ...GENERIC_CURRENT_JOB_SURFACE_SELECTORS
+    ],
+    resultCollectionMinimum: 30,
+    resultCollectionMultiplier: 6,
+    resultSurfaceSettleMs: 1600,
+    careerJobLinkSelectors: [...CAREER_SITE_JOB_LINK_SELECTORS]
+  };
+
   // src/content/sites/glassdoor/index.ts
   var glassdoorSiteProfile = {
     key: "glassdoor",
@@ -2792,6 +2887,34 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     resultCollectionMinimum: 25,
     resultCollectionMultiplier: 4,
     resultSurfaceSettleMs: 1600
+  };
+
+  // src/content/sites/greenhouse/index.ts
+  var greenhouseSiteProfile = {
+    key: "greenhouse",
+    applyCandidateSelectors: [
+      "button[aria-label*='apply' i]",
+      "button[title*='apply' i]",
+      "button[class*='apply']",
+      "a[href*='job_app']",
+      "a[href*='/apply']",
+      ...buildHrefContainsSelectors(ATS_APPLICATION_SELECTOR_TOKENS),
+      "[class*='application']",
+      "[id*='application']",
+      "[class*='apply']",
+      "[data-role*='apply' i]",
+      ...GENERIC_APPLY_CANDIDATE_SELECTORS
+    ],
+    currentJobSurfaceSelectors: [
+      "[class*='opening']",
+      "[class*='job-post']",
+      "[class*='job-detail']",
+      ...GENERIC_CURRENT_JOB_SURFACE_SELECTORS
+    ],
+    resultCollectionMinimum: 30,
+    resultCollectionMultiplier: 6,
+    resultSurfaceSettleMs: 1600,
+    careerJobLinkSelectors: [...CAREER_SITE_JOB_LINK_SELECTORS]
   };
 
   // src/content/sites/indeed/index.ts
@@ -2959,6 +3082,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     dice: diceSiteProfile,
     monster: monsterSiteProfile,
     glassdoor: glassdoorSiteProfile,
+    greenhouse: greenhouseSiteProfile,
+    builtin: builtInSiteProfile,
     startup: startupSiteProfile,
     other_sites: otherSitesProfile
   };
@@ -3275,7 +3400,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       case "startup":
       case "other_sites":
         return dedupeJobCandidates([
-          ...collectFocusedAtsLinkCandidates(),
+          ...collectFocusedAtsLinkCandidates(site),
           ...collectCandidatesFromContainers(
             [
               "[data-qa*='job']",
@@ -3297,10 +3422,79 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
               "section",
               "li"
             ],
-            getCareerSiteJobLinkSelectors("other_sites"),
+            getCareerSiteJobLinkSelectors(site),
             ["h1", "h2", "h3", "h4", "[data-testid*='title']", "[class*='title']"]
           ),
-          ...collectCandidatesFromAnchors(getCareerSiteJobLinkSelectors("other_sites")),
+          ...collectCandidatesFromAnchors(getCareerSiteJobLinkSelectors(site)),
+          ...collectFallbackJobCandidates()
+        ]);
+      case "greenhouse":
+        return dedupeJobCandidates([
+          ...collectLabeledActionCandidates(["view job"], 2),
+          ...collectSiteAnchoredJobCandidates(
+            [
+              "a[href*='greenhouse.io'][href*='/jobs/']",
+              "a[href*='greenhouse.io'][href*='gh_jid=']"
+            ],
+            2
+          ),
+          ...collectFocusedAtsLinkCandidates(site),
+          ...collectCandidatesFromContainers(
+            [
+              "[data-qa*='job']",
+              "[data-testid*='job']",
+              "[data-test*='job']",
+              "[class*='job']",
+              "[class*='position']",
+              "[class*='opening']",
+              "[class*='posting']",
+              "[class*='role']",
+              "[class*='vacancy']",
+              "[class*='listing']",
+              "[class*='opportunity']",
+              "[class*='career']",
+              "[class*='Career']",
+              "[class*='openings']",
+              "[class*='Openings']",
+              "article",
+              "section",
+              "li"
+            ],
+            getCareerSiteJobLinkSelectors(site),
+            ["h1", "h2", "h3", "h4", "[data-testid*='title']", "[class*='title']"]
+          ),
+          ...collectCandidatesFromAnchors(getCareerSiteJobLinkSelectors(site)),
+          ...collectFallbackJobCandidates()
+        ]);
+      case "builtin":
+        return dedupeJobCandidates([
+          ...collectSiteAnchoredJobCandidates(["a[href*='builtin.com/job/']"], 3),
+          ...collectFocusedAtsLinkCandidates(site),
+          ...collectCandidatesFromContainers(
+            [
+              "[data-qa*='job']",
+              "[data-testid*='job']",
+              "[data-test*='job']",
+              "[class*='job']",
+              "[class*='position']",
+              "[class*='opening']",
+              "[class*='posting']",
+              "[class*='role']",
+              "[class*='vacancy']",
+              "[class*='listing']",
+              "[class*='opportunity']",
+              "[class*='career']",
+              "[class*='Career']",
+              "[class*='openings']",
+              "[class*='Openings']",
+              "article",
+              "section",
+              "li"
+            ],
+            getCareerSiteJobLinkSelectors(site),
+            ["h1", "h2", "h3", "h4", "[data-testid*='title']", "[class*='title']"]
+          ),
+          ...collectCandidatesFromAnchors(getCareerSiteJobLinkSelectors(site)),
           ...collectFallbackJobCandidates()
         ]);
     }
@@ -3343,7 +3537,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
     const recencyEligible = datePostedWindow === "any" ? valid : recencyFiltered;
     const eligible = site === "dice" ? recencyEligible.filter((candidate) => isExplicitlyRemoteDiceCandidate(candidate)) : filterCandidatesForRemotePreference(recencyEligible);
-    const shouldKeywordFilter = searchKeywords.length > 0 && (site === "startup" || site === "other_sites");
+    const shouldKeywordFilter = searchKeywords.length > 0 && (site === "startup" || site === "other_sites" || site === "greenhouse" || site === "builtin");
     const boardKeywordMatchedCandidates = searchKeywords.length > 0 && (site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor") ? eligible.filter(
       (candidate) => scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0
     ) : [];
@@ -3355,7 +3549,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const keywordEligible = shouldKeywordFilter ? eligible.filter(
       (candidate) => matchesConfiguredSearchKeywords(candidate, searchKeywords)
     ) : shouldKeywordFilterBoardResults ? boardKeywordMatchedCandidates : eligible;
-    const technicalEligible = site === "startup" || site === "other_sites" ? keywordEligible.filter(
+    const technicalEligible = site === "startup" || site === "other_sites" || site === "greenhouse" || site === "builtin" ? keywordEligible.filter(
       (candidate) => looksLikeTechnicalRoleTitle(candidate.title)
     ) : keywordEligible;
     if (shouldKeywordFilter && keywordEligible.length === 0) {
@@ -3365,7 +3559,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       const fallbackPool2 = technicalEligible.length > 0 ? technicalEligible : keywordEligible;
       return sortCandidatesByRecency(fallbackPool2, datePostedWindow).map((candidate) => candidate.url);
     }
-    const fallbackPool = site === "startup" || site === "other_sites" ? technicalEligible : keywordEligible;
+    const fallbackPool = site === "startup" || site === "other_sites" || site === "greenhouse" || site === "builtin" ? technicalEligible : keywordEligible;
     const scored = fallbackPool.map((candidate, index) => ({
       candidate,
       index,
@@ -3576,7 +3770,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         return false;
       }
       case "startup":
-      case "other_sites": {
+      case "other_sites":
+      case "greenhouse":
+      case "builtin": {
         try {
           const parsed = new URL(lowerUrl);
           if (hasJobIdentifyingSearchParam(parsed)) {
@@ -3596,6 +3792,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         const pathSignals = [
           "/jobs/",
           "/job/",
+          "/view-job/",
+          "/view_job/",
           "/role/",
           "/roles/",
           "/positions/",
@@ -3937,7 +4135,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     let minAttemptsBeforeEarlyStop = 5;
     let stableThreshold = 4;
-    if (site === "startup" || site === "other_sites") {
+    if (site === "startup" || site === "other_sites" || site === "greenhouse" || site === "builtin") {
       minAttemptsBeforeEarlyStop = 22;
       stableThreshold = 8;
     } else if (site === "monster") {
@@ -4051,9 +4249,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     return candidates;
   }
-  function collectFocusedAtsLinkCandidates() {
+  function collectFocusedAtsLinkCandidates(site) {
     const candidates = [];
-    for (const selector of getCareerSiteJobLinkSelectors("other_sites")) {
+    for (const selector of getCareerSiteJobLinkSelectors(site)) {
       try {
         for (const anchor of Array.from(document.querySelectorAll(selector))) {
           if (!hasJobDetailAtsUrl(anchor.href)) {
@@ -4065,12 +4263,112 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           if (!title || isGenericRoleCtaText(title) || isCareerListingCtaText(title)) {
             continue;
           }
-          addJobCandidate(candidates, anchor.href, title, title);
+          const compactContainer = findCompactJobContextContainer(anchor, 2);
+          addJobCandidate(
+            candidates,
+            anchor.href,
+            title,
+            compactContainer ? buildCandidateContextText(compactContainer, anchor) : title
+          );
         }
       } catch {
       }
     }
     return candidates;
+  }
+  function collectSiteAnchoredJobCandidates(selectors, maxSiblingJobAnchors) {
+    const candidates = [];
+    for (const selector of selectors) {
+      try {
+        for (const anchor of Array.from(document.querySelectorAll(selector))) {
+          const title = resolveAnchorCandidateTitle(
+            anchor,
+            cleanText(anchor.textContent || anchor.getAttribute("aria-label") || "")
+          );
+          if (!title || isCareerListingCtaText(title) || isGenericRoleCtaText(title)) {
+            continue;
+          }
+          const compactContainer = findCompactJobContextContainer(anchor, maxSiblingJobAnchors);
+          addJobCandidate(
+            candidates,
+            anchor.href,
+            title,
+            compactContainer ? buildCandidateContextText(compactContainer, anchor) : title
+          );
+        }
+      } catch {
+      }
+    }
+    return candidates;
+  }
+  function collectLabeledActionCandidates(labels, maxSiblingJobAnchors) {
+    const candidates = [];
+    const normalizedLabels = labels.map((label) => normalizeChoiceText(label));
+    for (const element of Array.from(
+      document.querySelectorAll(
+        "a[href], button, [role='link'], [role='button'], input[type='button'], input[type='submit']"
+      )
+    )) {
+      const actionText = normalizeChoiceText(getActionText(element));
+      if (!actionText || !normalizedLabels.some((label) => actionText.includes(label))) {
+        continue;
+      }
+      const navUrl = getNavigationUrl(element);
+      if (!navUrl) {
+        continue;
+      }
+      const anchor = element instanceof HTMLAnchorElement ? element : element.closest("a[href]");
+      const compactContainer = anchor ? findCompactJobContextContainer(anchor, maxSiblingJobAnchors) : null;
+      const title = resolveContainerHeadingTitle(compactContainer) || resolveContainerHeadingTitle(
+        element.closest("article, li, section, div, tr")
+      ) || "";
+      if (!title || isCareerListingCtaText(title) || isGenericRoleCtaText(title)) {
+        continue;
+      }
+      const contextText = compactContainer ? buildCandidateContextText(compactContainer, anchor) : cleanText(
+        [
+          title,
+          element.closest("article, li, section, div, tr")?.innerText || element.closest("article, li, section, div, tr")?.textContent || ""
+        ].filter(Boolean).join(" ")
+      );
+      addJobCandidate(candidates, navUrl, title, contextText);
+    }
+    return candidates;
+  }
+  function findCompactJobContextContainer(anchor, maxSiblingJobAnchors) {
+    let current = anchor.parentElement;
+    for (let depth = 0; current && depth < 6; depth += 1) {
+      const text = cleanText(current.innerText || current.textContent || "");
+      const jobAnchorCount = countJobLikeAnchors(current);
+      if (text && text.length <= 500 && jobAnchorCount > 0 && jobAnchorCount <= maxSiblingJobAnchors) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+  function resolveContainerHeadingTitle(container) {
+    if (!container) {
+      return "";
+    }
+    const heading = container.querySelector(
+      "h1, h2, h3, h4, h5, [data-testid*='title'], [class*='title'], [class*='job-title'], [class*='role-title']"
+    );
+    const title = cleanText(heading?.textContent || "");
+    if (title && !isGenericRoleCtaText(title) && !isCareerListingCtaText(title)) {
+      return title;
+    }
+    return "";
+  }
+  function countJobLikeAnchors(container) {
+    let count = 0;
+    for (const anchor of Array.from(container.querySelectorAll("a[href]"))) {
+      const href = anchor.href.toLowerCase();
+      if (hasJobDetailAtsUrl(href) || href.includes("builtin.com/job/")) {
+        count += 1;
+      }
+    }
+    return count;
   }
   function collectDiceListItemCandidates() {
     const candidates = [];
@@ -7101,7 +7399,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     const hostname = parsed?.hostname.toLowerCase() ?? "";
     const pathAndQuery = `${parsed?.pathname.toLowerCase() ?? ""}${parsed?.search.toLowerCase() ?? ""}`;
-    if (hostname.includes("greenhouse.io") && (pathAndQuery.includes("/embed/job_app") || pathAndQuery.includes("/jobs/") || pathAndQuery.includes("gh_jid="))) {
+    if (hostname.includes("greenhouse.io") && isGreenhouseApplicationUrl(pathAndQuery)) {
       return true;
     }
     if (site === "ziprecruiter" && isZipRecruiterCandidatePortalUrl(url)) {
@@ -7110,7 +7408,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (lower.includes("smartapply.indeed.com") || lower.includes("indeedapply") || lower.includes("zipapply") || lower.includes("easyapply") || lower.includes("easy-apply") || lower.includes("/job-applications/") || lower.includes("start-apply") || lower.includes("/apply") || lower.includes("application") || lower.includes("candidateexperience") || lower.includes("jobapply") || lower.includes("job_app") || lower.includes("applytojob")) {
       return true;
     }
-    if (site === "startup" || site === "other_sites") {
+    if (site === "startup" || site === "other_sites" || site === "greenhouse" || site === "builtin") {
       return includesAnyToken(lower, ATS_APPLICATION_URL_TOKENS);
     }
     try {
@@ -7118,6 +7416,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     } catch {
       return false;
     }
+  }
+  function isGreenhouseApplicationUrl(pathAndQuery) {
+    if (!pathAndQuery) {
+      return false;
+    }
+    if (pathAndQuery.includes("/embed/job_app")) {
+      return true;
+    }
+    if (pathAndQuery.includes("/apply") || pathAndQuery.includes("job_app") || pathAndQuery.includes("application_confirmation") || pathAndQuery.includes("application_confirmation_token")) {
+      return true;
+    }
+    return false;
   }
   function isAlreadyOnApplyPage(site, url) {
     return isLikelyApplyUrl(url, site);
@@ -7368,6 +7678,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         return "monster.com";
       case "glassdoor":
         return "glassdoor.com";
+      case "greenhouse":
+        return "greenhouse.io";
+      case "builtin":
+        return "builtin.com";
       case "startup":
       case "other_sites":
         return window.location.hostname.toLowerCase();
@@ -7801,7 +8115,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     label,
     onOpenListingsSurface
   }) {
-    const isCareerSite = site === "startup" || site === "other_sites";
+    const isMyGreenhousePortal = site === "greenhouse" && isMyGreenhousePortalHost();
+    const isCareerSite = site === "startup" || site === "other_sites" || site === "greenhouse" || site === "builtin";
     const needsAggressiveScan = isCareerSite || site === "monster" || site === "indeed" || site === "dice" || site === "ziprecruiter" || site === "glassdoor";
     let careerSurfaceAttempts = 0;
     const desiredCount = Math.max(1, Math.floor(targetCount));
@@ -7857,7 +8172,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         return bestUrls;
       }
       if (isCareerSite) {
-        if (careerSurfaceAttempts < 2 && (attempt === 8 || attempt === 18)) {
+        if (!isMyGreenhousePortal && careerSurfaceAttempts < 2 && (attempt === 8 || attempt === 18)) {
           careerSurfaceAttempts += 1;
           const openedCareerSurface = await tryOpenCareerListingsSurface({
             site,
@@ -8475,6 +8790,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     ).filter((element) => isElementVisible(element)).map((element) => cleanText(getActionText(element)).toLowerCase()).filter(Boolean).slice(0, 6).join("|");
     const candidateMarkers = collectJobDetailCandidates(site).slice(0, 12).map((candidate) => normalizeUrl(candidate.url) ?? candidate.url).join("|");
     return [currentUrl, pageMarkers, candidateMarkers].join("::");
+  }
+  function isMyGreenhousePortalHost() {
+    try {
+      const parsed = new URL(window.location.href);
+      return parsed.hostname.toLowerCase().replace(/^www\./, "") === "my.greenhouse.io";
+    } catch {
+      return false;
+    }
   }
 
   // src/content/stageFlow.ts
@@ -9226,7 +9549,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     throwIfRateLimited(site);
     const targets = buildSearchTargets(
       site,
-      window.location.origin,
+      window.location.href,
       settings.searchKeywords
     );
     if (targets.length === 0) {
@@ -9285,10 +9608,20 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return;
     }
     await waitForHumanVerificationToClear();
-    const renderWaitMs = site === "startup" || site === "other_sites" ? 5e3 : site === "indeed" || site === "dice" || site === "ziprecruiter" || site === "glassdoor" ? 5e3 : site === "monster" ? 5e3 : 2500;
+    const renderWaitMs = site === "startup" || site === "other_sites" || site === "greenhouse" || site === "builtin" ? 5e3 : site === "indeed" || site === "dice" || site === "ziprecruiter" || site === "glassdoor" ? 5e3 : site === "monster" ? 5e3 : 2500;
     await sleep(renderWaitMs);
     throwIfRateLimited(site);
-    if (site === "startup" || site === "other_sites" || site === "indeed" || site === "dice" || site === "ziprecruiter" || site === "monster" || site === "glassdoor") {
+    if (site === "greenhouse" && currentLabel && await searchMyGreenhousePortal(currentLabel)) {
+      updateStatus(
+        "running",
+        `Opened ${currentLabel} Greenhouse results. Collecting job pages...`,
+        true,
+        "collect-results"
+      );
+      await waitForMyGreenhouseSearchResults(12e3);
+      throwIfRateLimited(site);
+    }
+    if (site === "startup" || site === "other_sites" || site === "greenhouse" || site === "builtin" || site === "indeed" || site === "dice" || site === "ziprecruiter" || site === "monster" || site === "glassdoor") {
       await scrollPageForLazyContent();
     }
     const jobUrls = await waitForJobDetailUrls({
@@ -9371,7 +9704,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       filteredJobUrls,
       effectiveLimit
     );
-    const approvedUrls = claimResult.approvedUrls;
+    const approvedUrls = claimResult.approvedUrls.slice(0, effectiveLimit);
     if (approvedUrls.length === 0) {
       if (await continueCollectResultsOnNextPage({
         site,
@@ -9426,7 +9759,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const response = await spawnTabs(items, effectiveLimit);
     const requestedOpenCount = items.length;
     const reopenedSlots = Math.max(0, requestedOpenCount - response.opened);
-    const remainingSlotsAfterSpawn = claimResult.remaining + reopenedSlots;
+    const remainingSlotsAfterSpawn = Math.max(0, effectiveLimit - response.opened) + reopenedSlots;
     const extra = jobUrls.length > approvedUrls.length ? ` (opened ${approvedUrls.length} unique jobs from ${jobUrls.length} found)` : "";
     const openedMessage = `Opened ${response.opened} job tabs from ${labelPrefix}${getSiteLabel(site)} search${extra}.`;
     if (remainingSlotsAfterSpawn > 0) {
@@ -9452,6 +9785,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const safeRemainingSlots = Math.max(0, Math.floor(remainingSlots));
     if (safeRemainingSlots <= 0) {
       return false;
+    }
+    if (site === "greenhouse" && isMyGreenhousePortalHost2()) {
+      updateStatus(
+        "completed",
+        fallbackMessage,
+        false,
+        "collect-results",
+        void 0,
+        safeRemainingSlots
+      );
+      await closeCurrentTab();
+      return true;
     }
     updateStatus(
       "running",
@@ -11065,6 +11410,143 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return;
     }
     window.location.assign(n);
+  }
+  async function searchMyGreenhousePortal(keyword) {
+    if (!isMyGreenhousePortalPage() || hasMyGreenhouseSearchResults()) {
+      return false;
+    }
+    const titleInput = findMyGreenhouseKeywordInput();
+    const locationInput = findMyGreenhouseLocationInput();
+    const searchButton = findMyGreenhouseSearchButton();
+    const normalizedKeyword = cleanText(keyword);
+    if (!titleInput || !searchButton || !normalizedKeyword) {
+      return false;
+    }
+    if (cleanText(titleInput.value) !== normalizedKeyword) {
+      setTextControlValue(titleInput, normalizedKeyword);
+    }
+    if (locationInput && cleanText(locationInput.value).toLowerCase() !== "remote") {
+      setTextControlValue(locationInput, "Remote");
+    }
+    try {
+      titleInput.focus();
+    } catch {
+    }
+    performClickAction(searchButton);
+    return true;
+  }
+  async function waitForMyGreenhouseSearchResults(timeoutMs) {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (Date.now() < deadline) {
+      if (hasMyGreenhouseSearchResults()) {
+        return;
+      }
+      await sleep(250);
+    }
+  }
+  function isMyGreenhousePortalPage() {
+    if (!isMyGreenhousePortalHost2()) {
+      return false;
+    }
+    return Boolean(findMyGreenhouseKeywordInput() && findMyGreenhouseSearchButton());
+  }
+  function isMyGreenhousePortalHost2() {
+    try {
+      const parsed = new URL(window.location.href);
+      return parsed.hostname.toLowerCase().replace(/^www\./, "") === "my.greenhouse.io";
+    } catch {
+      return false;
+    }
+  }
+  function hasMyGreenhouseSearchResults() {
+    if (!isMyGreenhousePortalHost2()) {
+      return false;
+    }
+    for (const element of Array.from(
+      document.querySelectorAll(
+        "a[href], button, [role='button'], [role='link'], input[type='button'], input[type='submit']"
+      )
+    )) {
+      if (!isElementInteractive(element)) {
+        continue;
+      }
+      const text = cleanText(
+        [
+          element.innerText || element.textContent || "",
+          element.getAttribute("aria-label"),
+          element.getAttribute("title"),
+          element.getAttribute("value")
+        ].filter(Boolean).join(" ")
+      ).toLowerCase();
+      if (text === "view job" || text.startsWith("view job ")) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function findMyGreenhouseKeywordInput() {
+    return findFirstInteractiveElement([
+      "input[placeholder*='job title' i]",
+      "input[aria-label*='job title' i]",
+      "input[name*='job' i]",
+      "input[name*='title' i]",
+      "input[type='search']"
+    ]);
+  }
+  function findMyGreenhouseLocationInput() {
+    return findFirstInteractiveElement([
+      "input[placeholder*='location' i]",
+      "input[aria-label*='location' i]",
+      "input[name*='location' i]",
+      "input[id*='location' i]"
+    ]);
+  }
+  function findMyGreenhouseSearchButton() {
+    for (const candidate of Array.from(
+      document.querySelectorAll(
+        "button, [role='button'], input[type='submit'], input[type='button']"
+      )
+    )) {
+      if (!isElementInteractive(candidate)) {
+        continue;
+      }
+      const text = cleanText(
+        [
+          candidate.innerText || candidate.textContent || "",
+          candidate.getAttribute("aria-label"),
+          candidate.getAttribute("title"),
+          candidate.getAttribute("value")
+        ].filter(Boolean).join(" ")
+      ).toLowerCase();
+      if (text === "search" || text.startsWith("search ")) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+  function findFirstInteractiveElement(selectors) {
+    for (const selector of selectors) {
+      try {
+        for (const element of Array.from(document.querySelectorAll(selector))) {
+          if (isElementInteractive(element)) {
+            return element;
+          }
+        }
+      } catch {
+      }
+    }
+    return null;
+  }
+  function setTextControlValue(input, value) {
+    const prototype = Object.getPrototypeOf(input);
+    const descriptor = prototype ? Object.getOwnPropertyDescriptor(prototype, "value") : null;
+    if (descriptor?.set) {
+      descriptor.set.call(input, value);
+    } else {
+      input.value = value;
+    }
+    input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
   }
   function updateStatus(phase, message, shouldResume, nextStage = currentStage, completionKind, jobSlots = currentJobSlots) {
     currentStage = nextStage;

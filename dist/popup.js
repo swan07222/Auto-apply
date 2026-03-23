@@ -49356,6 +49356,8 @@
     dice: "Dice",
     monster: "Monster",
     glassdoor: "Glassdoor",
+    greenhouse: "Greenhouse",
+    builtin: "Built In",
     startup: "Startup Careers",
     other_sites: "Other Job Sites"
   };
@@ -49439,6 +49441,12 @@
     if (bare === "dice.com" || bare.endsWith(".dice.com")) {
       return "dice";
     }
+    if (bare === "builtin.com" || bare.endsWith(".builtin.com")) {
+      return "builtin";
+    }
+    if (bare === "greenhouse.io" || bare.endsWith(".greenhouse.io")) {
+      return "greenhouse";
+    }
     const hostParts = bare.split(".");
     for (let i = 0; i < hostParts.length; i++) {
       if (hostParts[i] === "monster") {
@@ -49471,7 +49479,7 @@
     return SUPPORTED_SITE_LABELS[site];
   }
   function isJobBoardSite(site) {
-    return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor";
+    return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor" || site === "greenhouse" || site === "builtin";
   }
   function parseSearchKeywords(value) {
     const source = typeof value === "string" ? value : "";
@@ -49994,6 +50002,8 @@
 
   // src/popup.ts
   var MAX_RESUME_TEXT_CHARS = 24e3;
+  var SUPPORTED_JOB_BOARD_PROMPT = "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In in the active tab to start.";
+  var SUPPORTED_JOB_BOARD_MODE_PROMPT = "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In in the active tab to use Job Board mode.";
   var startButton = requireElement("#start-button");
   var saveButton = requireElement("#save-button");
   var clearAnswersButton = requireElement("#clear-answers-button");
@@ -50343,7 +50353,7 @@
         createStatus(
           "unsupported",
           "error",
-          "Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab to use Job Board mode."
+          SUPPORTED_JOB_BOARD_MODE_PROMPT
         )
       );
       startButton.disabled = false;
@@ -50517,7 +50527,7 @@
         bgSession.phase === "idle" ? createStatus(
           activeJobBoardSite ?? "unsupported",
           "idle",
-          bgSession.message || (activeJobBoardSite ? `Ready on ${getSiteLabel(activeJobBoardSite)}.` : "Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab to start.")
+          bgSession.message || (activeJobBoardSite ? `Ready on ${getSiteLabel(activeJobBoardSite)}.` : SUPPORTED_JOB_BOARD_PROMPT)
         ) : bgSession
       );
       startButton.disabled = !activeJobBoardSite || isBusy(bgSession.phase);
@@ -50534,7 +50544,7 @@
         createStatus(
           "unsupported",
           "error",
-          "Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab to start."
+          SUPPORTED_JOB_BOARD_PROMPT
         )
       );
       startButton.disabled = true;
@@ -50598,7 +50608,7 @@
         createStatus(
           "unsupported",
           "error",
-          "Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab to start."
+          SUPPORTED_JOB_BOARD_PROMPT
         )
       );
       startButton.disabled = true;
@@ -51336,7 +51346,7 @@
       return void 0;
     }
     const candidate = value;
-    const isSupportedSite = candidate.site === "unsupported" || candidate.site === "indeed" || candidate.site === "ziprecruiter" || candidate.site === "dice" || candidate.site === "monster" || candidate.site === "glassdoor" || candidate.site === "startup" || candidate.site === "other_sites";
+    const isSupportedSite = candidate.site === "unsupported" || candidate.site === "indeed" || candidate.site === "ziprecruiter" || candidate.site === "dice" || candidate.site === "monster" || candidate.site === "glassdoor" || candidate.site === "greenhouse" || candidate.site === "builtin" || candidate.site === "startup" || candidate.site === "other_sites";
     const isSupportedPhase = candidate.phase === "idle" || candidate.phase === "running" || candidate.phase === "waiting_for_verification" || candidate.phase === "completed" || candidate.phase === "error";
     if (!isSupportedSite || !isSupportedPhase || typeof candidate.message !== "string" || !Number.isFinite(candidate.updatedAt)) {
       return void 0;

@@ -98,7 +98,12 @@ export async function waitForJobDetailUrls({
   label,
   onOpenListingsSurface,
 }: WaitForJobDetailUrlsOptions): Promise<string[]> {
-  const isCareerSite = site === "startup" || site === "other_sites";
+  const isMyGreenhousePortal = site === "greenhouse" && isMyGreenhousePortalHost();
+  const isCareerSite =
+    site === "startup" ||
+    site === "other_sites" ||
+    site === "greenhouse" ||
+    site === "builtin";
   const needsAggressiveScan =
     isCareerSite ||
     site === "monster" ||
@@ -175,7 +180,11 @@ export async function waitForJobDetailUrls({
     }
 
     if (isCareerSite) {
-      if (careerSurfaceAttempts < 2 && (attempt === 8 || attempt === 18)) {
+      if (
+        !isMyGreenhousePortal &&
+        careerSurfaceAttempts < 2 &&
+        (attempt === 8 || attempt === 18)
+      ) {
         careerSurfaceAttempts += 1;
         const openedCareerSurface = await tryOpenCareerListingsSurface({
           site,
@@ -1008,4 +1017,13 @@ function getResultPageSignature(site: SiteKey): string {
     .join("|");
 
   return [currentUrl, pageMarkers, candidateMarkers].join("::");
+}
+
+function isMyGreenhousePortalHost(): boolean {
+  try {
+    const parsed = new URL(window.location.href);
+    return parsed.hostname.toLowerCase().replace(/^www\./, "") === "my.greenhouse.io";
+  } catch {
+    return false;
+  }
 }

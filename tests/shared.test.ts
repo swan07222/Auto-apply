@@ -37,7 +37,13 @@ describe("shared automation target logic", () => {
     ).toBe("glassdoor");
     expect(
       detectSiteFromUrl("https://boards.greenhouse.io/example")
-    ).toBeNull();
+    ).toBe("greenhouse");
+    expect(
+      detectSiteFromUrl("https://job-boards.greenhouse.io/vercel/jobs/123")
+    ).toBe("greenhouse");
+    expect(
+      detectSiteFromUrl("https://builtin.com/job/software-engineer/3985663")
+    ).toBe("builtin");
   });
 
   it("builds remote Monster search targets with the current form-based search URL", () => {
@@ -93,6 +99,50 @@ describe("shared automation target logic", () => {
     expect(firstUrl.searchParams.get("q")).toBe("software engineer");
     expect(firstUrl.searchParams.get("filters.workplaceTypes")).toBe("Remote");
     expect(firstUrl.searchParams.get("location")).toBeNull();
+  });
+
+  it("builds Greenhouse search targets from the current board path using the live keyword param", () => {
+    const targets = buildSearchTargets(
+      "greenhouse",
+      "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
+      "site engineer"
+    );
+
+    expect(targets).toHaveLength(1);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(firstUrl.origin).toBe("https://job-boards.greenhouse.io");
+    expect(firstUrl.pathname).toBe("/vercel");
+    expect(firstUrl.searchParams.get("keyword")).toBe("site engineer");
+  });
+
+  it("keeps MyGreenhouse search targets on the portal page so the in-page search UI can run", () => {
+    const targets = buildSearchTargets(
+      "greenhouse",
+      "https://my.greenhouse.io/",
+      "site engineer"
+    );
+
+    expect(targets).toHaveLength(1);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(firstUrl.origin).toBe("https://my.greenhouse.io");
+    expect(firstUrl.pathname).toBe("/");
+    expect(firstUrl.search).toBe("");
+  });
+
+  it("builds Built In search targets with the current remote jobs route", () => {
+    const targets = buildSearchTargets(
+      "builtin",
+      "https://builtin.com/job/software-engineer/3985663",
+      "software engineer"
+    );
+
+    expect(targets).toHaveLength(1);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(firstUrl.pathname).toBe("/jobs/remote");
+    expect(firstUrl.searchParams.get("search")).toBe("software engineer");
   });
 
   it("keeps Dice and ZipRecruiter job pages open when the apply flow moves to a new tab", () => {
@@ -228,7 +278,7 @@ describe("shared automation target logic", () => {
     const urls = targets.map((target) => target.url);
 
     expect(urls).toContain(
-      "https://builtin.com/jobs?search=frontend%20engineer"
+      "https://builtin.com/jobs/remote?search=frontend%20engineer"
     );
     expect(urls).toContain(
       "https://www.workatastartup.com/jobs?query=frontend%20engineer"
@@ -252,7 +302,7 @@ describe("shared automation target logic", () => {
 
     const targets = buildOtherJobSiteTargets(settings);
     const builtInTargets = targets.filter((target) =>
-      target.url.startsWith("https://builtin.com/jobs?")
+      target.url.startsWith("https://builtin.com/jobs/remote?")
     );
     const workAtStartupTargets = targets.filter((target) =>
       target.url.startsWith("https://www.workatastartup.com/jobs?")
@@ -312,6 +362,15 @@ describe("shared automation target logic", () => {
         src="https://geo.captcha-delivery.com/captcha/?initialCid=test"
         title="DataDome CAPTCHA"
       ></iframe>
+    `;
+
+    expect(isProbablyHumanVerificationPage(document)).toBe(true);
+  });
+
+  it("detects iframe-only verification metadata even when the page body is sparse", () => {
+    document.title = "monster.com";
+    document.body.innerHTML = `
+      <iframe title="Verification Required" aria-label="Verification Required"></iframe>
     `;
 
     expect(isProbablyHumanVerificationPage(document)).toBe(true);

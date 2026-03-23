@@ -4,7 +4,7 @@
 import { DatePostedWindow, ResumeKind, SiteKey, getJobDedupKey } from "../shared";
 import { JobCandidate } from "./types";
 import { cleanText, normalizeChoiceText } from "./text";
-import { normalizeUrl } from "./dom";
+import { getActionText, getNavigationUrl, normalizeUrl } from "./dom";
 import {
   CAREER_LISTING_TEXT_PATTERNS,
   hasJobDetailAtsUrl,
@@ -309,7 +309,7 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
     case "startup":
     case "other_sites":
       return dedupeJobCandidates([
-        ...collectFocusedAtsLinkCandidates(),
+        ...collectFocusedAtsLinkCandidates(site),
         ...collectCandidatesFromContainers(
           [
             "[data-qa*='job']",
@@ -331,10 +331,81 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "section",
             "li",
           ],
-          getCareerSiteJobLinkSelectors("other_sites"),
+          getCareerSiteJobLinkSelectors(site),
           ["h1", "h2", "h3", "h4", "[data-testid*='title']", "[class*='title']"]
         ),
-        ...collectCandidatesFromAnchors(getCareerSiteJobLinkSelectors("other_sites")),
+        ...collectCandidatesFromAnchors(getCareerSiteJobLinkSelectors(site)),
+        ...collectFallbackJobCandidates(),
+      ]);
+
+    case "greenhouse":
+      return dedupeJobCandidates([
+        ...collectLabeledActionCandidates(["view job"], 2),
+        ...collectSiteAnchoredJobCandidates(
+          [
+            "a[href*='greenhouse.io'][href*='/jobs/']",
+            "a[href*='greenhouse.io'][href*='gh_jid=']",
+          ],
+          2
+        ),
+        ...collectFocusedAtsLinkCandidates(site),
+        ...collectCandidatesFromContainers(
+          [
+            "[data-qa*='job']",
+            "[data-testid*='job']",
+            "[data-test*='job']",
+            "[class*='job']",
+            "[class*='position']",
+            "[class*='opening']",
+            "[class*='posting']",
+            "[class*='role']",
+            "[class*='vacancy']",
+            "[class*='listing']",
+            "[class*='opportunity']",
+            "[class*='career']",
+            "[class*='Career']",
+            "[class*='openings']",
+            "[class*='Openings']",
+            "article",
+            "section",
+            "li",
+          ],
+          getCareerSiteJobLinkSelectors(site),
+          ["h1", "h2", "h3", "h4", "[data-testid*='title']", "[class*='title']"]
+        ),
+        ...collectCandidatesFromAnchors(getCareerSiteJobLinkSelectors(site)),
+        ...collectFallbackJobCandidates(),
+      ]);
+
+    case "builtin":
+      return dedupeJobCandidates([
+        ...collectSiteAnchoredJobCandidates(["a[href*='builtin.com/job/']"], 3),
+        ...collectFocusedAtsLinkCandidates(site),
+        ...collectCandidatesFromContainers(
+          [
+            "[data-qa*='job']",
+            "[data-testid*='job']",
+            "[data-test*='job']",
+            "[class*='job']",
+            "[class*='position']",
+            "[class*='opening']",
+            "[class*='posting']",
+            "[class*='role']",
+            "[class*='vacancy']",
+            "[class*='listing']",
+            "[class*='opportunity']",
+            "[class*='career']",
+            "[class*='Career']",
+            "[class*='openings']",
+            "[class*='Openings']",
+            "article",
+            "section",
+            "li",
+          ],
+          getCareerSiteJobLinkSelectors(site),
+          ["h1", "h2", "h3", "h4", "[data-testid*='title']", "[class*='title']"]
+        ),
+        ...collectCandidatesFromAnchors(getCareerSiteJobLinkSelectors(site)),
         ...collectFallbackJobCandidates(),
       ]);
 
@@ -436,7 +507,10 @@ export function pickRelevantJobUrls(
       : filterCandidatesForRemotePreference(recencyEligible);
   const shouldKeywordFilter =
     searchKeywords.length > 0 &&
-    (site === "startup" || site === "other_sites");
+    (site === "startup" ||
+      site === "other_sites" ||
+      site === "greenhouse" ||
+      site === "builtin");
   const boardKeywordMatchedCandidates =
     searchKeywords.length > 0 &&
     (site === "indeed" ||
@@ -463,7 +537,10 @@ export function pickRelevantJobUrls(
         ? boardKeywordMatchedCandidates
       : eligible;
   const technicalEligible =
-    site === "startup" || site === "other_sites"
+    site === "startup" ||
+    site === "other_sites" ||
+    site === "greenhouse" ||
+    site === "builtin"
       ? keywordEligible.filter((candidate) =>
           looksLikeTechnicalRoleTitle(candidate.title)
         )
@@ -480,7 +557,10 @@ export function pickRelevantJobUrls(
   }
 
   const fallbackPool =
-    site === "startup" || site === "other_sites"
+    site === "startup" ||
+    site === "other_sites" ||
+    site === "greenhouse" ||
+    site === "builtin"
       ? technicalEligible
       : keywordEligible;
 
@@ -854,7 +934,9 @@ export function isLikelyJobDetailUrl(
     }
 
     case "startup":
-    case "other_sites": {
+    case "other_sites":
+    case "greenhouse":
+    case "builtin": {
       try {
         const parsed = new URL(lowerUrl);
         if (hasJobIdentifyingSearchParam(parsed)) {
@@ -877,6 +959,8 @@ export function isLikelyJobDetailUrl(
       const pathSignals = [
         "/jobs/",
         "/job/",
+        "/view-job/",
+        "/view_job/",
         "/role/",
         "/roles/",
         "/positions/",
@@ -1322,7 +1406,12 @@ export function shouldFinishJobResultScan(
   let minAttemptsBeforeEarlyStop = 5;
   let stableThreshold = 4;
 
-  if (site === "startup" || site === "other_sites") {
+  if (
+    site === "startup" ||
+    site === "other_sites" ||
+    site === "greenhouse" ||
+    site === "builtin"
+  ) {
     minAttemptsBeforeEarlyStop = 22;
     stableThreshold = 8;
   } else if (site === "monster") {
@@ -1475,10 +1564,12 @@ function collectCandidatesFromAnchors(selectors: string[]): JobCandidate[] {
   return candidates;
 }
 
-function collectFocusedAtsLinkCandidates(): JobCandidate[] {
+function collectFocusedAtsLinkCandidates(
+  site: "startup" | "other_sites" | "greenhouse" | "builtin"
+): JobCandidate[] {
   const candidates: JobCandidate[] = [];
 
-  for (const selector of getCareerSiteJobLinkSelectors("other_sites")) {
+  for (const selector of getCareerSiteJobLinkSelectors(site)) {
     try {
       for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>(selector))) {
         if (!hasJobDetailAtsUrl(anchor.href)) {
@@ -1495,7 +1586,13 @@ function collectFocusedAtsLinkCandidates(): JobCandidate[] {
           continue;
         }
 
-        addJobCandidate(candidates, anchor.href, title, title);
+        const compactContainer = findCompactJobContextContainer(anchor, 2);
+        addJobCandidate(
+          candidates,
+          anchor.href,
+          title,
+          compactContainer ? buildCandidateContextText(compactContainer, anchor) : title
+        );
       }
     } catch {
       // Skip invalid selectors
@@ -1503,6 +1600,149 @@ function collectFocusedAtsLinkCandidates(): JobCandidate[] {
   }
 
   return candidates;
+}
+
+function collectSiteAnchoredJobCandidates(
+  selectors: string[],
+  maxSiblingJobAnchors: number
+): JobCandidate[] {
+  const candidates: JobCandidate[] = [];
+
+  for (const selector of selectors) {
+    try {
+      for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>(selector))) {
+        const title = resolveAnchorCandidateTitle(
+          anchor,
+          cleanText(anchor.textContent || anchor.getAttribute("aria-label") || "")
+        );
+        if (!title || isCareerListingCtaText(title) || isGenericRoleCtaText(title)) {
+          continue;
+        }
+
+        const compactContainer = findCompactJobContextContainer(anchor, maxSiblingJobAnchors);
+        addJobCandidate(
+          candidates,
+          anchor.href,
+          title,
+          compactContainer ? buildCandidateContextText(compactContainer, anchor) : title
+        );
+      }
+    } catch {
+      // Skip invalid selectors
+    }
+  }
+
+  return candidates;
+}
+
+function collectLabeledActionCandidates(
+  labels: string[],
+  maxSiblingJobAnchors: number
+): JobCandidate[] {
+  const candidates: JobCandidate[] = [];
+  const normalizedLabels = labels.map((label) => normalizeChoiceText(label));
+
+  for (const element of Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "a[href], button, [role='link'], [role='button'], input[type='button'], input[type='submit']"
+    )
+  )) {
+    const actionText = normalizeChoiceText(getActionText(element));
+    if (!actionText || !normalizedLabels.some((label) => actionText.includes(label))) {
+      continue;
+    }
+
+    const navUrl = getNavigationUrl(element);
+    if (!navUrl) {
+      continue;
+    }
+
+    const anchor =
+      element instanceof HTMLAnchorElement ? element : element.closest<HTMLAnchorElement>("a[href]");
+    const compactContainer =
+      anchor ? findCompactJobContextContainer(anchor, maxSiblingJobAnchors) : null;
+    const title =
+      resolveContainerHeadingTitle(compactContainer) ||
+      resolveContainerHeadingTitle(
+        element.closest<HTMLElement>("article, li, section, div, tr")
+      ) ||
+      "";
+
+    if (!title || isCareerListingCtaText(title) || isGenericRoleCtaText(title)) {
+      continue;
+    }
+
+    const contextText = compactContainer
+      ? buildCandidateContextText(compactContainer, anchor)
+      : cleanText(
+          [
+            title,
+            element.closest<HTMLElement>("article, li, section, div, tr")?.innerText ||
+              element.closest<HTMLElement>("article, li, section, div, tr")?.textContent ||
+              "",
+          ]
+            .filter(Boolean)
+            .join(" ")
+        );
+
+    addJobCandidate(candidates, navUrl, title, contextText);
+  }
+
+  return candidates;
+}
+
+function findCompactJobContextContainer(
+  anchor: HTMLAnchorElement,
+  maxSiblingJobAnchors: number
+): HTMLElement | null {
+  let current = anchor.parentElement;
+
+  for (let depth = 0; current && depth < 6; depth += 1) {
+    const text = cleanText(current.innerText || current.textContent || "");
+    const jobAnchorCount = countJobLikeAnchors(current);
+    if (
+      text &&
+      text.length <= 500 &&
+      jobAnchorCount > 0 &&
+      jobAnchorCount <= maxSiblingJobAnchors
+    ) {
+      return current;
+    }
+
+    current = current.parentElement;
+  }
+
+  return null;
+}
+
+function resolveContainerHeadingTitle(container: HTMLElement | null | undefined): string {
+  if (!container) {
+    return "";
+  }
+
+  const heading = container.querySelector<HTMLElement>(
+    "h1, h2, h3, h4, h5, [data-testid*='title'], [class*='title'], [class*='job-title'], [class*='role-title']"
+  );
+
+  const title = cleanText(heading?.textContent || "");
+  if (title && !isGenericRoleCtaText(title) && !isCareerListingCtaText(title)) {
+    return title;
+  }
+
+  return "";
+}
+
+function countJobLikeAnchors(container: HTMLElement): number {
+  let count = 0;
+
+  for (const anchor of Array.from(container.querySelectorAll<HTMLAnchorElement>("a[href]"))) {
+    const href = anchor.href.toLowerCase();
+    if (hasJobDetailAtsUrl(href) || href.includes("builtin.com/job/")) {
+      count += 1;
+    }
+  }
+
+  return count;
 }
 
 function collectDiceListItemCandidates(): JobCandidate[] {

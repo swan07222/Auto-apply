@@ -7,6 +7,8 @@ export type SiteKey =
   | "dice"
   | "monster"
   | "glassdoor"
+  | "greenhouse"
+  | "builtin"
   | "startup"
   | "other_sites";
 export type JobBoardSite = Exclude<SiteKey, "startup" | "other_sites">;
@@ -150,6 +152,8 @@ export const SUPPORTED_SITE_LABELS: Record<SiteKey, string> = {
   dice: "Dice",
   monster: "Monster",
   glassdoor: "Glassdoor",
+  greenhouse: "Greenhouse",
+  builtin: "Built In",
   startup: "Startup Careers",
   other_sites: "Other Job Sites",
 };
@@ -253,7 +257,7 @@ const OTHER_JOB_SITE_DEFINITIONS: CuratedJobSiteDefinition[] = [
     label: "Built In",
     regions: ["us"],
     buildUrl: (keyword) =>
-      `https://builtin.com/jobs?search=${encodeURIComponent(keyword)}`,
+      `https://builtin.com/jobs/remote?search=${encodeURIComponent(keyword)}`,
   },
   {
     label: "The Muse",
@@ -357,6 +361,14 @@ export function detectSiteFromUrl(url: string): SiteKey | null {
     return "dice";
   }
 
+  if (bare === "builtin.com" || bare.endsWith(".builtin.com")) {
+    return "builtin";
+  }
+
+  if (bare === "greenhouse.io" || bare.endsWith(".greenhouse.io")) {
+    return "greenhouse";
+  }
+
   const hostParts = bare.split(".");
   for (let i = 0; i < hostParts.length; i++) {
     if (hostParts[i] === "monster") {
@@ -444,7 +456,9 @@ export function isJobBoardSite(
     site === "ziprecruiter" ||
     site === "dice" ||
     site === "monster" ||
-    site === "glassdoor"
+    site === "glassdoor" ||
+    site === "greenhouse" ||
+    site === "builtin"
   );
 }
 
@@ -485,14 +499,14 @@ export function hasConfiguredSearchKeywords(value: string): boolean {
 
 export function buildSearchTargets(
   site: JobBoardSite,
-  _origin: string,
+  currentUrl: string,
   searchKeywords: string
 ): SearchTarget[] {
   return dedupeSearchTargets(
     parseSearchKeywords(searchKeywords).map((keyword) => ({
       label: keyword,
       keyword,
-      url: buildSingleSearchUrl(site, keyword),
+      url: buildSingleSearchUrl(site, keyword, currentUrl),
     }))
   );
 }
@@ -689,6 +703,8 @@ const CANONICAL_JOB_BOARD_ORIGINS: Record<JobBoardSite, string> = {
   dice: "https://www.dice.com",
   monster: "https://www.monster.com",
   glassdoor: "https://www.glassdoor.com",
+  greenhouse: "https://job-boards.greenhouse.io",
+  builtin: "https://builtin.com",
 };
 
 // FIX: Removed "lk" from general identifying params — handled site-specifically
@@ -912,7 +928,58 @@ function buildGlassdoorSearchUrl(query: string, baseOrigin: string): string {
   return url.toString();
 }
 
-function buildSingleSearchUrl(site: JobBoardSite, query: string): string {
+function buildBuiltInSearchUrl(query: string, baseOrigin: string): string {
+  const url = new URL("/jobs/remote", baseOrigin);
+  url.searchParams.set("search", query);
+  return url.toString();
+}
+
+function isMyGreenhousePortalUrl(currentUrl: string): boolean {
+  try {
+    const parsed = new URL(currentUrl);
+    return parsed.hostname.toLowerCase().replace(/^www\./, "") === "my.greenhouse.io";
+  } catch {
+    return false;
+  }
+}
+
+function resolveGreenhouseBoardBaseUrl(currentUrl: string, fallbackOrigin: string): string {
+  try {
+    const parsed = new URL(currentUrl);
+    const normalizedPath = parsed.pathname.replace(/\/+$/, "");
+    const jobsIndex = normalizedPath.toLowerCase().indexOf("/jobs/");
+    const boardPath =
+      jobsIndex >= 0
+        ? normalizedPath.slice(0, jobsIndex)
+        : normalizedPath || "/";
+    return new URL(boardPath || "/", `${parsed.protocol}//${parsed.host}`).toString();
+  } catch {
+    return fallbackOrigin;
+  }
+}
+
+function buildGreenhouseSearchUrl(query: string, currentUrl: string, fallbackOrigin: string): string {
+  if (isMyGreenhousePortalUrl(currentUrl)) {
+    try {
+      const parsed = new URL(currentUrl);
+      return new URL(parsed.pathname || "/", `${parsed.protocol}//${parsed.host}`).toString();
+    } catch {
+      return currentUrl;
+    }
+  }
+
+  const url = new URL(
+    resolveGreenhouseBoardBaseUrl(currentUrl, fallbackOrigin)
+  );
+  url.searchParams.set("keyword", query);
+  return url.toString();
+}
+
+function buildSingleSearchUrl(
+  site: JobBoardSite,
+  query: string,
+  currentUrl: string
+): string {
   const baseOrigin = CANONICAL_JOB_BOARD_ORIGINS[site];
 
   switch (site) {
@@ -941,6 +1008,12 @@ function buildSingleSearchUrl(site: JobBoardSite, query: string): string {
     }
     case "glassdoor": {
       return buildGlassdoorSearchUrl(query, baseOrigin);
+    }
+    case "greenhouse": {
+      return buildGreenhouseSearchUrl(query, currentUrl, baseOrigin);
+    }
+    case "builtin": {
+      return buildBuiltInSearchUrl(query, baseOrigin);
     }
   }
 }
@@ -1111,6 +1184,21 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
   const title = doc.title.toLowerCase();
   const bodyText = (doc.body?.innerText ?? "").toLowerCase().slice(0, 6000);
   const bodyLength = (doc.body?.innerText ?? "").trim().length;
+  const iframeMetadata = Array.from(doc.querySelectorAll("iframe"))
+    .map((frame) =>
+      [
+        frame.getAttribute("title"),
+        frame.getAttribute("aria-label"),
+        frame.getAttribute("name"),
+        frame.getAttribute("src"),
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+    )
+    .join(" ")
+    .slice(0, 4000);
+  const combinedText = `${title} ${bodyText} ${iframeMetadata}`;
 
   const strongPhrases = [
     "verify you are human", "verification required", "complete the security check",
@@ -1122,7 +1210,7 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
     "security service to protect against malicious bots",
   ];
 
-  if (strongPhrases.some((phrase) => title.includes(phrase) || bodyText.includes(phrase))) {
+  if (strongPhrases.some((phrase) => combinedText.includes(phrase))) {
     return true;
   }
 
@@ -1133,7 +1221,7 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
       "enable javascript and cookies to continue", "captcha",
       "security verification", "ray id", "cloudflare",
     ];
-    if (weakPhrases.some((phrase) => title.includes(phrase) || bodyText.includes(phrase))) {
+    if (weakPhrases.some((phrase) => combinedText.includes(phrase))) {
       return true;
     }
   }
@@ -1143,6 +1231,8 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
       [
         "iframe[src*='captcha']",
         "iframe[title*='challenge']",
+        "iframe[title*='verification' i]",
+        "iframe[aria-label*='verification' i]",
         "#px-captcha",
         ".cf-turnstile",
         ".g-recaptcha",

@@ -322,9 +322,65 @@ describe("popup workflow", () => {
 
     expect(popup.siteName.textContent).toBe("No supported site");
     expect(popup.statusText.textContent).toBe(
-      "Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab to start."
+      "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In in the active tab to start."
     );
     expect(popup.startButton.disabled).toBe(true);
+  });
+
+  it("treats Built In and Greenhouse tabs as first-class job boards in job-board mode", async () => {
+    const builtInPopup = await createPopupHarness({
+      activeTabs: [
+        {
+          id: 42,
+          url: "https://builtin.com/jobs/remote?search=software%20engineer",
+        },
+      ],
+      runtimeSendMessage: async (message) => {
+        if (message.type === "get-tab-session") {
+          return {
+            ok: true,
+            session: {
+              site: "builtin",
+              phase: "idle",
+              message: "Ready on Built In.",
+              updatedAt: Date.now(),
+            },
+          };
+        }
+        return { ok: true };
+      },
+    });
+
+    expect(builtInPopup.siteName.textContent).toBe("Built In");
+    expect(builtInPopup.statusText.textContent).toBe("Ready on Built In.");
+    expect(builtInPopup.startButton.disabled).toBe(false);
+
+    const greenhousePopup = await createPopupHarness({
+      activeTabs: [
+        {
+          id: 77,
+          url: "https://job-boards.greenhouse.io/vercel",
+        },
+      ],
+      runtimeSendMessage: async (message) => {
+        if (message.type === "get-tab-session") {
+          return {
+            ok: true,
+            session: {
+              site: "greenhouse",
+              phase: "idle",
+              message: "Ready on Greenhouse.",
+              updatedAt: Date.now(),
+            },
+          };
+        }
+        return { ok: true };
+      },
+    });
+
+    expect(greenhousePopup.siteName.textContent).toBe("Greenhouse");
+    expect(greenhousePopup.statusText.textContent).toBe("Ready on Greenhouse.");
+    expect(greenhousePopup.startButton.disabled).toBe(false);
   });
 
   it("uses the pending job-board URL when the active tab is still loading", async () => {

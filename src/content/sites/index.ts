@@ -1,6 +1,8 @@
 import { SiteKey } from "../../shared";
 import { diceSiteProfile } from "./dice";
+import { builtInSiteProfile } from "./builtin";
 import { glassdoorSiteProfile } from "./glassdoor";
+import { greenhouseSiteProfile } from "./greenhouse";
 import { indeedSiteProfile } from "./indeed";
 import { monsterSiteProfile } from "./monster";
 import { otherSitesProfile } from "./other_sites";
@@ -14,6 +16,8 @@ const SITE_PROFILES: Record<SiteKey, SiteContentProfile> = {
   dice: diceSiteProfile,
   monster: monsterSiteProfile,
   glassdoor: glassdoorSiteProfile,
+  greenhouse: greenhouseSiteProfile,
+  builtin: builtInSiteProfile,
   startup: startupSiteProfile,
   other_sites: otherSitesProfile,
 };
@@ -30,7 +34,9 @@ export function getPrimaryCurrentJobSurfaceSelectors(site: SiteKey | null): stri
   return getSiteContentProfile(site)?.currentJobSurfaceSelectors ?? [];
 }
 
-export function getCareerSiteJobLinkSelectors(site: "startup" | "other_sites"): string[] {
+export function getCareerSiteJobLinkSelectors(
+  site: "startup" | "other_sites" | "greenhouse" | "builtin"
+): string[] {
   return SITE_PROFILES[site].careerJobLinkSelectors ?? [];
 }
 

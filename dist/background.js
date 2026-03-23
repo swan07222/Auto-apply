@@ -74,7 +74,7 @@
     {
       label: "Built In",
       regions: ["us"],
-      buildUrl: (keyword) => `https://builtin.com/jobs?search=${encodeURIComponent(keyword)}`
+      buildUrl: (keyword) => `https://builtin.com/jobs/remote?search=${encodeURIComponent(keyword)}`
     },
     {
       label: "The Muse",
@@ -154,6 +154,12 @@
     if (bare === "dice.com" || bare.endsWith(".dice.com")) {
       return "dice";
     }
+    if (bare === "builtin.com" || bare.endsWith(".builtin.com")) {
+      return "builtin";
+    }
+    if (bare === "greenhouse.io" || bare.endsWith(".greenhouse.io")) {
+      return "greenhouse";
+    }
     const hostParts = bare.split(".");
     for (let i = 0; i < hostParts.length; i++) {
       if (hostParts[i] === "monster") {
@@ -195,7 +201,7 @@
     return `remote-job-search-session:${tabId}`;
   }
   function isJobBoardSite(site) {
-    return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor";
+    return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor" || site === "greenhouse" || site === "builtin";
   }
   function shouldKeepManagedJobPageOpen(site) {
     return site === "ziprecruiter" || site === "dice";
@@ -1230,7 +1236,7 @@
     if (!tab || tab.id === void 0) {
       return {
         ok: false,
-        error: "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, Monster, or Glassdoor page and try again."
+        error: "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In page and try again."
       };
     }
     const resolvedTabId = tab.id;
@@ -1241,7 +1247,7 @@
     if (!isJobBoardSite(site)) {
       return {
         ok: false,
-        error: "Open an Indeed, ZipRecruiter, Dice, Monster, or Glassdoor page first."
+        error: "Open an Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In page first."
       };
     }
     if (searchKeywords.length === 0) {
@@ -2622,6 +2628,10 @@
         return "Monster";
       case "glassdoor":
         return "Glassdoor";
+      case "greenhouse":
+        return "Greenhouse";
+      case "builtin":
+        return "Built In";
       case "startup":
         return "Startup Careers";
       case "other_sites":

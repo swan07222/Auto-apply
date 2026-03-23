@@ -2451,14 +2451,7 @@ export function isLikelyApplyUrl(url: string, site: SiteKey): boolean {
   const hostname = parsed?.hostname.toLowerCase() ?? "";
   const pathAndQuery = `${parsed?.pathname.toLowerCase() ?? ""}${parsed?.search.toLowerCase() ?? ""}`;
 
-  if (
-    hostname.includes("greenhouse.io") &&
-    (
-      pathAndQuery.includes("/embed/job_app") ||
-      pathAndQuery.includes("/jobs/") ||
-      pathAndQuery.includes("gh_jid=")
-    )
-  ) {
+  if (hostname.includes("greenhouse.io") && isGreenhouseApplicationUrl(pathAndQuery)) {
     return true;
   }
 
@@ -2484,7 +2477,12 @@ export function isLikelyApplyUrl(url: string, site: SiteKey): boolean {
     return true;
   }
 
-  if (site === "startup" || site === "other_sites") {
+  if (
+    site === "startup" ||
+    site === "other_sites" ||
+    site === "greenhouse" ||
+    site === "builtin"
+  ) {
     return includesAnyToken(lower, ATS_APPLICATION_URL_TOKENS);
   }
 
@@ -2493,6 +2491,27 @@ export function isLikelyApplyUrl(url: string, site: SiteKey): boolean {
   } catch {
     return false;
   }
+}
+
+function isGreenhouseApplicationUrl(pathAndQuery: string): boolean {
+  if (!pathAndQuery) {
+    return false;
+  }
+
+  if (pathAndQuery.includes("/embed/job_app")) {
+    return true;
+  }
+
+  if (
+    pathAndQuery.includes("/apply") ||
+    pathAndQuery.includes("job_app") ||
+    pathAndQuery.includes("application_confirmation") ||
+    pathAndQuery.includes("application_confirmation_token")
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 export function isAlreadyOnApplyPage(site: SiteKey, url: string): boolean {
@@ -2830,6 +2849,10 @@ function getSiteRoot(site: SiteKey): string {
       return "monster.com";
     case "glassdoor":
       return "glassdoor.com";
+    case "greenhouse":
+      return "greenhouse.io";
+    case "builtin":
+      return "builtin.com";
     case "startup":
     case "other_sites":
       return window.location.hostname.toLowerCase();

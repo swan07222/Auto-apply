@@ -1222,10 +1222,16 @@ describe("application progression actions", () => {
     ).toBe(true);
     expect(
       isLikelyApplyUrl(
-        "https://job-boards.greenhouse.io/example/jobs/1234567?gh_jid=1234567",
+        "https://job-boards.greenhouse.io/example/jobs/1234567/apply",
         "other_sites"
       )
     ).toBe(true);
+    expect(
+      isLikelyApplyUrl(
+        "https://job-boards.greenhouse.io/example/jobs/1234567?gh_jid=1234567",
+        "other_sites"
+      )
+    ).toBe(false);
     expect(
       isLikelyApplyUrl(
         "https://www.dice.com/job-applications/d32a5e6b-4beb-4314-9830-a5b0c943d59c/start-apply",
@@ -1251,5 +1257,55 @@ describe("application progression actions", () => {
     expect(shouldPreferApplyNavigation("https://example.com/jobs/123", "Apply", "other_sites")).toBe(
       false
     );
+  });
+
+  it("prefers Built In's real external apply link over sticky helper buttons", () => {
+    document.body.innerHTML = `
+      <main>
+        <a
+          href="https://jobs.ashbyhq.com/example/6462d3d1-443c-4a5a-8667-c1d0472fa32d"
+          aria-label="Apply to job"
+          class="job-post-sticky-bar-btn"
+        >
+          APPLY
+        </a>
+        <button id="filter-apply-handler">Apply</button>
+      </main>
+    `;
+
+    const action = findApplyAction("other_sites", "job-page");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe(
+        "https://jobs.ashbyhq.com/example/6462d3d1-443c-4a5a-8667-c1d0472fa32d"
+      );
+    }
+  });
+
+  it("prefers Built In external apply actions when running on the Built In site profile", () => {
+    document.body.innerHTML = `
+      <main class="job-post">
+        <a
+          href="https://jobs.ashbyhq.com/example/6462d3d1-443c-4a5a-8667-c1d0472fa32d"
+          aria-label="Apply to job"
+          class="job-post-sticky-bar-btn"
+        >
+          APPLY
+        </a>
+        <button id="filter-apply-handler">Apply</button>
+      </main>
+    `;
+
+    const action = findApplyAction("builtin", "job-page");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe(
+        "https://jobs.ashbyhq.com/example/6462d3d1-443c-4a5a-8667-c1d0472fa32d"
+      );
+    }
   });
 });

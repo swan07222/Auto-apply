@@ -279,6 +279,19 @@ async function waitForMeaningfulLiveContent(page: Page): Promise<void> {
         .replace(/\s+/g, " ")
         .trim()
         .toLowerCase();
+      const iframeMetadata = Array.from(document.querySelectorAll("iframe"))
+        .map((frame) =>
+          [
+            frame.getAttribute("title"),
+            frame.getAttribute("aria-label"),
+            frame.getAttribute("name"),
+            frame.getAttribute("src"),
+          ]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase()
+        )
+        .join(" ");
       const anchorCount = document.querySelectorAll("a[href]").length;
       const verificationSignals = [
         "additional verification required",
@@ -287,9 +300,11 @@ async function waitForMeaningfulLiveContent(page: Page): Promise<void> {
         "security challenge",
         "cloudflare",
         "ray id",
+        "captcha",
       ];
+      const combinedText = `${bodyText} ${iframeMetadata}`;
 
-      if (verificationSignals.some((signal) => bodyText.includes(signal))) {
+      if (verificationSignals.some((signal) => combinedText.includes(signal))) {
         return true;
       }
 
@@ -711,6 +726,48 @@ for (const target of buildSearchTargets("glassdoor", "https://www.glassdoor.com"
     expect(
       probe.candidateUrls.length,
       `Glassdoor search produced no job-detail candidates.\n${describeProbeFailure(target, probe)}`
+    ).toBeGreaterThan(0);
+  });
+}
+
+for (const target of buildSearchTargets("builtin", "https://builtin.com", "software engineer")) {
+  test(`live Built In search works: ${target.label}`, async ({ page }) => {
+    const probe = await navigateAndCollect(page, "builtin", target);
+
+    test.skip(
+      Boolean(probe.navigationError),
+      `Built In target could not be reached.\n${describeProbeFailure(target, probe)}`
+    );
+    test.skip(
+      probe.verificationDetected,
+      `Built In blocked automated browsing with a verification page.\n${describeProbeFailure(target, probe)}`
+    );
+    expect(
+      probe.candidateUrls.length,
+      `Built In search produced no job-detail candidates.\n${describeProbeFailure(target, probe)}`
+    ).toBeGreaterThan(0);
+  });
+}
+
+for (const target of buildSearchTargets(
+  "greenhouse",
+  "https://job-boards.greenhouse.io/vercel",
+  "engineer"
+)) {
+  test(`live Greenhouse search works: ${target.label}`, async ({ page }) => {
+    const probe = await navigateAndCollect(page, "greenhouse", target);
+
+    test.skip(
+      Boolean(probe.navigationError),
+      `Greenhouse target could not be reached.\n${describeProbeFailure(target, probe)}`
+    );
+    test.skip(
+      probe.verificationDetected,
+      `Greenhouse blocked automated browsing with a verification page.\n${describeProbeFailure(target, probe)}`
+    );
+    expect(
+      probe.candidateUrls.length,
+      `Greenhouse search produced no job-detail candidates.\n${describeProbeFailure(target, probe)}`
     ).toBeGreaterThan(0);
   });
 }

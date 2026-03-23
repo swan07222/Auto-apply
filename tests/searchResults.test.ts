@@ -293,4 +293,43 @@ describe("search result collection", () => {
       "https://www.dice.com/jobs?q=software%20engineer&page=2"
     );
   });
+
+  it("does not try generic career-surface recovery clicks on the MyGreenhouse portal", async () => {
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: new URL("https://my.greenhouse.io/") as unknown as Location,
+    });
+
+    document.body.innerHTML = `
+      <main>
+        <input placeholder="Search for a job title" value="full stack" />
+        <button id="portal-action" type="button">Quick apply</button>
+      </main>
+    `;
+
+    let clicks = 0;
+    document.getElementById("portal-action")?.addEventListener("click", () => {
+      clicks += 1;
+    });
+
+    const promise = waitForJobDetailUrls({
+      site: "greenhouse",
+      datePostedWindow: "any",
+      targetCount: 1,
+      detectedSite: "greenhouse",
+      searchKeywords: ["full stack"],
+    });
+
+    await vi.runAllTimersAsync();
+    const urls = await promise;
+
+    expect(urls).toEqual([]);
+    expect(clicks).toBe(0);
+
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: originalLocation,
+    });
+  });
 });

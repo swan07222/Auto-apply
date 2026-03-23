@@ -30,6 +30,10 @@ import {
 import { createPopupDialogController } from "./popupDialog";
 
 const MAX_RESUME_TEXT_CHARS = 24_000;
+const SUPPORTED_JOB_BOARD_PROMPT =
+  "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In in the active tab to start.";
+const SUPPORTED_JOB_BOARD_MODE_PROMPT =
+  "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In in the active tab to use Job Board mode.";
 
 const startButton = requireElement<HTMLButtonElement>("#start-button");
 const saveButton = requireElement<HTMLButtonElement>("#save-button");
@@ -460,7 +464,7 @@ async function startAutomation(): Promise<void> {
       createStatus(
         "unsupported",
         "error",
-        "Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab to use Job Board mode."
+        SUPPORTED_JOB_BOARD_MODE_PROMPT
       )
     );
     startButton.disabled = false;
@@ -696,7 +700,7 @@ async function refreshStatus(): Promise<void> {
             bgSession.message ||
               (activeJobBoardSite
                 ? `Ready on ${getSiteLabel(activeJobBoardSite)}.`
-                : "Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab to start.")
+                : SUPPORTED_JOB_BOARD_PROMPT)
           )
         : bgSession
     );
@@ -724,7 +728,7 @@ async function refreshStatus(): Promise<void> {
       createStatus(
         "unsupported",
         "error",
-        "Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab to start."
+        SUPPORTED_JOB_BOARD_PROMPT
       )
     );
     startButton.disabled = true;
@@ -799,7 +803,7 @@ function applyLocalStatusPreview(): void {
       createStatus(
         "unsupported",
         "error",
-        "Open Indeed, ZipRecruiter, Dice, Monster, or Glassdoor in the active tab to start."
+        SUPPORTED_JOB_BOARD_PROMPT
       )
     );
     startButton.disabled = true;
@@ -1740,6 +1744,8 @@ function parseAutomationStatus(value: unknown): AutomationStatus | undefined {
     candidate.site === "dice" ||
     candidate.site === "monster" ||
     candidate.site === "glassdoor" ||
+    candidate.site === "greenhouse" ||
+    candidate.site === "builtin" ||
     candidate.site === "startup" ||
     candidate.site === "other_sites";
   const isSupportedPhase =
