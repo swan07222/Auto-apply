@@ -101,6 +101,7 @@ export async function waitForJobDetailUrls({
   const isCareerSite = site === "startup" || site === "other_sites";
   const needsAggressiveScan =
     isCareerSite ||
+    site === "monster" ||
     site === "indeed" ||
     site === "dice" ||
     site === "ziprecruiter" ||
@@ -217,6 +218,18 @@ export async function waitForJobDetailUrls({
       if (attempt === 10 || attempt === 20 || attempt === 30) {
         tryClickLoadMoreButton();
       }
+    } else if (site === "monster") {
+      advanceMonsterResultsSurface(attempt);
+
+      if (
+        attempt === 8 ||
+        attempt === 16 ||
+        attempt === 24 ||
+        attempt === 32 ||
+        attempt === 40
+      ) {
+        tryClickLoadMoreButton();
+      }
     } else if (
       site === "indeed" ||
       site === "dice" ||
@@ -293,6 +306,179 @@ function mergeJobUrlLists(...lists: string[][]): string[] {
 
 async function waitForResultSurfaceSettle(site: SiteKey): Promise<void> {
   await waitForDomSettle(getSiteResultSurfaceSettleMs(site), 350);
+}
+
+function advanceMonsterResultsSurface(attempt: number): void {
+  const rail = findMonsterScrollableResultsRail();
+
+  if (rail) {
+    const maxScrollTop = Math.max(rail.scrollHeight - rail.clientHeight, 0);
+    const stride = Math.max(Math.round(rail.clientHeight * 0.9), 280);
+    const phase = attempt % 6;
+    let nextTop = rail.scrollTop;
+
+    if (maxScrollTop > 0) {
+      if (phase === 0) {
+        nextTop = Math.min(maxScrollTop, rail.scrollTop + stride);
+      } else if (phase === 1) {
+        nextTop = Math.min(maxScrollTop, rail.scrollTop + stride);
+      } else if (phase === 2) {
+        nextTop = Math.min(maxScrollTop, rail.scrollTop + Math.round(stride / 2));
+      } else if (phase === 3) {
+        nextTop = maxScrollTop;
+      } else if (phase === 4) {
+        nextTop = Math.max(0, Math.round(maxScrollTop / 2));
+      } else {
+        nextTop = 0;
+      }
+
+      if (nextTop !== rail.scrollTop) {
+        setElementScrollTop(rail, nextTop);
+        rail.dispatchEvent(new Event("scroll", { bubbles: true }));
+      }
+    }
+    return;
+  }
+
+  const pageHeight = Math.max(
+    document.body.scrollHeight,
+    document.documentElement?.scrollHeight ?? 0
+  );
+  const pagePhase = attempt % 4;
+
+  if (pagePhase === 0) {
+    window.scrollTo({ top: pageHeight / 3, behavior: "smooth" });
+  } else if (pagePhase === 1) {
+    window.scrollTo({ top: pageHeight, behavior: "smooth" });
+  } else if (pagePhase === 2) {
+    window.scrollTo({ top: pageHeight / 2, behavior: "smooth" });
+  } else {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+}
+
+function findMonsterScrollableResultsRail(): HTMLElement | null {
+  const selectors = [
+    "[data-testid*='search-results' i]",
+    "[data-testid*='job-results' i]",
+    "[data-testid*='results-list' i]",
+    "[data-testid*='job-list' i]",
+    "[aria-label*='job results' i]",
+    "[aria-label*='search results' i]",
+    "[class*='search-results' i]",
+    "[class*='SearchResults' i]",
+    "[class*='results-list' i]",
+    "[class*='ResultsList' i]",
+    "[class*='jobs-list' i]",
+    "[class*='JobsList' i]",
+    "[class*='left-column' i]",
+    "[class*='LeftColumn' i]",
+    "[class*='sidebar' i]",
+    "[class*='Sidebar' i]",
+    "aside",
+    "section",
+    "div",
+  ];
+  const candidates: Array<{ element: HTMLElement; score: number }> = [];
+  const seen = new Set<HTMLElement>();
+  const pushCandidate = (element: HTMLElement, baseScore = 0) => {
+    if (seen.has(element) || !isElementVisible(element) || !isScrollableElement(element)) {
+      return;
+    }
+
+    seen.add(element);
+
+    const monsterLinks = element.querySelectorAll(
+      "a[href*='/job-openings/'], a[href*='/job-opening/'], a[href*='monster.com/job/'], a[href*='job-openings.monster.com'], a[href*='jobview.monster.com']"
+    ).length;
+    if (monsterLinks === 0) {
+      return;
+    }
+
+    let score = baseScore + monsterLinks * 10;
+    const attrs = [
+      element.getAttribute("data-testid"),
+      element.getAttribute("aria-label"),
+      element.className,
+      element.id,
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    if (/search-results|job-results|results-list|job-list/.test(attrs)) score += 40;
+    if (/left|sidebar|rail|dashboard|pane|panel/.test(attrs)) score += 16;
+    if (element.tagName === "ASIDE") score += 8;
+    if (element.clientWidth > 0 && element.clientWidth < window.innerWidth * 0.7) {
+      score += 10;
+    }
+
+    candidates.push({ element, score });
+  };
+
+  for (const selector of selectors) {
+    let elements: HTMLElement[];
+    try {
+      elements = Array.from(document.querySelectorAll<HTMLElement>(selector));
+    } catch {
+      continue;
+    }
+
+    for (const element of elements) {
+      pushCandidate(element);
+    }
+  }
+
+  for (const link of Array.from(
+    document.querySelectorAll<HTMLAnchorElement>(
+      "a[href*='/job-openings/'], a[href*='/job-opening/'], a[href*='monster.com/job/'], a[href*='job-openings.monster.com'], a[href*='jobview.monster.com']"
+    )
+  )) {
+    let depth = 0;
+    let ancestor = link.parentElement;
+    while (ancestor && depth < 6) {
+      pushCandidate(ancestor, Math.max(24 - depth * 4, 0));
+      ancestor = ancestor.parentElement;
+      depth += 1;
+    }
+  }
+
+  return candidates.sort((left, right) => right.score - left.score)[0]?.element ?? null;
+}
+
+function isScrollableElement(element: HTMLElement): boolean {
+  const style = window.getComputedStyle(element);
+  const overflowY = style.overflowY.toLowerCase();
+  const allowsScroll =
+    overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay";
+  const attrs = [
+    element.getAttribute("data-testid"),
+    element.getAttribute("aria-label"),
+    element.className,
+    element.id,
+  ]
+    .join(" ")
+    .toLowerCase();
+  const likelyResultsContainer = /search-results|job-results|results-list|job-list|dashboard|pane|panel|rail|left/.test(
+    attrs
+  );
+
+  return (
+    element.scrollHeight > element.clientHeight + 80 &&
+    (allowsScroll || likelyResultsContainer)
+  );
+}
+
+function setElementScrollTop(element: HTMLElement, top: number): void {
+  element.scrollTop = top;
+  try {
+    element.scrollTo({ top, behavior: "smooth" });
+  } catch {
+    try {
+      element.scrollTo(0, top);
+    } catch {
+      // Ignore non-scrollable polyfill gaps.
+    }
+  }
 }
 
 async function waitForDomSettle(

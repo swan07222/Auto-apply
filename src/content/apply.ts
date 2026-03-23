@@ -663,15 +663,42 @@ function choosePreferredMonsterPrimaryApplyCandidate(
       top: number;
     }
   | undefined {
-  const primaryApplyCandidates = candidates.filter((candidate) =>
-    /^(quick apply|apply|apply now|easy apply)$/i.test(candidate.text.trim())
+  const primaryApplyCandidates = candidates.filter(
+    (candidate) =>
+      !isMonsterSecondaryApplyContext(candidate.element) &&
+      isMonsterPrimaryApplyLabel(candidate.text, candidate.url)
   );
 
-  if (primaryApplyCandidates.length < 2) {
-    return undefined;
+  if (primaryApplyCandidates.length >= 1) {
+    return primaryApplyCandidates.sort((left, right) => {
+      if (left.top !== right.top) {
+        return left.top - right.top;
+      }
+
+      if (left.score !== right.score) {
+        return right.score - left.score;
+      }
+
+      const position = left.element.compareDocumentPosition(right.element);
+      if (position & Node.DOCUMENT_POSITION_FOLLOWING) {
+        return -1;
+      }
+      if (position & Node.DOCUMENT_POSITION_PRECEDING) {
+        return 1;
+      }
+      return 0;
+    })[0];
   }
 
-  return primaryApplyCandidates.sort((left, right) => {
+  const nonSecondaryCandidates = candidates.filter(
+    (candidate) => !isMonsterSecondaryApplyContext(candidate.element)
+  );
+
+  if (nonSecondaryCandidates.length < 2) {
+    return nonSecondaryCandidates[0];
+  }
+
+  return nonSecondaryCandidates.sort((left, right) => {
     if (left.top !== right.top) {
       return left.top - right.top;
     }
@@ -689,6 +716,53 @@ function choosePreferredMonsterPrimaryApplyCandidate(
     }
     return 0;
   })[0];
+}
+
+function isMonsterPrimaryApplyLabel(text: string, url: string | null): boolean {
+  const normalizedText = text
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const lowerUrl = url?.toLowerCase() ?? "";
+
+  if (
+    normalizedText === "apply" ||
+    normalizedText === "apply now" ||
+    normalizedText === "quick apply" ||
+    normalizedText === "easy apply" ||
+    normalizedText.endsWith(" apply") ||
+    normalizedText.startsWith("apply ")
+  ) {
+    return true;
+  }
+
+  return (
+    lowerUrl.includes("/apply") ||
+    lowerUrl.includes("candidate") ||
+    lowerUrl.includes("application")
+  );
+}
+
+function isMonsterSecondaryApplyContext(element: HTMLElement): boolean {
+  if (
+    element.closest(
+      "aside, [class*='related'], [class*='recommended'], [class*='suggested'], [class*='similar'], [class*='resume-resource'], [class*='resumeResource']"
+    )
+  ) {
+    return true;
+  }
+
+  const section = element.closest<HTMLElement>("section, article, div, aside");
+  const sectionText = cleanText(section?.textContent || "").toLowerCase();
+
+  return (
+    sectionText.includes("similar jobs") ||
+    sectionText.includes("recommended jobs") ||
+    sectionText.includes("suggested jobs") ||
+    sectionText.includes("more jobs") ||
+    sectionText.includes("resume resources")
+  );
 }
 
 function collectMonsterApplyCandidates(): HTMLElement[] {
@@ -859,6 +933,18 @@ function scoreMonsterApplyCandidate(
   ) {
     score -= 40;
   }
+  if (isMonsterSecondaryApplyContext(actionElement)) {
+    score -= 36;
+  }
+  if (
+    /\b(related|recommended|suggested|similar|more jobs)\b/i.test(
+      cleanText(
+        actionElement.closest<HTMLElement>("section, aside, article, div")?.textContent || ""
+      )
+    )
+  ) {
+    score -= 28;
+  }
   if (actionElement.closest("aside")) score -= 12;
   if (actionElement.closest("main, article, [role='main'], section")) score += 12;
   if (actionElement.closest("[data-testid*='job'], [class*='job'], [class*='Job']")) score += 10;
@@ -911,6 +997,13 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
       }
     | undefined;
   let bestDirect: ScoredApplyCandidate | undefined;
+  const viableCandidates: Array<{
+    element: HTMLElement;
+    score: number;
+    text: string;
+    url: string | null;
+    top: number;
+  }> = [];
 
   for (const element of candidateElements) {
     const actionElement = getClickableApplyElement(element);
@@ -1006,6 +1099,14 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
     if (score < 45) {
       continue;
     }
+
+    viableCandidates.push({
+      element: actionElement,
+      score,
+      text,
+      url,
+      top: getZipRecruiterActionTop(actionElement),
+    });
 
     if (!best || score > best.score) {
       best = { element: actionElement, score, text, url };
@@ -1111,6 +1212,14 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
         continue;
       }
 
+      viableCandidates.push({
+        element: actionElement,
+        score,
+        text,
+        url,
+        top: getZipRecruiterActionTop(actionElement),
+      });
+
       if (!best || score > best.score) {
         best = { element: actionElement, score, text, url };
       }
@@ -1121,6 +1230,14 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
         bestDirect = { element: actionElement, score, text, url };
       }
     }
+  }
+
+  const preferredPrimaryApply = choosePreferredZipRecruiterPrimaryApplyCandidate(
+    viableCandidates
+  );
+  if (preferredPrimaryApply) {
+    best = preferredPrimaryApply;
+    bestDirect = preferredPrimaryApply;
   }
 
   best = choosePreferredJobPageAction(best, bestDirect);
@@ -1146,11 +1263,18 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
 
 function collectZipRecruiterApplyCandidates(selectors: string[]): HTMLElement[] {
   const surfaces = collectCurrentJobSurfaceMatches("ziprecruiter");
+  const genericActionSelectors = [
+    "a[href]",
+    "button",
+    "input[type='submit']",
+    "input[type='button']",
+    "[role='button']",
+  ];
   const matches: HTMLElement[] = [];
   const seen = new Set<HTMLElement>();
 
   for (const surface of surfaces) {
-    for (const selector of selectors) {
+    for (const selector of [...selectors, ...genericActionSelectors]) {
       let scopedMatches: HTMLElement[];
       try {
         scopedMatches = Array.from(surface.querySelectorAll<HTMLElement>(selector));
@@ -1169,7 +1293,7 @@ function collectZipRecruiterApplyCandidates(selectors: string[]): HTMLElement[] 
     }
 
     for (const host of collectShadowHosts(surface)) {
-      for (const selector of selectors) {
+      for (const selector of [...selectors, ...genericActionSelectors]) {
         let shadowMatches: HTMLElement[];
         try {
           shadowMatches = Array.from(
@@ -1192,6 +1316,58 @@ function collectZipRecruiterApplyCandidates(selectors: string[]): HTMLElement[] 
   }
 
   return matches;
+}
+
+function getZipRecruiterActionTop(element: HTMLElement): number {
+  const rect = element.getBoundingClientRect();
+  return Number.isFinite(rect.top) ? rect.top : 0;
+}
+
+function choosePreferredZipRecruiterPrimaryApplyCandidate(
+  candidates: Array<{
+    element: HTMLElement;
+    score: number;
+    text: string;
+    url: string | null;
+    top: number;
+  }>
+):
+  | {
+      element: HTMLElement;
+      score: number;
+      text: string;
+      url: string | null;
+      top: number;
+    }
+  | undefined {
+  const primaryCandidates = candidates.filter((candidate) =>
+    /^(1[\s-]?click apply|quick apply|apply|apply now|easy apply)$/i.test(
+      candidate.text.trim()
+    )
+  );
+
+  if (primaryCandidates.length < 2) {
+    return undefined;
+  }
+
+  return primaryCandidates.sort((left, right) => {
+    if (left.top !== right.top) {
+      return left.top - right.top;
+    }
+
+    if (left.score !== right.score) {
+      return right.score - left.score;
+    }
+
+    const position = left.element.compareDocumentPosition(right.element);
+    if (position & Node.DOCUMENT_POSITION_FOLLOWING) {
+      return -1;
+    }
+    if (position & Node.DOCUMENT_POSITION_PRECEDING) {
+      return 1;
+    }
+    return 0;
+  })[0];
 }
 
 export function findGlassdoorApplyAction(): ApplyAction | null {

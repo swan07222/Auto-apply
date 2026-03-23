@@ -1325,6 +1325,9 @@ export function shouldFinishJobResultScan(
   if (site === "startup" || site === "other_sites") {
     minAttemptsBeforeEarlyStop = 22;
     stableThreshold = 8;
+  } else if (site === "monster") {
+    minAttemptsBeforeEarlyStop = 18;
+    stableThreshold = 8;
   } else if (
     site === "indeed" ||
     site === "ziprecruiter" ||

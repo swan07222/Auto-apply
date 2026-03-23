@@ -83,6 +83,171 @@ describe("search result collection", () => {
     });
   });
 
+  it("scrolls the Monster results rail to load additional jobs before finishing review", async () => {
+    chrome.runtime.sendMessage = vi.fn().mockResolvedValue({
+      jobResults: [],
+    });
+
+    document.body.innerHTML = `
+      <main>
+        <section
+          id="monster-results-rail"
+          data-testid="search-results"
+          aria-label="Job results"
+          style="overflow-y: auto; height: 480px;"
+        >
+          <article class="job-card">
+            <h2>Frontend Engineer</h2>
+            <a href="https://www.monster.com/job-openings/frontend-engineer-remote--alpha123">
+              Frontend Engineer
+            </a>
+          </article>
+        </section>
+      </main>
+    `;
+
+    const rail = document.getElementById("monster-results-rail") as HTMLElement;
+    let scrollTop = 0;
+    let stage = 0;
+
+    Object.defineProperty(rail, "clientHeight", {
+      configurable: true,
+      get: () => 480,
+    });
+    Object.defineProperty(rail, "scrollHeight", {
+      configurable: true,
+      get: () => 2400,
+    });
+    Object.defineProperty(rail, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+
+        if (value >= 280 && stage === 0) {
+          stage = 1;
+          rail.insertAdjacentHTML(
+            "beforeend",
+            `
+              <article class="job-card">
+                <h2>Platform Engineer</h2>
+                <a href="https://www.monster.com/job-openings/platform-engineer-remote--beta456">
+                  Platform Engineer
+                </a>
+              </article>
+            `
+          );
+        }
+
+        if (value >= 840 && stage === 1) {
+          stage = 2;
+          rail.insertAdjacentHTML(
+            "beforeend",
+            `
+              <article class="job-card">
+                <h2>Site Reliability Engineer</h2>
+                <a href="https://www.monster.com/job-openings/site-reliability-engineer-remote--gamma789">
+                  Site Reliability Engineer
+                </a>
+              </article>
+            `
+          );
+        }
+      },
+    });
+
+    const promise = waitForJobDetailUrls({
+      site: "monster",
+      datePostedWindow: "any",
+      targetCount: 3,
+      detectedSite: "monster",
+    });
+
+    await vi.runAllTimersAsync();
+    const urls = await promise;
+
+    expect(urls).toEqual([
+      "https://www.monster.com/job-openings/frontend-engineer-remote--alpha123",
+      "https://www.monster.com/job-openings/platform-engineer-remote--beta456",
+      "https://www.monster.com/job-openings/site-reliability-engineer-remote--gamma789",
+    ]);
+    expect(scrollTop).toBeGreaterThan(0);
+  });
+
+  it("prefers scrolling the inner Monster dashboard list instead of the page body", async () => {
+    chrome.runtime.sendMessage = vi.fn().mockResolvedValue({
+      jobResults: [],
+    });
+
+    document.body.innerHTML = `
+      <main>
+        <section id="monster-page-shell" data-testid="search-results">
+          <div
+            id="monster-dashboard-list"
+            class="left-dashboard-panel"
+            aria-label="Job results dashboard"
+          >
+            <article class="job-card">
+              <a href="https://www.monster.com/job-openings/frontend-engineer-remote--alpha123">
+                Frontend Engineer
+              </a>
+            </article>
+          </div>
+        </section>
+      </main>
+    `;
+
+    const dashboard = document.getElementById("monster-dashboard-list") as HTMLElement;
+    let scrollTop = 0;
+
+    Object.defineProperty(dashboard, "clientHeight", {
+      configurable: true,
+      get: () => 420,
+    });
+    Object.defineProperty(dashboard, "scrollHeight", {
+      configurable: true,
+      get: () => 2200,
+    });
+    Object.defineProperty(dashboard, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+        if (value >= 300 && !dashboard.querySelector("#second-job")) {
+          dashboard.insertAdjacentHTML(
+            "beforeend",
+            `
+              <article class="job-card" id="second-job">
+                <a href="https://www.monster.com/job-openings/platform-engineer-remote--beta456">
+                  Platform Engineer
+                </a>
+              </article>
+            `
+          );
+        }
+      },
+    });
+
+    const pageScrollSpy = vi.spyOn(window, "scrollTo");
+
+    const promise = waitForJobDetailUrls({
+      site: "monster",
+      datePostedWindow: "any",
+      targetCount: 2,
+      detectedSite: "monster",
+    });
+
+    await vi.runAllTimersAsync();
+    const urls = await promise;
+
+    expect(urls).toEqual([
+      "https://www.monster.com/job-openings/frontend-engineer-remote--alpha123",
+      "https://www.monster.com/job-openings/platform-engineer-remote--beta456",
+    ]);
+    expect(scrollTop).toBeGreaterThan(0);
+    expect(pageScrollSpy).not.toHaveBeenCalled();
+  });
+
   it("finds Indeed next-page pagination controls without confusing generic next buttons", () => {
     document.body.innerHTML = `
       <section role="dialog" aria-modal="true">

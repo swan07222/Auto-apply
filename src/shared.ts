@@ -425,6 +425,17 @@ export function getSiteLabel(site: SiteKey | "unsupported" | null): string {
   return SUPPORTED_SITE_LABELS[site];
 }
 
+export function resolveSessionSite(
+  sessionSite: SiteKey | "unsupported",
+  detectedSite: SiteKey | null
+): SiteKey | "unsupported" {
+  if (!detectedSite) {
+    return sessionSite;
+  }
+
+  return detectedSite;
+}
+
 export function isJobBoardSite(
   site: SiteKey | null | "unsupported"
 ): site is JobBoardSite {

@@ -8,7 +8,6 @@ import {
   AutomationStage,
   AutomationStatus,
   BrokenPageReason,
-  DatePostedWindow,
   JobBoardSite,
   ResumeAsset,
   ResumeKind,
@@ -30,6 +29,7 @@ import {
   normalizeQuestionKey,
   parseSearchKeywords,
   readAutomationSettings,
+  resolveSessionSite,
   resolveAutomationSettingsForProfile,
   shouldKeepManagedJobPageOpen,
   sleep,
@@ -251,30 +251,6 @@ async function readCurrentAutomationSettings(): Promise<AutomationSettings> {
   );
 }
 
-async function scrollPageForLazyContent(): Promise<void> {
-  await scrollSearchResultsPage();
-}
-
-async function waitForJobDetailUrls(
-  site: SiteKey,
-  datePostedWindow: DatePostedWindow,
-  targetCount = 1,
-  searchKeywords: string[] = []
-): Promise<string[]> {
-  return collectJobDetailUrls({
-    site,
-    datePostedWindow,
-    targetCount,
-    detectedSite: status.site === "unsupported" ? null : status.site,
-    resumeKind: currentResumeKind,
-    searchKeywords,
-    label: currentLabel,
-    onOpenListingsSurface: (message) => {
-      updateStatus("running", message, true, "collect-results");
-    },
-  });
-}
-
 function getCurrentSearchKeywordHints(
   site: SiteKey,
   settings: AutomationSettings
@@ -335,11 +311,16 @@ function throwIfRateLimited(site: SiteKey): void {
 }
 
 function resolveCurrentSiteKey(): SiteKey | null {
+  const detectedSite = detectSiteFromUrl(window.location.href);
+  if (detectedSite) {
+    return detectedSite;
+  }
+
   if (status.site && status.site !== "unsupported") {
     return status.site;
   }
 
-  return detectSiteFromUrl(window.location.href);
+  return null;
 }
 
 function hasUsableApplicationSignalsForSite(site: SiteKey | null): boolean {
@@ -679,7 +660,10 @@ chrome.runtime.onMessage.addListener(
       childApplicationTabOpened = false;
       stageRetryState = createStageRetryState();
       if (message.session) {
-        status = message.session;
+        status = {
+          ...message.session,
+          site: resolveSessionSite(message.session.site, detectedSite),
+        };
         currentStage = message.session.stage;
         currentLabel = message.session.label;
         currentResumeKind = message.session.resumeKind;
@@ -794,7 +778,10 @@ async function resumeAutomationIfNeeded(): Promise<void> {
         lastSessionState = sessionStateKey;
       }
 
-      status = s;
+      status = {
+        ...s,
+        site: resolveSessionSite(s.site, detectedSite),
+      };
       currentStage = s.stage;
       currentLabel = s.label;
       currentResumeKind = s.resumeKind;
@@ -996,15 +983,21 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     site === "monster" ||
     site === "glassdoor"
   ) {
-    await scrollPageForLazyContent();
+    await scrollSearchResultsPage();
   }
 
-  const jobUrls = await waitForJobDetailUrls(
+  const jobUrls = await collectJobDetailUrls({
     site,
-    settings.datePostedWindow,
-    collectionTargetCount,
-    keywordHints
-  );
+    datePostedWindow: settings.datePostedWindow,
+    targetCount: collectionTargetCount,
+    detectedSite: status.site === "unsupported" ? null : status.site,
+    resumeKind: currentResumeKind,
+    searchKeywords: keywordHints,
+    label: currentLabel,
+    onOpenListingsSurface: (message) => {
+      updateStatus("running", message, true, "collect-results");
+    },
+  });
 
   if (jobUrls.length === 0) {
     if (

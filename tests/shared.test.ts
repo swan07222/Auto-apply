@@ -18,6 +18,7 @@ import {
   normalizeQuestionKey,
   resolveStartupRegion,
   resolveStartupTargetRegions,
+  resolveSessionSite,
   sanitizeStartupCompaniesPayload,
   sanitizeAutomationSettings,
   shouldKeepManagedJobPageOpen,
@@ -98,6 +99,15 @@ describe("shared automation target logic", () => {
     expect(shouldKeepManagedJobPageOpen("dice")).toBe(true);
     expect(shouldKeepManagedJobPageOpen("ziprecruiter")).toBe(true);
     expect(shouldKeepManagedJobPageOpen("indeed")).toBe(false);
+  });
+
+  it("prefers the detected supported site over stale session site metadata", () => {
+    expect(resolveSessionSite("indeed", "monster")).toBe("monster");
+    expect(resolveSessionSite("monster", "monster")).toBe("monster");
+    expect(resolveSessionSite("indeed", null)).toBe("indeed");
+    expect(resolveSessionSite("unsupported", "ziprecruiter")).toBe(
+      "ziprecruiter"
+    );
   });
 
   it("dedupes equivalent Dice detail URLs that expose the same non-hex job id", () => {

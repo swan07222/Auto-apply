@@ -483,6 +483,149 @@ describe("application progression actions", () => {
     expect(action?.description).toBe("Apply");
   });
 
+  it("still prefers the top-most Monster apply CTA when the label includes icon text", () => {
+    document.body.innerHTML = `
+      <main class="job-detail-panel">
+        <section class="job-description">
+          <header>
+            <button id="top-apply" type="button">↗ Apply</button>
+          </header>
+        </section>
+        <section class="recommended-jobs">
+          <article>
+            <button id="lower-apply-one" type="button">Apply</button>
+          </article>
+        </section>
+      </main>
+    `;
+
+    const topButton = document.querySelector("#top-apply") as HTMLButtonElement;
+    const lowerButton = document.querySelector("#lower-apply-one") as HTMLButtonElement;
+
+    Object.defineProperty(topButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 88,
+          left: 0,
+          width: 120,
+          height: 40,
+          right: 120,
+          bottom: 128,
+          x: 0,
+          y: 88,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(lowerButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 460,
+          left: 0,
+          width: 120,
+          height: 40,
+          right: 120,
+          bottom: 500,
+          x: 0,
+          y: 460,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+
+    const action = findMonsterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    if (action?.type === "click") {
+      expect(action.element).toBe(topButton);
+    }
+  });
+
+  it("ignores Monster similar-jobs and resume-resources apply buttons under the main job", () => {
+    document.body.innerHTML = `
+      <main class="job-detail-panel">
+        <section class="job-description">
+          <header>
+            <button id="top-apply" type="button">Apply now</button>
+          </header>
+        </section>
+        <section class="resume-resources">
+          <h2>Resume Resources</h2>
+          <button id="resume-resource-apply" type="button">Apply</button>
+        </section>
+        <section class="similar-jobs">
+          <h2>Similar Jobs</h2>
+          <article>
+            <button id="similar-job-apply" type="button">Apply</button>
+          </article>
+        </section>
+      </main>
+    `;
+
+    const topButton = document.querySelector("#top-apply") as HTMLButtonElement;
+    const resumeButton = document.querySelector(
+      "#resume-resource-apply"
+    ) as HTMLButtonElement;
+    const similarButton = document.querySelector(
+      "#similar-job-apply"
+    ) as HTMLButtonElement;
+
+    Object.defineProperty(topButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 72,
+          left: 0,
+          width: 120,
+          height: 40,
+          right: 120,
+          bottom: 112,
+          x: 0,
+          y: 72,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(resumeButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 840,
+          left: 0,
+          width: 120,
+          height: 40,
+          right: 120,
+          bottom: 880,
+          x: 0,
+          y: 840,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(similarButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 980,
+          left: 0,
+          width: 120,
+          height: 40,
+          right: 120,
+          bottom: 1020,
+          x: 0,
+          y: 980,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+
+    const action = findMonsterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    if (action?.type === "click") {
+      expect(action.element).toBe(topButton);
+    }
+  });
+
   it("keeps same-site Monster apply targets click-based so site scripts can continue the flow", () => {
     document.body.innerHTML = `
       <main class="job-detail-panel">
@@ -587,6 +730,81 @@ describe("application progression actions", () => {
     expect(action).not.toBeNull();
     expect(action?.type).toBe("click");
     expect(action?.description).toBe("Apply Now");
+  });
+
+  it("finds plain ZipRecruiter apply buttons on the current job surface", () => {
+    document.body.innerHTML = `
+      <main class="jobDetails">
+        <section class="jobDescription">
+          <header>
+            <button type="button">Apply</button>
+          </header>
+        </section>
+      </main>
+    `;
+
+    const action = findZipRecruiterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply");
+  });
+
+  it("prefers the top-most ZipRecruiter apply button when lower apply buttons exist", () => {
+    document.body.innerHTML = `
+      <main class="jobDetails">
+        <section class="jobDescription">
+          <header>
+            <button id="top-zr-apply" type="button">Apply</button>
+          </header>
+          <div class="recommendedJobs">
+            <button id="lower-zr-apply" type="button">Apply</button>
+          </div>
+        </section>
+      </main>
+    `;
+
+    const topButton = document.querySelector("#top-zr-apply") as HTMLButtonElement;
+    const lowerButton = document.querySelector("#lower-zr-apply") as HTMLButtonElement;
+
+    Object.defineProperty(topButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 82,
+          left: 0,
+          width: 120,
+          height: 40,
+          right: 120,
+          bottom: 122,
+          x: 0,
+          y: 82,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(lowerButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 520,
+          left: 0,
+          width: 120,
+          height: 40,
+          right: 120,
+          bottom: 560,
+          x: 0,
+          y: 520,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+
+    const action = findZipRecruiterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    if (action?.type === "click") {
+      expect(action.element).toBe(topButton);
+    }
   });
 
   it("does not treat a ZipRecruiter company-name link as the apply action", () => {
