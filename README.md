@@ -75,14 +75,18 @@ npm run build
 
 ```powershell
 npm run test:unit
+npm run test:features
 npm run test:coverage
-npm run test:check
+npm run test:ci
 ```
 
-- `npm run test:unit` runs the fast Vitest suite, including popup workflow coverage.
-- `npm run test:coverage` writes HTML, JSON summary, and `lcov` coverage reports.
-- `npm run test:check` runs coverage, typechecking, and a production build in one pass.
+- `npm run test:unit` runs the full local Vitest suite with the standard reporter.
+- `npm run test:unit:verbose` prints every Vitest test case when you need extra local detail.
+- `npm run test:features` runs the core extension regression suite: popup, storage, background orchestration, search targeting, results collection, apply-flow detection, autofill, and runtime helpers.
+- `npm run test:coverage` writes HTML, JSON summary, and `lcov` coverage reports across the extension's background, shared, popup, and content helper modules.
+- `npm run test:ci` runs the local quality gate: coverage, typechecking, and a production build.
 - `npm run test:live` runs the Playwright smoke suite against real job sites. It is intentionally opt-in because it depends on live pages, network conditions, and anti-bot challenges.
+- When `CI=1` is set, Vitest also writes machine-readable reports to `reports/vitest/results.json` and `reports/vitest/junit.xml`.
 
 ## Load In Chrome
 

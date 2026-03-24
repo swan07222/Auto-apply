@@ -1,5 +1,4 @@
-// src/content/dom.ts
-// COMPLETE FILE — replace entirely
+// DOM helpers shared across search result collection and apply flows.
 
 import { cleanText } from "./text";
 
@@ -22,9 +21,11 @@ export function collectDeepMatches<T extends Element>(
   const results: T[] = [];
   const seen = new Set<Element>();
   const roots: Array<Document | ShadowRoot> = [document];
+  let rootIndex = 0;
 
-  while (roots.length > 0) {
-    const root = roots.shift();
+  while (rootIndex < roots.length) {
+    const root = roots[rootIndex];
+    rootIndex += 1;
     if (!root) {
       continue;
     }
@@ -42,14 +43,43 @@ export function collectDeepMatches<T extends Element>(
       continue;
     }
 
-    for (const host of Array.from(root.querySelectorAll<HTMLElement>("*"))) {
-      if (host.shadowRoot) {
-        roots.push(host.shadowRoot);
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    let current = walker.nextNode();
+
+    while (current) {
+      const element = current as HTMLElement;
+      if (element.shadowRoot) {
+        roots.push(element.shadowRoot);
       }
+      current = walker.nextNode();
     }
   }
 
   return results;
+}
+
+export function collectShadowHosts(root: ParentNode): HTMLElement[] {
+  const hosts: HTMLElement[] = [];
+  const seen = new Set<HTMLElement>();
+
+  if (root instanceof HTMLElement && root.shadowRoot) {
+    seen.add(root);
+    hosts.push(root);
+  }
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+  let current = walker.nextNode();
+
+  while (current) {
+    const element = current as HTMLElement;
+    if (element.shadowRoot && !seen.has(element)) {
+      seen.add(element);
+      hosts.push(element);
+    }
+    current = walker.nextNode();
+  }
+
+  return hosts;
 }
 
 export function findFirstVisibleElement<T extends HTMLElement>(
@@ -74,7 +104,7 @@ export function findFirstVisibleElement<T extends HTMLElement>(
 }
 
 export function getClickableApplyElement(el: HTMLElement): HTMLElement {
-  // FIX: Check shadow DOM first
+  // Many boards render the real click target inside shadow DOM.
   if (el.shadowRoot) {
     const shadowTarget = el.shadowRoot.querySelector<HTMLElement>(
       "a[href], button, input[type='submit'], input[type='button'], [role='button']"
@@ -84,7 +114,7 @@ export function getClickableApplyElement(el: HTMLElement): HTMLElement {
     }
   }
 
-  // FIX: Check for nested clickable elements
+  // Cards often wrap the actionable control instead of being clickable themselves.
   const childTarget = el.querySelector<HTMLElement>(
     "a[href], button, input[type='submit'], input[type='button'], [role='button']"
   );
@@ -154,7 +184,7 @@ export function getNavigationUrl(el: HTMLElement): string | null {
     }
   }
 
-  // FIX: Check all attributes for URL-like values
+  // Some sites hide navigation URLs in custom data attributes.
   for (const attribute of Array.from(el.attributes)) {
     const name = attribute.name.toLowerCase();
     const value = attribute.value?.trim();
@@ -209,7 +239,7 @@ export function getNavigationUrl(el: HTMLElement): string | null {
     }
   }
 
-  // FIX: Check for URL in inner anchor if element wraps one
+  // Wrapper elements sometimes proxy an inner anchor's destination.
   const innerAnchor = el.querySelector<HTMLAnchorElement>("a[href]");
   if (innerAnchor?.href) {
     return unwrapRedirectNavigationUrl(normalizeUrl(innerAnchor.href));
@@ -230,7 +260,7 @@ export function normalizeUrl(url: string): string | null {
     return null;
   }
 
-  // FIX: Handle protocol-relative URLs
+  // Normalize protocol-relative URLs against the current page.
   if (trimmedUrl.startsWith("//")) {
     url = window.location.protocol + trimmedUrl;
   } else {
@@ -294,25 +324,16 @@ export function isExternalUrl(url: string): boolean {
     const urlHost = new URL(url).hostname.toLowerCase();
     const currentHost = window.location.hostname.toLowerCase();
 
-    // FIX: Handle subdomains properly
+    // Treat subdomains of the same site family as internal navigation.
     if (urlHost === currentHost) {
       return false;
     }
 
     // Check if one is a subdomain of the other
-    if (urlHost.endsWith(`.${currentHost}`) || currentHost.endsWith(`.${urlHost}`)) {
-      return false;
-    }
-
-    // FIX: Handle common CDN/asset domains as not external
-    const assetDomains = [
-      "cloudfront.net",
-      "amazonaws.com",
-      "cloudflare.com",
-      "akamaized.net",
-      "fastly.net",
-    ];
-    if (assetDomains.some((domain) => urlHost.endsWith(domain))) {
+    if (
+      urlHost.endsWith(`.${currentHost}`) ||
+      currentHost.endsWith(`.${urlHost}`)
+    ) {
       return false;
     }
 
@@ -323,29 +344,31 @@ export function isExternalUrl(url: string): boolean {
 }
 
 export function isElementVisible(el: HTMLElement): boolean {
-  // FIX: More robust visibility check
+  // Visibility needs to account for more than display and dimensions.
   if (!el || !el.isConnected) {
     return false;
   }
 
   const styles = window.getComputedStyle(el);
+  const opacity = Number.parseFloat(styles.opacity);
 
   if (
     styles.visibility === "hidden" ||
+    styles.visibility === "collapse" ||
     styles.display === "none" ||
-    styles.opacity === "0"
+    (Number.isFinite(opacity) && opacity <= 0.01)
   ) {
     return false;
   }
 
   const rect = el.getBoundingClientRect();
 
-  // FIX: Allow very small elements that might be icon buttons
+  // Tiny icon buttons can still be valid interactive targets.
   if (rect.width <= 0 || rect.height <= 0) {
     return false;
   }
 
-  // FIX: Check if element is within viewport or scrollable area
+  // Elements inside scrollable containers can be interactive off the main viewport.
   // Some elements may be off-screen but still "visible" in DOM sense
   if (
     rect.bottom < 0 ||
@@ -387,8 +410,19 @@ export function performClickAction(element: HTMLElement): void {
       element.type.toLowerCase() === "submit") ||
     (element instanceof HTMLInputElement &&
       element.type.toLowerCase() === "submit");
+  const isNativeInteractiveElement =
+    element instanceof HTMLButtonElement ||
+    element instanceof HTMLAnchorElement ||
+    (element instanceof HTMLInputElement &&
+      ["button", "submit", "checkbox", "radio"].includes(
+        element.type.toLowerCase()
+      ));
+  const shouldDispatchKeyboardFallback =
+    !isNativeInteractiveElement &&
+    (element.getAttribute("role") === "button" ||
+      element.getAttribute("tabindex") !== null);
 
-  // FIX: Ensure element is focused first
+  // Focus first so sites that rely on active-element state respond consistently.
   try {
     element.focus();
   } catch {
@@ -404,7 +438,7 @@ export function performClickAction(element: HTMLElement): void {
     }
   }
 
-  // FIX: Dispatch a complete sequence of pointer/mouse events
+  // Mirror the native pointer sequence for sites with custom listeners.
   const eventOptions = {
     bubbles: true,
     cancelable: true,
@@ -432,7 +466,6 @@ export function performClickAction(element: HTMLElement): void {
     "mousedown",
     "pointerup",
     "mouseup",
-    "click",
   ] as const;
 
   for (const eventType of events) {
@@ -447,37 +480,58 @@ export function performClickAction(element: HTMLElement): void {
     }
   }
 
-  // FIX: Also try native click as fallback
+  let clickedNatively = false;
+
+  // Prefer a single native click once the pointer sequence has run.
   try {
     element.click();
+    clickedNatively = true;
   } catch {
     // Some elements may throw on click()
   }
 
-  const keyboardEvents = [
-    ["keydown", "Enter"],
-    ["keyup", "Enter"],
-    ["keydown", " "],
-    ["keyup", " "],
-  ] as const;
-
-  for (const [eventType, key] of keyboardEvents) {
+  if (!clickedNatively) {
     try {
       element.dispatchEvent(
-        new KeyboardEvent(eventType, {
+        new MouseEvent("click", {
           bubbles: true,
           cancelable: true,
           composed: true,
-          key,
+          view: window,
+          button: 0,
         })
       );
     } catch {
-      // Ignore keyboard dispatch issues
+      // Ignore click fallback issues.
+    }
+  }
+
+  if (shouldDispatchKeyboardFallback) {
+    const keyboardEvents = [
+      ["keydown", "Enter"],
+      ["keyup", "Enter"],
+      ["keydown", " "],
+      ["keyup", " "],
+    ] as const;
+
+    for (const [eventType, key] of keyboardEvents) {
+      try {
+        element.dispatchEvent(
+          new KeyboardEvent(eventType, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            key,
+          })
+        );
+      } catch {
+        // Ignore keyboard dispatch issues
+      }
     }
   }
 }
 
-// FIX: Add helper to check if element is interactive
+// Check whether an element is still interactive before clicking it.
 export function isElementInteractive(el: HTMLElement): boolean {
   if (!isElementVisible(el)) {
     return false;

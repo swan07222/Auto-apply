@@ -1,5 +1,4 @@
-// src/popup.ts
-// COMPLETE FILE — replace entirely
+// Popup UI for profile editing, mode selection, and run launch controls.
 
 import {
   AUTOMATION_SETTINGS_STORAGE_KEY,
@@ -134,7 +133,9 @@ const dialogSubmitButton = requireElement<HTMLButtonElement>(
 
 let activeTabId: number | null = null;
 let activeSite = detectSiteFromUrl("");
-let refreshIntervalId: number | null = null;
+let refreshPollTimerId: number | null = null;
+let refreshStatusPromise: Promise<void> | null = null;
+let refreshStatusTimerId: number | null = null;
 let settings = createEmptySettings();
 const popupDialog = createPopupDialogController({
   root: dialogRoot,
@@ -234,17 +235,17 @@ preferenceList.addEventListener("click", (event) => {
 searchModeInput.addEventListener("change", () => {
   updateModeUi();
   updateOverviewPreview();
-  void refreshStatus();
+  scheduleRefreshStatus();
 });
 
 searchKeywordsInput.addEventListener("input", () => {
   updateOverviewPreview();
-  void refreshStatus();
+  scheduleRefreshStatus();
 });
 
 startupRegionInput.addEventListener("change", () => {
   updateOverviewPreview();
-  void refreshStatus();
+  scheduleRefreshStatus();
 });
 
 datePostedWindowInput.addEventListener("change", () => {
@@ -257,7 +258,7 @@ autoUploadInput.addEventListener("change", () => {
 
 countryInput.addEventListener("input", () => {
   updateOverviewPreview();
-  void refreshStatus();
+  scheduleRefreshStatus();
 });
 
 addPreferenceButton.addEventListener("click", () => {
@@ -269,9 +270,21 @@ resumeInput.addEventListener("change", () => {
 });
 
 window.addEventListener("beforeunload", () => {
-  if (refreshIntervalId !== null) {
-    window.clearInterval(refreshIntervalId);
+  if (refreshPollTimerId !== null) {
+    window.clearTimeout(refreshPollTimerId);
   }
+  if (refreshStatusTimerId !== null) {
+    window.clearTimeout(refreshStatusTimerId);
+  }
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    stopPeriodicRefresh();
+    return;
+  }
+
+  schedulePeriodicRefresh(150);
 });
 
 async function initialize(): Promise<void> {
@@ -318,11 +331,7 @@ async function initialize(): Promise<void> {
     setStartButtonDisabled(getSelectedSearchMode() === "job_board");
   }
 
-  refreshIntervalId = window.setInterval(() => {
-    void refreshStatus().catch(() => {
-      // Ignore transient popup refresh failures so the UI stays usable.
-    });
-  }, 1500);
+  schedulePeriodicRefresh();
 }
 
 async function startAutomation(): Promise<void> {
@@ -526,6 +535,59 @@ async function startAutomation(): Promise<void> {
 }
 
 async function refreshStatus(): Promise<void> {
+  if (refreshStatusPromise) {
+    return refreshStatusPromise;
+  }
+
+  refreshStatusPromise = performRefreshStatus().finally(() => {
+    refreshStatusPromise = null;
+  });
+
+  return refreshStatusPromise;
+}
+
+function scheduleRefreshStatus(delayMs = 120): void {
+  if (refreshStatusTimerId !== null) {
+    window.clearTimeout(refreshStatusTimerId);
+  }
+
+  refreshStatusTimerId = window.setTimeout(() => {
+    refreshStatusTimerId = null;
+    void refreshStatus().catch(() => {
+      // Ignore transient popup refresh failures so the UI stays usable.
+    });
+  }, Math.max(0, delayMs));
+}
+
+function stopPeriodicRefresh(): void {
+  if (refreshPollTimerId === null) {
+    return;
+  }
+
+  window.clearTimeout(refreshPollTimerId);
+  refreshPollTimerId = null;
+}
+
+function schedulePeriodicRefresh(delayMs = 1500): void {
+  stopPeriodicRefresh();
+
+  if (document.visibilityState === "hidden") {
+    return;
+  }
+
+  refreshPollTimerId = window.setTimeout(() => {
+    refreshPollTimerId = null;
+    void refreshStatus()
+      .catch(() => {
+        // Ignore transient popup refresh failures so the UI stays usable.
+      })
+      .finally(() => {
+        schedulePeriodicRefresh();
+      });
+  }, Math.max(0, delayMs));
+}
+
+async function performRefreshStatus(): Promise<void> {
   await refreshActiveTabContext();
 
   const searchMode = getSelectedSearchMode();
@@ -780,7 +842,7 @@ async function getContentStatus(
     const response = await chrome.tabs.sendMessage(tabId, {
       type: "get-status",
     });
-    return (response?.status as AutomationStatus | undefined) ?? null;
+    return parseAutomationStatus(response?.status) ?? null;
   } catch {
     return null;
   }
@@ -1571,7 +1633,7 @@ async function extractResumeTextFromFile(file: File): Promise<string> {
       );
     }
   } catch (error) {
-    // FIX: Log extraction errors instead of silently swallowing them
+    // Keep extraction failures visible without blocking file storage.
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.warn(`[Auto-apply] Resume text extraction failed for ${file.name}: ${errorMessage}`);
     // Still return empty text to allow file to be saved, but user won't get answer suggestions
@@ -1668,7 +1730,7 @@ function readFileAsDataUrl(file: File): Promise<string> {
       reject(new Error("Could not read the selected file."));
     };
     reader.onerror = () => {
-      // FIX: Properly handle DOMError instead of using ?? operator
+      // FileReader can expose a DOMException instead of a simple message.
       const error = reader.error;
       if (error) {
         reject(new Error(`File read error: ${error.message || String(error)}`));
@@ -1741,8 +1803,7 @@ function updateOverviewPreview(): void {
   regionPreview.textContent = getRegionPreviewLabel();
 }
 
-// FIX: Validate HTML select values against SearchMode type
-// The HTML has: "job_board", "startup_careers", "other_job_sites"
+// Parse the select value defensively before treating it as a SearchMode.
 function getSelectedSearchMode(): SearchMode {
   return parseSelectedSearchMode(searchModeInput.value);
 }
@@ -1927,7 +1988,7 @@ async function findBestActiveTab(): Promise<ActiveContextTab | null> {
     return null;
   }
 
-  // FIX: Prefer a job board tab if one exists among candidates
+  // Prefer an active supported job-board tab when multiple candidates exist.
   const jobBoardTab = candidates.find((tab) => {
     const url = getTabUrl(tab);
     return isWebPageTab(tab) && isJobBoardSite(detectSiteFromUrl(url));

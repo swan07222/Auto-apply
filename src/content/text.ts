@@ -1,5 +1,4 @@
-// src/content/text.ts
-// COMPLETE FILE — replace entirely
+// Text normalization and extraction helpers used across the content runtime.
 
 export function cleanText(value: string | null | undefined): string {
   if (!value) {

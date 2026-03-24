@@ -1,10 +1,14 @@
-// src/content/jobSearch.ts
-// COMPLETE FILE — replace entirely
+// Search-result extraction and site-specific candidate filtering.
 
 import { DatePostedWindow, ResumeKind, SiteKey, getJobDedupKey } from "../shared";
 import { JobCandidate } from "./types";
 import { cleanText, getReadableText, normalizeChoiceText } from "./text";
-import { getActionText, getNavigationUrl, normalizeUrl } from "./dom";
+import {
+  collectShadowHosts,
+  getActionText,
+  getNavigationUrl,
+  normalizeUrl,
+} from "./dom";
 import {
   CAREER_LISTING_TEXT_PATTERNS,
   hasJobDetailAtsUrl,
@@ -84,6 +88,58 @@ const CAREER_LISTING_CTA_TEXTS = Array.from(
   ])
 );
 
+const GENERIC_LISTING_SEGMENTS = new Set([
+  "all",
+  "browse",
+  "career",
+  "careers",
+  "department",
+  "departments",
+  "design",
+  "dev-engineering",
+  "engineering",
+  "europe",
+  "eu",
+  "finance",
+  "front-end",
+  "frontend",
+  "full-stack",
+  "fullstack",
+  "hybrid",
+  "in-office",
+  "job",
+  "job-board",
+  "jobs",
+  "location",
+  "locations",
+  "marketing",
+  "open-jobs",
+  "open-positions",
+  "open-roles",
+  "opening",
+  "openings",
+  "opportunities",
+  "opportunity",
+  "people",
+  "position",
+  "positions",
+  "product",
+  "remote",
+  "role",
+  "roles",
+  "sales",
+  "search",
+  "support",
+  "team",
+  "teams",
+  "uk",
+  "united-kingdom",
+  "united-states",
+  "us",
+  "usa",
+  "vacancies",
+]);
+
 function isElementLike(value: unknown): value is Element {
   return Boolean(
     value &&
@@ -153,7 +209,7 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
               "a[data-testid='job-title']",
               "a[class*='job']",
               "a[class*='job_link']",
-              // FIX: Additional ZipRecruiter anchor patterns
+              // ZipRecruiter mixes multiple detail-link patterns across layouts.
               "a[href*='/t-']",
               "a[href*='mid=']",
             ],
@@ -805,7 +861,7 @@ export function isLikelyJobDetailUrl(
         return false;
       }
 
-    // FIX: Completely rewritten ZipRecruiter URL matching
+    // ZipRecruiter detail URLs vary across redirect and direct-link formats.
     case "ziprecruiter": {
       // Search-result detail pages can still use the jobs-search route
       // while pinning a specific job with lk/jid.
@@ -849,7 +905,7 @@ export function isLikelyJobDetailUrl(
       return false;
     }
 
-    // FIX: Expanded Dice URL matching
+    // Dice uses several equivalent detail URL patterns.
     case "dice": {
       if (lowerUrl.includes("/job-detail/")) return true;
       if (lowerUrl.includes("/jobs/detail/")) return true;
@@ -1505,16 +1561,61 @@ function resolveContainerHeadingTitle(container: HTMLElement | null | undefined)
 }
 
 function countJobLikeAnchors(container: HTMLElement): number {
-  let count = 0;
+  const keys = new Set<string>();
 
   for (const anchor of Array.from(container.querySelectorAll<HTMLAnchorElement>("a[href]"))) {
-    const href = anchor.href.toLowerCase();
-    if (hasJobDetailAtsUrl(href) || href.includes("builtin.com/job/")) {
-      count += 1;
+    if (isLikelyJobContextAnchorHref(anchor.href)) {
+      const key = getJobDedupKey(anchor.href) || anchor.href.trim().toLowerCase();
+      if (key) {
+        keys.add(key);
+      }
     }
   }
 
-  return count;
+  return keys.size;
+}
+
+function isLikelyJobContextAnchorHref(href: string): boolean {
+  const normalizedHref = href.trim();
+  if (!normalizedHref) {
+    return false;
+  }
+
+  const lowerHref = normalizedHref.toLowerCase();
+  if (hasJobDetailAtsUrl(lowerHref) || lowerHref.includes("builtin.com/job/")) {
+    return true;
+  }
+
+  try {
+    const parsed = new URL(normalizedHref, window.location.href);
+    const pathname = parsed.pathname.toLowerCase();
+    if (
+      /\/(?:jobs?|roles?|positions?|openings?|opportunities|opportunity|vacancies|vacancy|job-postings?|requisition|req)\/[^/]+/.test(
+        pathname
+      )
+    ) {
+      return true;
+    }
+
+    const lowerSearch = parsed.search.toLowerCase();
+    if (
+      JOB_DETAIL_QUERY_PARAMS.some((key) =>
+        lowerSearch.includes(`${key.toLowerCase()}=`)
+      )
+    ) {
+      return true;
+    }
+  } catch {
+    if (
+      /\/(?:jobs?|roles?|positions?|openings?|opportunities|opportunity|vacancies|vacancy|job-postings?|requisition|req)\/[^/]+/.test(
+        lowerHref
+      )
+    ) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function collectDiceListItemCandidates(): JobCandidate[] {
@@ -1569,7 +1670,7 @@ function collectDiceListItemCandidates(): JobCandidate[] {
   return candidates;
 }
 
-// FIX: New collector for Dice custom web components
+// Collect Dice cards rendered through custom web components.
 function collectDiceSearchCardCandidates(): JobCandidate[] {
   const candidates: JobCandidate[] = [];
 
@@ -1649,9 +1750,9 @@ function collectDiceSearchCardCandidates(): JobCandidate[] {
   }
 
   // Also scan shadow roots of all elements on the page for Dice links
-  const allShadowHosts = Array.from(
-    document.querySelectorAll<HTMLElement>("*")
-  ).filter((el) => el.shadowRoot);
+  const allShadowHosts = collectShadowHosts(
+    document.body ?? document.documentElement
+  );
 
   for (const host of allShadowHosts) {
     if (!host.shadowRoot) continue;
@@ -2073,7 +2174,7 @@ function getZipRecruiterCandidateKey(rawUrl: string): string {
   return getJobDedupKey(rawUrl);
 }
 
-// FIX: New collector for ZipRecruiter data-attribute based candidates
+// Collect ZipRecruiter cards that expose URLs through data attributes.
 function collectZipRecruiterDataAttributeCandidates(): JobCandidate[] {
   const candidates: JobCandidate[] = [];
 
@@ -2226,7 +2327,7 @@ function collectZipRecruiterCardCandidates(): JobCandidate[] {
       continue;
     }
 
-    // FIX: Check if already applied before adding
+    // Skip results that already show an applied state.
     if (isAppliedJobText(contextText)) {
       continue;
     }
@@ -2484,6 +2585,10 @@ function buildCandidateContextText(
 
   const addContext = (element: HTMLElement | null | undefined) => {
     if (!element) {
+      return;
+    }
+
+    if (element !== anchor && countJobLikeAnchors(element) > 1) {
       return;
     }
 
@@ -3172,57 +3277,7 @@ function stringOrEmpty(value: unknown): string {
 }
 
 function isGenericListingSegment(segment: string): boolean {
-  return new Set([
-    "all",
-    "browse",
-    "career",
-    "careers",
-    "department",
-    "departments",
-    "design",
-    "dev-engineering",
-    "engineering",
-    "europe",
-    "eu",
-    "finance",
-    "front-end",
-    "frontend",
-    "full-stack",
-    "fullstack",
-    "hybrid",
-    "in-office",
-    "job",
-    "job-board",
-    "jobs",
-    "location",
-    "locations",
-    "marketing",
-    "open-jobs",
-    "open-positions",
-    "open-roles",
-    "opening",
-    "openings",
-    "opportunities",
-    "opportunity",
-    "people",
-    "position",
-    "positions",
-    "product",
-    "remote",
-    "role",
-    "roles",
-    "sales",
-    "search",
-    "support",
-    "team",
-    "teams",
-    "uk",
-    "united-kingdom",
-    "united-states",
-    "us",
-    "usa",
-    "vacancies",
-  ]).has(segment);
+  return GENERIC_LISTING_SEGMENTS.has(segment);
 }
 
 // ─── DATE / RECENCY HELPERS ─────────────────────────────────────────────────

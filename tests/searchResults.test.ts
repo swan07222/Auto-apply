@@ -313,6 +313,40 @@ describe("search result collection", () => {
     expect(action?.navUrl).toContain("page=2");
   });
 
+  it("respects the selected date window when collecting career-site job URLs", async () => {
+    document.body.innerHTML = `
+      <main>
+        <article class="job-result">
+          <h2>Frontend Engineer</h2>
+          <a href="https://example.com/careers/jobs/frontend-engineer-123">
+            Frontend Engineer
+          </a>
+          <span>Remote</span>
+          <span>Posted today</span>
+        </article>
+        <article class="job-result">
+          <h2>Platform Engineer</h2>
+          <a href="https://example.com/careers/jobs/platform-engineer-456">
+            Platform Engineer
+          </a>
+          <span>Remote</span>
+          <span>Reposted 2 weeks ago</span>
+        </article>
+      </main>
+    `;
+
+    const urls = await waitForJobDetailUrls({
+      site: "other_sites",
+      datePostedWindow: "24h",
+      targetCount: 1,
+      detectedSite: "other_sites",
+    });
+
+    expect(urls).toEqual([
+      "https://example.com/careers/jobs/frontend-engineer-123",
+    ]);
+  });
+
   it("does not try generic career-surface recovery clicks on the MyGreenhouse portal", async () => {
     const originalLocation = window.location;
     Object.defineProperty(window, "location", {

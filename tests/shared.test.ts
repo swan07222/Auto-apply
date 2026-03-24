@@ -114,6 +114,7 @@ describe("shared automation target logic", () => {
     expect(firstUrl.origin).toBe("https://job-boards.greenhouse.io");
     expect(firstUrl.pathname).toBe("/vercel");
     expect(firstUrl.searchParams.get("keyword")).toBe("site engineer");
+    expect(firstUrl.searchParams.get("location")).toBe("Remote");
   });
 
   it("keeps MyGreenhouse search targets on the portal page so the in-page search UI can run", () => {
@@ -312,7 +313,7 @@ describe("shared automation target logic", () => {
     expect(workAtStartupTargets).toHaveLength(1);
   });
 
-  it("normalizes dedup keys for Indeed, Monster, Glassdoor, and ATS job URLs", () => {
+  it("normalizes dedup keys for Indeed, Monster, Glassdoor, Built In, and ATS job URLs", () => {
     expect(
       getJobDedupKey("https://www.indeed.com/viewjob?jk=ABC123&from=serp")
     ).toBe("indeed:jk:abc123");
@@ -330,6 +331,12 @@ describe("shared automation target logic", () => {
         "https://www.glassdoor.com/job-listing/frontend-engineer-example-co-JV_IC1147401_KO0,17_KE18,28.htm?jl=1010069347428"
       )
     ).toBe("glassdoor:jl:1010069347428");
+    expect(
+      getJobDedupKey("https://builtin.com/job/software-engineer/8472985")
+    ).toBe("builtin:job:8472985");
+    expect(
+      getJobDedupKey("https://builtin.com/job/software-engineer-remote/8472985?ref=search")
+    ).toBe("builtin:job:8472985");
     expect(
       getJobDedupKey("https://boards.greenhouse.io/example/jobs/1234567?gh_jid=1234567#apply")
     ).toBe("boards.greenhouse.io/example/jobs/1234567?gh_jid=1234567");

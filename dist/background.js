@@ -643,6 +643,15 @@
           return `${hostname}${path}`;
         }
       }
+      if (hostname === "builtin.com" || hostname.endsWith(".builtin.com")) {
+        const pathParts = path.split("/").filter(Boolean);
+        if (pathParts[0] === "job" && pathParts.length >= 2) {
+          const builtInJobId = pathParts[pathParts.length - 1];
+          if (/^\d+$/.test(builtInJobId)) {
+            return `builtin:job:${builtInJobId}`;
+          }
+        }
+      }
       for (const param of IDENTIFYING_PARAMS) {
         const value = parsed.searchParams.get(param);
         if (value) {
@@ -1055,6 +1064,10 @@
   var MAX_REVIEWED_JOB_KEYS = 5e3;
   var runLocks = /* @__PURE__ */ new Map();
   var pendingExtensionTabSpawns = /* @__PURE__ */ new Map();
+  var pendingSpawnPersistTimerId = null;
+  var reviewedJobKeysCache = null;
+  var reviewedJobKeysLoadPromise = null;
+  var reviewedJobKeysWritePromise = Promise.resolve();
   chrome.runtime.onMessage.addListener(
     (message, sender, sendResponse) => {
       void handleMessage(message, sender).then((response) => sendResponse(response)).catch((error) => {
@@ -1252,6 +1265,15 @@
       await chrome.storage.local.set({ [key]: data });
     } catch {
     }
+  }
+  function schedulePendingSpawnsPersist() {
+    if (pendingSpawnPersistTimerId !== null) {
+      return;
+    }
+    pendingSpawnPersistTimerId = globalThis.setTimeout(() => {
+      pendingSpawnPersistTimerId = null;
+      void persistPendingSpawns();
+    }, 50);
   }
   async function handleMessage(message, sender) {
     switch (message.type) {
@@ -1556,6 +1578,13 @@
         type: "automation-child-tab-opened"
       });
     } catch {
+    }
+    if (!shouldKeepManagedJobPageOpen(openerSession.site)) {
+      await removeSession(openerTabId);
+      try {
+        await chrome.tabs.remove(openerTabId);
+      } catch {
+      }
     }
   }
   async function hasLiveManagedChildSessionForClaimedJob(openerSession, openerTabId) {
@@ -2074,7 +2103,7 @@
           break;
         }
         const url = candidate.url.trim();
-        const key = getJobDedupKey(url);
+        const key = candidate.key?.trim() || getJobDedupKey(url);
         if (!url || !key || seenKeys.has(key) || reviewedJobKeys.has(key)) {
           continue;
         }
@@ -2159,8 +2188,8 @@
     });
   }
   async function resolveManagedJobCompletionKey(session, tabId, fallbackUrl) {
-    if (session?.claimedJobKey) {
-      return session.claimedJobKey;
+    if (session?.claimedJobKey?.trim()) {
+      return session.claimedJobKey.trim();
     }
     if (fallbackUrl) {
       const fallbackKey = getJobDedupKey(fallbackUrl);
@@ -2461,37 +2490,70 @@
     };
   }
   async function getReviewedJobKeySet() {
-    try {
-      const stored = await chrome.storage.local.get(REVIEWED_JOB_KEYS_STORAGE_KEY);
-      const raw = stored[REVIEWED_JOB_KEYS_STORAGE_KEY];
-      if (!Array.isArray(raw)) {
-        return /* @__PURE__ */ new Set();
-      }
-      return new Set(
-        raw.map((value) => typeof value === "string" ? value.trim() : "").filter(Boolean)
-      );
-    } catch {
-      return /* @__PURE__ */ new Set();
+    const reviewed = await loadReviewedJobKeys();
+    return new Set(reviewed);
+  }
+  async function loadReviewedJobKeys() {
+    if (reviewedJobKeysCache) {
+      return reviewedJobKeysCache;
     }
+    if (reviewedJobKeysLoadPromise) {
+      return reviewedJobKeysLoadPromise;
+    }
+    reviewedJobKeysLoadPromise = (async () => {
+      try {
+        const stored = await chrome.storage.local.get(REVIEWED_JOB_KEYS_STORAGE_KEY);
+        const raw = stored[REVIEWED_JOB_KEYS_STORAGE_KEY];
+        if (!Array.isArray(raw)) {
+          reviewedJobKeysCache = /* @__PURE__ */ new Set();
+          return reviewedJobKeysCache;
+        }
+        reviewedJobKeysCache = new Set(
+          raw.map((value) => typeof value === "string" ? value.trim() : "").filter(Boolean)
+        );
+        return reviewedJobKeysCache;
+      } catch {
+        reviewedJobKeysCache = /* @__PURE__ */ new Set();
+        return reviewedJobKeysCache;
+      } finally {
+        reviewedJobKeysLoadPromise = null;
+      }
+    })();
+    return reviewedJobKeysLoadPromise;
+  }
+  async function persistReviewedJobKeys(reviewed) {
+    reviewedJobKeysWritePromise = reviewedJobKeysWritePromise.catch(() => {
+    }).then(async () => {
+      try {
+        await chrome.storage.local.set({
+          [REVIEWED_JOB_KEYS_STORAGE_KEY]: Array.from(reviewed).slice(
+            -MAX_REVIEWED_JOB_KEYS
+          )
+        });
+        reviewedJobKeysCache = new Set(reviewed);
+      } catch {
+      }
+    });
+    await reviewedJobKeysWritePromise;
   }
   async function rememberReviewedJobKey(key) {
     const normalizedKey = key.trim();
     if (!normalizedKey) {
       return;
     }
-    const reviewed = await getReviewedJobKeySet();
+    const reviewed = await loadReviewedJobKeys();
     if (reviewed.has(normalizedKey)) {
       return;
     }
     reviewed.add(normalizedKey);
-    try {
-      await chrome.storage.local.set({
-        [REVIEWED_JOB_KEYS_STORAGE_KEY]: Array.from(reviewed).slice(
-          -MAX_REVIEWED_JOB_KEYS
-        )
-      });
-    } catch {
+    while (reviewed.size > MAX_REVIEWED_JOB_KEYS) {
+      const oldest = reviewed.values().next().value;
+      if (!oldest) {
+        break;
+      }
+      reviewed.delete(oldest);
     }
+    await persistReviewedJobKeys(reviewed);
   }
   async function getTabSafely(tabId) {
     try {
@@ -2651,7 +2713,7 @@
       tabId,
       (pendingExtensionTabSpawns.get(tabId) ?? 0) + count
     );
-    void persistPendingSpawns();
+    schedulePendingSpawnsPersist();
   }
   function consumePendingExtensionSpawn(tabId) {
     const remaining = pendingExtensionTabSpawns.get(tabId) ?? 0;
@@ -2663,7 +2725,7 @@
     } else {
       pendingExtensionTabSpawns.set(tabId, remaining - 1);
     }
-    void persistPendingSpawns();
+    schedulePendingSpawnsPersist();
     return true;
   }
   function releaseExtensionSpawnSlots(tabId, count) {
@@ -2679,7 +2741,7 @@
     } else {
       pendingExtensionTabSpawns.set(tabId, remaining);
     }
-    void persistPendingSpawns();
+    schedulePendingSpawnsPersist();
   }
   function getReadableSiteName(site) {
     switch (site) {

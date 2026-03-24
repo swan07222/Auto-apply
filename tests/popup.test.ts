@@ -449,6 +449,118 @@ describe("popup workflow", () => {
     expect(popup.startButton.disabled).toBe(false);
   });
 
+  it("ignores malformed content-script status payloads and keeps the popup usable", async () => {
+    const popup = await createPopupHarness({
+      runtimeSendMessage: (message) => {
+        if (message.type === "get-tab-session") {
+          return { ok: true };
+        }
+
+        return { ok: true };
+      },
+      tabsSendMessage: () => ({
+        status: {
+          site: "indeed",
+          phase: "broken",
+          message: ["bad payload"],
+          updatedAt: "later",
+        },
+      }),
+    });
+
+    expect(popup.siteName.textContent).toBe("Indeed");
+    expect(popup.statusText.textContent).toBe("Ready on Indeed.");
+    expect(popup.startButton.disabled).toBe(false);
+  });
+
+  it("does not start overlapping popup refresh polls while one is already in flight", async () => {
+    vi.useFakeTimers();
+    let getTabSessionCalls = 0;
+    let resolvePendingRefresh: (() => void) | null = null;
+
+    const popup = await createPopupHarness({
+      runtimeSendMessage: (message) => {
+        if (message.type !== "get-tab-session") {
+          return { ok: true };
+        }
+
+        getTabSessionCalls += 1;
+        if (getTabSessionCalls === 1) {
+          return {
+            ok: true,
+            session: {
+              site: "indeed",
+              phase: "idle",
+              message: "Ready on Indeed.",
+              updatedAt: Date.now(),
+            },
+          };
+        }
+
+        return new Promise((resolve) => {
+          resolvePendingRefresh = () =>
+            resolve({
+              ok: true,
+              session: {
+                site: "indeed",
+                phase: "idle",
+                message: "Ready on Indeed.",
+                updatedAt: Date.now(),
+              },
+            });
+        });
+      },
+    });
+
+    expect(getTabSessionCalls).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(3_100);
+    await flushAsyncWork(12);
+
+    expect(getTabSessionCalls).toBe(2);
+
+    resolvePendingRefresh?.();
+    await flushAsyncWork(12);
+    expect(popup.statusText.textContent).toBe("Ready on Indeed.");
+  });
+
+  it("pauses periodic popup refresh polling while the popup is hidden", async () => {
+    vi.useFakeTimers();
+    let getTabSessionCalls = 0;
+
+    await createPopupHarness({
+      runtimeSendMessage: (message) => {
+        if (message.type === "get-tab-session") {
+          getTabSessionCalls += 1;
+          return {
+            ok: true,
+            session: {
+              site: "indeed",
+              phase: "idle",
+              message: "Ready on Indeed.",
+              updatedAt: Date.now(),
+            },
+          };
+        }
+
+        return { ok: true };
+      },
+    });
+
+    expect(getTabSessionCalls).toBe(1);
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    await vi.advanceTimersByTimeAsync(4_500);
+    await flushAsyncWork(12);
+
+    expect(getTabSessionCalls).toBe(1);
+  });
+
   it("saves trimmed candidate details and normalized keywords through the popup form", async () => {
     const popup = await createPopupHarness();
 

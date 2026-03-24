@@ -1,9 +1,12 @@
 import { defineConfig } from "vitest/config";
 
+const isCi = Boolean(process.env.CI);
+
 export default defineConfig({
   test: {
     environment: "jsdom",
     include: ["tests/**/*.test.ts"],
+    exclude: ["tests/**/*.spec.ts"],
     setupFiles: ["./tests/setup.ts"],
     globals: true,
     clearMocks: true,
@@ -13,6 +16,13 @@ export default defineConfig({
     unstubEnvs: true,
     passWithNoTests: false,
     allowOnly: false,
+    reporters: isCi ? ["default", "json", "junit"] : ["default"],
+    outputFile: isCi
+      ? {
+          json: "./reports/vitest/results.json",
+          junit: "./reports/vitest/junit.xml",
+        }
+      : undefined,
     environmentOptions: {
       jsdom: {
         url: "https://example.com/",
@@ -22,21 +32,35 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "html", "json-summary", "lcov"],
       include: [
+        "src/background.ts",
+        "src/background/**/*.ts",
         "src/shared.ts",
         "src/popup.ts",
         "src/popupDialog.ts",
+        "src/popupState.ts",
+        "src/shared/**/*.ts",
+        "src/content/answerCapture.ts",
+        "src/content/answerMemory.ts",
+        "src/content/applicationSurface.ts",
+        "src/content/apply.ts",
+        "src/content/autofill.ts",
+        "src/content/choiceFill.ts",
         "src/content/sitePatterns.ts",
         "src/content/text.ts",
         "src/content/dom.ts",
-        "src/content/applicationSurface.ts",
         "src/content/jobSearch.ts",
-        "src/content/apply.ts",
-        "src/content/autofill.ts",
-        "src/content/answerMemory.ts",
+        "src/content/jobSearchHeuristics.ts",
+        "src/content/manualReview.ts",
         "src/content/pdfWorker.ts",
         "src/content/progression.ts",
+        "src/content/resumeStep.ts",
         "src/content/resumeUpload.ts",
+        "src/content/runtimeHelpers.ts",
+        "src/content/searchResults.ts",
+        "src/content/stageFlow.ts",
+        "src/content/sites/**/*.ts",
       ],
+      exclude: ["src/content/types.ts", "src/content/sites/types.ts"],
       thresholds: {
         lines: 75,
         functions: 90,

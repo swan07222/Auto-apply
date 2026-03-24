@@ -7,13 +7,16 @@
     "build": "node ./scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "npm run test:unit",
-    "test:unit": "vitest run --reporter=verbose",
+    "test:unit": "vitest run",
+    "test:unit:verbose": "vitest run --reporter=verbose",
+    "test:features": "vitest run tests/featureMatrix.test.ts tests/shared.test.ts tests/shared.storage.test.ts tests/popup.test.ts tests/background.test.ts tests/jobSearch.test.ts tests/searchResults.test.ts tests/apply.test.ts tests/autofill.test.ts tests/runtimeHelpers.test.ts",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "test:smoke": "node ./scripts/run-live-tests.mjs",
     "test:live": "npm run test:smoke --",
-    "test:check": "npm run test:coverage && npm run typecheck && npm run build",
-    "test:full": "npm run test:check && npm run test:smoke"
+    "test:ci": "npm run test:coverage && npm run typecheck && npm run build",
+    "test:check": "npm run test:ci",
+    "test:full": "npm run test:ci && npm run test:smoke"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

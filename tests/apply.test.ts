@@ -176,6 +176,30 @@ describe("application progression actions", () => {
     }
   });
 
+  it("prefers explicit company-site links over unrelated ATS URLs buried in inline scripts", () => {
+    document.body.innerHTML = `
+      <script type="application/json">
+        {
+          "trackingUrl": "https://jobs.workday.com/older-role/apply"
+        }
+      </script>
+      <section>
+        <p>You will be redirected to the company website to apply.</p>
+        <a href="https://company.example.com/careers/current-role/apply">Apply on company site</a>
+      </section>
+    `;
+
+    const action = findCompanySiteAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe(
+        "https://company.example.com/careers/current-role/apply"
+      );
+    }
+  });
+
   it("prefers a direct apply button over a company-site CTA on generic job pages", () => {
     document.body.innerHTML = `
       <section>
@@ -277,6 +301,25 @@ describe("application progression actions", () => {
     expect(action).not.toBeNull();
     expect(action?.type).toBe("click");
     expect(action?.description).toBe("Monster apply button");
+  });
+
+  it("falls back to markup-only apply URLs on generic career pages", () => {
+    document.body.innerHTML = `
+      <main>
+        <button type="button">Apply on company site</button>
+        <script>
+          window.__APPLY_TARGET__ = "https://boards.greenhouse.io/example/jobs/12345";
+        </script>
+      </main>
+    `;
+
+    const action = findCompanySiteAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe("https://boards.greenhouse.io/example/jobs/12345");
+    }
   });
 
   it("uses Monster shadow-dom apply controls when present", () => {
@@ -708,6 +751,21 @@ describe("application progression actions", () => {
     expect(action?.type).toBe("navigate");
     if (action?.type === "navigate") {
       expect(action.url).toContain("ziprecruiter.com/job/apply/abc");
+    }
+  });
+
+  it("does not mistake ZipRecruiter direct-apply links for company-site handoffs", () => {
+    document.body.innerHTML = `
+      <a href="https://www.ziprecruiter.com/job/apply/abc?zipapply=true">Apply on company site</a>
+    `;
+
+    const action = findZipRecruiterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe("https://www.ziprecruiter.com/job/apply/abc?zipapply=true");
+      expect(action.description).toBe("the apply page");
     }
   });
 

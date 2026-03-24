@@ -1,10 +1,10 @@
-// src/content/apply.ts
-// COMPLETE FILE — replace entirely
+// Apply-action discovery for job boards and external career sites.
 
 import { SiteKey } from "../shared";
 import { ApplyAction, ProgressionAction } from "./types";
 import { cleanText } from "./text";
 import {
+  collectShadowHosts,
   collectDeepMatches,
   getActionText,
   getClickableApplyElement,
@@ -60,7 +60,7 @@ const COMPANY_SITE_GATE_TOKENS = [
   "direct application",
   "original posting",
   "original job posting",
-  // FIX: Additional tokens for various sites
+  // Keep site-specific CTA wording close to the shared token list.
   "apply on external site",
   "apply on their site",
   "apply on their website",
@@ -73,6 +73,20 @@ const COMPANY_SITE_GATE_TOKENS = [
 ];
 
 const KNOWN_BROKEN_APPLY_HOSTS = ["apply.monster.com"];
+const MAX_APPLY_URL_SOURCE_COUNT = 40;
+const MAX_APPLY_URL_SOURCE_LENGTH = 60_000;
+const MAX_APPLY_URL_MARKUP_LENGTH = 180_000;
+const APPLY_URL_DISCOVERY_TOKENS = [
+  "apply",
+  "application",
+  "candidate",
+  "career",
+  "greenhouse",
+  "lever",
+  "ashby",
+  "workday",
+  "job",
+];
 
 function isLegalOrPolicyText(text: string): boolean {
   const lower = text.toLowerCase();
@@ -366,7 +380,7 @@ export function findCompanySiteAction(): ApplyAction | null {
       score -= 28;
     }
 
-    // FIX: Lower threshold so company-site buttons are found more reliably
+    // Company-site CTAs are often shorter and less explicit than direct apply CTAs.
     const threshold = hasGateText ? 35 : 70;
     if (score < threshold) {
       continue;
@@ -462,9 +476,11 @@ function isZipRecruiterExplicitCompanyApplyControl(
   ].some((token) => attrs.includes(token)) ||
     (lower.includes("continue") && lower.includes("company")) ||
     (lower.includes("apply") && lower.includes("company")) ||
-    /careers?\/apply|\/apply\/|candidateexperience|jobapply|zipapply/.test(
-      lowerUrl
-    );
+    (typeof url === "string" &&
+      isExternalUrl(url) &&
+      /careers?\/apply|\/apply\/|candidateexperience|jobapply|zipapply/.test(
+        lowerUrl
+      ));
 }
 
 function isDirectApplyActionCandidate(text: string, url: string | null): boolean {
@@ -1618,9 +1634,7 @@ export function findDiceApplyAction(): ApplyAction | null {
     };
   }
 
-  const allHosts = Array.from(document.querySelectorAll<HTMLElement>("*")).filter(
-    (element) => element.shadowRoot
-  );
+  const allHosts = collectShadowHosts(document.body ?? document.documentElement);
 
   for (const host of allHosts) {
     if (!host.shadowRoot) {
@@ -1760,22 +1774,6 @@ function collectDiceCurrentJobSurfaces(): HTMLElement[] {
   return surfaces;
 }
 
-function collectShadowHosts(root: ParentNode): HTMLElement[] {
-  const hosts: HTMLElement[] = [];
-
-  if (root instanceof HTMLElement && root.shadowRoot) {
-    hosts.push(root);
-  }
-
-  for (const element of Array.from(root.querySelectorAll<HTMLElement>("*"))) {
-    if (element.shadowRoot) {
-      hosts.push(element);
-    }
-  }
-
-  return hosts;
-}
-
 function isDiceNestedResultContainer(
   element: HTMLElement,
   surface?: HTMLElement
@@ -1810,10 +1808,9 @@ function isDiceNestedResultElement(
 
 function extractDiceInlineApplyUrl(): string | null {
   const sources = [
-    ...Array.from(document.querySelectorAll<HTMLScriptElement>("script:not([src])")).map(
-      (script) => script.textContent || ""
-    ),
-    document.documentElement?.innerHTML || "",
+    ...getApplyUrlAttributeSources(),
+    ...getApplyUrlScriptSources(),
+    ...getApplyUrlMarkupSources(),
   ];
 
   for (const source of sources) {
@@ -2668,13 +2665,30 @@ function extractLikelyApplyUrl(element: HTMLElement): string | null {
 }
 
 function findExternalApplyUrlInDocument(): string | null {
-  const sources = [
-    ...Array.from(document.querySelectorAll<HTMLScriptElement>("script:not([src])")).map(
-      (script) => script.textContent || ""
-    ),
-    document.documentElement?.innerHTML || "",
-  ];
+  let best = findBestExternalApplyUrlFromSources(
+    getApplyUrlAttributeSources()
+  );
+  if (best) {
+    return best.url;
+  }
 
+  best = findBestExternalApplyUrlFromSources(getApplyUrlScriptSources());
+  if (best) {
+    return best.url;
+  }
+
+  best = findBestExternalApplyUrlFromSources(getApplyUrlMarkupSources());
+  return best?.url ?? null;
+}
+
+function findBestExternalApplyUrlFromSources(
+  sources: string[]
+):
+  | {
+      url: string;
+      score: number;
+    }
+  | undefined {
   let best:
     | {
         url: string;
@@ -2701,7 +2715,115 @@ function findExternalApplyUrlInDocument(): string | null {
     }
   }
 
-  return best?.url ?? null;
+  return best;
+}
+
+function getApplyUrlAttributeSources(): string[] {
+  const sources: string[] = [];
+
+  const elements = document.querySelectorAll<HTMLElement>(
+    "a[href], button[data-href], button[data-url], [data-apply-url], [data-url], [onclick], form[action], iframe[src]"
+  );
+
+  for (const element of Array.from(elements)) {
+    const source = [
+      element.getAttribute("href"),
+      element.getAttribute("data-href"),
+      element.getAttribute("data-url"),
+      element.getAttribute("data-apply-url"),
+      element.getAttribute("onclick"),
+      element.getAttribute("action"),
+      element.getAttribute("src"),
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    const limited = limitApplyUrlSource(source);
+    if (!limited) {
+      continue;
+    }
+
+    sources.push(limited);
+    if (sources.length >= MAX_APPLY_URL_SOURCE_COUNT) {
+      break;
+    }
+  }
+
+  return sources;
+}
+
+function getApplyUrlScriptSources(): string[] {
+  const sources: string[] = [];
+
+  const scripts = document.querySelectorAll<HTMLScriptElement>("script:not([src])");
+
+  for (const script of Array.from(scripts)) {
+    const limited = limitApplyUrlSource(script.textContent || "");
+    if (!limited) {
+      continue;
+    }
+
+    sources.push(limited);
+    if (sources.length >= MAX_APPLY_URL_SOURCE_COUNT) {
+      break;
+    }
+  }
+
+  return sources;
+}
+
+function getApplyUrlMarkupSources(): string[] {
+  const root = document.body ?? document.documentElement;
+  if (!root) {
+    return [];
+  }
+
+  if (root.childElementCount > 2500) {
+    return [];
+  }
+
+  const markup = root.innerHTML || "";
+  if (!markup) {
+    return [];
+  }
+
+  return [markup.slice(0, MAX_APPLY_URL_MARKUP_LENGTH)];
+}
+
+function limitApplyUrlSources(sources: string[]): string[] {
+  const limited: string[] = [];
+
+  for (const source of sources) {
+    const normalized = limitApplyUrlSource(source);
+    if (!normalized) {
+      continue;
+    }
+
+    limited.push(normalized);
+    if (limited.length >= MAX_APPLY_URL_SOURCE_COUNT) {
+      break;
+    }
+  }
+
+  return limited;
+}
+
+function limitApplyUrlSource(source: string | null | undefined): string | null {
+  if (!source) {
+    return null;
+  }
+
+  const trimmed = source.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const lower = trimmed.toLowerCase();
+  if (!APPLY_URL_DISCOVERY_TOKENS.some((token) => lower.includes(token))) {
+    return null;
+  }
+
+  return trimmed.slice(0, MAX_APPLY_URL_SOURCE_LENGTH);
 }
 
 function scoreExternalApplyUrl(url: string): number {
@@ -2918,6 +3040,10 @@ function getApplyCandidateSelectors(site: SiteKey | null): string[] {
 function describeApplyTarget(url: string, text: string): string {
   if (url.toLowerCase().includes("smartapply.indeed.com")) {
     return "the Indeed apply page";
+  }
+
+  if (/zipapply|jobapply|candidateexperience|indeedapply|smartapply|\/apply\b/i.test(url)) {
+    return "the apply page";
   }
 
   if (isExternalUrl(url) || text.toLowerCase().includes("company site")) {

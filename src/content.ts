@@ -1,5 +1,4 @@
-// src/content.ts
-// COMPLETE FILE — Part 1 of 3
+// Content runtime that coordinates search collection, apply handoff, and autofill.
 
 import {
   AutomationPhase,
@@ -586,7 +585,7 @@ chrome.runtime.onMessage.addListener(
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
 
-// FIX: Prevent duplicate event listener registration
+// Register listeners only once, even if the script is evaluated again.
 let eventListenersInitialized = false;
 
 function initializeEventListeners(): void {
@@ -857,7 +856,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
 
   await waitForHumanVerificationToClear();
 
-  // FIX: Dice needs longer render wait – its custom web components load slowly
+  // Dice job cards render through delayed custom elements.
   const renderWaitMs =
     site === "startup" ||
     site === "other_sites" ||
@@ -898,7 +897,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     });
   }
 
-  // FIX: Scroll for Dice too – its cards may lazy-load
+  // Dice can lazy-load additional cards while scrolling.
   if (
     site === "startup" ||
     site === "other_sites" ||
@@ -948,7 +947,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     return;
   }
 
-  // FIX: Build a title map for resume-kind inference AND applied-job filtering
+  // Reuse titles for both resume-kind inference and applied-job filtering.
   let candidates = collectJobDetailCandidates(site);
   if (site === "monster") {
     try {
@@ -973,7 +972,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     }
   }
 
-  // FIX: Filter out already-applied jobs BEFORE claiming slots
+  // Skip already-applied jobs before consuming run quota.
   const filteredJobUrls = jobUrls.filter((url) => {
     const key = getJobDedupKey(url);
     const ctx = key ? contextMap.get(key) ?? "" : "";
@@ -1256,7 +1255,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     isProbablyRateLimitPage,
   });
 
-  // FIX: Dice needs extra render time for its web components
+  // Dice apply surfaces may appear after their custom elements finish booting.
   await sleep(
     site === "indeed" ||
       site === "dice" ||
@@ -1271,7 +1270,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     isProbablyRateLimitPage,
   });
 
-  // FIX: Named constants for scroll positions instead of magic numbers
+  // Use named scroll anchors so the navigation wait stays predictable.
   const SCROLL_TOP = 0;
   const SCROLL_SMALL = 300;
   const SCROLL_MEDIUM = 600;
@@ -1292,8 +1291,8 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   ];
 
   let action: ApplyAction | null = null;
-  
-  // FIX: Use MutationObserver for more reliable navigation detection
+
+  // Watch the DOM as well as the URL because some sites navigate in place.
   let navigationDetected = false;
   const urlChangeObserver = new MutationObserver(() => {
     if (window.location.href !== urlAtStart) {
@@ -1305,16 +1304,17 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     subtree: true,
   });
 
-  // FIX: Ensure observer is disconnected on function exit
+  // Always disconnect observers before leaving this wait loop.
   const cleanupObserver = () => {
     urlChangeObserver.disconnect();
   };
 
-  const maxApplySearchAttempts = site === "indeed" ? 45 : 35;
+  try {
+    const maxApplySearchAttempts = site === "indeed" ? 45 : 35;
 
-  for (let attempt = 0; attempt < maxApplySearchAttempts; attempt += 1) {
-    // Check both direct URL comparison and MutationObserver detection
-    const hasNavigated = window.location.href !== urlAtStart || navigationDetected;
+    for (let attempt = 0; attempt < maxApplySearchAttempts; attempt += 1) {
+      // Check both direct URL comparison and MutationObserver detection
+      const hasNavigated = window.location.href !== urlAtStart || navigationDetected;
 
     if (hasNavigated) {
       cleanupObserver();
@@ -1349,7 +1349,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       return;
     }
 
-    // FIX: Site-specific apply-button finders first
+    // Prefer site-owned apply finders before falling back to generic heuristics.
     if (site === "monster") {
       action = findMonsterApplyAction();
       if (action) break;
@@ -1422,10 +1422,11 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     }
 
     await sleep(700);
+    }
+  } finally {
+    // Disconnect the observer if nothing navigated before timeout.
+    cleanupObserver();
   }
-
-  // FIX: Clean up observer when loop exits without navigation
-  cleanupObserver();
 
   if (!action) {
     if (hasLikelyApplicationForm()) {
@@ -2334,7 +2335,7 @@ async function autofillVisibleApplication(
 ): Promise<AutofillResult> {
   const result = createEmptyAutofillResult();
 
-  // FIX: Always attempt resume upload first — even if autoUploadResumes is
+  // Attempt the extension-managed upload first so site state stays consistent.
   // technically on, ensure we actually find and fill the file input
   if (settings.autoUploadResumes) {
     const uploaded = await uploadResumeIfNeeded(settings);
@@ -2390,7 +2391,7 @@ async function uploadResumeIfNeeded(
       ? scopeDiceResumeUploadInputs(collectResumeFileInputs(), diceResumePanel ?? document)
       : collectResumeFileInputs();
 
-  // FIX: If no file inputs found via deep matching, also check for
+  // Fall back to label-driven matching when deep selectors find nothing.
   // visually-hidden file inputs that might be triggered by a button
   if (fileInputs.length === 0) {
     const hiddenFileInputs = Array.from(
@@ -2533,7 +2534,7 @@ async function setFileInputValue(
 ): Promise<boolean> {
   if (input.disabled) return false;
   
-  // FIX: Feature detection for DataTransfer API support
+  // Some pages disable the DataTransfer API entirely.
   const hasDataTransferSupport = typeof DataTransfer === "function";
   const hasFileApiSupport = typeof File === "function";
   
@@ -2557,7 +2558,7 @@ async function setFileInputValue(
     const transfer = new DataTransfer();
     transfer.items.add(file);
 
-    // FIX: Check if files property can be set
+    // Older or locked inputs may reject direct `files` assignment.
     const filesDescriptor = Object.getOwnPropertyDescriptor(
       HTMLInputElement.prototype,
       "files"
@@ -2821,7 +2822,7 @@ function deriveProfileAnswer(
   const first = parts[0] ?? "",
     last = parts.slice(1).join(" ");
 
-  // FIX: Check autocomplete attribute first for best matching
+  // Prefer `autocomplete` metadata before looser label matching.
   const autocomplete = (
     field.getAttribute("autocomplete") || ""
   ).toLowerCase().trim();
@@ -3019,7 +3020,7 @@ async function spawnTabs(
     throw new Error(
       response?.error ?? "Could not open tabs."
     );
-  // FIX: Validate response.opened is a number instead of unsafe cast
+  // Guard against malformed background responses before using the count.
   const opened = typeof response.opened === "number" 
     ? Math.max(0, Math.floor(response.opened)) 
     : 0;
@@ -3062,7 +3063,7 @@ async function claimJobOpenings(
       response?.ok &&
       Array.isArray(response.approvedUrls)
     ) {
-      // FIX: Validate array elements are strings instead of unsafe cast
+      // Ignore malformed candidate responses instead of trusting unknown data.
       const validatedApprovedUrls = response.approvedUrls.filter(
         (u: unknown): u is string => typeof u === "string"
       );

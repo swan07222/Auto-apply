@@ -312,6 +312,7 @@ export function comparePostedAgeHours(
 }
 
 export function extractPostedAgeHours(text: string): number | null {
+  const raw = cleanText(text).toLowerCase();
   const normalized = normalizeChoiceText(text).replace(/\s+/g, " ");
   if (!normalized) {
     return null;
@@ -319,22 +320,32 @@ export function extractPostedAgeHours(text: string): number | null {
   if (/\bjust posted\b/.test(normalized)) {
     return 0;
   }
-  if (/\b(?:posted|active|updated|listed)\s+today\b/.test(normalized) || /\bnew today\b/.test(normalized)) {
+  if (
+    /\b(?:posted|active|updated|listed|reposted)\s+today\b/.test(normalized) ||
+    /\bnew today\b/.test(normalized)
+  ) {
     return 12;
   }
-  if (/\b(?:posted|active|updated|listed)\s+yesterday\b/.test(normalized)) {
+  if (/\b(?:posted|active|updated|listed|reposted)\s+yesterday\b/.test(normalized)) {
     return 24;
   }
 
+  const compactPlusMatch = raw.match(
+    /\b(\d+)\s*(hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\+(?=\s|$)/
+  );
+  if (compactPlusMatch) {
+    return convertAgeValueToHours(compactPlusMatch[1], compactPlusMatch[2]);
+  }
+
   const explicitAgoMatch = normalized.match(
-    /\b(?:(?:posted|active|updated|listed)\s+)?(\d+)\+?\s*(hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\s+ago\b/
+    /\b(?:(?:posted|active|updated|listed|reposted)\s+)?(\d+)\+?\s*(hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\s+ago\b/
   );
   if (explicitAgoMatch) {
     return convertAgeValueToHours(explicitAgoMatch[1], explicitAgoMatch[2]);
   }
 
   const postedWithinMatch = normalized.match(
-    /\b(?:posted|active|updated|listed)\s+(\d+)\+?\s*(hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\b/
+    /\b(?:posted|active|updated|listed|reposted)\s+(\d+)\+?\s*(hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\b/
   );
   if (postedWithinMatch) {
     return convertAgeValueToHours(postedWithinMatch[1], postedWithinMatch[2]);

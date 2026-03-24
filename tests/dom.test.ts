@@ -90,13 +90,15 @@ describe("dom helpers", () => {
 
     expect(isExternalUrl("https://jobs.example.com/apply")).toBe(false);
     expect(isExternalUrl("https://cdn.jobs.example.com/apply")).toBe(false);
-    expect(isExternalUrl("https://d111111abcdef8.cloudfront.net/asset.js")).toBe(false);
+    expect(isExternalUrl("https://d111111abcdef8.cloudfront.net/apply")).toBe(true);
+    expect(isExternalUrl("https://bucket-name.s3.amazonaws.com/careers/apply")).toBe(true);
     expect(isExternalUrl("https://company.example.org/careers/apply")).toBe(true);
   });
 
   it("finds visible elements while skipping invalid selectors and hidden nodes", () => {
     document.body.innerHTML = `
       <button id="hidden" style="display:none">Hidden</button>
+      <button id="transparent" style="opacity:0.0">Transparent</button>
       <button id="visible">Visible</button>
     `;
 
@@ -108,6 +110,9 @@ describe("dom helpers", () => {
 
     expect(found?.id).toBe("visible");
     expect(isElementVisible(document.querySelector("#hidden") as HTMLButtonElement)).toBe(false);
+    expect(
+      isElementVisible(document.querySelector("#transparent") as HTMLButtonElement)
+    ).toBe(false);
     expect(isElementVisible(document.querySelector("#visible") as HTMLButtonElement)).toBe(true);
   });
 
@@ -143,6 +148,18 @@ describe("dom helpers", () => {
     performClickAction(button);
 
     expect(clickSpy).toHaveBeenCalled();
+  });
+
+  it("does not fire duplicate click events for generic buttons", () => {
+    document.body.innerHTML = `<button id="apply">Apply</button>`;
+
+    const button = document.querySelector("#apply") as HTMLButtonElement;
+    const clickSpy = vi.fn();
+    button.addEventListener("click", clickSpy);
+
+    performClickAction(button);
+
+    expect(clickSpy).toHaveBeenCalledTimes(1);
   });
 
   it("uses a single native click for submit buttons", () => {

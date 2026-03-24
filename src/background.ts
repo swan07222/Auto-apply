@@ -1,5 +1,4 @@
-// src/background.ts
-// COMPLETE FILE — replace entirely
+// Background runtime orchestration for tab spawning, session state, and run quotas.
 
 import {
   AutomationSession,
@@ -107,6 +106,10 @@ const MAX_REVIEWED_JOB_KEYS = 5_000;
 
 const runLocks = new Map<string, Promise<void>>();
 const pendingExtensionTabSpawns = new Map<number, number>();
+let pendingSpawnPersistTimerId: number | null = null;
+let reviewedJobKeysCache: Set<string> | null = null;
+let reviewedJobKeysLoadPromise: Promise<Set<string>> | null = null;
+let reviewedJobKeysWritePromise: Promise<void> = Promise.resolve();
 
 chrome.runtime.onMessage.addListener(
   (message: BackgroundRequest, sender, sendResponse) => {
@@ -410,6 +413,17 @@ async function persistPendingSpawns(): Promise<void> {
   }
 }
 
+function schedulePendingSpawnsPersist(): void {
+  if (pendingSpawnPersistTimerId !== null) {
+    return;
+  }
+
+  pendingSpawnPersistTimerId = globalThis.setTimeout(() => {
+    pendingSpawnPersistTimerId = null;
+    void persistPendingSpawns();
+  }, 50);
+}
+
 async function handleMessage(
   message: BackgroundRequest,
   sender: chrome.runtime.MessageSender
@@ -513,7 +527,7 @@ async function handleMessage(
         itemsToOpen = capJobOpeningItems(itemsToOpen, cap);
       }
 
-      // FIX: Deduplicate items before opening — uses getSpawnDedupKey to preserve query params
+      // Preserve search-specific query params when deduplicating spawn targets.
       itemsToOpen = deduplicateSpawnItems(itemsToOpen, message.maxJobPages);
       const {
         items: unreviewedItemsToOpen,
@@ -569,7 +583,7 @@ async function handleMessage(
           });
           openedCount += 1;
         } catch (error: unknown) {
-          // FIX: Log tab creation errors for debugging instead of silently swallowing
+          // Keep the first open failure so the caller gets a useful error.
           const errorMessage = error instanceof Error ? error.message : String(error);
           console.error(`[Auto-apply] Tab creation failed for ${item.url}: ${errorMessage}`);
           
@@ -1012,7 +1026,7 @@ async function startStartupAutomation(
     };
   }
 
-  // FIX: Deduplicate using spawn-specific dedup key (preserves query params)
+  // Preserve search-specific query params when deduplicating startup targets.
   const dedupedItems = deduplicateSpawnItems(items);
 
   await setRunState({
@@ -1153,7 +1167,7 @@ async function startOtherSitesAutomation(
     };
   }
 
-  // FIX: Deduplicate using spawn-specific dedup key
+  // Preserve search-specific query params when deduplicating other-site targets.
   const dedupedItems = deduplicateSpawnItems(items);
 
   await setRunState({
@@ -1304,7 +1318,7 @@ async function probeUrlForHardFailure(
       return { reason: "unreachable" };
     }
 
-    // FIX: Safely handle response.url which may be empty or throw
+    // Some Chrome responses omit `url`; fall back safely when that happens.
     let finalUrl = "";
     try {
       finalUrl = response.url?.toLowerCase() ?? "";
@@ -1567,8 +1581,8 @@ async function claimJobOpeningsForRunId(
       }
 
       const url = candidate.url.trim();
-      // FIX: Always re-derive the key using getJobDedupKey for consistency
-      const key = getJobDedupKey(url);
+      // Use the candidate's provided key if available and non-empty, otherwise recompute from URL
+      const key = candidate.key?.trim() || getJobDedupKey(url);
 
       if (!url || !key || seenKeys.has(key) || reviewedJobKeys.has(key)) {
         continue;
@@ -1684,8 +1698,8 @@ async function resolveManagedJobCompletionKey(
   tabId: number,
   fallbackUrl?: string
 ): Promise<string> {
-  if (session?.claimedJobKey) {
-    return session.claimedJobKey;
+  if (session?.claimedJobKey?.trim()) {
+    return session.claimedJobKey.trim();
   }
 
   if (fallbackUrl) {
@@ -1775,6 +1789,9 @@ async function listLiveRunSessionInfos(
 
   for (const session of sessions) {
     const liveTab = await getTabSafely(session.tabId);
+    // A tab is considered stale if getTabSafely returns null.
+    // Note: getTabSafely may return a minimal tab object { id } for closed tabs,
+    // but we keep the session if it has an openedUrlKey (indicating it was successfully opened)
     if (!liveTab) {
       await removeSession(session.tabId);
       continue;
@@ -2143,21 +2160,63 @@ async function filterReviewedManagedSpawnItems(
 }
 
 async function getReviewedJobKeySet(): Promise<Set<string>> {
-  try {
-    const stored = await chrome.storage.local.get(REVIEWED_JOB_KEYS_STORAGE_KEY);
-    const raw = stored[REVIEWED_JOB_KEYS_STORAGE_KEY];
-    if (!Array.isArray(raw)) {
-      return new Set();
-    }
+  const reviewed = await loadReviewedJobKeys();
+  return new Set(reviewed);
+}
 
-    return new Set(
-      raw
-        .map((value) => (typeof value === "string" ? value.trim() : ""))
-        .filter(Boolean)
-    );
-  } catch {
-    return new Set();
+async function loadReviewedJobKeys(): Promise<Set<string>> {
+  if (reviewedJobKeysCache) {
+    return reviewedJobKeysCache;
   }
+
+  if (reviewedJobKeysLoadPromise) {
+    return reviewedJobKeysLoadPromise;
+  }
+
+  reviewedJobKeysLoadPromise = (async () => {
+    try {
+      const stored = await chrome.storage.local.get(REVIEWED_JOB_KEYS_STORAGE_KEY);
+      const raw = stored[REVIEWED_JOB_KEYS_STORAGE_KEY];
+      if (!Array.isArray(raw)) {
+        reviewedJobKeysCache = new Set();
+        return reviewedJobKeysCache;
+      }
+
+      reviewedJobKeysCache = new Set(
+        raw
+          .map((value) => (typeof value === "string" ? value.trim() : ""))
+          .filter(Boolean)
+      );
+      return reviewedJobKeysCache;
+    } catch {
+      reviewedJobKeysCache = new Set();
+      return reviewedJobKeysCache;
+    } finally {
+      reviewedJobKeysLoadPromise = null;
+    }
+  })();
+
+  return reviewedJobKeysLoadPromise;
+}
+
+async function persistReviewedJobKeys(reviewed: Set<string>): Promise<void> {
+  reviewedJobKeysWritePromise = reviewedJobKeysWritePromise
+    .catch(() => {})
+    .then(async () => {
+      try {
+        await chrome.storage.local.set({
+          [REVIEWED_JOB_KEYS_STORAGE_KEY]: Array.from(reviewed).slice(
+            -MAX_REVIEWED_JOB_KEYS
+          ),
+        });
+        // Update cache after successful write to ensure consistency
+        reviewedJobKeysCache = new Set(reviewed);
+      } catch {
+        // Ignore persistence errors, but don't update cache on failure
+      }
+    });
+
+  await reviewedJobKeysWritePromise;
 }
 
 async function rememberReviewedJobKey(key: string): Promise<void> {
@@ -2166,22 +2225,21 @@ async function rememberReviewedJobKey(key: string): Promise<void> {
     return;
   }
 
-  const reviewed = await getReviewedJobKeySet();
+  const reviewed = await loadReviewedJobKeys();
   if (reviewed.has(normalizedKey)) {
     return;
   }
 
   reviewed.add(normalizedKey);
-
-  try {
-    await chrome.storage.local.set({
-      [REVIEWED_JOB_KEYS_STORAGE_KEY]: Array.from(reviewed).slice(
-        -MAX_REVIEWED_JOB_KEYS
-      ),
-    });
-  } catch {
-    // Ignore persistence errors.
+  while (reviewed.size > MAX_REVIEWED_JOB_KEYS) {
+    const oldest = reviewed.values().next().value;
+    if (!oldest) {
+      break;
+    }
+    reviewed.delete(oldest);
   }
+
+  await persistReviewedJobKeys(reviewed);
 }
 
 type BackgroundSourceTab = chrome.tabs.Tab & { pendingUrl?: string };
@@ -2192,9 +2250,10 @@ async function getTabSafely(tabId: number): Promise<BackgroundSourceTab | null> 
     if (tab && typeof tab === "object") {
       return tab as BackgroundSourceTab;
     }
-
+    // chrome.tabs.get succeeded but returned an invalid object - return minimal tab
     return { id: tabId } as BackgroundSourceTab;
   } catch {
+    // chrome.tabs.get threw - tab is genuinely gone
     return null;
   }
 }
@@ -2429,7 +2488,7 @@ function reserveExtensionSpawnSlots(tabId: number, count: number): void {
     (pendingExtensionTabSpawns.get(tabId) ?? 0) + count
   );
 
-  void persistPendingSpawns();
+  schedulePendingSpawnsPersist();
 }
 
 function consumePendingExtensionSpawn(tabId: number): boolean {
@@ -2445,7 +2504,7 @@ function consumePendingExtensionSpawn(tabId: number): boolean {
     pendingExtensionTabSpawns.set(tabId, remaining - 1);
   }
 
-  void persistPendingSpawns();
+  schedulePendingSpawnsPersist();
   return true;
 }
 
@@ -2465,7 +2524,7 @@ function releaseExtensionSpawnSlots(tabId: number, count: number): void {
     pendingExtensionTabSpawns.set(tabId, remaining);
   }
 
-  void persistPendingSpawns();
+  schedulePendingSpawnsPersist();
 }
 
 function getReadableSiteName(site: SiteKey | "unsupported"): string {

@@ -671,6 +671,80 @@ describe("background spawn quota handling", () => {
     );
   });
 
+  it("does not claim duplicate Built In job URLs that only differ by slug text", async () => {
+    const runId = "run-claim-builtin-duplicate";
+    const senderTabId = 42;
+    const canonicalUrl = "https://builtin.com/job/software-engineer/8472985";
+    const variantUrl =
+      "https://builtin.com/job/software-engineer-remote/8472985?ref=search";
+    const distinctUrl = "https://builtin.com/job/platform-engineer/8472986";
+    const runStateKey = `remote-job-search-run:${runId}`;
+    const sessionKey = `remote-job-search-session:${senderTabId}`;
+
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 3,
+          openedJobPages: 0,
+          openedJobKeys: [],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          updatedAt: 1,
+        },
+        [sessionKey]: {
+          tabId: senderTabId,
+          site: "builtin",
+          phase: "running",
+          message: "Collecting job pages...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "collect-results",
+          runId,
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "claim-job-openings",
+        requested: 3,
+        candidates: [
+          { url: canonicalUrl, key: getJobDedupKey(canonicalUrl)! },
+          { url: variantUrl, key: getJobDedupKey(variantUrl)! },
+          { url: distinctUrl, key: getJobDedupKey(distinctUrl)! },
+        ],
+      },
+      {
+        tab: {
+          id: senderTabId,
+          index: 0,
+        },
+      }
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      approved: 2,
+      approvedUrls: [canonicalUrl, distinctUrl],
+      remaining: 1,
+      limit: 3,
+    });
+    expect(chromeMock.local.state[runStateKey]).toEqual(
+      expect.objectContaining({
+        openedJobPages: 2,
+        openedJobKeys: [
+          getJobDedupKey(canonicalUrl),
+          getJobDedupKey(distinctUrl),
+        ],
+      })
+    );
+  });
+
   it("never claims jobs that were already reviewed in a past run", async () => {
     const runId = "run-skip-reviewed";
     const senderTabId = 42;

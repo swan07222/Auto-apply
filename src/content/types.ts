@@ -1,5 +1,4 @@
-// src/content/types.ts
-// COMPLETE FILE — replace entirely
+// Shared content-script types for apply, autofill, and search flows.
 
 import { ResumeAsset } from "../shared";
 

@@ -99,6 +99,16 @@ export function getJobDedupKey(url: string): string {
       }
     }
 
+    if (hostname === "builtin.com" || hostname.endsWith(".builtin.com")) {
+      const pathParts = path.split("/").filter(Boolean);
+      if (pathParts[0] === "job" && pathParts.length >= 2) {
+        const builtInJobId = pathParts[pathParts.length - 1];
+        if (/^\d+$/.test(builtInJobId)) {
+          return `builtin:job:${builtInJobId}`;
+        }
+      }
+    }
+
     for (const param of IDENTIFYING_PARAMS) {
       const value = parsed.searchParams.get(param);
       if (value) {

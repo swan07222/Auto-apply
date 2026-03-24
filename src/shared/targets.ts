@@ -287,6 +287,7 @@ function buildGreenhouseSearchUrl(query: string, currentUrl: string, fallbackOri
 
   const url = new URL(resolveGreenhouseBoardBaseUrl(currentUrl, fallbackOrigin));
   url.searchParams.set("keyword", query);
+  url.searchParams.set("location", "Remote");
   return url.toString();
 }
 

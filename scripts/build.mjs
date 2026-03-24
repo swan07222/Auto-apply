@@ -16,12 +16,25 @@ await mkdir(distDir, { recursive: true });
 await build({
   entryPoints: {
     background: path.join(rootDir, "src", "background.ts"),
-    content: path.join(rootDir, "src", "content.ts"),
-    popup: path.join(rootDir, "src", "popup.ts")
+    content: path.join(rootDir, "src", "content.ts")
   },
   bundle: true,
   format: "iife",
   outdir: distDir,
+  target: "chrome120",
+  sourcemap: false,
+  logLevel: "info"
+});
+
+await build({
+  entryPoints: {
+    popup: path.join(rootDir, "src", "popup.ts")
+  },
+  bundle: true,
+  format: "esm",
+  splitting: true,
+  outdir: distDir,
+  chunkNames: "chunks/[name]-[hash]",
   target: "chrome120",
   sourcemap: false,
   logLevel: "info"

@@ -41,6 +41,11 @@ describe("job search heuristic helpers", () => {
     expect(filterCandidatesByDatePostedWindow(candidates, "3d")).toEqual([candidates[0]]);
   });
 
+  it("parses reposted and compact plus-style date chips from job boards", () => {
+    expect(extractPostedAgeHours("Reposted 2 days ago")).toBe(48);
+    expect(extractPostedAgeHours("Platform Engineer Remote 30d+")).toBe(720);
+  });
+
   it("keeps technical-title and applied-state heuristics explicit", () => {
     expect(looksLikeTechnicalRoleTitle("Senior React Engineer")).toBe(true);
     expect(looksLikeTechnicalRoleTitle("Head of People Operations")).toBe(false);
