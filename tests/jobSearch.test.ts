@@ -1232,6 +1232,47 @@ describe("job search candidate filtering", () => {
     ).toEqual(["https://job-boards.greenhouse.io/vercel/jobs/5431123004"]);
   });
 
+  it("collects technical Greenhouse board jobs from the current live table layout", () => {
+    document.body.innerHTML = `
+      <main class="main font-secondary">
+        <div class="padding">
+          <h2 class="section-header section-header--large font-primary" data-testid="job-count-header">39 jobs</h2>
+          <div class="job-posts">
+            <div class="job-posts--table--department">
+              <h3 class="section-header font-primary">Engineering</h3>
+              <div class="job-posts--table">
+                <table>
+                  <tbody>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5788954004" target="_top"><p class="body body--medium">Senior Software Engineer, Trust &amp; Safety</p><p class="body body__secondary body--metadata">Remote - United States</p></a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5430088004" target="_top"><p class="body body--medium">Software Engineer, Accounts</p><p class="body body__secondary body--metadata">Remote - United States</p></a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5624231004" target="_top"><p class="body body--medium">Account Executive- Startups, Greenfield</p><p class="body body__secondary body--metadata">Hybrid - San Francisco, New York City, Austin</p></a>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    `;
+
+    expect(pickRelevantJobUrls(collectJobDetailCandidates("greenhouse"), "greenhouse")).toEqual([
+      "https://job-boards.greenhouse.io/vercel/jobs/5788954004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5430088004",
+    ]);
+  });
+
   it("collects MyGreenhouse view-job cards and opens the matching technical roles", () => {
     document.body.innerHTML = `
       <section class="results-grid">
@@ -1319,6 +1360,87 @@ describe("job search candidate filtering", () => {
     ]);
     expect(pickRelevantJobUrls(builtInCandidates, "builtin")).toEqual([
       "https://builtin.com/job/software-engineer/8472985",
+    ]);
+  });
+
+  it("keeps neutral Built In cards on remote-scoped Built In search pages", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://builtin.com/job/software-engineer/8472985",
+        title: "Software Engineer",
+        contextText: "Software Engineer",
+      },
+      {
+        url: "https://builtin.com/job/platform-engineer/8472986",
+        title: "Platform Engineer",
+        contextText: "Platform Engineer",
+      },
+      {
+        url: "https://builtin.com/job/frontend-engineer/8472987",
+        title: "Frontend Engineer",
+        contextText: "Remote - United States",
+      },
+      {
+        url: "https://builtin.com/job/site-reliability-engineer/8472988",
+        title: "Site Reliability Engineer",
+        contextText: "Hybrid",
+      },
+    ];
+
+    expect(
+      pickRelevantJobUrls(
+        candidates,
+        "builtin",
+        undefined,
+        "any",
+        [],
+        "https://builtin.com/jobs/remote?search=software%20engineer"
+      )
+    ).toEqual([
+      "https://builtin.com/job/software-engineer/8472985",
+      "https://builtin.com/job/platform-engineer/8472986",
+      "https://builtin.com/job/frontend-engineer/8472987",
+    ]);
+  });
+
+  it("keeps Built In search extraction on canonical Built In job pages instead of external ATS links", () => {
+    document.body.innerHTML = `
+      <section class="jobs-list">
+        <article class="job-card">
+          <h2>Software Engineer</h2>
+          <p>Remote</p>
+          <a href="https://builtin.com/job/software-engineer/8472985">
+            Software Engineer
+          </a>
+          <a href="https://jobs.ashbyhq.com/example/4e64ab86-4e30-403b-b1b9-41dc052570ce">
+            Apply
+          </a>
+        </article>
+        <article class="job-card">
+          <h2>Platform Engineer</h2>
+          <p>Remote</p>
+          <a href="https://builtin.com/job/platform-engineer/8472986">
+            Platform Engineer
+          </a>
+          <a href="https://job-boards.greenhouse.io/example/jobs/5798406004">
+            Apply
+          </a>
+        </article>
+      </section>
+    `;
+
+    expect(
+      pickRelevantJobUrls(
+        collectJobDetailCandidates("builtin"),
+        "builtin",
+        undefined,
+        "any",
+        [],
+        "https://builtin.com/jobs/remote?search=software%20engineer"
+      )
+    ).toEqual([
+      "https://builtin.com/job/software-engineer/8472985",
+      "https://builtin.com/job/platform-engineer/8472986",
     ]);
   });
 

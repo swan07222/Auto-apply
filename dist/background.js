@@ -1,17 +1,6 @@
 "use strict";
 (() => {
-  // src/shared.ts
-  var STARTUP_REGION_LABELS = {
-    auto: "Auto",
-    us: "US",
-    uk: "UK",
-    eu: "EU"
-  };
-  var RESUME_KIND_LABELS = {
-    front_end: "Front End",
-    back_end: "Back End",
-    full_stack: "Full Stack"
-  };
+  // src/shared/profiles.ts
   var DEFAULT_PROFILE_ID = "default-profile";
   var DEFAULT_PROFILE_NAME = "Default Profile";
   function createEmptyCandidateProfile() {
@@ -42,6 +31,39 @@
       updatedAt: now
     };
   }
+  function getActiveAutomationProfile(settings) {
+    return settings.profiles[settings.activeProfileId] ?? settings.profiles[Object.keys(settings.profiles)[0] ?? DEFAULT_PROFILE_ID] ?? createAutomationProfile();
+  }
+  function resolveAutomationSettingsForProfile(settings, profileId) {
+    const nextProfileId = profileId && settings.profiles[profileId] ? profileId : settings.activeProfileId;
+    const activeProfile = settings.profiles[nextProfileId] ?? getActiveAutomationProfile(settings);
+    const derivedResume = activeProfile.resume ?? null;
+    return {
+      ...settings,
+      activeProfileId: activeProfile.id,
+      candidate: { ...activeProfile.candidate },
+      resume: derivedResume,
+      resumes: derivedResume ? { full_stack: derivedResume } : {},
+      answers: { ...activeProfile.answers },
+      preferenceAnswers: { ...activeProfile.preferenceAnswers }
+    };
+  }
+  function readString(value) {
+    return typeof value === "string" ? value.trim() : "";
+  }
+
+  // src/shared/catalog.ts
+  var STARTUP_REGION_LABELS = {
+    auto: "Auto",
+    us: "US",
+    uk: "UK",
+    eu: "EU"
+  };
+  var RESUME_KIND_LABELS = {
+    front_end: "Front End",
+    back_end: "Back End",
+    full_stack: "Full Stack"
+  };
   var DEFAULT_STARTUP_COMPANIES = [
     { name: "Ramp", careersUrl: "https://jobs.ashbyhq.com/ramp", regions: ["us"] },
     { name: "Vercel", careersUrl: "https://job-boards.greenhouse.io/vercel", regions: ["us"] },
@@ -53,11 +75,7 @@
       careersUrl: "https://careers.veeva.com/job-search-results/",
       regions: ["us", "uk", "eu"]
     },
-    {
-      name: "Monzo",
-      careersUrl: "https://job-boards.greenhouse.io/monzo",
-      regions: ["uk"]
-    },
+    { name: "Monzo", careersUrl: "https://job-boards.greenhouse.io/monzo", regions: ["uk"] },
     { name: "Wise", careersUrl: "https://wise.jobs/", regions: ["uk"] },
     { name: "Synthesia", careersUrl: "https://synthesia.io/careers", regions: ["uk"] },
     { name: "Snyk", careersUrl: "https://snyk.io/careers/", regions: ["uk"] },
@@ -117,6 +135,8 @@
   var STARTUP_COMPANIES_CACHE_STORAGE_KEY = "remote-job-search-startup-companies-cache";
   var STARTUP_COMPANIES_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1e3;
   var STARTUP_COMPANIES_REFRESH_ALARM = "remote-job-search-refresh-startup-companies";
+  var MIN_JOB_PAGE_LIMIT = 1;
+  var MAX_JOB_PAGE_LIMIT = 25;
   var DEFAULT_PROFILE = createAutomationProfile();
   var DEFAULT_SETTINGS = {
     jobPageLimit: 5,
@@ -135,9 +155,23 @@
     answers: {},
     preferenceAnswers: {}
   };
-  var automationSettingsWriteQueue = Promise.resolve();
+  var STARTUP_TARGET_REGIONS = [
+    "us",
+    "uk",
+    "eu"
+  ];
+  function getStartupTargetRegions() {
+    return [...STARTUP_TARGET_REGIONS];
+  }
+  function encodeSearchQueryForPath(query) {
+    return query.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+
+  // src/shared/status.ts
   function detectSiteFromUrl(url) {
-    if (!url || typeof url !== "string") return null;
+    if (!url || typeof url !== "string") {
+      return null;
+    }
     let hostname;
     try {
       hostname = new URL(url).hostname.toLowerCase();
@@ -145,34 +179,18 @@
       return null;
     }
     const bare = hostname.replace(/^www\./, "");
-    if (bare === "indeed.com" || bare.endsWith(".indeed.com")) {
-      return "indeed";
-    }
-    if (bare === "ziprecruiter.com" || bare.endsWith(".ziprecruiter.com")) {
-      return "ziprecruiter";
-    }
-    if (bare === "dice.com" || bare.endsWith(".dice.com")) {
-      return "dice";
-    }
-    if (bare === "builtin.com" || bare.endsWith(".builtin.com")) {
-      return "builtin";
-    }
-    if (bare === "greenhouse.io" || bare.endsWith(".greenhouse.io")) {
-      return "greenhouse";
-    }
+    if (bare === "indeed.com" || bare.endsWith(".indeed.com")) return "indeed";
+    if (bare === "ziprecruiter.com" || bare.endsWith(".ziprecruiter.com")) return "ziprecruiter";
+    if (bare === "dice.com" || bare.endsWith(".dice.com")) return "dice";
+    if (bare === "builtin.com" || bare.endsWith(".builtin.com")) return "builtin";
+    if (bare === "greenhouse.io" || bare.endsWith(".greenhouse.io")) return "greenhouse";
     const hostParts = bare.split(".");
-    for (let i = 0; i < hostParts.length; i++) {
-      if (hostParts[i] === "monster") {
-        if (i < hostParts.length - 1) {
-          return "monster";
-        }
+    for (let index = 0; index < hostParts.length; index += 1) {
+      if (hostParts[index] === "monster" && index < hostParts.length - 1) {
+        return "monster";
       }
-    }
-    for (let i = 0; i < hostParts.length; i++) {
-      if (hostParts[i] === "glassdoor") {
-        if (i < hostParts.length - 1) {
-          return "glassdoor";
-        }
+      if (hostParts[index] === "glassdoor" && index < hostParts.length - 1) {
+        return "glassdoor";
       }
     }
     return null;
@@ -206,6 +224,183 @@
   function shouldKeepManagedJobPageOpen(site) {
     return site === "ziprecruiter" || site === "dice";
   }
+
+  // src/shared/storage.ts
+  var automationSettingsWriteQueue = Promise.resolve();
+  function normalizeQuestionKey(question) {
+    return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  }
+  async function readAutomationSettings() {
+    const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
+    return sanitizeAutomationSettings(stored[AUTOMATION_SETTINGS_STORAGE_KEY]);
+  }
+  function sanitizeAutomationSettings(raw) {
+    const source = isRecord(raw) ? raw : {};
+    const profiles = sanitizeAutomationProfiles(source.profiles);
+    const hasStoredProfiles = Object.keys(profiles).length > 0;
+    const fallbackProfile = sanitizeLegacyProfile(source);
+    const mergedProfiles = hasStoredProfiles ? profiles : {
+      [fallbackProfile.id]: fallbackProfile
+    };
+    let activeProfileId = readString2(source.activeProfileId) || Object.keys(mergedProfiles)[0] || DEFAULT_PROFILE_ID;
+    if (!mergedProfiles[activeProfileId]) {
+      activeProfileId = Object.keys(mergedProfiles)[0] ?? DEFAULT_PROFILE_ID;
+    }
+    const baseSettings = {
+      jobPageLimit: clampJobPageLimit(source.jobPageLimit),
+      autoUploadResumes: typeof source.autoUploadResumes === "boolean" ? source.autoUploadResumes : DEFAULT_SETTINGS.autoUploadResumes,
+      searchMode: sanitizeSearchMode(source.searchMode),
+      startupRegion: sanitizeStartupRegion(source.startupRegion),
+      datePostedWindow: sanitizeDatePostedWindow(source.datePostedWindow),
+      searchKeywords: sanitizeSearchKeywords(source.searchKeywords),
+      activeProfileId,
+      profiles: mergedProfiles,
+      candidate: createEmptyCandidateProfile(),
+      resume: null,
+      resumes: {},
+      answers: {},
+      preferenceAnswers: {}
+    };
+    return resolveAutomationSettingsForProfile(baseSettings, activeProfileId);
+  }
+  function sanitizeLegacyProfile(source) {
+    const now = Date.now();
+    const legacyResumes = isRecord(source.resumes) ? source.resumes : {};
+    return {
+      ...createAutomationProfile(DEFAULT_PROFILE_ID, DEFAULT_PROFILE_NAME, now),
+      candidate: sanitizeCandidateProfile(source.candidate),
+      resume: pickPrimaryResumeAssetFromLegacyResumes(legacyResumes),
+      answers: sanitizeSavedAnswerRecord(source.answers),
+      preferenceAnswers: sanitizeSavedAnswerRecord(source.preferenceAnswers),
+      updatedAt: now
+    };
+  }
+  function sanitizeAutomationProfiles(raw) {
+    const source = isRecord(raw) ? raw : {};
+    const profiles = {};
+    for (const [rawId, value] of Object.entries(source)) {
+      const id = readString2(rawId);
+      if (!id || !isRecord(value)) {
+        continue;
+      }
+      profiles[id] = sanitizeAutomationProfile(id, value);
+    }
+    return profiles;
+  }
+  function sanitizeAutomationProfile(id, value) {
+    return {
+      id,
+      name: readString2(value.name) || DEFAULT_PROFILE_NAME,
+      candidate: sanitizeCandidateProfile(value.candidate),
+      resume: sanitizeResumeAsset(value.resume) ?? (isRecord(value.resumes) ? pickPrimaryResumeAssetFromLegacyResumes(value.resumes) : null),
+      answers: sanitizeSavedAnswerRecord(value.answers),
+      preferenceAnswers: sanitizeSavedAnswerRecord(value.preferenceAnswers),
+      updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now()
+    };
+  }
+  function sanitizeCandidateProfile(value) {
+    const source = isRecord(value) ? value : {};
+    return {
+      fullName: readString2(source.fullName),
+      email: readString2(source.email),
+      phone: readString2(source.phone),
+      city: readString2(source.city),
+      state: readString2(source.state),
+      country: readString2(source.country),
+      linkedinUrl: readString2(source.linkedinUrl),
+      portfolioUrl: readString2(source.portfolioUrl),
+      currentCompany: readString2(source.currentCompany),
+      yearsExperience: readString2(source.yearsExperience),
+      workAuthorization: readString2(source.workAuthorization),
+      needsSponsorship: readString2(source.needsSponsorship),
+      willingToRelocate: readString2(source.willingToRelocate)
+    };
+  }
+  function sanitizeSavedAnswerRecord(raw) {
+    const source = isRecord(raw) ? raw : {};
+    const answers = {};
+    for (const [key, value] of Object.entries(source)) {
+      if (!isRecord(value)) continue;
+      const question = readString2(value.question);
+      const savedValue = readString2(value.value);
+      if (!question || !savedValue) continue;
+      const normalizedKey = normalizeQuestionKey(key || question);
+      if (!normalizedKey) continue;
+      answers[normalizedKey] = {
+        question,
+        value: savedValue,
+        updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now()
+      };
+    }
+    return answers;
+  }
+  function pickPrimaryResumeAssetFromLegacyResumes(raw) {
+    const assets = Object.keys(RESUME_KIND_LABELS).map((key) => sanitizeResumeAsset(raw[key])).filter((asset) => Boolean(asset)).sort(
+      (left, right) => right.updatedAt - left.updatedAt || left.name.localeCompare(right.name)
+    );
+    return assets[0] ?? null;
+  }
+  function clampJobPageLimit(raw) {
+    const numeric = Number(raw);
+    if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.jobPageLimit;
+    return Math.min(MAX_JOB_PAGE_LIMIT, Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric)));
+  }
+  function sanitizeResumeAsset(value) {
+    if (!isRecord(value)) {
+      return null;
+    }
+    const name = readString2(value.name);
+    const type = readString2(value.type);
+    const dataUrl = readString2(value.dataUrl);
+    const textContent = readString2(value.textContent);
+    const size = Number.isFinite(value.size) ? Number(value.size) : 0;
+    if (!name || !type || !dataUrl) {
+      return null;
+    }
+    return {
+      name,
+      type,
+      dataUrl,
+      textContent,
+      size,
+      updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now()
+    };
+  }
+  function sanitizeSearchKeywords(value) {
+    if (typeof value !== "string") {
+      return "";
+    }
+    const deduped = /* @__PURE__ */ new Map();
+    for (const rawEntry of value.split(/[\r\n,]+/)) {
+      const entry = rawEntry.trim();
+      if (!entry) {
+        continue;
+      }
+      const normalized = normalizeQuestionKey(entry);
+      if (!normalized || deduped.has(normalized)) {
+        continue;
+      }
+      deduped.set(normalized, entry);
+    }
+    return Array.from(deduped.values()).join("\n");
+  }
+  function sanitizeSearchMode(value) {
+    return value === "startup_careers" || value === "other_job_sites" ? value : DEFAULT_SETTINGS.searchMode;
+  }
+  function sanitizeStartupRegion(value) {
+    return value === "us" || value === "uk" || value === "eu" || value === "auto" ? value : DEFAULT_SETTINGS.startupRegion;
+  }
+  function sanitizeDatePostedWindow(value) {
+    return value === "24h" || value === "3d" || value === "1w" || value === "any" ? value : DEFAULT_SETTINGS.datePostedWindow;
+  }
+  function readString2(value) {
+    return typeof value === "string" ? value.trim() : "";
+  }
+  function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
+  // src/shared/targets.ts
   function parseSearchKeywords(value) {
     const source = typeof value === "string" ? value : "";
     const deduped = /* @__PURE__ */ new Map();
@@ -265,34 +460,12 @@
     }
     return dedupeSearchTargets(targets);
   }
-  function dedupeSearchTargets(targets) {
-    const deduped = /* @__PURE__ */ new Map();
-    for (const target of targets) {
-      const normalizedUrl = sanitizeHttpUrl(target.url);
-      if (!normalizedUrl) {
-        continue;
-      }
-      const key = `${normalizedUrl.toLowerCase()}::${target.resumeKind ?? ""}`;
-      if (!deduped.has(key)) {
-        deduped.set(key, {
-          ...target,
-          url: normalizedUrl
-        });
-      }
-    }
-    return Array.from(deduped.values());
-  }
-  var STARTUP_TARGET_REGIONS = [
-    "us",
-    "uk",
-    "eu"
-  ];
   function resolveStartupTargetRegions(startupRegion, candidateCountry) {
     if (startupRegion !== "auto") {
       return [startupRegion];
     }
     const inferred = inferStartupRegionFromCountry(candidateCountry);
-    return inferred ? [inferred] : [...STARTUP_TARGET_REGIONS];
+    return inferred ? [inferred] : getStartupTargetRegions();
   }
   function inferStartupRegionFromCountry(candidateCountry) {
     const normalized = normalizeQuestionKey(candidateCountry);
@@ -353,26 +526,41 @@
   function formatStartupRegionList(regions) {
     return regions.filter((region, index, values) => values.indexOf(region) === index).map((region) => STARTUP_REGION_LABELS[region]).join(" / ");
   }
-  function getActiveAutomationProfile(settings) {
-    return settings.profiles[settings.activeProfileId] ?? settings.profiles[Object.keys(settings.profiles)[0] ?? DEFAULT_PROFILE_ID] ?? createAutomationProfile();
+  function dedupeSearchTargets(targets) {
+    const deduped = /* @__PURE__ */ new Map();
+    for (const target of targets) {
+      const normalizedUrl = sanitizeHttpUrl(target.url);
+      if (!normalizedUrl) {
+        continue;
+      }
+      const key = `${normalizedUrl.toLowerCase()}::${target.resumeKind ?? ""}`;
+      if (!deduped.has(key)) {
+        deduped.set(key, {
+          ...target,
+          url: normalizedUrl
+        });
+      }
+    }
+    return Array.from(deduped.values());
   }
-  function resolveAutomationSettingsForProfile(settings, profileId) {
-    const nextProfileId = profileId && settings.profiles[profileId] ? profileId : settings.activeProfileId;
-    const activeProfile = settings.profiles[nextProfileId] ?? getActiveAutomationProfile(settings);
-    const derivedResume = activeProfile.resume ?? null;
-    return {
-      ...settings,
-      activeProfileId: activeProfile.id,
-      candidate: { ...activeProfile.candidate },
-      resume: derivedResume,
-      resumes: derivedResume ? { full_stack: derivedResume } : {},
-      answers: { ...activeProfile.answers },
-      preferenceAnswers: { ...activeProfile.preferenceAnswers }
-    };
+  function sanitizeHttpUrl(value) {
+    const raw = typeof value === "string" ? value.trim() : "";
+    if (!raw) {
+      return "";
+    }
+    try {
+      const normalized = new URL(raw);
+      if (normalized.protocol !== "http:" && normalized.protocol !== "https:") {
+        return "";
+      }
+      normalized.hash = "";
+      return normalized.toString();
+    } catch {
+      return "";
+    }
   }
-  function encodeSearchQueryForPath(query) {
-    return query.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  }
+
+  // src/shared/url.ts
   var IDENTIFYING_PARAMS = [
     "jk",
     "vjk",
@@ -479,18 +667,17 @@
       return raw;
     }
   }
-  function normalizeQuestionKey(question) {
-    return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-  }
+
+  // src/shared/pageSignals.ts
   function sanitizeStartupCompaniesPayload(raw) {
-    const entries = Array.isArray(raw) ? raw : isRecord(raw) && Array.isArray(raw.companies) ? raw.companies : [];
+    const entries = Array.isArray(raw) ? raw : isRecord2(raw) && Array.isArray(raw.companies) ? raw.companies : [];
     const deduped = /* @__PURE__ */ new Map();
     for (const entry of entries) {
-      if (!isRecord(entry)) {
+      if (!isRecord2(entry)) {
         continue;
       }
-      const name = readString(entry.name);
-      const careersUrl = sanitizeHttpUrl(entry.careersUrl);
+      const name = readString3(entry.name);
+      const careersUrl = sanitizeHttpUrl2(entry.careersUrl);
       const regions = Array.isArray(entry.regions) ? entry.regions.filter(isStartupCompanyRegion) : [];
       if (!name || !careersUrl || regions.length === 0) {
         continue;
@@ -547,129 +734,14 @@
     }
     return STARTUP_COMPANIES;
   }
-  async function readAutomationSettings() {
-    const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
-    return sanitizeAutomationSettings(stored[AUTOMATION_SETTINGS_STORAGE_KEY]);
-  }
-  function sanitizeAutomationSettings(raw) {
-    const source = isRecord(raw) ? raw : {};
-    const profiles = sanitizeAutomationProfiles(source.profiles);
-    const hasStoredProfiles = Object.keys(profiles).length > 0;
-    const fallbackProfile = sanitizeLegacyProfile(source);
-    const mergedProfiles = hasStoredProfiles ? profiles : {
-      [fallbackProfile.id]: fallbackProfile
-    };
-    let activeProfileId = readString(source.activeProfileId) || Object.keys(mergedProfiles)[0] || DEFAULT_PROFILE_ID;
-    if (!mergedProfiles[activeProfileId]) {
-      activeProfileId = Object.keys(mergedProfiles)[0] ?? DEFAULT_PROFILE_ID;
-    }
-    const baseSettings = {
-      jobPageLimit: clampJobPageLimit(source.jobPageLimit),
-      autoUploadResumes: typeof source.autoUploadResumes === "boolean" ? source.autoUploadResumes : DEFAULT_SETTINGS.autoUploadResumes,
-      searchMode: sanitizeSearchMode(source.searchMode),
-      startupRegion: sanitizeStartupRegion(source.startupRegion),
-      datePostedWindow: sanitizeDatePostedWindow(source.datePostedWindow),
-      searchKeywords: sanitizeSearchKeywords(source.searchKeywords),
-      activeProfileId,
-      profiles: mergedProfiles,
-      candidate: createEmptyCandidateProfile(),
-      resume: null,
-      resumes: {},
-      answers: {},
-      preferenceAnswers: {}
-    };
-    return resolveAutomationSettingsForProfile(baseSettings, activeProfileId);
-  }
-  function sanitizeLegacyProfile(source) {
-    const now = Date.now();
-    const legacyResumes = isRecord(source.resumes) ? source.resumes : {};
-    return {
-      ...createAutomationProfile(DEFAULT_PROFILE_ID, DEFAULT_PROFILE_NAME, now),
-      candidate: sanitizeCandidateProfile(source.candidate),
-      resume: pickPrimaryResumeAssetFromLegacyResumes(legacyResumes),
-      answers: sanitizeSavedAnswerRecord(source.answers),
-      preferenceAnswers: sanitizeSavedAnswerRecord(source.preferenceAnswers),
-      updatedAt: now
-    };
-  }
-  function sanitizeAutomationProfiles(raw) {
-    const source = isRecord(raw) ? raw : {};
-    const profiles = {};
-    for (const [rawId, value] of Object.entries(source)) {
-      const id = readString(rawId);
-      if (!id || !isRecord(value)) {
-        continue;
-      }
-      profiles[id] = sanitizeAutomationProfile(id, value);
-    }
-    return profiles;
-  }
-  function sanitizeAutomationProfile(id, value) {
-    return {
-      id,
-      name: readString(value.name) || DEFAULT_PROFILE_NAME,
-      candidate: sanitizeCandidateProfile(value.candidate),
-      resume: sanitizeResumeAsset(value.resume) ?? (isRecord(value.resumes) ? pickPrimaryResumeAssetFromLegacyResumes(value.resumes) : null),
-      answers: sanitizeSavedAnswerRecord(value.answers),
-      preferenceAnswers: sanitizeSavedAnswerRecord(value.preferenceAnswers),
-      updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now()
-    };
-  }
-  function sanitizeCandidateProfile(value) {
-    const source = isRecord(value) ? value : {};
-    return {
-      fullName: readString(source.fullName),
-      email: readString(source.email),
-      phone: readString(source.phone),
-      city: readString(source.city),
-      state: readString(source.state),
-      country: readString(source.country),
-      linkedinUrl: readString(source.linkedinUrl),
-      portfolioUrl: readString(source.portfolioUrl),
-      currentCompany: readString(source.currentCompany),
-      yearsExperience: readString(source.yearsExperience),
-      workAuthorization: readString(source.workAuthorization),
-      needsSponsorship: readString(source.needsSponsorship),
-      willingToRelocate: readString(source.willingToRelocate)
-    };
-  }
-  function sanitizeSavedAnswerRecord(raw) {
-    const source = isRecord(raw) ? raw : {};
-    const answers = {};
-    for (const [key, value] of Object.entries(source)) {
-      if (!isRecord(value)) continue;
-      const question = readString(value.question);
-      const savedValue = readString(value.value);
-      if (!question || !savedValue) continue;
-      const normalizedKey = normalizeQuestionKey(key || question);
-      if (!normalizedKey) continue;
-      answers[normalizedKey] = {
-        question,
-        value: savedValue,
-        updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now()
-      };
-    }
-    return answers;
-  }
-  function pickPrimaryResumeAssetFromLegacyResumes(raw) {
-    const assets = Object.keys(RESUME_KIND_LABELS).map((key) => sanitizeResumeAsset(raw[key])).filter((asset) => Boolean(asset)).sort(
-      (left, right) => right.updatedAt - left.updatedAt || left.name.localeCompare(right.name)
-    );
-    return assets[0] ?? null;
-  }
-  function clampJobPageLimit(raw) {
-    const numeric = Number(raw);
-    if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.jobPageLimit;
-    return Math.min(25, Math.max(1, Math.round(numeric)));
-  }
-  function readString(value) {
+  function readString3(value) {
     return typeof value === "string" ? value.trim() : "";
   }
-  function isRecord(value) {
+  function isRecord2(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
-  function sanitizeHttpUrl(value) {
-    const raw = readString(value);
+  function sanitizeHttpUrl2(value) {
+    const raw = readString3(value);
     if (!raw) {
       return "";
     }
@@ -688,7 +760,7 @@
     return value === "us" || value === "uk" || value === "eu";
   }
   function sanitizeStartupCompanyCache(raw) {
-    if (!isRecord(raw)) {
+    if (!isRecord2(raw)) {
       return null;
     }
     const companies = sanitizeStartupCompaniesPayload(raw.companies);
@@ -698,42 +770,287 @@
     return {
       companies,
       updatedAt: Number.isFinite(raw.updatedAt) ? Number(raw.updatedAt) : 0,
-      sourceUrl: sanitizeHttpUrl(raw.sourceUrl) || STARTUP_COMPANIES_FEED_URL
+      sourceUrl: sanitizeHttpUrl2(raw.sourceUrl) || STARTUP_COMPANIES_FEED_URL
     };
   }
-  function sanitizeSearchMode(value) {
-    return value === "startup_careers" || value === "other_job_sites" ? value : DEFAULT_SETTINGS.searchMode;
+
+  // src/background/spawnQueue.ts
+  function pickUniqueCandidateUrls(candidates, limit, reviewedJobKeys = /* @__PURE__ */ new Set()) {
+    const approvedUrls = [];
+    const seenKeys = /* @__PURE__ */ new Set();
+    const safeLimit = Math.max(0, Math.floor(limit));
+    for (const candidate of candidates) {
+      if (approvedUrls.length >= safeLimit) {
+        break;
+      }
+      const url = candidate.url.trim();
+      const key = getJobDedupKey(url);
+      if (!url || !key || seenKeys.has(key) || reviewedJobKeys.has(key)) {
+        continue;
+      }
+      seenKeys.add(key);
+      approvedUrls.push(url);
+    }
+    return approvedUrls;
   }
-  function sanitizeStartupRegion(value) {
-    return value === "us" || value === "uk" || value === "eu" || value === "auto" ? value : DEFAULT_SETTINGS.startupRegion;
+  function deduplicateSpawnItems(items, maxJobSlots) {
+    const seen = /* @__PURE__ */ new Set();
+    const result = [];
+    const resultIndexByKey = /* @__PURE__ */ new Map();
+    let totalJobSlots = 0;
+    for (const item of items) {
+      const key = getSpawnDedupKey(item.url);
+      if (!key || seen.has(key)) {
+        if (key && item.jobSlots && item.jobSlots > 0) {
+          const existingIndex = resultIndexByKey.get(key);
+          const existing = existingIndex === void 0 ? null : result[existingIndex];
+          if (existing) {
+            const currentSlots = Math.max(0, existing.jobSlots ?? 0);
+            const maxAllowedForItem = maxJobSlots !== void 0 ? currentSlots + Math.max(0, maxJobSlots - totalJobSlots) : currentSlots + item.jobSlots;
+            const nextSlots = Math.min(currentSlots + item.jobSlots, maxAllowedForItem);
+            totalJobSlots += Math.max(0, nextSlots - currentSlots);
+            existing.jobSlots = nextSlots;
+          }
+        }
+        continue;
+      }
+      seen.add(key);
+      resultIndexByKey.set(key, result.length);
+      const newItem = { ...item };
+      if (newItem.jobSlots !== void 0 && newItem.jobSlots > 0) {
+        totalJobSlots += newItem.jobSlots;
+      }
+      result.push(newItem);
+    }
+    return result;
   }
-  function sanitizeDatePostedWindow(value) {
-    return value === "24h" || value === "3d" || value === "1w" || value === "any" ? value : DEFAULT_SETTINGS.datePostedWindow;
+
+  // src/background/sessionState.ts
+  function isFrameBoundSession(session) {
+    return session.stage === "autofill-form" && session.site !== "unsupported";
   }
-  function sanitizeSearchKeywords(value) {
-    const raw = typeof value === "string" ? value : "";
-    return parseSearchKeywords(raw).join("\n");
-  }
-  function sanitizeResumeAsset(value) {
-    if (!isRecord(value)) return void 0;
-    const asset = {
-      name: readString(value.name),
-      type: readString(value.type),
-      dataUrl: readString(value.dataUrl),
-      textContent: readString(value.textContent),
-      size: Number.isFinite(value.size) ? Number(value.size) : 0,
-      updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now()
+  async function resolveContentReadySession(session, senderFrameId, looksLikeApplicationSurface, persistSession) {
+    if (!isFrameBoundSession(session)) {
+      return {
+        session,
+        shouldResume: Boolean(session.shouldResume)
+      };
+    }
+    if (typeof session.controllerFrameId === "number") {
+      return {
+        session,
+        shouldResume: session.controllerFrameId === senderFrameId && Boolean(session.shouldResume)
+      };
+    }
+    if (!looksLikeApplicationSurface) {
+      return {
+        session,
+        shouldResume: false
+      };
+    }
+    const claimedSession = {
+      ...session,
+      controllerFrameId: senderFrameId
     };
-    return asset.name && asset.dataUrl ? asset : void 0;
+    await persistSession(claimedSession);
+    return {
+      session: claimedSession,
+      shouldResume: Boolean(claimedSession.shouldResume)
+    };
+  }
+  function isManagedJobStage(stage) {
+    return stage === "open-apply" || stage === "autofill-form";
+  }
+  function shouldQueueManagedJobSession(item, sourceSession) {
+    if (!item.runId || !isManagedJobStage(item.stage)) {
+      return false;
+    }
+    if (sourceSession?.stage === "collect-results") {
+      return false;
+    }
+    if (sourceSession?.runId === item.runId && isManagedJobSession(sourceSession)) {
+      return false;
+    }
+    return true;
+  }
+  function isManagedJobSession(session) {
+    return Boolean(session.runId && isManagedJobStage(session.stage));
+  }
+  function isManagedJobSessionActive(session) {
+    return isManagedJobSession(session) && session.shouldResume && (session.phase === "running" || session.phase === "waiting_for_verification");
+  }
+  function isManagedJobSessionPending(session) {
+    return isManagedJobSession(session) && !session.shouldResume && session.phase !== "completed" && session.phase !== "error";
+  }
+  function isRateLimitMessage(message) {
+    const lower = message.toLowerCase();
+    return lower.includes("rate limited") || lower.includes("rate limit exceeded");
+  }
+  function isRateLimitedSession(session) {
+    return session.phase === "error" && isRateLimitMessage(session.message);
+  }
+  function isSuccessfulJobCompletion(session, completionKind) {
+    if (!isManagedJobSession(session) || session.phase !== "completed") {
+      return false;
+    }
+    if (completionKind) {
+      return completionKind === "successful";
+    }
+    const message = session.message.toLowerCase();
+    return message.includes("review before submitting") || message.includes("application opened. no fields auto-filled") || message.includes("application opened, nothing auto-filled") || message.includes("application page opened. review and complete manually") || message.includes("review manually");
+  }
+  function shouldReleaseManagedJobOpening(session, completionKind) {
+    if (!isManagedJobSession(session)) {
+      return false;
+    }
+    if (completionKind) {
+      return completionKind === "released";
+    }
+    if (session.phase === "error") {
+      return !isRateLimitedSession(session);
+    }
+    if (session.phase !== "completed") {
+      return false;
+    }
+    const message = session.message.toLowerCase();
+    return message.includes("already applied") || message.includes("no application form detected") || message.includes("no apply button found");
+  }
+  function buildQueuedJobSessionMessage(site, getReadableSiteName2) {
+    return `Queued this ${getReadableSiteName2(site)} job page. It will start automatically when an application slot is available.`;
+  }
+
+  // src/background/sessionStore.ts
+  var AUTOMATION_RUN_STORAGE_PREFIX = "remote-job-search-run:";
+  var SESSION_STORAGE_PREFIX = "remote-job-search-session:";
+  var ACTIVE_RUNS_STORAGE_KEY = "remote-job-search-active-runs";
+  async function getSession(tabId) {
+    const key = getSessionStorageKey(tabId);
+    const stored = await chrome.storage.local.get(key);
+    return stored[key] ?? null;
+  }
+  async function setSession(session) {
+    await chrome.storage.local.set({
+      [getSessionStorageKey(session.tabId)]: session
+    });
+  }
+  async function removeSession(tabId) {
+    const existingSession = await getSession(tabId);
+    await chrome.storage.local.remove(getSessionStorageKey(tabId));
+    if (existingSession?.runId) {
+      await removeRunStateIfUnused(existingSession.runId);
+    }
+  }
+  async function getRunState(runId) {
+    const key = getAutomationRunStorageKey(runId);
+    const stored = await chrome.storage.local.get(key);
+    const value = stored[key];
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return null;
+    }
+    const raw = value;
+    return {
+      id: typeof raw.id === "string" && raw.id.trim() ? raw.id : runId,
+      jobPageLimit: Number.isFinite(Number(raw.jobPageLimit)) ? Math.max(0, Math.floor(Number(raw.jobPageLimit))) : 0,
+      openedJobPages: Number.isFinite(Number(raw.openedJobPages)) ? Math.max(0, Math.floor(Number(raw.openedJobPages))) : 0,
+      openedJobKeys: Array.isArray(raw.openedJobKeys) ? raw.openedJobKeys.filter(
+        (key2) => typeof key2 === "string" && Boolean(key2.trim())
+      ) : [],
+      successfulJobPages: Number.isFinite(Number(raw.successfulJobPages)) ? Math.max(0, Math.floor(Number(raw.successfulJobPages))) : 0,
+      successfulJobKeys: Array.isArray(raw.successfulJobKeys) ? raw.successfulJobKeys.filter(
+        (key2) => typeof key2 === "string" && Boolean(key2.trim())
+      ) : [],
+      rateLimitedUntil: Number.isFinite(Number(raw.rateLimitedUntil)) ? Number(raw.rateLimitedUntil) : void 0,
+      updatedAt: Number.isFinite(raw.updatedAt) ? Number(raw.updatedAt) : Date.now()
+    };
+  }
+  async function isRunRateLimited(runId) {
+    const runState = await getRunState(runId);
+    return Boolean(
+      runState && Number.isFinite(runState.rateLimitedUntil) && Date.now() < Number(runState.rateLimitedUntil)
+    );
+  }
+  async function setRunState(runState) {
+    await chrome.storage.local.set({
+      [getAutomationRunStorageKey(runState.id)]: runState
+    });
+  }
+  async function removeRunState(runId) {
+    await chrome.storage.local.remove(getAutomationRunStorageKey(runId));
+  }
+  async function listSessionsForRunId(runId) {
+    const allStored = await chrome.storage.local.get(null);
+    return Object.entries(allStored).filter(([key]) => key.startsWith(SESSION_STORAGE_PREFIX)).map(([, value]) => value).filter((session) => session?.runId === runId);
+  }
+  async function listLiveSessionsForRunId(runId) {
+    const sessions = await listSessionsForRunId(runId);
+    return sessions.filter(
+      (session) => session.phase !== "completed" && session.phase !== "error"
+    );
+  }
+  async function addActiveRunId(runId) {
+    const stored = await chrome.storage.local.get(ACTIVE_RUNS_STORAGE_KEY);
+    const activeRuns = Array.isArray(stored[ACTIVE_RUNS_STORAGE_KEY]) ? stored[ACTIVE_RUNS_STORAGE_KEY] : [];
+    if (!activeRuns.includes(runId)) {
+      activeRuns.push(runId);
+      await chrome.storage.local.set({
+        [ACTIVE_RUNS_STORAGE_KEY]: activeRuns
+      });
+    }
+  }
+  async function removeActiveRunId(runId) {
+    const stored = await chrome.storage.local.get(ACTIVE_RUNS_STORAGE_KEY);
+    const activeRuns = Array.isArray(stored[ACTIVE_RUNS_STORAGE_KEY]) ? stored[ACTIVE_RUNS_STORAGE_KEY] : [];
+    const filtered = activeRuns.filter((id) => id !== runId);
+    await chrome.storage.local.set({
+      [ACTIVE_RUNS_STORAGE_KEY]: filtered
+    });
+  }
+  async function removeRunStateIfUnused(runId) {
+    const allStored = await chrome.storage.local.get(null);
+    const allKeys = Object.keys(allStored);
+    const sessionKeys = allKeys.filter(
+      (key) => key.startsWith(SESSION_STORAGE_PREFIX)
+    );
+    if (sessionKeys.length === 0) {
+      await removeRunState(runId);
+      await removeActiveRunId(runId);
+      return;
+    }
+    const sessionEntries = await chrome.storage.local.get(sessionKeys);
+    const hasActiveSession = Object.values(sessionEntries).some((value) => {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        return false;
+      }
+      return "runId" in value && value.runId === runId;
+    });
+    if (!hasActiveSession) {
+      await removeRunState(runId);
+      await removeActiveRunId(runId);
+    }
+  }
+  function getAutomationRunStorageKey(runId) {
+    return `${AUTOMATION_RUN_STORAGE_PREFIX}${runId}`;
+  }
+  function createRunId() {
+    return typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+  function distributeJobSlots(totalSlots, targetCount) {
+    const safeTargetCount = Math.max(0, Math.floor(targetCount));
+    const safeTotalSlots = Math.max(0, Math.floor(totalSlots));
+    const slots = new Array(safeTargetCount).fill(0);
+    for (let index = 0; index < safeTotalSlots; index += 1) {
+      if (safeTargetCount === 0) {
+        break;
+      }
+      slots[index % safeTargetCount] += 1;
+    }
+    return slots;
   }
 
   // src/background.ts
   var ZIPRECRUITER_SPAWN_DELAY_MS = 4e3;
   var MONSTER_SPAWN_DELAY_MS = 9e3;
   var RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1e3;
-  var AUTOMATION_RUN_STORAGE_PREFIX = "remote-job-search-run:";
-  var SESSION_STORAGE_PREFIX = "remote-job-search-session:";
-  var ACTIVE_RUNS_STORAGE_KEY = "remote-job-search-active-runs";
   var REVIEWED_JOB_KEYS_STORAGE_KEY = "remote-job-search-reviewed-job-keys";
   var MAX_REVIEWED_JOB_KEYS = 5e3;
   var runLocks = /* @__PURE__ */ new Map();
@@ -983,7 +1300,8 @@
         const resolved = await resolveContentReadySession(
           session,
           typeof sender.frameId === "number" ? sender.frameId : 0,
-          Boolean(message.looksLikeApplicationSurface)
+          Boolean(message.looksLikeApplicationSurface),
+          setSession
         );
         return {
           ok: true,
@@ -1070,7 +1388,7 @@
               createdTab.id,
               item.site,
               shouldQueue ? "idle" : "running",
-              shouldQueue ? buildQueuedJobSessionMessage(item.site) : item.message ?? `Starting ${getReadableStageName(item.stage)}...`,
+              shouldQueue ? buildQueuedJobSessionMessage(item.site, getReadableSiteName) : item.message ?? `Starting ${getReadableStageName(item.stage)}...`,
               shouldQueue ? false : true,
               item.stage,
               item.runId,
@@ -1208,6 +1526,15 @@
     if (openerSession.site === "unsupported" || openerSession.phase !== "running" && openerSession.phase !== "waiting_for_verification" || openerSession.stage !== "open-apply" && openerSession.stage !== "autofill-form") {
       return;
     }
+    if (await hasLiveManagedChildSessionForClaimedJob(openerSession, openerTabId)) {
+      if (openerSession.site === "builtin") {
+        try {
+          await chrome.tabs.remove(childTabId);
+        } catch {
+        }
+      }
+      return;
+    }
     const childSession = createSession(
       childTabId,
       openerSession.site,
@@ -1230,6 +1557,17 @@
       });
     } catch {
     }
+  }
+  async function hasLiveManagedChildSessionForClaimedJob(openerSession, openerTabId) {
+    const runId = openerSession.runId?.trim();
+    const claimedJobKey = openerSession.claimedJobKey?.trim();
+    if (!runId || !claimedJobKey) {
+      return false;
+    }
+    const liveSessions = await listLiveSessionsForRunId(runId);
+    return liveSessions.some(
+      (session) => session.tabId !== openerTabId && session.claimedJobKey?.trim() === claimedJobKey && isManagedJobSession(session)
+    );
   }
   async function startAutomationForTab(tabId) {
     const tab = await resolvePreferredTab(tabId, "job_board");
@@ -1630,43 +1968,6 @@
       "unsupported protocol"
     ].some((token) => message.includes(token));
   }
-  async function getSession(tabId) {
-    const key = getSessionStorageKey(tabId);
-    const stored = await chrome.storage.local.get(key);
-    return stored[key] ?? null;
-  }
-  function isFrameBoundSession(session) {
-    return session.stage === "autofill-form" && session.site !== "unsupported";
-  }
-  async function resolveContentReadySession(session, senderFrameId, looksLikeApplicationSurface) {
-    if (!isFrameBoundSession(session)) {
-      return {
-        session,
-        shouldResume: Boolean(session.shouldResume)
-      };
-    }
-    if (typeof session.controllerFrameId === "number") {
-      return {
-        session,
-        shouldResume: session.controllerFrameId === senderFrameId && Boolean(session.shouldResume)
-      };
-    }
-    if (!looksLikeApplicationSurface) {
-      return {
-        session,
-        shouldResume: false
-      };
-    }
-    const claimedSession = {
-      ...session,
-      controllerFrameId: senderFrameId
-    };
-    await setSession(claimedSession);
-    return {
-      session: claimedSession,
-      shouldResume: Boolean(claimedSession.shouldResume)
-    };
-  }
   async function reserveJobOpeningsForSender(sender, requested) {
     const tabId = sender.tab?.id;
     if (tabId === void 0) {
@@ -1844,66 +2145,6 @@
       });
     });
   }
-  function isManagedJobStage(stage) {
-    return stage === "open-apply" || stage === "autofill-form";
-  }
-  function shouldQueueManagedJobSession(item, sourceSession) {
-    if (!item.runId || !isManagedJobStage(item.stage)) {
-      return false;
-    }
-    if (sourceSession?.stage === "collect-results") {
-      return false;
-    }
-    if (sourceSession?.runId === item.runId && isManagedJobSession(sourceSession)) {
-      return false;
-    }
-    return true;
-  }
-  function buildQueuedJobSessionMessage(site) {
-    return `Queued this ${getReadableSiteName(site)} job page. It will start automatically when an application slot is available.`;
-  }
-  function isManagedJobSession(session) {
-    return Boolean(session.runId && isManagedJobStage(session.stage));
-  }
-  function isManagedJobSessionActive(session) {
-    return isManagedJobSession(session) && session.shouldResume && (session.phase === "running" || session.phase === "waiting_for_verification");
-  }
-  function isManagedJobSessionPending(session) {
-    return isManagedJobSession(session) && !session.shouldResume && session.phase !== "completed" && session.phase !== "error";
-  }
-  function isRateLimitMessage(message) {
-    const lower = message.toLowerCase();
-    return lower.includes("rate limited") || lower.includes("rate limit exceeded");
-  }
-  function isRateLimitedSession(session) {
-    return session.phase === "error" && isRateLimitMessage(session.message);
-  }
-  function isSuccessfulJobCompletion(session, completionKind) {
-    if (!isManagedJobSession(session) || session.phase !== "completed") {
-      return false;
-    }
-    if (completionKind) {
-      return completionKind === "successful";
-    }
-    const message = session.message.toLowerCase();
-    return message.includes("review before submitting") || message.includes("application opened. no fields auto-filled") || message.includes("application opened, nothing auto-filled") || message.includes("application page opened. review and complete manually") || message.includes("review manually");
-  }
-  function shouldReleaseManagedJobOpening(session, completionKind) {
-    if (!isManagedJobSession(session)) {
-      return false;
-    }
-    if (completionKind) {
-      return completionKind === "released";
-    }
-    if (session.phase === "error") {
-      return !isRateLimitedSession(session);
-    }
-    if (session.phase !== "completed") {
-      return false;
-    }
-    const message = session.message.toLowerCase();
-    return message.includes("already applied") || message.includes("no application form detected") || message.includes("no apply button found");
-  }
   async function markRunRateLimited(runId) {
     await withRunLock(runId, async () => {
       const runState = await getRunState(runId);
@@ -1973,25 +2214,6 @@
       return;
     }
     await releaseJobOpeningsForRunId(runId, [completionKey]);
-  }
-  async function listSessionsForRunId(runId) {
-    const allStored = await chrome.storage.local.get(null);
-    return Object.entries(allStored).filter(([key]) => key.startsWith(SESSION_STORAGE_PREFIX)).map(([, value]) => value).filter(
-      (value) => typeof value === "object" && value !== null && !Array.isArray(value) && "runId" in value && value.runId === runId
-    );
-  }
-  async function listLiveSessionsForRunId(runId) {
-    const sessions = await listSessionsForRunId(runId);
-    const liveSessions = [];
-    for (const session of sessions) {
-      const liveTab = await getTabSafely(session.tabId);
-      if (liveTab) {
-        liveSessions.push(session);
-        continue;
-      }
-      await removeSession(session.tabId);
-    }
-    return liveSessions;
   }
   async function listLiveRunSessionInfos(runId) {
     const sessions = await listLiveSessionsForRunId(runId);
@@ -2071,73 +2293,6 @@
       }
     }
   }
-  async function setSession(session) {
-    await chrome.storage.local.set({
-      [getSessionStorageKey(session.tabId)]: session
-    });
-  }
-  async function removeSession(tabId) {
-    const existingSession = await getSession(tabId);
-    await chrome.storage.local.remove(getSessionStorageKey(tabId));
-    if (existingSession?.runId) {
-      await removeRunStateIfUnused(existingSession.runId);
-    }
-  }
-  async function getRunState(runId) {
-    const key = getAutomationRunStorageKey(runId);
-    const stored = await chrome.storage.local.get(key);
-    const value = stored[key];
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return null;
-    }
-    const raw = value;
-    return {
-      id: typeof raw.id === "string" && raw.id.trim() ? raw.id : runId,
-      jobPageLimit: Number.isFinite(Number(raw.jobPageLimit)) ? Math.max(0, Math.floor(Number(raw.jobPageLimit))) : 0,
-      openedJobPages: Number.isFinite(Number(raw.openedJobPages)) ? Math.max(0, Math.floor(Number(raw.openedJobPages))) : 0,
-      openedJobKeys: Array.isArray(raw.openedJobKeys) ? raw.openedJobKeys.filter(
-        (key2) => typeof key2 === "string" && Boolean(key2.trim())
-      ) : [],
-      successfulJobPages: Number.isFinite(Number(raw.successfulJobPages)) ? Math.max(0, Math.floor(Number(raw.successfulJobPages))) : 0,
-      successfulJobKeys: Array.isArray(raw.successfulJobKeys) ? raw.successfulJobKeys.filter(
-        (key2) => typeof key2 === "string" && Boolean(key2.trim())
-      ) : [],
-      rateLimitedUntil: Number.isFinite(Number(raw.rateLimitedUntil)) ? Number(raw.rateLimitedUntil) : void 0,
-      updatedAt: Number.isFinite(raw.updatedAt) ? Number(raw.updatedAt) : Date.now()
-    };
-  }
-  async function isRunRateLimited(runId) {
-    const runState = await getRunState(runId);
-    return Boolean(
-      runState && Number.isFinite(runState.rateLimitedUntil) && Date.now() < Number(runState.rateLimitedUntil)
-    );
-  }
-  async function setRunState(runState) {
-    await chrome.storage.local.set({
-      [getAutomationRunStorageKey(runState.id)]: runState
-    });
-  }
-  async function removeRunState(runId) {
-    await chrome.storage.local.remove(getAutomationRunStorageKey(runId));
-  }
-  function getAutomationRunStorageKey(runId) {
-    return `${AUTOMATION_RUN_STORAGE_PREFIX}${runId}`;
-  }
-  function createRunId() {
-    return typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  }
-  function distributeJobSlots(totalSlots, targetCount) {
-    const safeTargetCount = Math.max(0, Math.floor(targetCount));
-    const safeTotalSlots = Math.max(0, Math.floor(totalSlots));
-    const slots = new Array(safeTargetCount).fill(0);
-    for (let index = 0; index < safeTotalSlots; index += 1) {
-      if (safeTargetCount === 0) {
-        break;
-      }
-      slots[index % safeTargetCount] += 1;
-    }
-    return slots;
-  }
   async function withRunLock(runId, task) {
     const previous = runLocks.get(runId) ?? Promise.resolve();
     let releaseLock = () => {
@@ -2183,55 +2338,6 @@
       openedJobItems += 1;
     }
     return capped;
-  }
-  function pickUniqueCandidateUrls(candidates, limit, reviewedJobKeys = /* @__PURE__ */ new Set()) {
-    const approvedUrls = [];
-    const seenKeys = /* @__PURE__ */ new Set();
-    const safeLimit = Math.max(0, Math.floor(limit));
-    for (const candidate of candidates) {
-      if (approvedUrls.length >= safeLimit) {
-        break;
-      }
-      const url = candidate.url.trim();
-      const key = getJobDedupKey(url);
-      if (!url || !key || seenKeys.has(key) || reviewedJobKeys.has(key)) {
-        continue;
-      }
-      seenKeys.add(key);
-      approvedUrls.push(url);
-    }
-    return approvedUrls;
-  }
-  function deduplicateSpawnItems(items, maxJobSlots) {
-    const seen = /* @__PURE__ */ new Set();
-    const result = [];
-    const resultIndexByKey = /* @__PURE__ */ new Map();
-    let totalJobSlots = 0;
-    for (const item of items) {
-      const key = getSpawnDedupKey(item.url);
-      if (!key || seen.has(key)) {
-        if (key && item.jobSlots && item.jobSlots > 0) {
-          const existingIndex = resultIndexByKey.get(key);
-          const existing = existingIndex === void 0 ? null : result[existingIndex];
-          if (existing) {
-            const currentSlots = Math.max(0, existing.jobSlots ?? 0);
-            const maxAllowedForItem = maxJobSlots !== void 0 ? currentSlots + Math.max(0, maxJobSlots - totalJobSlots) : currentSlots + item.jobSlots;
-            const nextSlots = Math.min(currentSlots + item.jobSlots, maxAllowedForItem);
-            totalJobSlots += Math.max(0, nextSlots - currentSlots);
-            existing.jobSlots = nextSlots;
-          }
-        }
-        continue;
-      }
-      seen.add(key);
-      resultIndexByKey.set(key, result.length);
-      const newItem = { ...item };
-      if (newItem.jobSlots !== void 0 && newItem.jobSlots > 0) {
-        totalJobSlots += newItem.jobSlots;
-      }
-      result.push(newItem);
-    }
-    return result;
   }
   function isLikelyManagedApplyTarget(urlOrKey, site) {
     if (site === "unsupported") {
@@ -2574,47 +2680,6 @@
       pendingExtensionTabSpawns.set(tabId, remaining);
     }
     void persistPendingSpawns();
-  }
-  async function addActiveRunId(runId) {
-    const stored = await chrome.storage.local.get(ACTIVE_RUNS_STORAGE_KEY);
-    const activeRuns = Array.isArray(stored[ACTIVE_RUNS_STORAGE_KEY]) ? stored[ACTIVE_RUNS_STORAGE_KEY] : [];
-    if (!activeRuns.includes(runId)) {
-      activeRuns.push(runId);
-      await chrome.storage.local.set({
-        [ACTIVE_RUNS_STORAGE_KEY]: activeRuns
-      });
-    }
-  }
-  async function removeActiveRunId(runId) {
-    const stored = await chrome.storage.local.get(ACTIVE_RUNS_STORAGE_KEY);
-    const activeRuns = Array.isArray(stored[ACTIVE_RUNS_STORAGE_KEY]) ? stored[ACTIVE_RUNS_STORAGE_KEY] : [];
-    const filtered = activeRuns.filter((id) => id !== runId);
-    await chrome.storage.local.set({
-      [ACTIVE_RUNS_STORAGE_KEY]: filtered
-    });
-  }
-  async function removeRunStateIfUnused(runId) {
-    const allStored = await chrome.storage.local.get(null);
-    const allKeys = Object.keys(allStored);
-    const sessionKeys = allKeys.filter(
-      (key) => key.startsWith(SESSION_STORAGE_PREFIX)
-    );
-    if (sessionKeys.length === 0) {
-      await removeRunState(runId);
-      await removeActiveRunId(runId);
-      return;
-    }
-    const sessionEntries = await chrome.storage.local.get(sessionKeys);
-    const hasActiveSession = Object.values(sessionEntries).some((value) => {
-      if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        return false;
-      }
-      return "runId" in value && value.runId === runId;
-    });
-    if (!hasActiveSession) {
-      await removeRunState(runId);
-      await removeActiveRunId(runId);
-    }
   }
   function getReadableSiteName(site) {
     switch (site) {

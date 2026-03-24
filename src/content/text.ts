@@ -8,8 +8,89 @@ export function cleanText(value: string | null | undefined): string {
 
   return value
     .replace(/\s+/g, " ")
-    .replace(/[\u200B-\u200D\uFEFF]/g, "") // FIX: Remove zero-width characters
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
     .trim();
+}
+
+const READABLE_TEXT_BREAK_TAGS = new Set([
+  "ADDRESS",
+  "ARTICLE",
+  "ASIDE",
+  "BLOCKQUOTE",
+  "BR",
+  "DD",
+  "DIV",
+  "DL",
+  "DT",
+  "FIELDSET",
+  "FIGCAPTION",
+  "FIGURE",
+  "FOOTER",
+  "FORM",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "HEADER",
+  "HR",
+  "LI",
+  "MAIN",
+  "NAV",
+  "OL",
+  "P",
+  "SECTION",
+  "TABLE",
+  "TBODY",
+  "TD",
+  "TFOOT",
+  "TH",
+  "THEAD",
+  "TR",
+  "UL",
+]);
+
+export function getReadableText(node: Node | null | undefined): string {
+  if (!node) {
+    return "";
+  }
+
+  const chunks: string[] = [];
+  const pushChunk = (chunk: string | null | undefined) => {
+    if (chunk) {
+      chunks.push(chunk);
+    }
+  };
+
+  const walk = (current: Node): void => {
+    if (current.nodeType === Node.TEXT_NODE) {
+      pushChunk(current.textContent);
+      return;
+    }
+
+    if (current.nodeType !== Node.ELEMENT_NODE) {
+      return;
+    }
+
+    const element = current as Element;
+    const isBreakTag = READABLE_TEXT_BREAK_TAGS.has(element.tagName.toUpperCase());
+
+    if (isBreakTag && chunks.length > 0) {
+      pushChunk(" ");
+    }
+
+    for (const child of Array.from(element.childNodes)) {
+      walk(child);
+    }
+
+    if (isBreakTag) {
+      pushChunk(" ");
+    }
+  };
+
+  walk(node);
+  return cleanText(chunks.join(" "));
 }
 
 
@@ -34,12 +115,9 @@ export function cssEscape(value: string): string {
     return CSS.escape(value);
   }
 
-  // FIX: More comprehensive fallback escape
   return value.replace(/["'\\#.:[\]()>+~=^$*|]/g, "\\$&");
 }
 
-
-// FIX: Add helper to compare text similarity
 export function textSimilarity(a: string, b: string): number {
   if (!a || !b) {
     return 0;
@@ -74,7 +152,6 @@ export function textSimilarity(a: string, b: string): number {
   return overlap / Math.max(wordsA.size, wordsB.size);
 }
 
-// FIX: Add helper to check if text looks like a question
 export function looksLikeQuestion(text: string): boolean {
   if (!text) {
     return false;

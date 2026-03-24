@@ -294,6 +294,25 @@ describe("search result collection", () => {
     );
   });
 
+  it("finds next-page controls that use a unicode arrow glyph", () => {
+    document.body.innerHTML = `
+      <nav class="pagination">
+        <a href="/jobs?q=software+engineer&page=1" aria-current="page">1</a>
+        <a
+          href="/jobs?q=software+engineer&page=2"
+          aria-label="Next page"
+          class="pagination-next"
+        >
+          ›
+        </a>
+      </nav>
+    `;
+
+    const action = findNextResultsPageAction("dice");
+
+    expect(action?.navUrl).toContain("page=2");
+  });
+
   it("does not try generic career-surface recovery clicks on the MyGreenhouse portal", async () => {
     const originalLocation = window.location;
     Object.defineProperty(window, "location", {

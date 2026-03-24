@@ -17,12 +17,16 @@ describe("site content registry", () => {
 
   it("keeps startup and other-site job link selectors ready for Greenhouse and Built In surfaces", () => {
     const selectors = getCareerSiteJobLinkSelectors("other_sites");
+    const builtInSelectors = getCareerSiteJobLinkSelectors("builtin");
 
     expect(selectors).toContain("a[href*='builtin.com/job/']");
     expect(selectors.some((selector) => selector.includes("greenhouse.io"))).toBe(true);
     expect(getCareerSiteJobLinkSelectors("startup")).toEqual(selectors);
     expect(getCareerSiteJobLinkSelectors("greenhouse")).toEqual(selectors);
-    expect(getCareerSiteJobLinkSelectors("builtin")).toEqual(selectors);
+    expect(builtInSelectors).toContain("a[href*='builtin.com/job/']");
+    expect(builtInSelectors.some((selector) => selector.includes("greenhouse.io"))).toBe(
+      false
+    );
     expect(getSiteApplyCandidateSelectors("builtin")).toContain(
       ".job-post-sticky-bar-btn"
     );

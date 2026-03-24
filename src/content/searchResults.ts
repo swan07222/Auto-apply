@@ -42,6 +42,15 @@ type SearchResultsPageAction = {
   text: string;
 };
 
+const NEXT_PAGE_ARROW_LABELS = new Set([
+  ">",
+  "\u00bb",
+  "\u203a",
+  "\u2192",
+  "\u27e9",
+  "\u276f",
+]);
+
 export type SearchResultsAdvanceResult =
   | "advanced"
   | "navigating"
@@ -892,7 +901,7 @@ function scoreNextResultsPageAction(
     attrs.includes("rel next");
   const isArrowNext =
     insidePagination &&
-    ["›", "»", ">", "→", "⟩", "❯", "next"].includes(text);
+    (text === "next" || NEXT_PAGE_ARROW_LABELS.has(text));
 
   if (!isExplicitNext && !isArrowNext) {
     return null;

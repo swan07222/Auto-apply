@@ -28,6 +28,12 @@ import {
   sanitizeAutomationSettings,
 } from "./shared";
 import { createPopupDialogController } from "./popupDialog";
+import {
+  derivePopupIdlePreview,
+  getSelectedSearchMode as parseSelectedSearchMode,
+  getStartButtonLabel,
+  shouldDisableStartButtonForSession,
+} from "./popupState";
 
 const MAX_RESUME_TEXT_CHARS = 24_000;
 const SUPPORTED_JOB_BOARD_PROMPT =
@@ -150,6 +156,10 @@ const popupDialog = createPopupDialogController({
 });
 
 void initialize();
+
+function setStartButtonDisabled(disabled: boolean): void {
+  startButton.disabled = disabled;
+}
 
 startButton.addEventListener("click", () => {
   void startAutomation();
@@ -290,7 +300,6 @@ async function initialize(): Promise<void> {
     );
   }
 
-  // FIX: Respect the saved searchMode – don't override it
   updateModeUi();
   updateOverviewPreview();
   updateSiteNameDisplay();
@@ -306,7 +315,7 @@ async function initialize(): Promise<void> {
         "Could not refresh the current tab status."
       )
     );
-    startButton.disabled = getSelectedSearchMode() === "job_board";
+    setStartButtonDisabled(getSelectedSearchMode() === "job_board");
   }
 
   refreshIntervalId = window.setInterval(() => {
@@ -317,7 +326,6 @@ async function initialize(): Promise<void> {
 }
 
 async function startAutomation(): Promise<void> {
-  // FIX: Re-read active tab context right before starting
   await refreshActiveTabContext();
   const searchMode = getSelectedSearchMode();
 
@@ -333,12 +341,12 @@ async function startAutomation(): Promise<void> {
         "Add at least one search keyword before starting automation."
       )
     );
-    startButton.disabled = true;
+    setStartButtonDisabled(true);
     return;
   }
 
   await saveCurrentSettings(false);
-  startButton.disabled = true;
+  setStartButtonDisabled(true);
 
   if (searchMode === "startup_careers") {
     applyStatus(
@@ -368,7 +376,7 @@ async function startAutomation(): Promise<void> {
               "The extension could not start the startup career search."
           )
         );
-        startButton.disabled = false;
+        setStartButtonDisabled(false);
         return;
       }
 
@@ -391,7 +399,7 @@ async function startAutomation(): Promise<void> {
       );
     }
 
-    startButton.disabled = false;
+    setStartButtonDisabled(false);
     return;
   }
 
@@ -423,7 +431,7 @@ async function startAutomation(): Promise<void> {
               "The extension could not start the other job site search."
           )
         );
-        startButton.disabled = false;
+        setStartButtonDisabled(false);
         return;
       }
 
@@ -446,7 +454,7 @@ async function startAutomation(): Promise<void> {
       );
     }
 
-    startButton.disabled = false;
+    setStartButtonDisabled(false);
     return;
   }
 
@@ -455,7 +463,7 @@ async function startAutomation(): Promise<void> {
     applyStatus(
       createStatus("unsupported", "error", "No active tab was found.")
     );
-    startButton.disabled = false;
+    setStartButtonDisabled(false);
     return;
   }
 
@@ -467,7 +475,7 @@ async function startAutomation(): Promise<void> {
         SUPPORTED_JOB_BOARD_MODE_PROMPT
       )
     );
-    startButton.disabled = false;
+    setStartButtonDisabled(false);
     return;
   }
 
@@ -497,7 +505,7 @@ async function startAutomation(): Promise<void> {
             "The extension could not start on this tab."
         )
       );
-      startButton.disabled = false;
+      setStartButtonDisabled(false);
       return;
     }
   } catch (error: unknown) {
@@ -510,7 +518,7 @@ async function startAutomation(): Promise<void> {
           : "Failed to start automation."
       )
     );
-    startButton.disabled = false;
+    setStartButtonDisabled(false);
     return;
   }
 
@@ -538,11 +546,10 @@ async function refreshStatus(): Promise<void> {
         "Add at least one search keyword before starting automation."
       )
     );
-    startButton.disabled = true;
+    setStartButtonDisabled(true);
     return;
   }
 
-  // FIX: For startup/other modes, always enable the button — no tab requirement
   if (searchMode === "startup_careers") {
     if (!activeTabId) {
       applyStatus(
@@ -552,7 +559,7 @@ async function refreshStatus(): Promise<void> {
           `Ready to open startup career pages for ${getStartupRegionLabel()} companies.`
         )
       );
-      startButton.disabled = false;
+      setStartButtonDisabled(false);
       return;
     }
 
@@ -577,7 +584,9 @@ async function refreshStatus(): Promise<void> {
   ) {
     if (bgSession.phase !== "idle") {
       applyStatus(bgSession);
-      startButton.disabled = isBusy(bgSession.phase);
+      setStartButtonDisabled(
+        shouldDisableStartButtonForSession(searchMode, activeSite, bgSession)
+      );
       return;
     }
 
@@ -589,7 +598,7 @@ async function refreshStatus(): Promise<void> {
           `Ready to open startup career pages for ${getStartupRegionLabel()} companies.`
       )
     );
-    startButton.disabled = false;
+    setStartButtonDisabled(false);
     return;
   }
 
@@ -600,7 +609,7 @@ async function refreshStatus(): Promise<void> {
         `Ready to open startup career pages for ${getStartupRegionLabel()} companies.`
       )
     );
-    startButton.disabled = false;
+    setStartButtonDisabled(false);
     return;
   }
 
@@ -613,7 +622,7 @@ async function refreshStatus(): Promise<void> {
           `Ready to open other job site searches for ${getStartupRegionLabel()}.`
         )
       );
-      startButton.disabled = false;
+      setStartButtonDisabled(false);
       return;
     }
 
@@ -637,7 +646,9 @@ async function refreshStatus(): Promise<void> {
   ) {
     if (bgSession.phase !== "idle") {
       applyStatus(bgSession);
-      startButton.disabled = isBusy(bgSession.phase);
+      setStartButtonDisabled(
+        shouldDisableStartButtonForSession(searchMode, activeSite, bgSession)
+      );
       return;
     }
 
@@ -649,7 +660,7 @@ async function refreshStatus(): Promise<void> {
           `Ready to open other job site searches for ${getStartupRegionLabel()}.`
       )
     );
-    startButton.disabled = false;
+    setStartButtonDisabled(false);
     return;
   }
 
@@ -660,7 +671,7 @@ async function refreshStatus(): Promise<void> {
         `Ready to open other job site searches for ${getStartupRegionLabel()}.`
       )
     );
-    startButton.disabled = false;
+    setStartButtonDisabled(false);
     return;
   }
 
@@ -669,7 +680,7 @@ async function refreshStatus(): Promise<void> {
     applyStatus(
       createStatus("unsupported", "error", "No active tab was found.")
     );
-    startButton.disabled = true;
+    setStartButtonDisabled(true);
     return;
   }
 
@@ -704,7 +715,9 @@ async function refreshStatus(): Promise<void> {
           )
         : bgSession
     );
-    startButton.disabled = !activeJobBoardSite || isBusy(bgSession.phase);
+    setStartButtonDisabled(
+      shouldDisableStartButtonForSession(searchMode, activeSite, bgSession)
+    );
     return;
   }
 
@@ -717,8 +730,9 @@ async function refreshStatus(): Promise<void> {
     contentStatus.site === activeJobBoardSite
   ) {
     applyStatus(contentStatus);
-    startButton.disabled =
-      !activeJobBoardSite || isBusy(contentStatus.phase);
+    setStartButtonDisabled(
+      shouldDisableStartButtonForSession(searchMode, activeSite, contentStatus)
+    );
     return;
   }
 
@@ -731,7 +745,7 @@ async function refreshStatus(): Promise<void> {
         SUPPORTED_JOB_BOARD_PROMPT
       )
     );
-    startButton.disabled = true;
+    setStartButtonDisabled(true);
     return;
   }
 
@@ -742,82 +756,21 @@ async function refreshStatus(): Promise<void> {
       `Ready on ${getSiteLabel(activeJobBoardSite)}.`
     )
   );
-  startButton.disabled = false;
+  setStartButtonDisabled(false);
 }
 
 function applyLocalStatusPreview(): void {
-  const searchMode = getSelectedSearchMode();
-  const activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
-  const hasKeywords = getConfiguredKeywords().length > 0;
+  const preview = derivePopupIdlePreview({
+    searchMode: getSelectedSearchMode(),
+    activeSite,
+    activeTabId,
+    hasKeywords: getConfiguredKeywords().length > 0,
+    regionLabel: getStartupRegionLabel(),
+    supportedJobBoardPrompt: SUPPORTED_JOB_BOARD_PROMPT,
+  });
 
-  if (!hasKeywords) {
-    applyStatus(
-      createStatus(
-        searchMode === "job_board"
-          ? activeJobBoardSite ?? "unsupported"
-          : searchMode === "startup_careers"
-            ? "startup"
-            : "other_sites",
-        "error",
-        "Add at least one search keyword before starting automation."
-      )
-    );
-    startButton.disabled = true;
-    return;
-  }
-
-  if (searchMode === "startup_careers") {
-    applyStatus(
-      createStatus(
-        "startup",
-        "idle",
-        `Ready to open startup career pages for ${getStartupRegionLabel()} companies.`
-      )
-    );
-    startButton.disabled = false;
-    return;
-  }
-
-  if (searchMode === "other_job_sites") {
-    applyStatus(
-      createStatus(
-        "other_sites",
-        "idle",
-        `Ready to open other job site searches for ${getStartupRegionLabel()}.`
-      )
-    );
-    startButton.disabled = false;
-    return;
-  }
-
-  if (!activeTabId) {
-    applyStatus(
-      createStatus("unsupported", "error", "No active tab was found.")
-    );
-    startButton.disabled = true;
-    return;
-  }
-
-  if (!activeJobBoardSite) {
-    applyStatus(
-      createStatus(
-        "unsupported",
-        "error",
-        SUPPORTED_JOB_BOARD_PROMPT
-      )
-    );
-    startButton.disabled = true;
-    return;
-  }
-
-  applyStatus(
-    createStatus(
-      activeJobBoardSite,
-      "idle",
-      `Ready on ${getSiteLabel(activeJobBoardSite)}.`
-    )
-  );
-  startButton.disabled = false;
+  applyStatus(preview.status);
+  setStartButtonDisabled(preview.startDisabled);
 }
 
 async function getContentStatus(
@@ -1778,12 +1731,7 @@ function parseAutomationStatus(value: unknown): AutomationStatus | undefined {
 
 function updateModeUi(): void {
   const searchMode = getSelectedSearchMode();
-  startButton.textContent =
-    searchMode === "startup_careers"
-      ? "Start Startup Search"
-      : searchMode === "other_job_sites"
-        ? "Start Other Sites Search"
-        : "Start Auto Search";
+  startButton.textContent = getStartButtonLabel(searchMode);
   updateSiteNameDisplay();
 }
 
@@ -1796,13 +1744,7 @@ function updateOverviewPreview(): void {
 // FIX: Validate HTML select values against SearchMode type
 // The HTML has: "job_board", "startup_careers", "other_job_sites"
 function getSelectedSearchMode(): SearchMode {
-  const value = searchModeInput.value;
-  // FIX: Validate against known SearchMode values instead of returning directly
-  if (value === "startup_careers") return "startup_careers";
-  if (value === "other_job_sites") return "other_job_sites";
-  if (value === "job_board") return "job_board";
-  // Fallback to default if invalid value
-  return "job_board";
+  return parseSelectedSearchMode(searchModeInput.value);
 }
 
 function getSelectedStartupRegion(): StartupRegion {

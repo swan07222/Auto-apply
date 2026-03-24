@@ -222,6 +222,24 @@ describe("application progression actions", () => {
     expect(findApplyAction("indeed", "job-page")).toBeNull();
   });
 
+  it("finds plain Indeed apply buttons on job pages", () => {
+    document.body.innerHTML = `
+      <main>
+        <section class="jobsearch-IndeedApplyButton">
+          <button type="button" data-testid="indeed-apply-button">
+            Apply now
+          </button>
+        </section>
+      </main>
+    `;
+
+    const action = findApplyAction("indeed", "job-page");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply now");
+  });
+
   it("ignores combined legal-policy links on final Indeed review pages", () => {
     document.body.innerHTML = `
       <main>
@@ -1306,6 +1324,87 @@ describe("application progression actions", () => {
       expect(action.url).toBe(
         "https://jobs.ashbyhq.com/example/6462d3d1-443c-4a5a-8667-c1d0472fa32d"
       );
+    }
+  });
+
+  it("ignores Built In internal job links that look like apply actions", () => {
+    document.body.innerHTML = `
+      <main class="job-post">
+        <a
+          href="https://builtin.com/job/another-software-engineer/9876543"
+          aria-label="Apply"
+          class="related-job-link"
+        >
+          Apply
+        </a>
+        <a
+          href="https://jobs.ashbyhq.com/example/6462d3d1-443c-4a5a-8667-c1d0472fa32d"
+          class="job-post-sticky-bar-btn"
+        >
+          Apply on company site
+        </a>
+      </main>
+    `;
+
+    const action = findApplyAction("builtin", "job-page");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe(
+        "https://jobs.ashbyhq.com/example/6462d3d1-443c-4a5a-8667-c1d0472fa32d"
+      );
+    }
+  });
+
+  it("returns no Built In apply action when only internal Built In job links are present", () => {
+    document.body.innerHTML = `
+      <main class="job-post">
+        <a
+          href="https://builtin.com/job/another-software-engineer/9876543"
+          aria-label="Apply"
+          class="related-job-link"
+        >
+          Apply
+        </a>
+      </main>
+    `;
+
+    expect(findApplyAction("builtin", "job-page")).toBeNull();
+  });
+
+  it("prefers the Built In apply action on the current job surface over related-job CTAs", () => {
+    document.body.innerHTML = `
+      <main class="job-post">
+        <section class="job-post-details">
+          <h1>Senior Platform Engineer</h1>
+          <a
+            href="https://jobs.ashbyhq.com/example/current-role"
+            class="job-post-sticky-bar-btn"
+          >
+            Apply on company site
+          </a>
+        </section>
+      </main>
+      <aside class="related-jobs">
+        <article>
+          <h2>Other Engineer</h2>
+          <a
+            href="https://jobs.ashbyhq.com/example/other-role"
+            aria-label="Apply externally"
+          >
+            Apply externally
+          </a>
+        </article>
+      </aside>
+    `;
+
+    const action = findApplyAction("builtin", "job-page");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe("https://jobs.ashbyhq.com/example/current-role");
     }
   });
 });

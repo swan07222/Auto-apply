@@ -2366,7 +2366,14 @@ export function findApplyAction(
   context: "job-page" | "follow-up"
 ): ApplyAction | null {
   const selectors = getApplyCandidateSelectors(site);
-  const elements = collectDeepMatchesFromSelectors(selectors);
+  const scopedBuiltInElements =
+    site === "builtin" && context === "job-page"
+      ? collectBuiltInCurrentJobApplyCandidates()
+      : [];
+  const elements =
+    scopedBuiltInElements.length > 0
+      ? scopedBuiltInElements
+      : collectDeepMatchesFromSelectors(selectors);
 
   let best:
     | {
@@ -2382,6 +2389,24 @@ export function findApplyAction(
     const actionElement = getClickableApplyElement(element);
     const text = getActionText(actionElement) || getActionText(element);
     const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
+
+    if (
+      site === "builtin" &&
+      context === "job-page" &&
+      scopedBuiltInElements.length === 0 &&
+      isBuiltInSecondaryApplyContext(actionElement)
+    ) {
+      continue;
+    }
+
+    if (
+      site === "builtin" &&
+      isBuiltInInternalJobDetailUrl(url) &&
+      !hasBuiltInExternalApplySignal(text, actionElement)
+    ) {
+      continue;
+    }
+
     const score = scoreApplyElement(text, url, actionElement, context);
 
     if (score < 30) {
@@ -2432,6 +2457,107 @@ export function findApplyAction(
     element: best.element,
     description: best.text || "the apply button",
   };
+}
+
+function collectBuiltInCurrentJobApplyCandidates(): HTMLElement[] {
+  const surfaces = collectDeepMatchesFromSelectors(
+    getPrimaryCurrentJobSurfaceSelectors("builtin")
+  ).filter((surface) => !surface.closest("aside, nav, header, footer"));
+  const selectors = getSiteApplyCandidateSelectors("builtin");
+  const results: HTMLElement[] = [];
+  const seen = new Set<HTMLElement>();
+
+  for (const surface of surfaces) {
+    for (const selector of selectors) {
+      let matches: HTMLElement[];
+      try {
+        matches = Array.from(surface.querySelectorAll<HTMLElement>(selector));
+      } catch {
+        continue;
+      }
+
+      for (const match of matches) {
+        if (seen.has(match) || isBuiltInSecondaryApplyContext(match)) {
+          continue;
+        }
+
+        seen.add(match);
+        results.push(match);
+      }
+    }
+  }
+
+  return results;
+}
+
+function isBuiltInInternalJobDetailUrl(url: string | null): boolean {
+  if (!url) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(url, window.location.href);
+    const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    const path = parsed.pathname.toLowerCase();
+
+    return (
+      (hostname === "builtin.com" || hostname.endsWith(".builtin.com")) &&
+      path.includes("/job/")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isBuiltInSecondaryApplyContext(element: HTMLElement): boolean {
+  if (
+    element.closest(
+      "aside, [class*='related'], [class*='similar'], [class*='recommended'], [class*='more-jobs'], [class*='other-jobs'], [data-testid*='related' i], [data-test*='related' i]"
+    )
+  ) {
+    return true;
+  }
+
+  const container = element.closest<HTMLElement>("section, article, div, aside");
+  const containerText = cleanText(container?.textContent || "").toLowerCase();
+
+  return (
+    containerText.includes("related jobs") ||
+    containerText.includes("similar jobs") ||
+    containerText.includes("recommended jobs") ||
+    containerText.includes("more jobs") ||
+    containerText.includes("other jobs")
+  );
+}
+
+function hasBuiltInExternalApplySignal(
+  text: string,
+  element: HTMLElement
+): boolean {
+  const lowerText = text.toLowerCase();
+  const attrs = [
+    element.getAttribute("aria-label"),
+    element.getAttribute("title"),
+    element.getAttribute("data-testid"),
+    element.getAttribute("data-test"),
+    element.className,
+    element.id,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return (
+    lowerText.includes("company site") ||
+    lowerText.includes("employer site") ||
+    lowerText.includes("apply externally") ||
+    lowerText.includes("apply directly") ||
+    lowerText.includes("external") ||
+    attrs.includes("sticky-bar") ||
+    attrs.includes("company-site") ||
+    attrs.includes("employer-site") ||
+    attrs.includes("external")
+  );
 }
 
 export function isLikelyApplyUrl(url: string, site: SiteKey): boolean {

@@ -144,6 +144,16 @@ import {
   shouldPauseAutomationForManualReview,
   shouldStartManualReviewPause,
 } from "./content/manualReview";
+import {
+  createEmptyAutofillResult,
+  getRemainingJobSlotsAfterSpawn,
+  getCurrentSearchKeywordHints,
+  looksLikeCurrentFrameApplicationSurface,
+  mergeAutofillResult,
+  shouldPreferMonsterClickContinuation,
+  shouldTreatCurrentPageAsApplied,
+  throwIfRateLimited,
+} from "./content/runtimeHelpers";
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -178,26 +188,6 @@ const MAX_STAGE_DEPTH = 10;
 const IS_TOP_FRAME = window.top === window;
 
 // ─── RESULT HELPERS ──────────────────────────────────────────────────────────
-
-function createEmptyAutofillResult(): AutofillResult {
-  return {
-    filledFields: 0,
-    usedSavedAnswers: 0,
-    usedProfileAnswers: 0,
-    uploadedResume: null,
-  };
-}
-
-function mergeAutofillResult(
-  target: AutofillResult,
-  source: AutofillResult
-): void {
-  target.filledFields += source.filledFields;
-  target.usedSavedAnswers += source.usedSavedAnswers;
-  target.usedProfileAnswers += source.usedProfileAnswers;
-  if (!target.uploadedResume && source.uploadedResume)
-    target.uploadedResume = source.uploadedResume;
-}
 
 // ─── MODULE STATE ────────────────────────────────────────────────────────────
 
@@ -248,65 +238,6 @@ async function readCurrentAutomationSettings(): Promise<AutomationSettings> {
   return resolveAutomationSettingsForProfile(
     await readAutomationSettings(),
     currentProfileId
-  );
-}
-
-function getCurrentSearchKeywordHints(
-  site: SiteKey,
-  settings: AutomationSettings
-): string[] {
-  const configured = parseSearchKeywords(settings.searchKeywords);
-  const trimmedLabel = currentLabel?.trim() ?? "";
-
-  if (!trimmedLabel) {
-    return configured;
-  }
-
-  if (isJobBoardSite(site)) {
-    return [trimmedLabel];
-  }
-
-  if (site === "other_sites") {
-    const separatorIndex = trimmedLabel.indexOf(":");
-    if (separatorIndex >= 0) {
-      const parsed = parseSearchKeywords(
-        trimmedLabel.slice(separatorIndex + 1)
-      );
-      if (parsed.length > 0) {
-        return parsed;
-      }
-    }
-  }
-
-  return configured;
-}
-
-function throwIfRateLimited(site: SiteKey): void {
-  const brokenReason = detectBrokenPageReason(document);
-  if (brokenReason === "access_denied") {
-    throw new Error(
-      `${getSiteLabel(site)} redirected to an access-denied error page. Skipping this job.`
-    );
-  }
-
-  if (brokenReason === "bad_gateway") {
-    throw new Error(
-      `${getSiteLabel(site)} returned a server error page. Skipping this job.`
-    );
-  }
-
-  if (brokenReason === "not_found") {
-    throw new Error(
-      `${getSiteLabel(site)} redirected to a page-not-found error page. Skipping this job.`
-    );
-  }
-
-  if (!isProbablyRateLimitPage(document, site)) {
-    return;
-  }
-
-  throw new Error(
-    `${getSiteLabel(site)} temporarily rate limited this run. Wait a few minutes and try again.`
   );
 }
 
@@ -411,24 +342,6 @@ function hasLikelyApplicationSurface(site: SiteKey): boolean {
   return detectLikelyApplicationSurface(site, applicationSurfaceCollectors);
 }
 
-function shouldTreatCurrentPageAsApplied(site: SiteKey): boolean {
-  if (!isCurrentPageAppliedJob(site)) {
-    return false;
-  }
-
-  if (site !== "dice") {
-    return true;
-  }
-
-  if (hasLikelyApplicationSurface(site)) {
-    return false;
-  }
-
-  const diceApplyAction =
-    findDiceApplyAction() ?? findApplyAction(site, "job-page");
-  return !diceApplyAction;
-}
-
 function enterStageRetryScope(stage: AutomationStage): number {
   stageRetryState = getNextStageRetryState(
     stageRetryState,
@@ -438,46 +351,12 @@ function enterStageRetryScope(stage: AutomationStage): number {
   return stageRetryState.depth;
 }
 
-function looksLikeCurrentFrameApplicationSurface(
-  site: SiteKey | "unsupported" | null
-): boolean {
-  if (site && site !== "unsupported" && isLikelyApplyUrl(window.location.href, site)) {
-    return true;
-  }
-
-  if (hasLikelyApplicationForm() || collectResumeFileInputs().length > 0) {
-    return true;
-  }
-
-  if (IS_TOP_FRAME) {
-    return hasLikelyApplicationPageContent() && !hasLikelyApplicationFrame();
-  }
-
-  return hasLikelyApplicationPageContent();
-}
-
 async function waitForLikelyApplicationSurface(site: SiteKey): Promise<boolean> {
   return waitForApplicationSurface(site, applicationSurfaceCollectors);
 }
 
 function shouldKeepJobPageOpen(site: SiteKey | "unsupported"): boolean {
   return shouldKeepManagedJobPageOpen(site);
-}
-
-function shouldPreferMonsterClickContinuation(
-  site: SiteKey,
-  url: string | null | undefined
-): boolean {
-  if (site !== "monster" || !url) {
-    return false;
-  }
-
-  try {
-    const parsed = new URL(url, window.location.href);
-    return parsed.hostname.toLowerCase().includes("monster");
-  } catch {
-    return false;
-  }
 }
 
 async function openApplicationTargetInNewTab(
@@ -526,13 +405,20 @@ async function openApplicationTargetInNewTab(
     return;
   }
 
+  const keepJobPageOpen = shouldKeepJobPageOpen(site);
   updateStatus(
     "completed",
-    `Opened ${description} in a new tab. Keeping this job page open.`,
+    keepJobPageOpen
+      ? `Opened ${description} in a new tab. Keeping this job page open.`
+      : `Opened ${description} in a new tab. Continuing there...`,
     false,
     "autofill-form",
     "handoff"
   );
+
+  if (!keepJobPageOpen) {
+    await closeCurrentTab();
+  }
 }
 
 function resolveCurrentClaimedJobKey(): string | undefined {
@@ -745,7 +631,16 @@ async function resumeAutomationIfNeeded(): Promise<void> {
       response = await chrome.runtime.sendMessage({
         type: "content-ready",
         looksLikeApplicationSurface: looksLikeCurrentFrameApplicationSurface(
-          detectedSite
+          detectedSite,
+          {
+            currentUrl: window.location.href,
+            hasLikelyApplicationForm,
+            hasLikelyApplicationFrame,
+            hasLikelyApplicationPageContent,
+            isLikelyApplyUrl,
+            isTopFrame: IS_TOP_FRAME,
+            resumeFileInputCount: collectResumeFileInputs().length,
+          }
         ),
       });
     } catch {
@@ -881,7 +776,11 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
   );
 
   await waitForHumanVerificationToClear();
-  throwIfRateLimited(site);
+  throwIfRateLimited(site, {
+    detectBrokenPageReason,
+    document,
+    isProbablyRateLimitPage,
+  });
 
   const targets = buildSearchTargets(
     site,
@@ -936,7 +835,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     site,
     effectiveLimit
   );
-  const keywordHints = getCurrentSearchKeywordHints(site, settings);
+  const keywordHints = getCurrentSearchKeywordHints(site, settings, currentLabel);
 
   updateStatus(
     "running",
@@ -974,7 +873,11 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
           ? 5000
           : 2500;
   await sleep(renderWaitMs);
-  throwIfRateLimited(site);
+  throwIfRateLimited(site, {
+    detectBrokenPageReason,
+    document,
+    isProbablyRateLimitPage,
+  });
 
   if (
     site === "greenhouse" &&
@@ -988,7 +891,11 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
       "collect-results"
     );
     await waitForMyGreenhouseSearchResults(12_000);
-    throwIfRateLimited(site);
+    throwIfRateLimited(site, {
+      detectBrokenPageReason,
+      document,
+      isProbablyRateLimitPage,
+    });
   }
 
   // FIX: Scroll for Dice too – its cards may lazy-load
@@ -1160,10 +1067,11 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   });
 
   const response = await spawnTabs(items, effectiveLimit);
-  const requestedOpenCount = items.length;
-  const reopenedSlots = Math.max(0, requestedOpenCount - response.opened);
-  const remainingSlotsAfterSpawn =
-    Math.max(0, effectiveLimit - response.opened) + reopenedSlots;
+  const remainingSlotsAfterSpawn = getRemainingJobSlotsAfterSpawn(
+    effectiveLimit,
+    response.opened,
+    claimResult.remaining
+  );
 
   const extra =
     jobUrls.length > approvedUrls.length
@@ -1271,7 +1179,14 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
   const urlAtStart = window.location.href;
 
-  if (shouldTreatCurrentPageAsApplied(site)) {
+  if (
+    shouldTreatCurrentPageAsApplied(site, {
+      hasLikelyApplicationSurface,
+      findApplyAction,
+      findDiceApplyAction,
+      isCurrentPageAppliedJob,
+    })
+  ) {
     updateStatus(
       "completed",
       "Skipped - already applied.",
@@ -1335,15 +1250,26 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     "open-apply"
   );
   await waitForHumanVerificationToClear();
-  throwIfRateLimited(site);
+  throwIfRateLimited(site, {
+    detectBrokenPageReason,
+    document,
+    isProbablyRateLimitPage,
+  });
 
   // FIX: Dice needs extra render time for its web components
   await sleep(
-    site === "dice" || site === "monster" || site === "glassdoor"
+    site === "indeed" ||
+      site === "dice" ||
+      site === "monster" ||
+      site === "glassdoor"
       ? 4000
       : 2500
   );
-  throwIfRateLimited(site);
+  throwIfRateLimited(site, {
+    detectBrokenPageReason,
+    document,
+    isProbablyRateLimitPage,
+  });
 
   // FIX: Named constants for scroll positions instead of magic numbers
   const SCROLL_TOP = 0;
@@ -1384,7 +1310,9 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     urlChangeObserver.disconnect();
   };
 
-  for (let attempt = 0; attempt < 35; attempt += 1) {
+  const maxApplySearchAttempts = site === "indeed" ? 45 : 35;
+
+  for (let attempt = 0; attempt < maxApplySearchAttempts; attempt += 1) {
     // Check both direct URL comparison and MutationObserver detection
     const hasNavigated = window.location.href !== urlAtStart || navigationDetected;
 
@@ -1392,7 +1320,11 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       cleanupObserver();
       await sleep(2500);
       await waitForHumanVerificationToClear();
-      throwIfRateLimited(site);
+      throwIfRateLimited(site, {
+        detectBrokenPageReason,
+        document,
+        isProbablyRateLimitPage,
+      });
 
       if (hasLikelyApplicationForm() || hasLikelyApplicationSurface(site)) {
         currentStage = "autofill-form";
@@ -1567,7 +1499,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       href &&
       href !== urlBeforeClick &&
       !href.startsWith("javascript:") &&
-      !shouldPreferMonsterClickContinuation(site, href) &&
+      !shouldPreferMonsterClickContinuation(site, href, window.location.href) &&
       shouldPreferApplyNavigation(
         href,
         getActionText(action.element),
@@ -1908,7 +1840,14 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     return;
   }
 
-  if (shouldTreatCurrentPageAsApplied(site)) {
+  if (
+    shouldTreatCurrentPageAsApplied(site, {
+      hasLikelyApplicationSurface,
+      findApplyAction,
+      findDiceApplyAction,
+      isCurrentPageAppliedJob,
+    })
+  ) {
     updateStatus(
       "completed",
       "Skipped - already applied.",
@@ -1927,7 +1866,11 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     "autofill-form"
   );
   await waitForHumanVerificationToClear();
-  throwIfRateLimited(site);
+  throwIfRateLimited(site, {
+    detectBrokenPageReason,
+    document,
+    isProbablyRateLimitPage,
+  });
   await waitForLikelyApplicationSurface(site);
 
   const standaloneFrameUrl = findStandaloneApplicationFrameUrl();
@@ -1974,7 +1917,11 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       previousUrl = window.location.href;
       noProgressCount = 0;
       await waitForHumanVerificationToClear();
-      throwIfRateLimited(site);
+      throwIfRateLimited(site, {
+        detectBrokenPageReason,
+        document,
+        isProbablyRateLimitPage,
+      });
       await waitForLikelyApplicationSurface(site);
       if (childApplicationTabOpened) return;
     }
@@ -3164,7 +3111,17 @@ function shouldPreferInFrameProgressionClick(url: string): boolean {
     return false;
   }
 
-  if (!looksLikeCurrentFrameApplicationSurface(status.site)) {
+  if (
+    !looksLikeCurrentFrameApplicationSurface(status.site, {
+      currentUrl: window.location.href,
+      hasLikelyApplicationForm,
+      hasLikelyApplicationFrame,
+      hasLikelyApplicationPageContent,
+      isLikelyApplyUrl,
+      isTopFrame: IS_TOP_FRAME,
+      resumeFileInputCount: collectResumeFileInputs().length,
+    })
+  ) {
     return false;
   }
 
@@ -3906,7 +3863,15 @@ function shouldHandleAutomationInCurrentFrame(
   }
 
   if (IS_TOP_FRAME) {
-    return looksLikeCurrentFrameApplicationSurface(session.site);
+    return looksLikeCurrentFrameApplicationSurface(session.site, {
+      currentUrl: window.location.href,
+      hasLikelyApplicationForm,
+      hasLikelyApplicationFrame,
+      hasLikelyApplicationPageContent,
+      isLikelyApplyUrl,
+      isTopFrame: IS_TOP_FRAME,
+      resumeFileInputCount: collectResumeFileInputs().length,
+    });
   }
 
   if (session.site === "unsupported") {

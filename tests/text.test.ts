@@ -7,6 +7,7 @@ import {
   extractNumber,
   extractPhone,
   extractUrl,
+  getReadableText,
   looksLikeQuestion,
   normalizeChoiceText,
   textSimilarity,
@@ -17,6 +18,15 @@ describe("text helpers", () => {
   it("normalizes whitespace and zero-width characters", () => {
     expect(cleanText("  hello\u200B   world  ")).toBe("hello world");
     expect(normalizeChoiceText("Front-End Engineer!")).toBe("front end engineer");
+  });
+
+  it("preserves word boundaries for adjacent block elements", () => {
+    document.body.innerHTML =
+      "<a><p>Software Engineer, Accounts</p><p>Remote - United States</p></a>";
+
+    expect(getReadableText(document.querySelector("a"))).toBe(
+      "Software Engineer, Accounts Remote - United States"
+    );
   });
 
   it("truncates at a word boundary when possible", () => {

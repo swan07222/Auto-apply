@@ -28,6 +28,8 @@ type TabRemovedListener = (
   removeInfo?: chrome.tabs.TabRemoveInfo
 ) => void;
 
+type TabCreatedListener = (tab: chrome.tabs.Tab) => void;
+
 function createBackgroundChrome(
   initialState: Record<string, unknown>,
   createTabMock: ReturnType<typeof vi.fn>
@@ -36,6 +38,7 @@ function createBackgroundChrome(
   const local = createMockChromeStorageLocal(initialState);
   const tabUpdatedListeners = new Set<TabUpdatedListener>();
   const tabRemovedListeners = new Set<TabRemovedListener>();
+  const tabCreatedListeners = new Set<TabCreatedListener>();
   const reloadMock = vi.fn(async (tabId: number) => {
     const tab = await chrome.tabs.get(tabId).catch(() => ({ id: tabId }));
     for (const listener of Array.from(tabUpdatedListeners)) {
@@ -84,7 +87,9 @@ function createBackgroundChrome(
           },
         },
         onCreated: {
-          addListener: vi.fn(),
+          addListener(listener: TabCreatedListener) {
+            tabCreatedListeners.add(listener);
+          },
         },
       },
       alarms: {
@@ -110,6 +115,11 @@ function createBackgroundChrome(
         listener(tabId, removeInfo);
       }
     },
+    dispatchTabCreated(tab: chrome.tabs.Tab) {
+      for (const listener of Array.from(tabCreatedListeners)) {
+        listener(tab);
+      }
+    },
     getMessageListener() {
       if (!messageListener) {
         throw new Error("Background message listener was not registered.");
@@ -127,6 +137,10 @@ async function dispatchBackgroundMessage(
   return await new Promise((resolve) => {
     listener(message, sender, resolve);
   });
+}
+
+async function flushAsyncWork(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 describe("background spawn quota handling", () => {
@@ -2209,5 +2223,118 @@ describe("background spawn quota handling", () => {
         message: "Continuing to the next results page...",
       })
     );
+  });
+
+  it("does not attach a second managed child tab for the same claimed Built In job", async () => {
+    const openerTabId = 42;
+    const existingChildTabId = 101;
+    const duplicateChildTabId = 202;
+    const runId = "run-builtin-child-dedupe";
+    const claimedJobKey = getJobDedupKey(
+      "https://builtin.com/job/software-engineer/8472985"
+    );
+
+    const chromeMock = createBackgroundChrome(
+      {
+        [`remote-job-search-session:${openerTabId}`]: {
+          tabId: openerTabId,
+          site: "builtin",
+          phase: "running",
+          message: "Opening Built In job page...",
+          shouldResume: true,
+          stage: "open-apply",
+          runId,
+          claimedJobKey,
+          updatedAt: 1,
+        },
+        [`remote-job-search-session:${existingChildTabId}`]: {
+          tabId: existingChildTabId,
+          site: "builtin",
+          phase: "running",
+          message: "Continuing Built In application in a new tab...",
+          shouldResume: true,
+          stage: "open-apply",
+          runId,
+          claimedJobKey,
+          updatedAt: 2,
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    chromeMock.dispatchTabCreated({
+      id: duplicateChildTabId,
+      openerTabId,
+      url: "https://company.example.com/apply",
+    });
+
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    expect(
+      chromeMock.local.state[`remote-job-search-session:${duplicateChildTabId}`]
+    ).toBeUndefined();
+    expect(chrome.tabs.remove).toHaveBeenCalledWith(duplicateChildTabId);
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalledWith(openerTabId, {
+      type: "automation-child-tab-opened",
+    });
+  });
+
+  it("closes the Built In opener tab after handing off to a site-opened child tab", async () => {
+    const openerTabId = 42;
+    const childTabId = 202;
+    const runId = "run-builtin-child-close";
+    const claimedJobKey = getJobDedupKey(
+      "https://builtin.com/job/software-engineer/8472985"
+    );
+
+    const chromeMock = createBackgroundChrome(
+      {
+        [`remote-job-search-session:${openerTabId}`]: {
+          tabId: openerTabId,
+          site: "builtin",
+          phase: "running",
+          message: "Opening Built In job page...",
+          shouldResume: true,
+          stage: "open-apply",
+          runId,
+          claimedJobKey,
+          updatedAt: 1,
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    chromeMock.dispatchTabCreated({
+      id: childTabId,
+      openerTabId,
+      url: "https://company.example.com/apply",
+    });
+
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    expect(
+      chromeMock.local.state[`remote-job-search-session:${childTabId}`]
+    ).toEqual(
+      expect.objectContaining({
+        tabId: childTabId,
+        site: "builtin",
+        stage: "open-apply",
+        runId,
+        claimedJobKey,
+      })
+    );
+    expect(
+      chromeMock.local.state[`remote-job-search-session:${openerTabId}`]
+    ).toBeUndefined();
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(openerTabId, {
+      type: "automation-child-tab-opened",
+    });
+    expect(chrome.tabs.remove).toHaveBeenCalledWith(openerTabId);
   });
 });

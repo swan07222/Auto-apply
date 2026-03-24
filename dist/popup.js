@@ -41638,9 +41638,9 @@
       var xmldom = require_xmldom();
       var nodes = require_nodes();
       var Element = nodes.Element;
-      exports2.readString = readString2;
+      exports2.readString = readString3;
       var Node2 = xmldom.Node;
-      function readString2(xmlString, namespaceMap) {
+      function readString3(xmlString, namespaceMap) {
         namespaceMap = namespaceMap || {};
         try {
           var document2 = xmldom.parseFromString(xmlString, "text/xml");
@@ -49349,29 +49349,7 @@
     }
   });
 
-  // src/shared.ts
-  var SUPPORTED_SITE_LABELS = {
-    indeed: "Indeed",
-    ziprecruiter: "ZipRecruiter",
-    dice: "Dice",
-    monster: "Monster",
-    glassdoor: "Glassdoor",
-    greenhouse: "Greenhouse",
-    builtin: "Built In",
-    startup: "Startup Careers",
-    other_sites: "Other Job Sites"
-  };
-  var STARTUP_REGION_LABELS = {
-    auto: "Auto",
-    us: "US",
-    uk: "UK",
-    eu: "EU"
-  };
-  var RESUME_KIND_LABELS = {
-    front_end: "Front End",
-    back_end: "Back End",
-    full_stack: "Full Stack"
-  };
+  // src/shared/profiles.ts
   var DEFAULT_PROFILE_ID = "default-profile";
   var DEFAULT_PROFILE_NAME = "Default Profile";
   function createEmptyCandidateProfile() {
@@ -49402,8 +49380,54 @@
       updatedAt: now
     };
   }
+  function getActiveAutomationProfile(settings2) {
+    return settings2.profiles[settings2.activeProfileId] ?? settings2.profiles[Object.keys(settings2.profiles)[0] ?? DEFAULT_PROFILE_ID] ?? createAutomationProfile();
+  }
+  function resolveAutomationSettingsForProfile(settings2, profileId) {
+    const nextProfileId = profileId && settings2.profiles[profileId] ? profileId : settings2.activeProfileId;
+    const activeProfile = settings2.profiles[nextProfileId] ?? getActiveAutomationProfile(settings2);
+    const derivedResume = activeProfile.resume ?? null;
+    return {
+      ...settings2,
+      activeProfileId: activeProfile.id,
+      candidate: { ...activeProfile.candidate },
+      resume: derivedResume,
+      resumes: derivedResume ? { full_stack: derivedResume } : {},
+      answers: { ...activeProfile.answers },
+      preferenceAnswers: { ...activeProfile.preferenceAnswers }
+    };
+  }
+  function readString(value) {
+    return typeof value === "string" ? value.trim() : "";
+  }
+
+  // src/shared/catalog.ts
+  var SUPPORTED_SITE_LABELS = {
+    indeed: "Indeed",
+    ziprecruiter: "ZipRecruiter",
+    dice: "Dice",
+    monster: "Monster",
+    glassdoor: "Glassdoor",
+    greenhouse: "Greenhouse",
+    builtin: "Built In",
+    startup: "Startup Careers",
+    other_sites: "Other Job Sites"
+  };
+  var STARTUP_REGION_LABELS = {
+    auto: "Auto",
+    us: "US",
+    uk: "UK",
+    eu: "EU"
+  };
+  var RESUME_KIND_LABELS = {
+    front_end: "Front End",
+    back_end: "Back End",
+    full_stack: "Full Stack"
+  };
   var AUTOMATION_SETTINGS_STORAGE_KEY = "remote-job-search-settings";
   var STARTUP_COMPANIES_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1e3;
+  var MIN_JOB_PAGE_LIMIT = 1;
+  var MAX_JOB_PAGE_LIMIT = 25;
   var DEFAULT_PROFILE = createAutomationProfile();
   var DEFAULT_SETTINGS = {
     jobPageLimit: 5,
@@ -49422,9 +49446,20 @@
     answers: {},
     preferenceAnswers: {}
   };
-  var automationSettingsWriteQueue = Promise.resolve();
+  var STARTUP_TARGET_REGIONS = [
+    "us",
+    "uk",
+    "eu"
+  ];
+  function getStartupTargetRegions() {
+    return [...STARTUP_TARGET_REGIONS];
+  }
+
+  // src/shared/status.ts
   function detectSiteFromUrl(url) {
-    if (!url || typeof url !== "string") return null;
+    if (!url || typeof url !== "string") {
+      return null;
+    }
     let hostname;
     try {
       hostname = new URL(url).hostname.toLowerCase();
@@ -49432,34 +49467,18 @@
       return null;
     }
     const bare = hostname.replace(/^www\./, "");
-    if (bare === "indeed.com" || bare.endsWith(".indeed.com")) {
-      return "indeed";
-    }
-    if (bare === "ziprecruiter.com" || bare.endsWith(".ziprecruiter.com")) {
-      return "ziprecruiter";
-    }
-    if (bare === "dice.com" || bare.endsWith(".dice.com")) {
-      return "dice";
-    }
-    if (bare === "builtin.com" || bare.endsWith(".builtin.com")) {
-      return "builtin";
-    }
-    if (bare === "greenhouse.io" || bare.endsWith(".greenhouse.io")) {
-      return "greenhouse";
-    }
+    if (bare === "indeed.com" || bare.endsWith(".indeed.com")) return "indeed";
+    if (bare === "ziprecruiter.com" || bare.endsWith(".ziprecruiter.com")) return "ziprecruiter";
+    if (bare === "dice.com" || bare.endsWith(".dice.com")) return "dice";
+    if (bare === "builtin.com" || bare.endsWith(".builtin.com")) return "builtin";
+    if (bare === "greenhouse.io" || bare.endsWith(".greenhouse.io")) return "greenhouse";
     const hostParts = bare.split(".");
-    for (let i = 0; i < hostParts.length; i++) {
-      if (hostParts[i] === "monster") {
-        if (i < hostParts.length - 1) {
-          return "monster";
-        }
+    for (let index = 0; index < hostParts.length; index += 1) {
+      if (hostParts[index] === "monster" && index < hostParts.length - 1) {
+        return "monster";
       }
-    }
-    for (let i = 0; i < hostParts.length; i++) {
-      if (hostParts[i] === "glassdoor") {
-        if (i < hostParts.length - 1) {
-          return "glassdoor";
-        }
+      if (hostParts[index] === "glassdoor" && index < hostParts.length - 1) {
+        return "glassdoor";
       }
     }
     return null;
@@ -49481,6 +49500,230 @@
   function isJobBoardSite(site) {
     return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor" || site === "greenhouse" || site === "builtin";
   }
+
+  // src/shared/storage.ts
+  var automationSettingsWriteQueue = Promise.resolve();
+  function normalizeQuestionKey(question) {
+    return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  }
+  async function readAutomationSettings() {
+    const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
+    return sanitizeAutomationSettings(stored[AUTOMATION_SETTINGS_STORAGE_KEY]);
+  }
+  function applyAutomationSettingsUpdate(current, update) {
+    const source = isRecord(update) ? update : {};
+    const profiles = "profiles" in source ? sanitizeAutomationProfiles(source.profiles) : cloneAutomationProfiles(current.profiles);
+    let activeProfileId = readString2(source.activeProfileId) || current.activeProfileId;
+    if (!profiles[activeProfileId]) {
+      activeProfileId = Object.keys(profiles)[0] ?? DEFAULT_PROFILE_ID;
+    }
+    const existingProfile = profiles[activeProfileId] ?? createAutomationProfile(activeProfileId);
+    const nextProfile = {
+      ...existingProfile,
+      candidate: "candidate" in source && isRecord(source.candidate) ? sanitizeCandidateProfile({
+        ...existingProfile.candidate,
+        ...source.candidate
+      }) : { ...existingProfile.candidate },
+      resume: "resume" in source ? sanitizeResumeAsset(source.resume) ?? null : "resumes" in source && isRecord(source.resumes) ? pickPrimaryResumeAssetFromLegacyResumes(source.resumes) : existingProfile.resume,
+      answers: "answers" in source ? sanitizeSavedAnswerRecord(source.answers) : cloneSavedAnswers(existingProfile.answers),
+      preferenceAnswers: "preferenceAnswers" in source ? sanitizeSavedAnswerRecord(source.preferenceAnswers) : cloneSavedAnswers(existingProfile.preferenceAnswers),
+      updatedAt: Date.now()
+    };
+    profiles[activeProfileId] = nextProfile;
+    return sanitizeAutomationSettings({
+      ...current,
+      ...source,
+      searchKeywords: "searchKeywords" in source ? sanitizeSearchKeywords(source.searchKeywords) : current.searchKeywords,
+      activeProfileId,
+      profiles
+    });
+  }
+  function sanitizeAutomationSettings(raw) {
+    const source = isRecord(raw) ? raw : {};
+    const profiles = sanitizeAutomationProfiles(source.profiles);
+    const hasStoredProfiles = Object.keys(profiles).length > 0;
+    const fallbackProfile = sanitizeLegacyProfile(source);
+    const mergedProfiles = hasStoredProfiles ? profiles : {
+      [fallbackProfile.id]: fallbackProfile
+    };
+    let activeProfileId = readString2(source.activeProfileId) || Object.keys(mergedProfiles)[0] || DEFAULT_PROFILE_ID;
+    if (!mergedProfiles[activeProfileId]) {
+      activeProfileId = Object.keys(mergedProfiles)[0] ?? DEFAULT_PROFILE_ID;
+    }
+    const baseSettings = {
+      jobPageLimit: clampJobPageLimit(source.jobPageLimit),
+      autoUploadResumes: typeof source.autoUploadResumes === "boolean" ? source.autoUploadResumes : DEFAULT_SETTINGS.autoUploadResumes,
+      searchMode: sanitizeSearchMode(source.searchMode),
+      startupRegion: sanitizeStartupRegion(source.startupRegion),
+      datePostedWindow: sanitizeDatePostedWindow(source.datePostedWindow),
+      searchKeywords: sanitizeSearchKeywords(source.searchKeywords),
+      activeProfileId,
+      profiles: mergedProfiles,
+      candidate: createEmptyCandidateProfile(),
+      resume: null,
+      resumes: {},
+      answers: {},
+      preferenceAnswers: {}
+    };
+    return resolveAutomationSettingsForProfile(baseSettings, activeProfileId);
+  }
+  function sanitizeLegacyProfile(source) {
+    const now = Date.now();
+    const legacyResumes = isRecord(source.resumes) ? source.resumes : {};
+    return {
+      ...createAutomationProfile(DEFAULT_PROFILE_ID, DEFAULT_PROFILE_NAME, now),
+      candidate: sanitizeCandidateProfile(source.candidate),
+      resume: pickPrimaryResumeAssetFromLegacyResumes(legacyResumes),
+      answers: sanitizeSavedAnswerRecord(source.answers),
+      preferenceAnswers: sanitizeSavedAnswerRecord(source.preferenceAnswers),
+      updatedAt: now
+    };
+  }
+  function sanitizeAutomationProfiles(raw) {
+    const source = isRecord(raw) ? raw : {};
+    const profiles = {};
+    for (const [rawId, value] of Object.entries(source)) {
+      const id = readString2(rawId);
+      if (!id || !isRecord(value)) {
+        continue;
+      }
+      profiles[id] = sanitizeAutomationProfile(id, value);
+    }
+    return profiles;
+  }
+  function sanitizeAutomationProfile(id, value) {
+    return {
+      id,
+      name: readString2(value.name) || DEFAULT_PROFILE_NAME,
+      candidate: sanitizeCandidateProfile(value.candidate),
+      resume: sanitizeResumeAsset(value.resume) ?? (isRecord(value.resumes) ? pickPrimaryResumeAssetFromLegacyResumes(value.resumes) : null),
+      answers: sanitizeSavedAnswerRecord(value.answers),
+      preferenceAnswers: sanitizeSavedAnswerRecord(value.preferenceAnswers),
+      updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now()
+    };
+  }
+  function sanitizeCandidateProfile(value) {
+    const source = isRecord(value) ? value : {};
+    return {
+      fullName: readString2(source.fullName),
+      email: readString2(source.email),
+      phone: readString2(source.phone),
+      city: readString2(source.city),
+      state: readString2(source.state),
+      country: readString2(source.country),
+      linkedinUrl: readString2(source.linkedinUrl),
+      portfolioUrl: readString2(source.portfolioUrl),
+      currentCompany: readString2(source.currentCompany),
+      yearsExperience: readString2(source.yearsExperience),
+      workAuthorization: readString2(source.workAuthorization),
+      needsSponsorship: readString2(source.needsSponsorship),
+      willingToRelocate: readString2(source.willingToRelocate)
+    };
+  }
+  function sanitizeSavedAnswerRecord(raw) {
+    const source = isRecord(raw) ? raw : {};
+    const answers = {};
+    for (const [key, value] of Object.entries(source)) {
+      if (!isRecord(value)) continue;
+      const question = readString2(value.question);
+      const savedValue = readString2(value.value);
+      if (!question || !savedValue) continue;
+      const normalizedKey = normalizeQuestionKey(key || question);
+      if (!normalizedKey) continue;
+      answers[normalizedKey] = {
+        question,
+        value: savedValue,
+        updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now()
+      };
+    }
+    return answers;
+  }
+  function cloneSavedAnswers(answers) {
+    return Object.fromEntries(
+      Object.entries(answers).map(([key, value]) => [key, { ...value }])
+    );
+  }
+  function cloneAutomationProfiles(profiles) {
+    return Object.fromEntries(
+      Object.entries(profiles).map(([id, profile]) => [
+        id,
+        {
+          ...profile,
+          candidate: { ...profile.candidate },
+          resume: profile.resume ? { ...profile.resume } : null,
+          answers: cloneSavedAnswers(profile.answers),
+          preferenceAnswers: cloneSavedAnswers(profile.preferenceAnswers)
+        }
+      ])
+    );
+  }
+  function pickPrimaryResumeAssetFromLegacyResumes(raw) {
+    const assets = Object.keys(RESUME_KIND_LABELS).map((key) => sanitizeResumeAsset(raw[key])).filter((asset) => Boolean(asset)).sort(
+      (left, right) => right.updatedAt - left.updatedAt || left.name.localeCompare(right.name)
+    );
+    return assets[0] ?? null;
+  }
+  function clampJobPageLimit(raw) {
+    const numeric = Number(raw);
+    if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.jobPageLimit;
+    return Math.min(MAX_JOB_PAGE_LIMIT, Math.max(MIN_JOB_PAGE_LIMIT, Math.round(numeric)));
+  }
+  function sanitizeResumeAsset(value) {
+    if (!isRecord(value)) {
+      return null;
+    }
+    const name = readString2(value.name);
+    const type = readString2(value.type);
+    const dataUrl = readString2(value.dataUrl);
+    const textContent = readString2(value.textContent);
+    const size2 = Number.isFinite(value.size) ? Number(value.size) : 0;
+    if (!name || !type || !dataUrl) {
+      return null;
+    }
+    return {
+      name,
+      type,
+      dataUrl,
+      textContent,
+      size: size2,
+      updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now()
+    };
+  }
+  function sanitizeSearchKeywords(value) {
+    if (typeof value !== "string") {
+      return "";
+    }
+    const deduped = /* @__PURE__ */ new Map();
+    for (const rawEntry of value.split(/[\r\n,]+/)) {
+      const entry = rawEntry.trim();
+      if (!entry) {
+        continue;
+      }
+      const normalized = normalizeQuestionKey(entry);
+      if (!normalized || deduped.has(normalized)) {
+        continue;
+      }
+      deduped.set(normalized, entry);
+    }
+    return Array.from(deduped.values()).join("\n");
+  }
+  function sanitizeSearchMode(value) {
+    return value === "startup_careers" || value === "other_job_sites" ? value : DEFAULT_SETTINGS.searchMode;
+  }
+  function sanitizeStartupRegion(value) {
+    return value === "us" || value === "uk" || value === "eu" || value === "auto" ? value : DEFAULT_SETTINGS.startupRegion;
+  }
+  function sanitizeDatePostedWindow(value) {
+    return value === "24h" || value === "3d" || value === "1w" || value === "any" ? value : DEFAULT_SETTINGS.datePostedWindow;
+  }
+  function readString2(value) {
+    return typeof value === "string" ? value.trim() : "";
+  }
+  function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
+  // src/shared/targets.ts
   function parseSearchKeywords(value) {
     const source = typeof value === "string" ? value : "";
     const deduped = /* @__PURE__ */ new Map();
@@ -49497,17 +49740,12 @@
     }
     return Array.from(deduped.values());
   }
-  var STARTUP_TARGET_REGIONS = [
-    "us",
-    "uk",
-    "eu"
-  ];
   function resolveStartupTargetRegions(startupRegion, candidateCountry) {
     if (startupRegion !== "auto") {
       return [startupRegion];
     }
     const inferred = inferStartupRegionFromCountry(candidateCountry);
-    return inferred ? [inferred] : [...STARTUP_TARGET_REGIONS];
+    return inferred ? [inferred] : getStartupTargetRegions();
   }
   function inferStartupRegionFromCountry(candidateCountry) {
     const normalized = normalizeQuestionKey(candidateCountry);
@@ -49567,219 +49805,6 @@
   }
   function formatStartupRegionList(regions) {
     return regions.filter((region, index, values2) => values2.indexOf(region) === index).map((region) => STARTUP_REGION_LABELS[region]).join(" / ");
-  }
-  function getActiveAutomationProfile(settings2) {
-    return settings2.profiles[settings2.activeProfileId] ?? settings2.profiles[Object.keys(settings2.profiles)[0] ?? DEFAULT_PROFILE_ID] ?? createAutomationProfile();
-  }
-  function resolveAutomationSettingsForProfile(settings2, profileId) {
-    const nextProfileId = profileId && settings2.profiles[profileId] ? profileId : settings2.activeProfileId;
-    const activeProfile = settings2.profiles[nextProfileId] ?? getActiveAutomationProfile(settings2);
-    const derivedResume = activeProfile.resume ?? null;
-    return {
-      ...settings2,
-      activeProfileId: activeProfile.id,
-      candidate: { ...activeProfile.candidate },
-      resume: derivedResume,
-      resumes: derivedResume ? { full_stack: derivedResume } : {},
-      answers: { ...activeProfile.answers },
-      preferenceAnswers: { ...activeProfile.preferenceAnswers }
-    };
-  }
-  function normalizeQuestionKey(question) {
-    return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-  }
-  async function readAutomationSettings() {
-    const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
-    return sanitizeAutomationSettings(stored[AUTOMATION_SETTINGS_STORAGE_KEY]);
-  }
-  function applyAutomationSettingsUpdate(current, update) {
-    const source = isRecord(update) ? update : {};
-    const profiles = "profiles" in source ? sanitizeAutomationProfiles(source.profiles) : cloneAutomationProfiles(current.profiles);
-    let activeProfileId = readString(source.activeProfileId) || current.activeProfileId;
-    if (!profiles[activeProfileId]) {
-      activeProfileId = Object.keys(profiles)[0] ?? DEFAULT_PROFILE_ID;
-    }
-    const existingProfile = profiles[activeProfileId] ?? createAutomationProfile(activeProfileId);
-    const nextProfile = {
-      ...existingProfile,
-      candidate: "candidate" in source && isRecord(source.candidate) ? sanitizeCandidateProfile({
-        ...existingProfile.candidate,
-        ...source.candidate
-      }) : { ...existingProfile.candidate },
-      resume: "resume" in source ? sanitizeResumeAsset(source.resume) ?? null : "resumes" in source && isRecord(source.resumes) ? pickPrimaryResumeAssetFromLegacyResumes(source.resumes) : existingProfile.resume,
-      answers: "answers" in source ? sanitizeSavedAnswerRecord(source.answers) : cloneSavedAnswers(existingProfile.answers),
-      preferenceAnswers: "preferenceAnswers" in source ? sanitizeSavedAnswerRecord(source.preferenceAnswers) : cloneSavedAnswers(existingProfile.preferenceAnswers),
-      updatedAt: Date.now()
-    };
-    profiles[activeProfileId] = nextProfile;
-    return sanitizeAutomationSettings({
-      ...current,
-      ...source,
-      searchKeywords: "searchKeywords" in source ? sanitizeSearchKeywords(source.searchKeywords) : current.searchKeywords,
-      activeProfileId,
-      profiles
-    });
-  }
-  function sanitizeAutomationSettings(raw) {
-    const source = isRecord(raw) ? raw : {};
-    const profiles = sanitizeAutomationProfiles(source.profiles);
-    const hasStoredProfiles = Object.keys(profiles).length > 0;
-    const fallbackProfile = sanitizeLegacyProfile(source);
-    const mergedProfiles = hasStoredProfiles ? profiles : {
-      [fallbackProfile.id]: fallbackProfile
-    };
-    let activeProfileId = readString(source.activeProfileId) || Object.keys(mergedProfiles)[0] || DEFAULT_PROFILE_ID;
-    if (!mergedProfiles[activeProfileId]) {
-      activeProfileId = Object.keys(mergedProfiles)[0] ?? DEFAULT_PROFILE_ID;
-    }
-    const baseSettings = {
-      jobPageLimit: clampJobPageLimit(source.jobPageLimit),
-      autoUploadResumes: typeof source.autoUploadResumes === "boolean" ? source.autoUploadResumes : DEFAULT_SETTINGS.autoUploadResumes,
-      searchMode: sanitizeSearchMode(source.searchMode),
-      startupRegion: sanitizeStartupRegion(source.startupRegion),
-      datePostedWindow: sanitizeDatePostedWindow(source.datePostedWindow),
-      searchKeywords: sanitizeSearchKeywords(source.searchKeywords),
-      activeProfileId,
-      profiles: mergedProfiles,
-      candidate: createEmptyCandidateProfile(),
-      resume: null,
-      resumes: {},
-      answers: {},
-      preferenceAnswers: {}
-    };
-    return resolveAutomationSettingsForProfile(baseSettings, activeProfileId);
-  }
-  function sanitizeLegacyProfile(source) {
-    const now = Date.now();
-    const legacyResumes = isRecord(source.resumes) ? source.resumes : {};
-    return {
-      ...createAutomationProfile(DEFAULT_PROFILE_ID, DEFAULT_PROFILE_NAME, now),
-      candidate: sanitizeCandidateProfile(source.candidate),
-      resume: pickPrimaryResumeAssetFromLegacyResumes(legacyResumes),
-      answers: sanitizeSavedAnswerRecord(source.answers),
-      preferenceAnswers: sanitizeSavedAnswerRecord(source.preferenceAnswers),
-      updatedAt: now
-    };
-  }
-  function sanitizeAutomationProfiles(raw) {
-    const source = isRecord(raw) ? raw : {};
-    const profiles = {};
-    for (const [rawId, value] of Object.entries(source)) {
-      const id = readString(rawId);
-      if (!id || !isRecord(value)) {
-        continue;
-      }
-      profiles[id] = sanitizeAutomationProfile(id, value);
-    }
-    return profiles;
-  }
-  function sanitizeAutomationProfile(id, value) {
-    return {
-      id,
-      name: readString(value.name) || DEFAULT_PROFILE_NAME,
-      candidate: sanitizeCandidateProfile(value.candidate),
-      resume: sanitizeResumeAsset(value.resume) ?? (isRecord(value.resumes) ? pickPrimaryResumeAssetFromLegacyResumes(value.resumes) : null),
-      answers: sanitizeSavedAnswerRecord(value.answers),
-      preferenceAnswers: sanitizeSavedAnswerRecord(value.preferenceAnswers),
-      updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now()
-    };
-  }
-  function sanitizeCandidateProfile(value) {
-    const source = isRecord(value) ? value : {};
-    return {
-      fullName: readString(source.fullName),
-      email: readString(source.email),
-      phone: readString(source.phone),
-      city: readString(source.city),
-      state: readString(source.state),
-      country: readString(source.country),
-      linkedinUrl: readString(source.linkedinUrl),
-      portfolioUrl: readString(source.portfolioUrl),
-      currentCompany: readString(source.currentCompany),
-      yearsExperience: readString(source.yearsExperience),
-      workAuthorization: readString(source.workAuthorization),
-      needsSponsorship: readString(source.needsSponsorship),
-      willingToRelocate: readString(source.willingToRelocate)
-    };
-  }
-  function sanitizeSavedAnswerRecord(raw) {
-    const source = isRecord(raw) ? raw : {};
-    const answers = {};
-    for (const [key, value] of Object.entries(source)) {
-      if (!isRecord(value)) continue;
-      const question = readString(value.question);
-      const savedValue = readString(value.value);
-      if (!question || !savedValue) continue;
-      const normalizedKey = normalizeQuestionKey(key || question);
-      if (!normalizedKey) continue;
-      answers[normalizedKey] = {
-        question,
-        value: savedValue,
-        updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now()
-      };
-    }
-    return answers;
-  }
-  function cloneSavedAnswers(answers) {
-    return Object.fromEntries(
-      Object.entries(answers).map(([key, value]) => [key, { ...value }])
-    );
-  }
-  function cloneAutomationProfiles(profiles) {
-    return Object.fromEntries(
-      Object.entries(profiles).map(([id, profile]) => [
-        id,
-        {
-          ...profile,
-          candidate: { ...profile.candidate },
-          resume: profile.resume ? { ...profile.resume } : null,
-          answers: cloneSavedAnswers(profile.answers),
-          preferenceAnswers: cloneSavedAnswers(profile.preferenceAnswers)
-        }
-      ])
-    );
-  }
-  function pickPrimaryResumeAssetFromLegacyResumes(raw) {
-    const assets = Object.keys(RESUME_KIND_LABELS).map((key) => sanitizeResumeAsset(raw[key])).filter((asset) => Boolean(asset)).sort(
-      (left, right) => right.updatedAt - left.updatedAt || left.name.localeCompare(right.name)
-    );
-    return assets[0] ?? null;
-  }
-  function clampJobPageLimit(raw) {
-    const numeric = Number(raw);
-    if (!Number.isFinite(numeric)) return DEFAULT_SETTINGS.jobPageLimit;
-    return Math.min(25, Math.max(1, Math.round(numeric)));
-  }
-  function readString(value) {
-    return typeof value === "string" ? value.trim() : "";
-  }
-  function isRecord(value) {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-  }
-  function sanitizeSearchMode(value) {
-    return value === "startup_careers" || value === "other_job_sites" ? value : DEFAULT_SETTINGS.searchMode;
-  }
-  function sanitizeStartupRegion(value) {
-    return value === "us" || value === "uk" || value === "eu" || value === "auto" ? value : DEFAULT_SETTINGS.startupRegion;
-  }
-  function sanitizeDatePostedWindow(value) {
-    return value === "24h" || value === "3d" || value === "1w" || value === "any" ? value : DEFAULT_SETTINGS.datePostedWindow;
-  }
-  function sanitizeSearchKeywords(value) {
-    const raw = typeof value === "string" ? value : "";
-    return parseSearchKeywords(raw).join("\n");
-  }
-  function sanitizeResumeAsset(value) {
-    if (!isRecord(value)) return void 0;
-    const asset = {
-      name: readString(value.name),
-      type: readString(value.type),
-      dataUrl: readString(value.dataUrl),
-      textContent: readString(value.textContent),
-      size: Number.isFinite(value.size) ? Number(value.size) : 0,
-      updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now()
-    };
-    return asset.name && asset.dataUrl ? asset : void 0;
   }
 
   // src/popupDialog.ts
@@ -50000,6 +50025,97 @@
     };
   }
 
+  // src/popupState.ts
+  function getStartButtonLabel(searchMode) {
+    switch (searchMode) {
+      case "startup_careers":
+        return "Start Startup Search";
+      case "other_job_sites":
+        return "Start Other Sites Search";
+      case "job_board":
+        return "Start Auto Search";
+    }
+  }
+  function getSelectedSearchMode(value) {
+    if (value === "startup_careers") {
+      return "startup_careers";
+    }
+    if (value === "other_job_sites") {
+      return "other_job_sites";
+    }
+    return "job_board";
+  }
+  function derivePopupIdlePreview(options) {
+    const {
+      activeSite: activeSite2,
+      activeTabId: activeTabId2,
+      hasKeywords,
+      regionLabel,
+      searchMode,
+      supportedJobBoardPrompt
+    } = options;
+    const activeJobBoardSite = isJobBoardSite2(activeSite2) ? activeSite2 : null;
+    if (!hasKeywords) {
+      return {
+        status: createStatus(
+          searchMode === "job_board" ? activeJobBoardSite ?? "unsupported" : searchMode === "startup_careers" ? "startup" : "other_sites",
+          "error",
+          "Add at least one search keyword before starting automation."
+        ),
+        startDisabled: true
+      };
+    }
+    if (searchMode === "startup_careers") {
+      return {
+        status: createStatus(
+          "startup",
+          "idle",
+          `Ready to open startup career pages for ${regionLabel} companies.`
+        ),
+        startDisabled: false
+      };
+    }
+    if (searchMode === "other_job_sites") {
+      return {
+        status: createStatus(
+          "other_sites",
+          "idle",
+          `Ready to open other job site searches for ${regionLabel}.`
+        ),
+        startDisabled: false
+      };
+    }
+    if (!activeTabId2) {
+      return {
+        status: createStatus("unsupported", "error", "No active tab was found."),
+        startDisabled: true
+      };
+    }
+    if (!activeJobBoardSite) {
+      return {
+        status: createStatus("unsupported", "error", supportedJobBoardPrompt),
+        startDisabled: true
+      };
+    }
+    return {
+      status: createStatus(
+        activeJobBoardSite,
+        "idle",
+        `Ready on ${getSiteLabel(activeJobBoardSite)}.`
+      ),
+      startDisabled: false
+    };
+  }
+  function shouldDisableStartButtonForSession(searchMode, activeSite2, session) {
+    if (searchMode === "job_board") {
+      return !isJobBoardSite2(activeSite2) || Boolean(session && session.phase !== "idle");
+    }
+    return Boolean(session && session.phase !== "idle");
+  }
+  function isJobBoardSite2(site) {
+    return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor" || site === "greenhouse" || site === "builtin";
+  }
+
   // src/popup.ts
   var MAX_RESUME_TEXT_CHARS = 24e3;
   var SUPPORTED_JOB_BOARD_PROMPT = "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In in the active tab to start.";
@@ -50108,6 +50224,9 @@
     submitButton: dialogSubmitButton
   });
   void initialize();
+  function setStartButtonDisabled(disabled) {
+    startButton.disabled = disabled;
+  }
   startButton.addEventListener("click", () => {
     void startAutomation();
   });
@@ -50234,7 +50353,7 @@
           "Could not refresh the current tab status."
         )
       );
-      startButton.disabled = getSelectedSearchMode() === "job_board";
+      setStartButtonDisabled(getSelectedSearchMode2() === "job_board");
     }
     refreshIntervalId = window.setInterval(() => {
       void refreshStatus().catch(() => {
@@ -50243,7 +50362,7 @@
   }
   async function startAutomation() {
     await refreshActiveTabContext();
-    const searchMode = getSelectedSearchMode();
+    const searchMode = getSelectedSearchMode2();
     if (getConfiguredKeywords().length === 0) {
       applyStatus(
         createStatus(
@@ -50252,11 +50371,11 @@
           "Add at least one search keyword before starting automation."
         )
       );
-      startButton.disabled = true;
+      setStartButtonDisabled(true);
       return;
     }
     await saveCurrentSettings(false);
-    startButton.disabled = true;
+    setStartButtonDisabled(true);
     if (searchMode === "startup_careers") {
       applyStatus(
         createStatus(
@@ -50277,7 +50396,7 @@
               response?.error ?? "The extension could not start the startup career search."
             )
           );
-          startButton.disabled = false;
+          setStartButtonDisabled(false);
           return;
         }
         applyStatus(
@@ -50296,7 +50415,7 @@
           )
         );
       }
-      startButton.disabled = false;
+      setStartButtonDisabled(false);
       return;
     }
     if (searchMode === "other_job_sites") {
@@ -50319,7 +50438,7 @@
               response?.error ?? "The extension could not start the other job site search."
             )
           );
-          startButton.disabled = false;
+          setStartButtonDisabled(false);
           return;
         }
         applyStatus(
@@ -50338,14 +50457,14 @@
           )
         );
       }
-      startButton.disabled = false;
+      setStartButtonDisabled(false);
       return;
     }
     if (!activeTabId) {
       applyStatus(
         createStatus("unsupported", "error", "No active tab was found.")
       );
-      startButton.disabled = false;
+      setStartButtonDisabled(false);
       return;
     }
     if (!isJobBoardSite(activeSite)) {
@@ -50356,7 +50475,7 @@
           SUPPORTED_JOB_BOARD_MODE_PROMPT
         )
       );
-      startButton.disabled = false;
+      setStartButtonDisabled(false);
       return;
     }
     applyStatus(
@@ -50379,7 +50498,7 @@
             response?.error ?? "The extension could not start on this tab."
           )
         );
-        startButton.disabled = false;
+        setStartButtonDisabled(false);
         return;
       }
     } catch (error) {
@@ -50390,14 +50509,14 @@
           error instanceof Error ? error.message : "Failed to start automation."
         )
       );
-      startButton.disabled = false;
+      setStartButtonDisabled(false);
       return;
     }
     await refreshStatus();
   }
   async function refreshStatus() {
     await refreshActiveTabContext();
-    const searchMode = getSelectedSearchMode();
+    const searchMode = getSelectedSearchMode2();
     const activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
     const hasKeywords = getConfiguredKeywords().length > 0;
     updateSiteNameDisplay();
@@ -50409,7 +50528,7 @@
           "Add at least one search keyword before starting automation."
         )
       );
-      startButton.disabled = true;
+      setStartButtonDisabled(true);
       return;
     }
     if (searchMode === "startup_careers") {
@@ -50421,7 +50540,7 @@
             `Ready to open startup career pages for ${getStartupRegionLabel()} companies.`
           )
         );
-        startButton.disabled = false;
+        setStartButtonDisabled(false);
         return;
       }
       let bgSession2;
@@ -50436,7 +50555,9 @@
       if (bgSession2 && bgSession2.site === "startup") {
         if (bgSession2.phase !== "idle") {
           applyStatus(bgSession2);
-          startButton.disabled = isBusy(bgSession2.phase);
+          setStartButtonDisabled(
+            shouldDisableStartButtonForSession(searchMode, activeSite, bgSession2)
+          );
           return;
         }
         applyStatus(
@@ -50446,7 +50567,7 @@
             bgSession2.message || `Ready to open startup career pages for ${getStartupRegionLabel()} companies.`
           )
         );
-        startButton.disabled = false;
+        setStartButtonDisabled(false);
         return;
       }
       applyStatus(
@@ -50456,7 +50577,7 @@
           `Ready to open startup career pages for ${getStartupRegionLabel()} companies.`
         )
       );
-      startButton.disabled = false;
+      setStartButtonDisabled(false);
       return;
     }
     if (searchMode === "other_job_sites") {
@@ -50468,7 +50589,7 @@
             `Ready to open other job site searches for ${getStartupRegionLabel()}.`
           )
         );
-        startButton.disabled = false;
+        setStartButtonDisabled(false);
         return;
       }
       let bgSession2;
@@ -50483,7 +50604,9 @@
       if (bgSession2 && bgSession2.site === "other_sites") {
         if (bgSession2.phase !== "idle") {
           applyStatus(bgSession2);
-          startButton.disabled = isBusy(bgSession2.phase);
+          setStartButtonDisabled(
+            shouldDisableStartButtonForSession(searchMode, activeSite, bgSession2)
+          );
           return;
         }
         applyStatus(
@@ -50493,7 +50616,7 @@
             bgSession2.message || `Ready to open other job site searches for ${getStartupRegionLabel()}.`
           )
         );
-        startButton.disabled = false;
+        setStartButtonDisabled(false);
         return;
       }
       applyStatus(
@@ -50503,14 +50626,14 @@
           `Ready to open other job site searches for ${getStartupRegionLabel()}.`
         )
       );
-      startButton.disabled = false;
+      setStartButtonDisabled(false);
       return;
     }
     if (!activeTabId) {
       applyStatus(
         createStatus("unsupported", "error", "No active tab was found.")
       );
-      startButton.disabled = true;
+      setStartButtonDisabled(true);
       return;
     }
     let bgSession;
@@ -50530,13 +50653,17 @@
           bgSession.message || (activeJobBoardSite ? `Ready on ${getSiteLabel(activeJobBoardSite)}.` : SUPPORTED_JOB_BOARD_PROMPT)
         ) : bgSession
       );
-      startButton.disabled = !activeJobBoardSite || isBusy(bgSession.phase);
+      setStartButtonDisabled(
+        shouldDisableStartButtonForSession(searchMode, activeSite, bgSession)
+      );
       return;
     }
     const contentStatus = await getContentStatus(activeTabId);
     if (contentStatus && contentStatus.phase !== "idle" && contentStatus.site === activeJobBoardSite) {
       applyStatus(contentStatus);
-      startButton.disabled = !activeJobBoardSite || isBusy(contentStatus.phase);
+      setStartButtonDisabled(
+        shouldDisableStartButtonForSession(searchMode, activeSite, contentStatus)
+      );
       return;
     }
     if (!activeJobBoardSite) {
@@ -50547,7 +50674,7 @@
           SUPPORTED_JOB_BOARD_PROMPT
         )
       );
-      startButton.disabled = true;
+      setStartButtonDisabled(true);
       return;
     }
     applyStatus(
@@ -50557,71 +50684,19 @@
         `Ready on ${getSiteLabel(activeJobBoardSite)}.`
       )
     );
-    startButton.disabled = false;
+    setStartButtonDisabled(false);
   }
   function applyLocalStatusPreview() {
-    const searchMode = getSelectedSearchMode();
-    const activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
-    const hasKeywords = getConfiguredKeywords().length > 0;
-    if (!hasKeywords) {
-      applyStatus(
-        createStatus(
-          searchMode === "job_board" ? activeJobBoardSite ?? "unsupported" : searchMode === "startup_careers" ? "startup" : "other_sites",
-          "error",
-          "Add at least one search keyword before starting automation."
-        )
-      );
-      startButton.disabled = true;
-      return;
-    }
-    if (searchMode === "startup_careers") {
-      applyStatus(
-        createStatus(
-          "startup",
-          "idle",
-          `Ready to open startup career pages for ${getStartupRegionLabel()} companies.`
-        )
-      );
-      startButton.disabled = false;
-      return;
-    }
-    if (searchMode === "other_job_sites") {
-      applyStatus(
-        createStatus(
-          "other_sites",
-          "idle",
-          `Ready to open other job site searches for ${getStartupRegionLabel()}.`
-        )
-      );
-      startButton.disabled = false;
-      return;
-    }
-    if (!activeTabId) {
-      applyStatus(
-        createStatus("unsupported", "error", "No active tab was found.")
-      );
-      startButton.disabled = true;
-      return;
-    }
-    if (!activeJobBoardSite) {
-      applyStatus(
-        createStatus(
-          "unsupported",
-          "error",
-          SUPPORTED_JOB_BOARD_PROMPT
-        )
-      );
-      startButton.disabled = true;
-      return;
-    }
-    applyStatus(
-      createStatus(
-        activeJobBoardSite,
-        "idle",
-        `Ready on ${getSiteLabel(activeJobBoardSite)}.`
-      )
-    );
-    startButton.disabled = false;
+    const preview = derivePopupIdlePreview({
+      searchMode: getSelectedSearchMode2(),
+      activeSite,
+      activeTabId,
+      hasKeywords: getConfiguredKeywords().length > 0,
+      regionLabel: getStartupRegionLabel(),
+      supportedJobBoardPrompt: SUPPORTED_JOB_BOARD_PROMPT
+    });
+    applyStatus(preview.status);
+    setStartButtonDisabled(preview.startDisabled);
   }
   async function getContentStatus(tabId) {
     try {
@@ -50654,7 +50729,7 @@
     return null;
   }
   function updateSiteNameDisplay() {
-    const searchMode = getSelectedSearchMode();
+    const searchMode = getSelectedSearchMode2();
     if (searchMode === "startup_careers") {
       siteName.textContent = "Startup Careers";
     } else if (searchMode === "other_job_sites") {
@@ -50697,7 +50772,7 @@
   function buildFormSettingsUpdate(current, profileId, activeProfileId) {
     const targetProfile = current.profiles[profileId] ?? createAutomationProfile(profileId);
     return {
-      searchMode: getSelectedSearchMode(),
+      searchMode: getSelectedSearchMode2(),
       startupRegion: getSelectedStartupRegion(),
       datePostedWindow: getSelectedDatePostedWindow(),
       searchKeywords: normalizeSearchKeywordsInput(),
@@ -51221,9 +51296,6 @@
     const kilobytes = Math.max(1, Math.round(size2 / 1024));
     return `${kilobytes} KB`;
   }
-  function isBusy(phase) {
-    return phase === "running" || phase === "waiting_for_verification";
-  }
   async function readFileAsResumeAsset(file) {
     const [dataUrl, textContent] = await Promise.all([
       readFileAsDataUrl(file),
@@ -51362,8 +51434,8 @@
     };
   }
   function updateModeUi() {
-    const searchMode = getSelectedSearchMode();
-    startButton.textContent = searchMode === "startup_careers" ? "Start Startup Search" : searchMode === "other_job_sites" ? "Start Other Sites Search" : "Start Auto Search";
+    const searchMode = getSelectedSearchMode2();
+    startButton.textContent = getStartButtonLabel(searchMode);
     updateSiteNameDisplay();
   }
   function updateOverviewPreview() {
@@ -51371,12 +51443,8 @@
     modePreview.textContent = getModePreviewLabel();
     regionPreview.textContent = getRegionPreviewLabel();
   }
-  function getSelectedSearchMode() {
-    const value = searchModeInput.value;
-    if (value === "startup_careers") return "startup_careers";
-    if (value === "other_job_sites") return "other_job_sites";
-    if (value === "job_board") return "job_board";
-    return "job_board";
+  function getSelectedSearchMode2() {
+    return getSelectedSearchMode(searchModeInput.value);
   }
   function getSelectedStartupRegion() {
     const value = startupRegionInput.value;
@@ -51454,7 +51522,7 @@
     return formatStartupRegionList(getSelectedStartupRegions());
   }
   function getModePreviewLabel() {
-    const searchMode = getSelectedSearchMode();
+    const searchMode = getSelectedSearchMode2();
     if (searchMode === "startup_careers") return "Startup careers";
     if (searchMode === "other_job_sites") return "Other job sites";
     return "Job boards";
