@@ -38,6 +38,20 @@ describe("answer capture helpers", () => {
     expect(findRememberableChoiceTarget(button)).toBeNull();
   });
 
+  it("does not remember consent-style custom choices as reusable answers", () => {
+    document.body.innerHTML = `
+      <fieldset>
+        <legend>Do you agree to the privacy policy?</legend>
+        <button type="button" role="radio" aria-checked="true">Yes</button>
+        <button type="button" role="radio" aria-checked="false">No</button>
+      </fieldset>
+    `;
+
+    const button = document.querySelector<HTMLElement>("button[aria-checked='true']");
+    expect(button).not.toBeNull();
+    expect(readChoiceAnswerForMemory(button as HTMLElement)).toBeNull();
+  });
+
   it("does not depend on a global Element constructor to capture custom choices", () => {
     document.body.innerHTML = `
       <fieldset>

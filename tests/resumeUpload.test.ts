@@ -1,6 +1,7 @@
 // Note: describe, expect, it are provided globally by vitest (globals: true)
 
 import {
+  hasAcceptedResumeUpload,
   findDiceUploadPanel,
   findDiceResumeMenuButton,
   findDiceResumePanel,
@@ -268,6 +269,21 @@ describe("resume upload helpers", () => {
 
     expect(selection.alreadySatisfied).toBeNull();
     expect(selection.targets).toEqual([resumeInput]);
+  });
+
+  it("accepts resume uploads when the site reflects the file name in nearby upload copy", () => {
+    document.body.innerHTML = `
+      <section class="resume-panel">
+        <label for="resume-input">Attach resume</label>
+        <input id="resume-input" type="file" />
+        <p>frontend-resume.pdf uploaded to application</p>
+      </section>
+    `;
+
+    const resumeInput = document.querySelector("#resume-input") as HTMLInputElement;
+
+    expect(hasAcceptedResumeUpload(resumeInput, "frontend-resume.pdf")).toBe(true);
+    expect(hasAcceptedResumeUpload(resumeInput, "backend-resume.pdf")).toBe(false);
   });
 
   it("never treats the cover-letter uploader as a resume target", () => {

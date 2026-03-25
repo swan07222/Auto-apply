@@ -129,7 +129,7 @@ describe("shared automation target logic", () => {
 
     expect(firstUrl.origin).toBe("https://my.greenhouse.io");
     expect(firstUrl.pathname).toBe("/");
-    expect(firstUrl.search).toBe("");
+    expect(firstUrl.searchParams.get("keyword")).toBe("site engineer");
   });
 
   it("builds Built In search targets with the current remote jobs route", () => {
@@ -580,6 +580,22 @@ describe("shared automation target logic", () => {
         <label>Full name <input type="text" /></label>
         <label>Email <input type="email" /></label>
         <div data-sitekey="test-key"></div>
+      </main>
+    `;
+
+    expect(isProbablyHumanVerificationPage(document)).toBe(false);
+  });
+
+  it("does not treat real application forms as verification pages just because they mention verification copy", () => {
+    document.title = "Apply";
+    document.body.innerHTML = `
+      <main>
+        <h1>Submit Your Application</h1>
+        <p>Verification required after submission.</p>
+        <label>Resume/CV <input type="file" /></label>
+        <label>Full name <input type="text" /></label>
+        <label>Email <input type="email" /></label>
+        <label>Phone <input type="tel" /></label>
       </main>
     `;
 

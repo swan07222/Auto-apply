@@ -200,6 +200,55 @@ describe("application progression actions", () => {
     }
   });
 
+  it("does not navigate directly to same-site Indeed company-site gateways when a real external apply URL is discoverable", () => {
+    window.history.replaceState({}, "", "/viewjob?jk=abc123");
+    document.body.innerHTML = `
+      <section>
+        <p>You will be redirected to the company website to apply.</p>
+        <a href="/orgIndApp?jobKey=abc123">Apply on company site</a>
+      </section>
+      <script type="application/json">
+        {
+          "applyUrl": "https://jobs.workday.com/example/job/software-engineer/apply"
+        }
+      </script>
+    `;
+
+    const action = findCompanySiteAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe(
+        "https://jobs.workday.com/example/job/software-engineer/apply"
+      );
+    }
+  });
+
+  it("ignores ATS image assets when discovering external company-site apply URLs", () => {
+    document.body.innerHTML = `
+      <main>
+        <button type="button">Apply on company site</button>
+        <script type="application/json">
+          {
+            "logo": "https://jobs.workday.com/example/assets/company-logo.png",
+            "applyUrl": "https://jobs.workday.com/example/job/platform-engineer/apply"
+          }
+        </script>
+      </main>
+    `;
+
+    const action = findCompanySiteAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe(
+        "https://jobs.workday.com/example/job/platform-engineer/apply"
+      );
+    }
+  });
+
   it("prefers a direct apply button over a company-site CTA on generic job pages", () => {
     document.body.innerHTML = `
       <section>

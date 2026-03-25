@@ -395,10 +395,13 @@ export function findCompanySiteAction(): ApplyAction | null {
     return null;
   }
 
+  const explicitCompanySiteAction = isCompanySiteActionText(best.text);
   if (
     best.url &&
     !isKnownBrokenApplyUrl(best.url) &&
-    (isExternalUrl(best.url) || shouldPreferApplyNavigation(best.url, best.text, null))
+    (isExternalUrl(best.url) ||
+      (!explicitCompanySiteAction &&
+        shouldPreferApplyNavigation(best.url, best.text, null)))
   ) {
     return {
       type: "navigate",
@@ -2697,14 +2700,24 @@ function findBestExternalApplyUrlFromSources(
     | undefined;
 
   for (const source of sources) {
-    const urls = source.match(/https?:\/\/[^"'\\<>\s]+/gi) || [];
-    for (const rawUrl of urls) {
+    for (const match of source.matchAll(/https?:\/\/[^"'\\<>\s]+/gi)) {
+      const rawUrl = match[0];
       const url = normalizeUrl(rawUrl);
       if (!url || isKnownBrokenApplyUrl(url) || !isExternalUrl(url)) {
         continue;
       }
 
-      const score = scoreExternalApplyUrl(url);
+      const matchIndex =
+        typeof match.index === "number" ? match.index : source.indexOf(rawUrl);
+      const contextStart = Math.max(0, matchIndex - 120);
+      const contextEnd = Math.min(
+        source.length,
+        matchIndex + rawUrl.length + 120
+      );
+      const score = scoreExternalApplyUrl(
+        url,
+        source.slice(contextStart, contextEnd)
+      );
       if (score <= 0) {
         continue;
       }
@@ -2826,11 +2839,42 @@ function limitApplyUrlSource(source: string | null | undefined): string | null {
   return trimmed.slice(0, MAX_APPLY_URL_SOURCE_LENGTH);
 }
 
-function scoreExternalApplyUrl(url: string): number {
+function hasApplyLikeExternalUrlCue(url: string): boolean {
   const lower = url.toLowerCase();
 
+  return (
+    includesAnyToken(lower, ATS_APPLICATION_URL_TOKENS) ||
+    includesAnyToken(lower, ATS_SCORING_URL_TOKENS) ||
+    /\/(apply|application|candidate|jobapply|jobs?|openings?|positions?|careers?)\b|[?&](gh_jid|job_id|jobid|requisitionid|rid|job)=/i.test(
+      lower
+    )
+  );
+}
+
+function scoreExternalApplyUrl(url: string, sourceContext = ""): number {
+  const lower = url.toLowerCase();
+  const lowerContext = sourceContext.toLowerCase();
+
   if (
-    /\.(?:png|jpg|jpeg|gif|svg|webp|ico|css|js|woff2?|ttf|eot)(?:[?#].*)?$/.test(lower)
+    /\.(?:png|jpg|jpeg|gif|svg|webp|ico|css|js|woff2?|ttf|eot|mp4|webm|mp3|wav|pdf)(?:[?#].*)?$/.test(
+      lower
+    )
+  ) {
+    return -1;
+  }
+
+  if (
+    /(?:^|[/?#._-])(logo|image|images|img|icon|icons|asset|assets|media|banner|thumbnail|thumb|avatar|photo|photos|favicon)(?:[/?#._-]|$)/i.test(
+      lower
+    )
+  ) {
+    return -1;
+  }
+
+  if (
+    /<(?:img|source)\b|srcset\s*=|background-image|og:image|twitter:image|itemprop\s*=\s*["']image["']/i.test(
+      lowerContext
+    )
   ) {
     return -1;
   }
@@ -2856,18 +2900,27 @@ function scoreExternalApplyUrl(url: string): number {
     return -1;
   }
 
+  if (lower.includes("indeed.com")) {
+    return -1;
+  }
+
   let score = 0;
+  const hasApplyCue = hasApplyLikeExternalUrlCue(url);
 
   if (includesAnyToken(lower, KNOWN_ATS_HOST_TOKENS)) {
-    score += 120;
+    score += hasApplyCue ? 120 : 20;
   }
 
   if (includesAnyToken(lower, ATS_SCORING_URL_TOKENS)) {
     score += 55;
   }
 
-  if (lower.includes("indeed.com")) {
-    score = -1;
+  if (includesAnyToken(lowerContext, ["apply", "application", "career", "job"])) {
+    score += 12;
+  }
+
+  if (!hasApplyCue && score < 60) {
+    return -1;
   }
 
   return score;

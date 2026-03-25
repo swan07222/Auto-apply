@@ -342,6 +342,14 @@ export function isFieldRequired(field: AutofillField): boolean {
 }
 
 export function shouldRememberField(field: AutofillField): boolean {
+  if (
+    field instanceof HTMLInputElement &&
+    (field.type === "checkbox" || field.type === "radio") &&
+    isConsentField(field)
+  ) {
+    return false;
+  }
+
   const descriptor = getFieldDescriptor(field, getQuestionText(field));
   if (
     descriptor.includes("password") ||
@@ -403,7 +411,11 @@ function findByIdNearField(field: Element, id: string): HTMLElement | null {
   }
 }
 
-function isFieldContextVisible(field: AutofillField): boolean {
+export function isFieldContextVisible(field: AutofillField): boolean {
+  if (hasHiddenAncestor(field)) {
+    return false;
+  }
+
   if (isElementVisible(field)) return true;
 
   for (const label of Array.from(field.labels ?? [])) {
@@ -413,7 +425,7 @@ function isFieldContextVisible(field: AutofillField): boolean {
   }
 
   const container = field.closest(
-    "label, fieldset, form, [role='group'], [role='radiogroup'], [role='dialog'], .field, .form-field, .question, .application-question, [class*='field'], [class*='question']"
+    "label, fieldset, [role='group'], [role='radiogroup'], [role='dialog'], .field, .form-field, .question, .application-question, [class*='field'], [class*='question']"
   );
   if (container instanceof HTMLElement && isElementVisible(container)) {
     return true;
@@ -421,6 +433,30 @@ function isFieldContextVisible(field: AutofillField): boolean {
 
   const root = field.getRootNode();
   return root instanceof ShadowRoot && root.host instanceof HTMLElement && isElementVisible(root.host);
+}
+
+function hasHiddenAncestor(field: AutofillField): boolean {
+  let current: Element | null = field.parentElement;
+
+  while (current) {
+    if (current instanceof HTMLElement) {
+      const styles = window.getComputedStyle(current);
+      const opacity = Number.parseFloat(styles.opacity);
+
+      if (
+        styles.visibility === "hidden" ||
+        styles.visibility === "collapse" ||
+        styles.display === "none" ||
+        (Number.isFinite(opacity) && opacity <= 0.01)
+      ) {
+        return true;
+      }
+    }
+
+    current = current.parentElement;
+  }
+
+  return false;
 }
 
 function isFieldExplicitlyOptional(

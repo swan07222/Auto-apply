@@ -24,6 +24,7 @@ export type AutomationStage =
 export type AutomationPhase =
   | "idle"
   | "running"
+  | "paused"
   | "waiting_for_verification"
   | "completed"
   | "error";

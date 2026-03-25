@@ -1,6 +1,7 @@
 import {
   getQuestionText,
   isFieldRequired,
+  isFieldContextVisible,
   isSelectBlank,
   shouldAutofillField,
 } from "./autofill";
@@ -102,6 +103,10 @@ export function hasPendingRequiredAutofillFields(
   const checkedRadioGroups = new Set<string>();
 
   for (const field of fields) {
+    if (!isFieldContextVisible(field)) {
+      continue;
+    }
+
     if (!isFieldRequired(field)) {
       continue;
     }

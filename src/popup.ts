@@ -2,6 +2,7 @@
 
 import {
   AUTOMATION_SETTINGS_STORAGE_KEY,
+  AutomationSession,
   AutomationProfile,
   AutomationSettings,
   AutomationStatus,
@@ -9,8 +10,6 @@ import {
   ResumeAsset,
   SavedAnswer,
   SearchMode,
-  StartupRegion,
-  STARTUP_REGION_LABELS,
   applyAutomationSettingsUpdate,
   createAutomationProfile,
   createStatus,
@@ -39,9 +38,9 @@ const SUPPORTED_JOB_BOARD_PROMPT =
   "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In in the active tab to start.";
 const SUPPORTED_JOB_BOARD_MODE_PROMPT =
   "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In in the active tab to use Job Board mode.";
+const AUTO_SAVE_DELAY_MS = 220;
 
 const startButton = requireElement<HTMLButtonElement>("#start-button");
-const saveButton = requireElement<HTMLButtonElement>("#save-button");
 const clearAnswersButton =
   requireElement<HTMLButtonElement>("#clear-answers-button");
 const siteName = requireElement<HTMLElement>("#site-name");
@@ -49,12 +48,11 @@ const profilePreview = requireElement<HTMLElement>("#profile-preview");
 const statusPanel = requireElement<HTMLElement>("#status-panel");
 const statusText = requireElement<HTMLElement>("#status-text");
 const settingsStatus = requireElement<HTMLElement>("#settings-status");
-const answerCount = requireElement<HTMLElement>("#answer-count");
-const answerList = requireElement<HTMLElement>("#answer-list");
-const answerEmptyState = requireElement<HTMLElement>("#answer-empty-state");
-const preferenceList = requireElement<HTMLElement>("#preference-list");
-const preferenceEmptyState =
-  requireElement<HTMLElement>("#preference-empty-state");
+const savedAnswerCount = requireElement<HTMLElement>("#saved-answer-count");
+const savedAnswerList = requireElement<HTMLElement>("#saved-answer-list");
+const savedAnswerEmptyState = requireElement<HTMLElement>(
+  "#saved-answer-empty-state"
+);
 const modePreview = requireElement<HTMLElement>("#mode-preview");
 const regionPreview = requireElement<HTMLElement>("#region-preview");
 const profileSelect = requireElement<HTMLSelectElement>("#profile-select");
@@ -68,7 +66,6 @@ const deleteProfileButton = requireElement<HTMLButtonElement>(
   "#delete-profile-button"
 );
 const searchModeInput = requireElement<HTMLSelectElement>("#search-mode");
-const startupRegionInput = requireElement<HTMLSelectElement>("#startup-region");
 const datePostedWindowInput =
   requireElement<HTMLSelectElement>("#date-posted-window");
 const searchKeywordsInput =
@@ -95,6 +92,9 @@ const willingToRelocateInput =
   requireElement<HTMLSelectElement>("#willing-to-relocate");
 const addPreferenceButton = requireElement<HTMLButtonElement>(
   "#add-preference-button"
+);
+const resumeUploadButton = requireElement<HTMLButtonElement>(
+  "#resume-upload-button"
 );
 const resumeInput = requireElement<HTMLInputElement>("#resume-upload");
 const resumeNameLabel = requireElement<HTMLElement>("#resume-upload-name");
@@ -133,9 +133,19 @@ const dialogSubmitButton = requireElement<HTMLButtonElement>(
 
 let activeTabId: number | null = null;
 let activeSite = detectSiteFromUrl("");
+let activeSession: AutomationSession | null = null;
+let currentStatusSnapshot = createStatus(
+  "unsupported",
+  "idle",
+  "Choose a search mode to begin."
+);
 let refreshPollTimerId: number | null = null;
 let refreshStatusPromise: Promise<void> | null = null;
 let refreshStatusTimerId: number | null = null;
+let autoSaveTimerId: number | null = null;
+let pendingAutoSaveRevision = 0;
+let savedAutoSaveRevision = 0;
+let settingsWriteQueue: Promise<void> = Promise.resolve();
 let settings = createEmptySettings();
 const popupDialog = createPopupDialogController({
   root: dialogRoot,
@@ -166,10 +176,6 @@ startButton.addEventListener("click", () => {
   void startAutomation();
 });
 
-saveButton.addEventListener("click", () => {
-  void saveCurrentSettings(true);
-});
-
 clearAnswersButton.addEventListener("click", () => {
   void clearRememberedAnswers();
 });
@@ -190,84 +196,100 @@ profileSelect.addEventListener("change", () => {
   void switchActiveProfile(profileSelect.value);
 });
 
-answerList.addEventListener("click", (event) => {
+savedAnswerList.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) {
     return;
   }
 
-  const button = target.closest<HTMLButtonElement>("[data-answer-key]");
-  const key = button?.dataset.answerKey?.trim();
-  const action = button?.dataset.answerAction?.trim();
-  if (!button || !key) {
+  const button = target.closest<HTMLButtonElement>("[data-saved-answer-key]");
+  const key = button?.dataset.savedAnswerKey?.trim();
+  const action = button?.dataset.savedAnswerAction?.trim();
+  const source = button?.dataset.savedAnswerSource?.trim();
+
+  if (!button || !key || (source !== "remembered" && source !== "custom")) {
     return;
   }
 
   if (action === "edit") {
-    void editRememberedAnswer(key);
+    void (source === "remembered"
+      ? editRememberedAnswer(key)
+      : editPreferenceAnswer(key));
     return;
   }
 
-  void removeRememberedAnswer(key);
-});
-
-preferenceList.addEventListener("click", (event) => {
-  const target = event.target;
-  if (!(target instanceof HTMLElement)) {
-    return;
-  }
-
-  const button = target.closest<HTMLButtonElement>("[data-preference-key]");
-  const key = button?.dataset.preferenceKey?.trim();
-  const action = button?.dataset.preferenceAction?.trim();
-  if (!button || !key) {
-    return;
-  }
-
-  if (action === "edit") {
-    void editPreferenceAnswer(key);
-    return;
-  }
-
-  void removePreferenceAnswer(key);
+  void (source === "remembered"
+    ? removeRememberedAnswer(key)
+    : removePreferenceAnswer(key));
 });
 
 searchModeInput.addEventListener("change", () => {
   updateModeUi();
   updateOverviewPreview();
   scheduleRefreshStatus();
+  scheduleAutoSave();
 });
 
 searchKeywordsInput.addEventListener("input", () => {
   updateOverviewPreview();
   scheduleRefreshStatus();
-});
-
-startupRegionInput.addEventListener("change", () => {
-  updateOverviewPreview();
-  scheduleRefreshStatus();
+  scheduleAutoSave();
 });
 
 datePostedWindowInput.addEventListener("change", () => {
   updateOverviewPreview();
+  scheduleAutoSave();
 });
 
 autoUploadInput.addEventListener("change", () => {
   updateOverviewPreview();
+  scheduleAutoSave();
 });
 
 countryInput.addEventListener("input", () => {
   updateOverviewPreview();
   scheduleRefreshStatus();
+  scheduleAutoSave();
 });
 
 addPreferenceButton.addEventListener("click", () => {
   void addPreferenceAnswer();
 });
 
+resumeUploadButton.addEventListener("click", () => {
+  resumeInput.click();
+});
+
 resumeInput.addEventListener("change", () => {
   void storeResumeFile();
 });
+
+for (const element of [
+  jobLimitInput,
+  fullNameInput,
+  emailInput,
+  phoneInput,
+  cityInput,
+  stateInput,
+  linkedinInput,
+  portfolioInput,
+  currentCompanyInput,
+  yearsExperienceInput,
+] as Array<HTMLInputElement | HTMLTextAreaElement>) {
+  element.addEventListener("input", () => {
+    scheduleAutoSave();
+  });
+}
+
+for (const element of [
+  workAuthorizationInput,
+  needsSponsorshipInput,
+  willingToRelocateInput,
+] as HTMLSelectElement[]) {
+  element.addEventListener("change", () => {
+    scheduleAutoSave();
+  });
+}
 
 window.addEventListener("beforeunload", () => {
   if (refreshPollTimerId !== null) {
@@ -275,6 +297,9 @@ window.addEventListener("beforeunload", () => {
   }
   if (refreshStatusTimerId !== null) {
     window.clearTimeout(refreshStatusTimerId);
+  }
+  if (autoSaveTimerId !== null) {
+    window.clearTimeout(autoSaveTimerId);
   }
 });
 
@@ -335,6 +360,7 @@ async function initialize(): Promise<void> {
 }
 
 async function startAutomation(): Promise<void> {
+  await flushPendingAutoSave();
   await refreshActiveTabContext();
   const searchMode = getSelectedSearchMode();
 
@@ -354,7 +380,6 @@ async function startAutomation(): Promise<void> {
     return;
   }
 
-  await saveCurrentSettings(false);
   setStartButtonDisabled(true);
 
   if (searchMode === "startup_careers") {
@@ -593,6 +618,7 @@ async function performRefreshStatus(): Promise<void> {
   const searchMode = getSelectedSearchMode();
   const activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
   const hasKeywords = getConfiguredKeywords().length > 0;
+  activeSession = null;
 
   updateSiteNameDisplay();
 
@@ -748,6 +774,7 @@ async function performRefreshStatus(): Promise<void> {
 
   // 1. Check background session
   let bgSession: AutomationStatus | undefined;
+  let parsedBackgroundSession: AutomationSession | undefined;
   try {
     const backgroundResponse = await sendRuntimeMessageWithRetry<{
       ok?: boolean;
@@ -756,6 +783,7 @@ async function performRefreshStatus(): Promise<void> {
       type: "get-tab-session",
       tabId: activeTabId,
     });
+    parsedBackgroundSession = parseAutomationSession(backgroundResponse?.session);
     bgSession = parseAutomationStatus(backgroundResponse?.session);
   } catch {
     // Extension context may be invalidated
@@ -763,8 +791,12 @@ async function performRefreshStatus(): Promise<void> {
 
   if (
     bgSession &&
-    bgSession.site === activeJobBoardSite
+    (
+      bgSession.site === activeJobBoardSite ||
+      (!activeJobBoardSite && bgSession.phase !== "idle")
+    )
   ) {
+    activeSession = parsedBackgroundSession ?? null;
     applyStatus(
       bgSession.phase === "idle"
         ? createStatus(
@@ -789,7 +821,10 @@ async function performRefreshStatus(): Promise<void> {
   if (
     contentStatus &&
     contentStatus.phase !== "idle" &&
-    contentStatus.site === activeJobBoardSite
+    (
+      contentStatus.site === activeJobBoardSite ||
+      (!activeJobBoardSite && contentStatus.site !== "unsupported")
+    )
   ) {
     applyStatus(contentStatus);
     setStartButtonDisabled(
@@ -883,15 +918,26 @@ function updateSiteNameDisplay(): void {
   } else if (searchMode === "other_job_sites") {
     siteName.textContent = "Other Job Sites";
   } else {
+    const sessionSite =
+      activeSession?.site && activeSession.site !== "unsupported"
+        ? activeSession.site
+        : isJobBoardSite(currentStatusSnapshot.site)
+          ? currentStatusSnapshot.site
+          : null;
+
     siteName.textContent = isJobBoardSite(activeSite)
       ? getSiteLabel(activeSite)
-      : "No supported site";
+      : sessionSite
+        ? getSiteLabel(sessionSite)
+        : "No supported site";
   }
 }
 
 function applyStatus(status: AutomationStatus): void {
+  currentStatusSnapshot = status;
   statusPanel.dataset.phase = status.phase;
   statusText.textContent = status.message;
+  updateSiteNameDisplay();
 }
 
 function setSettingsStatus(
@@ -939,7 +985,7 @@ function buildFormSettingsUpdate(
 
   return {
     searchMode: getSelectedSearchMode(),
-    startupRegion: getSelectedStartupRegion(),
+    startupRegion: "auto",
     datePostedWindow: getSelectedDatePostedWindow(),
     searchKeywords: normalizeSearchKeywordsInput(),
     jobPageLimit: Number(jobLimitInput.value) || 5,
@@ -960,18 +1006,79 @@ async function persistSettings(
         current: AutomationSettings
       ) => Partial<AutomationSettings> | AutomationSettings)
 ): Promise<AutomationSettings> {
-  const nextRaw = typeof update === "function" ? update(settings) : update;
-  const nextSettings = applyAutomationSettingsUpdate(settings, nextRaw);
-  await chrome.storage.local.set({
-    [AUTOMATION_SETTINGS_STORAGE_KEY]: nextSettings,
+  const queuedWrite = settingsWriteQueue.then(async () => {
+    const nextRaw = typeof update === "function" ? update(settings) : update;
+    const nextSettings = applyAutomationSettingsUpdate(settings, nextRaw);
+    await chrome.storage.local.set({
+      [AUTOMATION_SETTINGS_STORAGE_KEY]: nextSettings,
+    });
+    settings = nextSettings;
+    return nextSettings;
   });
-  settings = nextSettings;
-  return nextSettings;
+
+  settingsWriteQueue = queuedWrite.then(
+    () => undefined,
+    () => undefined
+  );
+
+  return queuedWrite;
 }
 
-async function saveCurrentSettings(showFeedback: boolean): Promise<void> {
-  saveButton.disabled = true;
-  setSettingsStatus("Saving settings...", "muted", true);
+function scheduleAutoSave(delayMs = AUTO_SAVE_DELAY_MS): void {
+  pendingAutoSaveRevision += 1;
+
+  if (autoSaveTimerId !== null) {
+    window.clearTimeout(autoSaveTimerId);
+  }
+
+  const revision = pendingAutoSaveRevision;
+  autoSaveTimerId = window.setTimeout(() => {
+    autoSaveTimerId = null;
+    void saveCurrentSettings({
+      showFeedback: false,
+      repopulateForm: false,
+      showSavingStatus: false,
+      revision,
+    });
+  }, Math.max(0, delayMs));
+}
+
+function cancelScheduledAutoSave(): void {
+  if (autoSaveTimerId !== null) {
+    window.clearTimeout(autoSaveTimerId);
+    autoSaveTimerId = null;
+  }
+}
+
+async function flushPendingAutoSave(): Promise<void> {
+  cancelScheduledAutoSave();
+
+  if (savedAutoSaveRevision >= pendingAutoSaveRevision) {
+    return;
+  }
+
+  await saveCurrentSettings({
+    showFeedback: false,
+    repopulateForm: false,
+    showSavingStatus: false,
+    revision: pendingAutoSaveRevision,
+  });
+}
+
+async function saveCurrentSettings(options?: {
+  showFeedback?: boolean;
+  repopulateForm?: boolean;
+  showSavingStatus?: boolean;
+  revision?: number;
+}): Promise<void> {
+  const showFeedback = options?.showFeedback ?? false;
+  const repopulateForm = options?.repopulateForm ?? true;
+  const showSavingStatus = options?.showSavingStatus ?? showFeedback;
+  const revision = options?.revision ?? pendingAutoSaveRevision;
+
+  if (showSavingStatus) {
+    setSettingsStatus("Saving settings...", "muted", true);
+  }
 
   try {
     const selectedProfileId = getSelectedProfileId();
@@ -979,15 +1086,19 @@ async function saveCurrentSettings(showFeedback: boolean): Promise<void> {
       buildFormSettingsUpdate(current, selectedProfileId, selectedProfileId)
     );
 
-    populateSettingsForm(settings);
+    if (repopulateForm) {
+      populateSettingsForm(settings);
+    } else {
+      updateOverviewPreview();
+    }
+    savedAutoSaveRevision = Math.max(savedAutoSaveRevision, revision);
     setSettingsStatus(
       showFeedback
         ? "Settings saved."
-        : "Settings are stored locally in the extension.",
+        : "Saved locally.",
       "success",
       showFeedback
     );
-    updateOverviewPreview();
   } catch (error: unknown) {
     setSettingsStatus(
       error instanceof Error
@@ -996,8 +1107,6 @@ async function saveCurrentSettings(showFeedback: boolean): Promise<void> {
       "error",
       true
     );
-  } finally {
-    saveButton.disabled = false;
   }
 }
 
@@ -1008,6 +1117,8 @@ async function switchActiveProfile(profileId: string): Promise<void> {
     return;
   }
 
+  savedAutoSaveRevision = pendingAutoSaveRevision;
+  cancelScheduledAutoSave();
   setSettingsStatus("Switching profile...", "muted", true);
 
   try {
@@ -1034,6 +1145,7 @@ async function switchActiveProfile(profileId: string): Promise<void> {
 }
 
 async function createProfile(): Promise<void> {
+  await flushPendingAutoSave();
   const name = await promptForProfileName("Create Profile", "");
   if (!name) {
     return;
@@ -1065,6 +1177,7 @@ async function createProfile(): Promise<void> {
 }
 
 async function renameSelectedProfile(): Promise<void> {
+  await flushPendingAutoSave();
   const activeProfile = getActiveAutomationProfile(settings);
   const nextName = await promptForProfileName(
     "Edit Profile Name",
@@ -1102,6 +1215,7 @@ async function renameSelectedProfile(): Promise<void> {
 }
 
 async function deleteSelectedProfile(): Promise<void> {
+  await flushPendingAutoSave();
   const profiles = Object.values(settings.profiles);
   if (profiles.length <= 1) {
     setSettingsStatus("At least one profile must remain.", "error", true);
@@ -1167,7 +1281,11 @@ async function clearRememberedAnswers(): Promise<void> {
     });
 
     populateSettingsForm(settings);
-    setSettingsStatus("Remembered answers cleared.", "success", true);
+    setSettingsStatus(
+      "Remembered answers cleared. Added answers were kept.",
+      "success",
+      true
+    );
   } catch (error: unknown) {
     setSettingsStatus(
       error instanceof Error
@@ -1187,7 +1305,7 @@ async function removeRememberedAnswer(key: string): Promise<void> {
     return;
   }
 
-  setSettingsStatus("Removing remembered answer...", "muted", true);
+  setSettingsStatus("Removing saved answer...", "muted", true);
 
   try {
     settings = await persistSettings((current) => {
@@ -1209,7 +1327,7 @@ async function removeRememberedAnswer(key: string): Promise<void> {
 
     populateSettingsForm(settings);
     setSettingsStatus(
-      `Removed remembered answer for "${truncateText(existing.question, 40)}".`,
+      `Removed saved answer for "${truncateText(existing.question, 40)}".`,
       "success",
       true
     );
@@ -1231,7 +1349,7 @@ async function editRememberedAnswer(key: string): Promise<void> {
   }
 
   const savedAnswer = await promptForSavedAnswer(
-    "Edit Remembered Answer",
+    "Edit Saved Answer",
     existing.question,
     existing.value
   );
@@ -1239,7 +1357,7 @@ async function editRememberedAnswer(key: string): Promise<void> {
     return;
   }
 
-  setSettingsStatus("Updating remembered answer...", "muted", true);
+  setSettingsStatus("Updating saved answer...", "muted", true);
 
   try {
     settings = await persistSettings((current) => {
@@ -1259,7 +1377,7 @@ async function editRememberedAnswer(key: string): Promise<void> {
     });
 
     populateSettingsForm(settings);
-    setSettingsStatus("Remembered answer updated.", "success", true);
+    setSettingsStatus("Saved answer updated.", "success", true);
   } catch (error: unknown) {
     setSettingsStatus(
       error instanceof Error
@@ -1272,16 +1390,12 @@ async function editRememberedAnswer(key: string): Promise<void> {
 }
 
 async function addPreferenceAnswer(): Promise<void> {
-  const savedAnswer = await promptForSavedAnswer(
-    "Add Custom Preference Answer",
-    "",
-    ""
-  );
+  const savedAnswer = await promptForSavedAnswer("Add Saved Answer", "", "");
   if (!savedAnswer) {
     return;
   }
 
-  setSettingsStatus("Saving custom preference answer...", "muted", true);
+  setSettingsStatus("Saving saved answer...", "muted", true);
 
   try {
     settings = await persistSettings((current) => {
@@ -1301,7 +1415,7 @@ async function addPreferenceAnswer(): Promise<void> {
     });
 
     populateSettingsForm(settings);
-    setSettingsStatus("Custom preference answer saved.", "success", true);
+    setSettingsStatus("Saved answer added.", "success", true);
   } catch (error: unknown) {
     setSettingsStatus(
       error instanceof Error
@@ -1320,7 +1434,7 @@ async function editPreferenceAnswer(key: string): Promise<void> {
   }
 
   const savedAnswer = await promptForSavedAnswer(
-    "Edit Custom Preference Answer",
+    "Edit Saved Answer",
     existing.question,
     existing.value
   );
@@ -1328,7 +1442,7 @@ async function editPreferenceAnswer(key: string): Promise<void> {
     return;
   }
 
-  setSettingsStatus("Updating custom preference answer...", "muted", true);
+  setSettingsStatus("Updating saved answer...", "muted", true);
 
   try {
     settings = await persistSettings((current) => {
@@ -1348,7 +1462,7 @@ async function editPreferenceAnswer(key: string): Promise<void> {
     });
 
     populateSettingsForm(settings);
-    setSettingsStatus("Custom preference answer updated.", "success", true);
+    setSettingsStatus("Saved answer updated.", "success", true);
   } catch (error: unknown) {
     setSettingsStatus(
       error instanceof Error
@@ -1366,7 +1480,7 @@ async function removePreferenceAnswer(key: string): Promise<void> {
     return;
   }
 
-  setSettingsStatus("Removing custom preference answer...", "muted", true);
+  setSettingsStatus("Removing saved answer...", "muted", true);
 
   try {
     settings = await persistSettings((current) => {
@@ -1388,7 +1502,7 @@ async function removePreferenceAnswer(key: string): Promise<void> {
 
     populateSettingsForm(settings);
     setSettingsStatus(
-      `Removed custom preference answer for "${truncateText(existing.question, 40)}".`,
+      `Removed saved answer for "${truncateText(existing.question, 40)}".`,
       "success",
       true
     );
@@ -1410,6 +1524,7 @@ async function storeResumeFile(): Promise<void> {
     return;
   }
 
+  resumeNameLabel.textContent = file.name;
   setSettingsStatus("Saving profile resume...", "muted", true);
 
   try {
@@ -1446,7 +1561,6 @@ function populateSettingsForm(nextSettings: AutomationSettings): void {
   renderProfileOptions(scopedSettings.profiles, scopedSettings.activeProfileId);
   profilePreview.textContent = activeProfile.name;
   searchModeInput.value = scopedSettings.searchMode;
-  startupRegionInput.value = scopedSettings.startupRegion;
   datePostedWindowInput.value = scopedSettings.datePostedWindow;
   searchKeywordsInput.value = scopedSettings.searchKeywords;
   jobLimitInput.value = String(scopedSettings.jobPageLimit);
@@ -1464,8 +1578,7 @@ function populateSettingsForm(nextSettings: AutomationSettings): void {
   workAuthorizationInput.value = activeProfile.candidate.workAuthorization;
   needsSponsorshipInput.value = activeProfile.candidate.needsSponsorship;
   willingToRelocateInput.value = activeProfile.candidate.willingToRelocate;
-  renderRememberedAnswers(activeProfile.answers);
-  renderPreferenceAnswers(activeProfile.preferenceAnswers);
+  renderSavedAnswers(activeProfile.answers, activeProfile.preferenceAnswers);
   resumeNameLabel.textContent = activeProfile.resume
     ? `${activeProfile.resume.name} (${formatFileSize(activeProfile.resume.size)})`
     : "No file saved";
@@ -1492,60 +1605,60 @@ function renderProfileOptions(
   }
 }
 
-function renderRememberedAnswers(answers: Record<string, SavedAnswer>): void {
-  const entries = Object.entries(answers).sort(
-    (left, right) => right[1].updatedAt - left[1].updatedAt
-  );
-
-  answerCount.textContent = String(entries.length);
-  clearAnswersButton.disabled = entries.length === 0;
-  renderSavedAnswerList({
-    container: answerList,
-    emptyState: answerEmptyState,
-    entries,
-    keyAttribute: "data-answer-key",
-    editAttribute: "data-answer-action",
-    deleteAttribute: "data-answer-action",
-  });
-}
-
-function renderPreferenceAnswers(
-  answers: Record<string, SavedAnswer>
+function renderSavedAnswers(
+  rememberedAnswers: Record<string, SavedAnswer>,
+  customAnswers: Record<string, SavedAnswer>
 ): void {
-  const entries = Object.entries(answers).sort(
-    (left, right) => right[1].updatedAt - left[1].updatedAt
-  );
+  const entries = [
+    ...Object.entries(rememberedAnswers).map(([key, answer]) => ({
+      key,
+      answer,
+      source: "remembered" as const,
+    })),
+    ...Object.entries(customAnswers).map(([key, answer]) => ({
+      key,
+      answer,
+      source: "custom" as const,
+    })),
+  ].sort((left, right) => right.answer.updatedAt - left.answer.updatedAt);
 
+  savedAnswerCount.textContent = String(entries.length);
+  clearAnswersButton.disabled = Object.keys(rememberedAnswers).length === 0;
   renderSavedAnswerList({
-    container: preferenceList,
-    emptyState: preferenceEmptyState,
+    container: savedAnswerList,
+    emptyState: savedAnswerEmptyState,
     entries,
-    keyAttribute: "data-preference-key",
-    editAttribute: "data-preference-action",
-    deleteAttribute: "data-preference-action",
   });
 }
 
 function renderSavedAnswerList(options: {
   container: HTMLElement;
   emptyState: HTMLElement;
-  entries: Array<[string, SavedAnswer]>;
-  keyAttribute: string;
-  editAttribute: string;
-  deleteAttribute: string;
+  entries: Array<{
+    key: string;
+    answer: SavedAnswer;
+    source: "remembered" | "custom";
+  }>;
 }): void {
-  const { container, emptyState, entries, keyAttribute, editAttribute, deleteAttribute } =
-    options;
+  const { container, emptyState, entries } = options;
 
   emptyState.hidden = entries.length > 0;
   container.replaceChildren();
 
-  for (const [key, answer] of entries) {
+  for (const { key, answer, source } of entries) {
     const row = document.createElement("article");
     row.className = "answer-item";
 
     const copy = document.createElement("div");
     copy.className = "answer-item-copy";
+
+    const meta = document.createElement("div");
+    meta.className = "answer-item-meta";
+
+    const sourceBadge = document.createElement("span");
+    sourceBadge.className = "answer-source-badge";
+    sourceBadge.textContent =
+      source === "remembered" ? "Remembered" : "Added";
 
     const question = document.createElement("p");
     question.className = "answer-question";
@@ -1561,18 +1674,21 @@ function renderSavedAnswerList(options: {
     const editButton = document.createElement("button");
     editButton.type = "button";
     editButton.className = "answer-delete-button answer-edit-button";
-    editButton.setAttribute(keyAttribute, key);
-    editButton.setAttribute(editAttribute, "edit");
+    editButton.dataset.savedAnswerKey = key;
+    editButton.dataset.savedAnswerAction = "edit";
+    editButton.dataset.savedAnswerSource = source;
     editButton.textContent = "Edit";
 
     const deleteButton = document.createElement("button");
     deleteButton.type = "button";
     deleteButton.className = "answer-delete-button";
-    deleteButton.setAttribute(keyAttribute, key);
-    deleteButton.setAttribute(deleteAttribute, "delete");
+    deleteButton.dataset.savedAnswerKey = key;
+    deleteButton.dataset.savedAnswerAction = "delete";
+    deleteButton.dataset.savedAnswerSource = source;
     deleteButton.textContent = "Delete";
 
-    copy.append(question, value);
+    meta.append(sourceBadge);
+    copy.append(meta, question, value);
     actions.append(editButton, deleteButton);
     row.append(copy, actions);
     container.append(row);
@@ -1588,7 +1704,11 @@ function formatFileSize(size: number): string {
 }
 
 function isBusy(phase: AutomationStatus["phase"]): boolean {
-  return phase === "running" || phase === "waiting_for_verification";
+  return (
+    phase === "running" ||
+    phase === "paused" ||
+    phase === "waiting_for_verification"
+  );
 }
 
 async function readFileAsResumeAsset(file: File): Promise<ResumeAsset> {
@@ -1766,6 +1886,7 @@ function parseAutomationStatus(value: unknown): AutomationStatus | undefined {
   const isSupportedPhase =
     candidate.phase === "idle" ||
     candidate.phase === "running" ||
+    candidate.phase === "paused" ||
     candidate.phase === "waiting_for_verification" ||
     candidate.phase === "completed" ||
     candidate.phase === "error";
@@ -1791,6 +1912,61 @@ function parseAutomationStatus(value: unknown): AutomationStatus | undefined {
   };
 }
 
+function parseAutomationSession(value: unknown): AutomationSession | undefined {
+  const status = parseAutomationStatus(value);
+  if (!status || !value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const candidate = value as Partial<AutomationSession>;
+  const stage =
+    candidate.stage === "bootstrap" ||
+    candidate.stage === "collect-results" ||
+    candidate.stage === "open-apply" ||
+    candidate.stage === "autofill-form"
+      ? candidate.stage
+      : undefined;
+
+  if (
+    !Number.isFinite(candidate.tabId) ||
+    typeof candidate.shouldResume !== "boolean" ||
+    !stage
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...status,
+    tabId: Number(candidate.tabId),
+    shouldResume: candidate.shouldResume,
+    stage,
+    runId: typeof candidate.runId === "string" ? candidate.runId : undefined,
+    jobSlots: Number.isFinite(candidate.jobSlots)
+      ? Number(candidate.jobSlots)
+      : undefined,
+    label: typeof candidate.label === "string" ? candidate.label : undefined,
+    resumeKind:
+      candidate.resumeKind === "front_end" ||
+      candidate.resumeKind === "back_end" ||
+      candidate.resumeKind === "full_stack"
+        ? candidate.resumeKind
+        : undefined,
+    profileId:
+      typeof candidate.profileId === "string" ? candidate.profileId : undefined,
+    controllerFrameId: Number.isFinite(candidate.controllerFrameId)
+      ? Number(candidate.controllerFrameId)
+      : undefined,
+    claimedJobKey:
+      typeof candidate.claimedJobKey === "string"
+        ? candidate.claimedJobKey
+        : undefined,
+    openedUrlKey:
+      typeof candidate.openedUrlKey === "string"
+        ? candidate.openedUrlKey
+        : undefined,
+  };
+}
+
 function updateModeUi(): void {
   const searchMode = getSelectedSearchMode();
   startButton.textContent = getStartButtonLabel(searchMode);
@@ -1806,14 +1982,6 @@ function updateOverviewPreview(): void {
 // Parse the select value defensively before treating it as a SearchMode.
 function getSelectedSearchMode(): SearchMode {
   return parseSelectedSearchMode(searchModeInput.value);
-}
-
-function getSelectedStartupRegion(): StartupRegion {
-  const value = startupRegionInput.value;
-  if (value === "us" || value === "uk" || value === "eu" || value === "auto") {
-    return value;
-  }
-  return "auto";
 }
 
 function getSelectedDatePostedWindow(): DatePostedWindow {
@@ -1874,7 +2042,7 @@ async function promptForSavedAnswer(
     secondaryLabel: "Answer",
     secondaryValue: initialValue,
     secondaryPlaceholder: "Short, reusable answer",
-    submitLabel: initialQuestion ? "Save Answer" : "Add Answer",
+    submitLabel: initialQuestion ? "Save" : "Add",
     validate: (question, value) => {
       if (!question.trim()) {
         return "Question cannot be empty.";
@@ -1891,11 +2059,14 @@ async function promptForSavedAnswer(
     return null;
   }
 
+  const cleanedQuestion = savedAnswer.primary.replace(/\s+/g, " ").trim();
+  const cleanedValue = savedAnswer.secondary.replace(/\s+/g, " ").trim();
+
   return {
-    key: normalizeQuestionKey(savedAnswer.primary),
+    key: normalizeQuestionKey(cleanedQuestion),
     answer: {
-      question: savedAnswer.primary,
-      value: savedAnswer.secondary,
+      question: cleanedQuestion,
+      value: cleanedValue,
       updatedAt: Date.now(),
     },
   };
@@ -1913,17 +2084,12 @@ function getModePreviewLabel(): string {
 }
 
 function getRegionPreviewLabel(): string {
-  const region = getSelectedStartupRegion();
-  if (region !== "auto") return STARTUP_REGION_LABELS[region];
   const country = countryInput.value.trim();
-  return `Auto (${country ? getStartupRegionLabel() : "US / UK / EU"})`;
+  return country ? getStartupRegionLabel() : "US / UK / EU";
 }
 
-function getSelectedStartupRegions(): Array<Exclude<StartupRegion, "auto">> {
-  return resolveStartupTargetRegions(
-    getSelectedStartupRegion(),
-    countryInput.value.trim()
-  );
+function getSelectedStartupRegions(): Array<"us" | "uk" | "eu"> {
+  return resolveStartupTargetRegions("auto", countryInput.value.trim());
 }
 
 function requireElement<T extends Element>(selector: string): T {

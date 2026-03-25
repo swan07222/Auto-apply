@@ -274,6 +274,233 @@ describe("background spawn quota handling", () => {
     );
   });
 
+  it("pauses an active autofill session and forwards the pause message to the controller frame", async () => {
+    const sessionKey = "remote-job-search-session:42";
+    const chromeMock = createBackgroundChrome(
+      {
+        [sessionKey]: {
+          tabId: 42,
+          site: "builtin",
+          phase: "running",
+          message: "Autofilling Built In application...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "autofill-form",
+          controllerFrameId: 3,
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "pause-automation-session",
+        tabId: 42,
+      },
+      {
+        tab: {
+          id: 99,
+        },
+      }
+    );
+
+    expect(response).toEqual(
+      expect.objectContaining({
+        ok: true,
+        session: expect.objectContaining({
+          tabId: 42,
+          phase: "paused",
+          shouldResume: false,
+        }),
+      })
+    );
+    expect(chromeMock.local.state[sessionKey]).toEqual(
+      expect.objectContaining({
+        phase: "paused",
+        shouldResume: false,
+      })
+    );
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      42,
+      {
+        type: "pause-automation",
+        message: "Automation paused. Press Resume to continue.",
+      },
+      { frameId: 3 }
+    );
+  });
+
+  it("resumes a paused autofill session and restarts automation in the controller frame", async () => {
+    const sessionKey = "remote-job-search-session:42";
+    const chromeMock = createBackgroundChrome(
+      {
+        [sessionKey]: {
+          tabId: 42,
+          site: "builtin",
+          phase: "paused",
+          message: "Automation paused. Press Resume to continue.",
+          updatedAt: 1,
+          shouldResume: false,
+          stage: "autofill-form",
+          controllerFrameId: 3,
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "resume-automation-session",
+        tabId: 42,
+      },
+      {
+        tab: {
+          id: 99,
+        },
+      }
+    );
+
+    expect(response).toEqual(
+      expect.objectContaining({
+        ok: true,
+        session: expect.objectContaining({
+          tabId: 42,
+          phase: "running",
+          shouldResume: true,
+        }),
+      })
+    );
+    expect(chromeMock.local.state[sessionKey]).toEqual(
+      expect.objectContaining({
+        phase: "running",
+        shouldResume: true,
+        message: "Resuming automation...",
+      })
+    );
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      42,
+      {
+        type: "start-automation",
+        session: expect.objectContaining({
+          tabId: 42,
+          phase: "running",
+          shouldResume: true,
+        }),
+      },
+      { frameId: 3 }
+    );
+  });
+
+  it("pauses a running non-form session by using the sender tab when no tabId is provided", async () => {
+    const sessionKey = "remote-job-search-session:42";
+    const chromeMock = createBackgroundChrome(
+      {
+        [sessionKey]: {
+          tabId: 42,
+          site: "greenhouse",
+          phase: "running",
+          message: "Scanning Greenhouse results...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "collect-results",
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "pause-automation-session",
+      },
+      {
+        tab: {
+          id: 42,
+        },
+      }
+    );
+
+    expect(response).toEqual(
+      expect.objectContaining({
+        ok: true,
+        session: expect.objectContaining({
+          tabId: 42,
+          phase: "paused",
+          shouldResume: false,
+          stage: "collect-results",
+        }),
+      })
+    );
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(42, {
+      type: "pause-automation",
+      message: "Automation paused. Press Resume to continue.",
+    });
+  });
+
+  it("resumes a paused open-apply session by using the sender tab when no tabId is provided", async () => {
+    const sessionKey = "remote-job-search-session:42";
+    const chromeMock = createBackgroundChrome(
+      {
+        [sessionKey]: {
+          tabId: 42,
+          site: "indeed",
+          phase: "paused",
+          message: "Automation paused. Press Resume to continue.",
+          updatedAt: 1,
+          shouldResume: false,
+          stage: "open-apply",
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "resume-automation-session",
+      },
+      {
+        tab: {
+          id: 42,
+        },
+      }
+    );
+
+    expect(response).toEqual(
+      expect.objectContaining({
+        ok: true,
+        session: expect.objectContaining({
+          tabId: 42,
+          phase: "running",
+          shouldResume: true,
+          stage: "open-apply",
+        }),
+      })
+    );
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      42,
+      {
+        type: "start-automation",
+        session: expect.objectContaining({
+          tabId: 42,
+          phase: "running",
+          shouldResume: true,
+          stage: "open-apply",
+        }),
+      }
+    );
+  });
+
   it("does not open other-site search tabs for hard network failures like dead domains", async () => {
     const createTabMock = vi.fn();
     const chromeMock = createBackgroundChrome(

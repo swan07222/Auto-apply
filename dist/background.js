@@ -889,7 +889,7 @@
     return isManagedJobSession(session) && session.shouldResume && (session.phase === "running" || session.phase === "waiting_for_verification");
   }
   function isManagedJobSessionPending(session) {
-    return isManagedJobSession(session) && !session.shouldResume && session.phase !== "completed" && session.phase !== "error";
+    return isManagedJobSession(session) && !session.shouldResume && session.phase !== "paused" && session.phase !== "completed" && session.phase !== "error";
   }
   function isRateLimitMessage(message) {
     const lower = message.toLowerCase();
@@ -1283,6 +1283,13 @@
         return startStartupAutomation(message.tabId);
       case "start-other-sites-automation":
         return startOtherSitesAutomation(message.tabId);
+      case "pause-automation-session":
+        return pauseAutomationSession(
+          resolveRequestedTabId(message.tabId, sender),
+          message.message
+        );
+      case "resume-automation-session":
+        return resumeAutomationSession(resolveRequestedTabId(message.tabId, sender));
       case "extract-monster-search-results": {
         const tabId = sender.tab?.id;
         if (tabId === void 0) {
@@ -1531,6 +1538,93 @@
       await resumePendingJobSessionsForRunId(nextSession.runId);
     }
     return { ok: true };
+  }
+  function resolveRequestedTabId(tabId, sender) {
+    if (typeof tabId === "number" && Number.isFinite(tabId)) {
+      return tabId;
+    }
+    if (typeof sender.tab?.id === "number") {
+      return sender.tab.id;
+    }
+    throw new Error("No active automation tab was available for this request.");
+  }
+  async function sendSessionControlMessage(session, message) {
+    if (typeof session.controllerFrameId === "number") {
+      await chrome.tabs.sendMessage(session.tabId, message, {
+        frameId: session.controllerFrameId
+      });
+      return;
+    }
+    await chrome.tabs.sendMessage(session.tabId, message);
+  }
+  async function pauseAutomationSession(tabId, message) {
+    const session = await getSession(tabId);
+    if (!session || session.site === "unsupported") {
+      return {
+        ok: false,
+        error: "No active automation session was found on this tab."
+      };
+    }
+    if (session.phase !== "running" && session.phase !== "waiting_for_verification" && session.phase !== "paused") {
+      return {
+        ok: false,
+        error: "Pause is only available while automation is actively running."
+      };
+    }
+    const pauseMessage = message?.trim() || "Automation paused. Press Resume to continue.";
+    const nextSession = {
+      ...session,
+      phase: "paused",
+      message: pauseMessage,
+      updatedAt: Date.now(),
+      shouldResume: false
+    };
+    await setSession(nextSession);
+    try {
+      await sendSessionControlMessage(nextSession, {
+        type: "pause-automation",
+        message: pauseMessage
+      });
+    } catch {
+    }
+    return {
+      ok: true,
+      session: nextSession
+    };
+  }
+  async function resumeAutomationSession(tabId) {
+    const session = await getSession(tabId);
+    if (!session || session.site === "unsupported") {
+      return {
+        ok: false,
+        error: "No paused automation session was found on this tab."
+      };
+    }
+    if (session.phase !== "paused") {
+      return {
+        ok: false,
+        error: "Resume is only available for paused automation."
+      };
+    }
+    const nextSession = {
+      ...session,
+      phase: "running",
+      message: "Resuming automation...",
+      updatedAt: Date.now(),
+      shouldResume: true
+    };
+    await setSession(nextSession);
+    try {
+      await sendSessionControlMessage(nextSession, {
+        type: "start-automation",
+        session: nextSession
+      });
+    } catch {
+    }
+    return {
+      ok: true,
+      session: nextSession
+    };
   }
   async function attachSessionToSiteOpenedChildTab(tab) {
     const childTabId = tab.id;

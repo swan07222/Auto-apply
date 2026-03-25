@@ -130,6 +130,8 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
     return false;
   }
 
+  const hasLikelyApplicationSignals =
+    hasLikelyApplicationFormSignals(doc) || hasLikelyApplicationStepSignals(doc);
   const title = doc.title.toLowerCase();
   const bodyText = (doc.body?.innerText ?? "").toLowerCase().slice(0, 6000);
   const bodyLength = (doc.body?.innerText ?? "").trim().length;
@@ -166,6 +168,9 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
   ];
 
   if (strongPhrases.some((phrase) => combinedText.includes(phrase))) {
+    if (hasLikelyApplicationSignals) {
+      return false;
+    }
     return true;
   }
 
@@ -204,10 +209,7 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
     return false;
   }
 
-  return !(
-    hasLikelyApplicationFormSignals(doc) ||
-    hasLikelyApplicationStepSignals(doc)
-  );
+  return !hasLikelyApplicationSignals;
 }
 
 export function isProbablyAuthGatePage(doc: Document): boolean {

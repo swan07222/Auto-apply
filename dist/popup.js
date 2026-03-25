@@ -771,19 +771,19 @@ function isJobBoardSite2(site) {
 var MAX_RESUME_TEXT_CHARS = 24e3;
 var SUPPORTED_JOB_BOARD_PROMPT = "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In in the active tab to start.";
 var SUPPORTED_JOB_BOARD_MODE_PROMPT = "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In in the active tab to use Job Board mode.";
+var AUTO_SAVE_DELAY_MS = 220;
 var startButton = requireElement("#start-button");
-var saveButton = requireElement("#save-button");
 var clearAnswersButton = requireElement("#clear-answers-button");
 var siteName = requireElement("#site-name");
 var profilePreview = requireElement("#profile-preview");
 var statusPanel = requireElement("#status-panel");
 var statusText = requireElement("#status-text");
 var settingsStatus = requireElement("#settings-status");
-var answerCount = requireElement("#answer-count");
-var answerList = requireElement("#answer-list");
-var answerEmptyState = requireElement("#answer-empty-state");
-var preferenceList = requireElement("#preference-list");
-var preferenceEmptyState = requireElement("#preference-empty-state");
+var savedAnswerCount = requireElement("#saved-answer-count");
+var savedAnswerList = requireElement("#saved-answer-list");
+var savedAnswerEmptyState = requireElement(
+  "#saved-answer-empty-state"
+);
 var modePreview = requireElement("#mode-preview");
 var regionPreview = requireElement("#region-preview");
 var profileSelect = requireElement("#profile-select");
@@ -797,7 +797,6 @@ var deleteProfileButton = requireElement(
   "#delete-profile-button"
 );
 var searchModeInput = requireElement("#search-mode");
-var startupRegionInput = requireElement("#startup-region");
 var datePostedWindowInput = requireElement("#date-posted-window");
 var searchKeywordsInput = requireElement("#search-keywords");
 var jobLimitInput = requireElement("#job-limit");
@@ -817,6 +816,9 @@ var needsSponsorshipInput = requireElement("#needs-sponsorship");
 var willingToRelocateInput = requireElement("#willing-to-relocate");
 var addPreferenceButton = requireElement(
   "#add-preference-button"
+);
+var resumeUploadButton = requireElement(
+  "#resume-upload-button"
 );
 var resumeInput = requireElement("#resume-upload");
 var resumeNameLabel = requireElement("#resume-upload-name");
@@ -854,9 +856,19 @@ var dialogSubmitButton = requireElement(
 );
 var activeTabId = null;
 var activeSite = detectSiteFromUrl("");
+var activeSession = null;
+var currentStatusSnapshot = createStatus(
+  "unsupported",
+  "idle",
+  "Choose a search mode to begin."
+);
 var refreshPollTimerId = null;
 var refreshStatusPromise = null;
 var refreshStatusTimerId = null;
+var autoSaveTimerId = null;
+var pendingAutoSaveRevision = 0;
+var savedAutoSaveRevision = 0;
+var settingsWriteQueue = Promise.resolve();
 var settings = createEmptySettings();
 var popupDialog = createPopupDialogController({
   root: dialogRoot,
@@ -883,9 +895,6 @@ function setStartButtonDisabled(disabled) {
 startButton.addEventListener("click", () => {
   void startAutomation();
 });
-saveButton.addEventListener("click", () => {
-  void saveCurrentSettings(true);
-});
 clearAnswersButton.addEventListener("click", () => {
   void clearRememberedAnswers();
 });
@@ -901,75 +910,91 @@ deleteProfileButton.addEventListener("click", () => {
 profileSelect.addEventListener("change", () => {
   void switchActiveProfile(profileSelect.value);
 });
-answerList.addEventListener("click", (event) => {
+savedAnswerList.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) {
     return;
   }
-  const button = target.closest("[data-answer-key]");
-  const key = button?.dataset.answerKey?.trim();
-  const action = button?.dataset.answerAction?.trim();
-  if (!button || !key) {
+  const button = target.closest("[data-saved-answer-key]");
+  const key = button?.dataset.savedAnswerKey?.trim();
+  const action = button?.dataset.savedAnswerAction?.trim();
+  const source = button?.dataset.savedAnswerSource?.trim();
+  if (!button || !key || source !== "remembered" && source !== "custom") {
     return;
   }
   if (action === "edit") {
-    void editRememberedAnswer(key);
+    void (source === "remembered" ? editRememberedAnswer(key) : editPreferenceAnswer(key));
     return;
   }
-  void removeRememberedAnswer(key);
-});
-preferenceList.addEventListener("click", (event) => {
-  const target = event.target;
-  if (!(target instanceof HTMLElement)) {
-    return;
-  }
-  const button = target.closest("[data-preference-key]");
-  const key = button?.dataset.preferenceKey?.trim();
-  const action = button?.dataset.preferenceAction?.trim();
-  if (!button || !key) {
-    return;
-  }
-  if (action === "edit") {
-    void editPreferenceAnswer(key);
-    return;
-  }
-  void removePreferenceAnswer(key);
+  void (source === "remembered" ? removeRememberedAnswer(key) : removePreferenceAnswer(key));
 });
 searchModeInput.addEventListener("change", () => {
   updateModeUi();
   updateOverviewPreview();
   scheduleRefreshStatus();
+  scheduleAutoSave();
 });
 searchKeywordsInput.addEventListener("input", () => {
   updateOverviewPreview();
   scheduleRefreshStatus();
-});
-startupRegionInput.addEventListener("change", () => {
-  updateOverviewPreview();
-  scheduleRefreshStatus();
+  scheduleAutoSave();
 });
 datePostedWindowInput.addEventListener("change", () => {
   updateOverviewPreview();
+  scheduleAutoSave();
 });
 autoUploadInput.addEventListener("change", () => {
   updateOverviewPreview();
+  scheduleAutoSave();
 });
 countryInput.addEventListener("input", () => {
   updateOverviewPreview();
   scheduleRefreshStatus();
+  scheduleAutoSave();
 });
 addPreferenceButton.addEventListener("click", () => {
   void addPreferenceAnswer();
 });
+resumeUploadButton.addEventListener("click", () => {
+  resumeInput.click();
+});
 resumeInput.addEventListener("change", () => {
   void storeResumeFile();
 });
+for (const element of [
+  jobLimitInput,
+  fullNameInput,
+  emailInput,
+  phoneInput,
+  cityInput,
+  stateInput,
+  linkedinInput,
+  portfolioInput,
+  currentCompanyInput,
+  yearsExperienceInput
+]) {
+  element.addEventListener("input", () => {
+    scheduleAutoSave();
+  });
+}
+for (const element of [
+  workAuthorizationInput,
+  needsSponsorshipInput,
+  willingToRelocateInput
+]) {
+  element.addEventListener("change", () => {
+    scheduleAutoSave();
+  });
+}
 window.addEventListener("beforeunload", () => {
   if (refreshPollTimerId !== null) {
     window.clearTimeout(refreshPollTimerId);
   }
   if (refreshStatusTimerId !== null) {
     window.clearTimeout(refreshStatusTimerId);
+  }
+  if (autoSaveTimerId !== null) {
+    window.clearTimeout(autoSaveTimerId);
   }
 });
 document.addEventListener("visibilitychange", () => {
@@ -1021,6 +1046,7 @@ async function initialize() {
   schedulePeriodicRefresh();
 }
 async function startAutomation() {
+  await flushPendingAutoSave();
   await refreshActiveTabContext();
   const searchMode = getSelectedSearchMode2();
   if (getConfiguredKeywords().length === 0) {
@@ -1034,7 +1060,6 @@ async function startAutomation() {
     setStartButtonDisabled(true);
     return;
   }
-  await saveCurrentSettings(false);
   setStartButtonDisabled(true);
   if (searchMode === "startup_careers") {
     applyStatus(
@@ -1218,6 +1243,7 @@ async function performRefreshStatus() {
   const searchMode = getSelectedSearchMode2();
   const activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
   const hasKeywords = getConfiguredKeywords().length > 0;
+  activeSession = null;
   updateSiteNameDisplay();
   if (!hasKeywords) {
     applyStatus(
@@ -1336,15 +1362,18 @@ async function performRefreshStatus() {
     return;
   }
   let bgSession;
+  let parsedBackgroundSession;
   try {
     const backgroundResponse = await sendRuntimeMessageWithRetry({
       type: "get-tab-session",
       tabId: activeTabId
     });
+    parsedBackgroundSession = parseAutomationSession(backgroundResponse?.session);
     bgSession = parseAutomationStatus(backgroundResponse?.session);
   } catch {
   }
-  if (bgSession && bgSession.site === activeJobBoardSite) {
+  if (bgSession && (bgSession.site === activeJobBoardSite || !activeJobBoardSite && bgSession.phase !== "idle")) {
+    activeSession = parsedBackgroundSession ?? null;
     applyStatus(
       bgSession.phase === "idle" ? createStatus(
         activeJobBoardSite ?? "unsupported",
@@ -1358,7 +1387,7 @@ async function performRefreshStatus() {
     return;
   }
   const contentStatus = await getContentStatus(activeTabId);
-  if (contentStatus && contentStatus.phase !== "idle" && contentStatus.site === activeJobBoardSite) {
+  if (contentStatus && contentStatus.phase !== "idle" && (contentStatus.site === activeJobBoardSite || !activeJobBoardSite && contentStatus.site !== "unsupported")) {
     applyStatus(contentStatus);
     setStartButtonDisabled(
       shouldDisableStartButtonForSession(searchMode, activeSite, contentStatus)
@@ -1434,12 +1463,15 @@ function updateSiteNameDisplay() {
   } else if (searchMode === "other_job_sites") {
     siteName.textContent = "Other Job Sites";
   } else {
-    siteName.textContent = isJobBoardSite(activeSite) ? getSiteLabel(activeSite) : "No supported site";
+    const sessionSite = activeSession?.site && activeSession.site !== "unsupported" ? activeSession.site : isJobBoardSite(currentStatusSnapshot.site) ? currentStatusSnapshot.site : null;
+    siteName.textContent = isJobBoardSite(activeSite) ? getSiteLabel(activeSite) : sessionSite ? getSiteLabel(sessionSite) : "No supported site";
   }
 }
 function applyStatus(status) {
+  currentStatusSnapshot = status;
   statusPanel.dataset.phase = status.phase;
   statusText.textContent = status.message;
+  updateSiteNameDisplay();
 }
 function setSettingsStatus(message, tone = "muted", visible = true) {
   settingsStatus.textContent = message;
@@ -1472,7 +1504,7 @@ function buildFormSettingsUpdate(current, profileId, activeProfileId) {
   const targetProfile = current.profiles[profileId] ?? createAutomationProfile(profileId);
   return {
     searchMode: getSelectedSearchMode2(),
-    startupRegion: getSelectedStartupRegion(),
+    startupRegion: "auto",
     datePostedWindow: getSelectedDatePostedWindow(),
     searchKeywords: normalizeSearchKeywordsInput(),
     jobPageLimit: Number(jobLimitInput.value) || 5,
@@ -1485,37 +1517,85 @@ function buildFormSettingsUpdate(current, profileId, activeProfileId) {
   };
 }
 async function persistSettings(update) {
-  const nextRaw = typeof update === "function" ? update(settings) : update;
-  const nextSettings = applyAutomationSettingsUpdate(settings, nextRaw);
-  await chrome.storage.local.set({
-    [AUTOMATION_SETTINGS_STORAGE_KEY]: nextSettings
+  const queuedWrite = settingsWriteQueue.then(async () => {
+    const nextRaw = typeof update === "function" ? update(settings) : update;
+    const nextSettings = applyAutomationSettingsUpdate(settings, nextRaw);
+    await chrome.storage.local.set({
+      [AUTOMATION_SETTINGS_STORAGE_KEY]: nextSettings
+    });
+    settings = nextSettings;
+    return nextSettings;
   });
-  settings = nextSettings;
-  return nextSettings;
+  settingsWriteQueue = queuedWrite.then(
+    () => void 0,
+    () => void 0
+  );
+  return queuedWrite;
 }
-async function saveCurrentSettings(showFeedback) {
-  saveButton.disabled = true;
-  setSettingsStatus("Saving settings...", "muted", true);
+function scheduleAutoSave(delayMs = AUTO_SAVE_DELAY_MS) {
+  pendingAutoSaveRevision += 1;
+  if (autoSaveTimerId !== null) {
+    window.clearTimeout(autoSaveTimerId);
+  }
+  const revision = pendingAutoSaveRevision;
+  autoSaveTimerId = window.setTimeout(() => {
+    autoSaveTimerId = null;
+    void saveCurrentSettings({
+      showFeedback: false,
+      repopulateForm: false,
+      showSavingStatus: false,
+      revision
+    });
+  }, Math.max(0, delayMs));
+}
+function cancelScheduledAutoSave() {
+  if (autoSaveTimerId !== null) {
+    window.clearTimeout(autoSaveTimerId);
+    autoSaveTimerId = null;
+  }
+}
+async function flushPendingAutoSave() {
+  cancelScheduledAutoSave();
+  if (savedAutoSaveRevision >= pendingAutoSaveRevision) {
+    return;
+  }
+  await saveCurrentSettings({
+    showFeedback: false,
+    repopulateForm: false,
+    showSavingStatus: false,
+    revision: pendingAutoSaveRevision
+  });
+}
+async function saveCurrentSettings(options) {
+  const showFeedback = options?.showFeedback ?? false;
+  const repopulateForm = options?.repopulateForm ?? true;
+  const showSavingStatus = options?.showSavingStatus ?? showFeedback;
+  const revision = options?.revision ?? pendingAutoSaveRevision;
+  if (showSavingStatus) {
+    setSettingsStatus("Saving settings...", "muted", true);
+  }
   try {
     const selectedProfileId = getSelectedProfileId();
     settings = await persistSettings(
       (current) => buildFormSettingsUpdate(current, selectedProfileId, selectedProfileId)
     );
-    populateSettingsForm(settings);
+    if (repopulateForm) {
+      populateSettingsForm(settings);
+    } else {
+      updateOverviewPreview();
+    }
+    savedAutoSaveRevision = Math.max(savedAutoSaveRevision, revision);
     setSettingsStatus(
-      showFeedback ? "Settings saved." : "Settings are stored locally in the extension.",
+      showFeedback ? "Settings saved." : "Saved locally.",
       "success",
       showFeedback
     );
-    updateOverviewPreview();
   } catch (error) {
     setSettingsStatus(
       error instanceof Error ? `Error: ${error.message}` : "Failed to save settings.",
       "error",
       true
     );
-  } finally {
-    saveButton.disabled = false;
   }
 }
 async function switchActiveProfile(profileId) {
@@ -1524,6 +1604,8 @@ async function switchActiveProfile(profileId) {
     populateSettingsForm(settings);
     return;
   }
+  savedAutoSaveRevision = pendingAutoSaveRevision;
+  cancelScheduledAutoSave();
   setSettingsStatus("Switching profile...", "muted", true);
   try {
     const previousProfileId = settings.activeProfileId;
@@ -1546,6 +1628,7 @@ async function switchActiveProfile(profileId) {
   }
 }
 async function createProfile() {
+  await flushPendingAutoSave();
   const name = await promptForProfileName("Create Profile", "");
   if (!name) {
     return;
@@ -1572,6 +1655,7 @@ async function createProfile() {
   }
 }
 async function renameSelectedProfile() {
+  await flushPendingAutoSave();
   const activeProfile = getActiveAutomationProfile(settings);
   const nextName = await promptForProfileName(
     "Edit Profile Name",
@@ -1604,6 +1688,7 @@ async function renameSelectedProfile() {
   }
 }
 async function deleteSelectedProfile() {
+  await flushPendingAutoSave();
   const profiles = Object.values(settings.profiles);
   if (profiles.length <= 1) {
     setSettingsStatus("At least one profile must remain.", "error", true);
@@ -1658,7 +1743,11 @@ async function clearRememberedAnswers() {
       answers: {}
     });
     populateSettingsForm(settings);
-    setSettingsStatus("Remembered answers cleared.", "success", true);
+    setSettingsStatus(
+      "Remembered answers cleared. Added answers were kept.",
+      "success",
+      true
+    );
   } catch (error) {
     setSettingsStatus(
       error instanceof Error ? `Error: ${error.message}` : "Failed to clear answers.",
@@ -1674,7 +1763,7 @@ async function removeRememberedAnswer(key) {
   if (!existing) {
     return;
   }
-  setSettingsStatus("Removing remembered answer...", "muted", true);
+  setSettingsStatus("Removing saved answer...", "muted", true);
   try {
     settings = await persistSettings((current) => {
       const selectedProfileId = getSelectedProfileId();
@@ -1693,7 +1782,7 @@ async function removeRememberedAnswer(key) {
     });
     populateSettingsForm(settings);
     setSettingsStatus(
-      `Removed remembered answer for "${truncateText(existing.question, 40)}".`,
+      `Removed saved answer for "${truncateText(existing.question, 40)}".`,
       "success",
       true
     );
@@ -1711,14 +1800,14 @@ async function editRememberedAnswer(key) {
     return;
   }
   const savedAnswer = await promptForSavedAnswer(
-    "Edit Remembered Answer",
+    "Edit Saved Answer",
     existing.question,
     existing.value
   );
   if (!savedAnswer) {
     return;
   }
-  setSettingsStatus("Updating remembered answer...", "muted", true);
+  setSettingsStatus("Updating saved answer...", "muted", true);
   try {
     settings = await persistSettings((current) => {
       const selectedProfileId = getSelectedProfileId();
@@ -1735,7 +1824,7 @@ async function editRememberedAnswer(key) {
       };
     });
     populateSettingsForm(settings);
-    setSettingsStatus("Remembered answer updated.", "success", true);
+    setSettingsStatus("Saved answer updated.", "success", true);
   } catch (error) {
     setSettingsStatus(
       error instanceof Error ? `Error: ${error.message}` : "Failed to update remembered answer.",
@@ -1745,15 +1834,11 @@ async function editRememberedAnswer(key) {
   }
 }
 async function addPreferenceAnswer() {
-  const savedAnswer = await promptForSavedAnswer(
-    "Add Custom Preference Answer",
-    "",
-    ""
-  );
+  const savedAnswer = await promptForSavedAnswer("Add Saved Answer", "", "");
   if (!savedAnswer) {
     return;
   }
-  setSettingsStatus("Saving custom preference answer...", "muted", true);
+  setSettingsStatus("Saving saved answer...", "muted", true);
   try {
     settings = await persistSettings((current) => {
       const selectedProfileId = getSelectedProfileId();
@@ -1770,7 +1855,7 @@ async function addPreferenceAnswer() {
       };
     });
     populateSettingsForm(settings);
-    setSettingsStatus("Custom preference answer saved.", "success", true);
+    setSettingsStatus("Saved answer added.", "success", true);
   } catch (error) {
     setSettingsStatus(
       error instanceof Error ? `Error: ${error.message}` : "Failed to save custom preference answer.",
@@ -1785,14 +1870,14 @@ async function editPreferenceAnswer(key) {
     return;
   }
   const savedAnswer = await promptForSavedAnswer(
-    "Edit Custom Preference Answer",
+    "Edit Saved Answer",
     existing.question,
     existing.value
   );
   if (!savedAnswer) {
     return;
   }
-  setSettingsStatus("Updating custom preference answer...", "muted", true);
+  setSettingsStatus("Updating saved answer...", "muted", true);
   try {
     settings = await persistSettings((current) => {
       const selectedProfileId = getSelectedProfileId();
@@ -1809,7 +1894,7 @@ async function editPreferenceAnswer(key) {
       };
     });
     populateSettingsForm(settings);
-    setSettingsStatus("Custom preference answer updated.", "success", true);
+    setSettingsStatus("Saved answer updated.", "success", true);
   } catch (error) {
     setSettingsStatus(
       error instanceof Error ? `Error: ${error.message}` : "Failed to update custom preference answer.",
@@ -1823,7 +1908,7 @@ async function removePreferenceAnswer(key) {
   if (!existing) {
     return;
   }
-  setSettingsStatus("Removing custom preference answer...", "muted", true);
+  setSettingsStatus("Removing saved answer...", "muted", true);
   try {
     settings = await persistSettings((current) => {
       const selectedProfileId = getSelectedProfileId();
@@ -1842,7 +1927,7 @@ async function removePreferenceAnswer(key) {
     });
     populateSettingsForm(settings);
     setSettingsStatus(
-      `Removed custom preference answer for "${truncateText(existing.question, 40)}".`,
+      `Removed saved answer for "${truncateText(existing.question, 40)}".`,
       "success",
       true
     );
@@ -1859,6 +1944,7 @@ async function storeResumeFile() {
   if (!file) {
     return;
   }
+  resumeNameLabel.textContent = file.name;
   setSettingsStatus("Saving profile resume...", "muted", true);
   try {
     const asset = await readFileAsResumeAsset(file);
@@ -1888,7 +1974,6 @@ function populateSettingsForm(nextSettings) {
   renderProfileOptions(scopedSettings.profiles, scopedSettings.activeProfileId);
   profilePreview.textContent = activeProfile.name;
   searchModeInput.value = scopedSettings.searchMode;
-  startupRegionInput.value = scopedSettings.startupRegion;
   datePostedWindowInput.value = scopedSettings.datePostedWindow;
   searchKeywordsInput.value = scopedSettings.searchKeywords;
   jobLimitInput.value = String(scopedSettings.jobPageLimit);
@@ -1906,8 +1991,7 @@ function populateSettingsForm(nextSettings) {
   workAuthorizationInput.value = activeProfile.candidate.workAuthorization;
   needsSponsorshipInput.value = activeProfile.candidate.needsSponsorship;
   willingToRelocateInput.value = activeProfile.candidate.willingToRelocate;
-  renderRememberedAnswers(activeProfile.answers);
-  renderPreferenceAnswers(activeProfile.preferenceAnswers);
+  renderSavedAnswers(activeProfile.answers, activeProfile.preferenceAnswers);
   resumeNameLabel.textContent = activeProfile.resume ? `${activeProfile.resume.name} (${formatFileSize(activeProfile.resume.size)})` : "No file saved";
   deleteProfileButton.disabled = Object.keys(scopedSettings.profiles).length <= 1;
   updateOverviewPreview();
@@ -1925,43 +2009,41 @@ function renderProfileOptions(profiles, activeProfileId) {
     profileSelect.append(option);
   }
 }
-function renderRememberedAnswers(answers) {
-  const entries = Object.entries(answers).sort(
-    (left, right) => right[1].updatedAt - left[1].updatedAt
-  );
-  answerCount.textContent = String(entries.length);
-  clearAnswersButton.disabled = entries.length === 0;
+function renderSavedAnswers(rememberedAnswers, customAnswers) {
+  const entries = [
+    ...Object.entries(rememberedAnswers).map(([key, answer]) => ({
+      key,
+      answer,
+      source: "remembered"
+    })),
+    ...Object.entries(customAnswers).map(([key, answer]) => ({
+      key,
+      answer,
+      source: "custom"
+    }))
+  ].sort((left, right) => right.answer.updatedAt - left.answer.updatedAt);
+  savedAnswerCount.textContent = String(entries.length);
+  clearAnswersButton.disabled = Object.keys(rememberedAnswers).length === 0;
   renderSavedAnswerList({
-    container: answerList,
-    emptyState: answerEmptyState,
-    entries,
-    keyAttribute: "data-answer-key",
-    editAttribute: "data-answer-action",
-    deleteAttribute: "data-answer-action"
-  });
-}
-function renderPreferenceAnswers(answers) {
-  const entries = Object.entries(answers).sort(
-    (left, right) => right[1].updatedAt - left[1].updatedAt
-  );
-  renderSavedAnswerList({
-    container: preferenceList,
-    emptyState: preferenceEmptyState,
-    entries,
-    keyAttribute: "data-preference-key",
-    editAttribute: "data-preference-action",
-    deleteAttribute: "data-preference-action"
+    container: savedAnswerList,
+    emptyState: savedAnswerEmptyState,
+    entries
   });
 }
 function renderSavedAnswerList(options) {
-  const { container, emptyState, entries, keyAttribute, editAttribute, deleteAttribute } = options;
+  const { container, emptyState, entries } = options;
   emptyState.hidden = entries.length > 0;
   container.replaceChildren();
-  for (const [key, answer] of entries) {
+  for (const { key, answer, source } of entries) {
     const row = document.createElement("article");
     row.className = "answer-item";
     const copy = document.createElement("div");
     copy.className = "answer-item-copy";
+    const meta = document.createElement("div");
+    meta.className = "answer-item-meta";
+    const sourceBadge = document.createElement("span");
+    sourceBadge.className = "answer-source-badge";
+    sourceBadge.textContent = source === "remembered" ? "Remembered" : "Added";
     const question = document.createElement("p");
     question.className = "answer-question";
     question.textContent = answer.question || "Untitled question";
@@ -1973,16 +2055,19 @@ function renderSavedAnswerList(options) {
     const editButton = document.createElement("button");
     editButton.type = "button";
     editButton.className = "answer-delete-button answer-edit-button";
-    editButton.setAttribute(keyAttribute, key);
-    editButton.setAttribute(editAttribute, "edit");
+    editButton.dataset.savedAnswerKey = key;
+    editButton.dataset.savedAnswerAction = "edit";
+    editButton.dataset.savedAnswerSource = source;
     editButton.textContent = "Edit";
     const deleteButton = document.createElement("button");
     deleteButton.type = "button";
     deleteButton.className = "answer-delete-button";
-    deleteButton.setAttribute(keyAttribute, key);
-    deleteButton.setAttribute(deleteAttribute, "delete");
+    deleteButton.dataset.savedAnswerKey = key;
+    deleteButton.dataset.savedAnswerAction = "delete";
+    deleteButton.dataset.savedAnswerSource = source;
     deleteButton.textContent = "Delete";
-    copy.append(question, value);
+    meta.append(sourceBadge);
+    copy.append(meta, question, value);
     actions.append(editButton, deleteButton);
     row.append(copy, actions);
     container.append(row);
@@ -2118,7 +2203,7 @@ function parseAutomationStatus(value) {
   }
   const candidate = value;
   const isSupportedSite = candidate.site === "unsupported" || candidate.site === "indeed" || candidate.site === "ziprecruiter" || candidate.site === "dice" || candidate.site === "monster" || candidate.site === "glassdoor" || candidate.site === "greenhouse" || candidate.site === "builtin" || candidate.site === "startup" || candidate.site === "other_sites";
-  const isSupportedPhase = candidate.phase === "idle" || candidate.phase === "running" || candidate.phase === "waiting_for_verification" || candidate.phase === "completed" || candidate.phase === "error";
+  const isSupportedPhase = candidate.phase === "idle" || candidate.phase === "running" || candidate.phase === "paused" || candidate.phase === "waiting_for_verification" || candidate.phase === "completed" || candidate.phase === "error";
   if (!isSupportedSite || !isSupportedPhase || typeof candidate.message !== "string" || !Number.isFinite(candidate.updatedAt)) {
     return void 0;
   }
@@ -2130,6 +2215,31 @@ function parseAutomationStatus(value) {
     phase,
     message: candidate.message,
     updatedAt
+  };
+}
+function parseAutomationSession(value) {
+  const status = parseAutomationStatus(value);
+  if (!status || !value || typeof value !== "object" || Array.isArray(value)) {
+    return void 0;
+  }
+  const candidate = value;
+  const stage = candidate.stage === "bootstrap" || candidate.stage === "collect-results" || candidate.stage === "open-apply" || candidate.stage === "autofill-form" ? candidate.stage : void 0;
+  if (!Number.isFinite(candidate.tabId) || typeof candidate.shouldResume !== "boolean" || !stage) {
+    return void 0;
+  }
+  return {
+    ...status,
+    tabId: Number(candidate.tabId),
+    shouldResume: candidate.shouldResume,
+    stage,
+    runId: typeof candidate.runId === "string" ? candidate.runId : void 0,
+    jobSlots: Number.isFinite(candidate.jobSlots) ? Number(candidate.jobSlots) : void 0,
+    label: typeof candidate.label === "string" ? candidate.label : void 0,
+    resumeKind: candidate.resumeKind === "front_end" || candidate.resumeKind === "back_end" || candidate.resumeKind === "full_stack" ? candidate.resumeKind : void 0,
+    profileId: typeof candidate.profileId === "string" ? candidate.profileId : void 0,
+    controllerFrameId: Number.isFinite(candidate.controllerFrameId) ? Number(candidate.controllerFrameId) : void 0,
+    claimedJobKey: typeof candidate.claimedJobKey === "string" ? candidate.claimedJobKey : void 0,
+    openedUrlKey: typeof candidate.openedUrlKey === "string" ? candidate.openedUrlKey : void 0
   };
 }
 function updateModeUi() {
@@ -2144,13 +2254,6 @@ function updateOverviewPreview() {
 }
 function getSelectedSearchMode2() {
   return getSelectedSearchMode(searchModeInput.value);
-}
-function getSelectedStartupRegion() {
-  const value = startupRegionInput.value;
-  if (value === "us" || value === "uk" || value === "eu" || value === "auto") {
-    return value;
-  }
-  return "auto";
 }
 function getSelectedDatePostedWindow() {
   const value = datePostedWindowInput.value;
@@ -2194,7 +2297,7 @@ async function promptForSavedAnswer(title, initialQuestion, initialValue) {
     secondaryLabel: "Answer",
     secondaryValue: initialValue,
     secondaryPlaceholder: "Short, reusable answer",
-    submitLabel: initialQuestion ? "Save Answer" : "Add Answer",
+    submitLabel: initialQuestion ? "Save" : "Add",
     validate: (question, value) => {
       if (!question.trim()) {
         return "Question cannot be empty.";
@@ -2208,11 +2311,13 @@ async function promptForSavedAnswer(title, initialQuestion, initialValue) {
   if (!savedAnswer) {
     return null;
   }
+  const cleanedQuestion = savedAnswer.primary.replace(/\s+/g, " ").trim();
+  const cleanedValue = savedAnswer.secondary.replace(/\s+/g, " ").trim();
   return {
-    key: normalizeQuestionKey(savedAnswer.primary),
+    key: normalizeQuestionKey(cleanedQuestion),
     answer: {
-      question: savedAnswer.primary,
-      value: savedAnswer.secondary,
+      question: cleanedQuestion,
+      value: cleanedValue,
       updatedAt: Date.now()
     }
   };
@@ -2227,16 +2332,11 @@ function getModePreviewLabel() {
   return "Job boards";
 }
 function getRegionPreviewLabel() {
-  const region = getSelectedStartupRegion();
-  if (region !== "auto") return STARTUP_REGION_LABELS[region];
   const country = countryInput.value.trim();
-  return `Auto (${country ? getStartupRegionLabel() : "US / UK / EU"})`;
+  return country ? getStartupRegionLabel() : "US / UK / EU";
 }
 function getSelectedStartupRegions() {
-  return resolveStartupTargetRegions(
-    getSelectedStartupRegion(),
-    countryInput.value.trim()
-  );
+  return resolveStartupTargetRegions("auto", countryInput.value.trim());
 }
 function requireElement(selector) {
   const element = document.querySelector(selector);

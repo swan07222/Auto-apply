@@ -1300,6 +1300,33 @@ describe("job search candidate filtering", () => {
     ).toEqual(["https://my.greenhouse.io/view_job?job_id=5431123004"]);
   });
 
+  it("collects MyGreenhouse cards when the action label changes but the Greenhouse job URL is still present", () => {
+    document.body.innerHTML = `
+      <section class="results-grid">
+        <article class="job-card">
+          <h3>Backend Engineer</h3>
+          <p>Remote - United States</p>
+          <a href="https://my.greenhouse.io/view_job?job_id=111222333">View opening</a>
+        </article>
+        <article class="job-card">
+          <h3>Sales Manager</h3>
+          <p>Remote - United States</p>
+          <a href="https://my.greenhouse.io/view_job?job_id=444555666">View opening</a>
+        </article>
+      </section>
+    `;
+
+    expect(
+      pickRelevantJobUrls(
+        collectJobDetailCandidates("greenhouse"),
+        "greenhouse",
+        undefined,
+        "any",
+        ["backend engineer"]
+      )
+    ).toEqual(["https://my.greenhouse.io/view_job?job_id=111222333"]);
+  });
+
   it("keeps only the explicit remote Built In result when sparse cards mix with a known remote signal", () => {
     const candidates: JobCandidate[] = [
       {

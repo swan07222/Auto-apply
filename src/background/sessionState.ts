@@ -104,6 +104,7 @@ export function isManagedJobSessionPending(
   return (
     isManagedJobSession(session) &&
     !session.shouldResume &&
+    session.phase !== "paused" &&
     session.phase !== "completed" &&
     session.phase !== "error"
   );

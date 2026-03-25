@@ -114,4 +114,66 @@ describe("answer memory helpers", () => {
       )?.value
     ).toBe("No");
   });
+
+  it("keeps location answers separated so city and country responses do not cross-match", () => {
+    const answers = {
+      [normalizeQuestionKey("What city do you live in?")]: {
+        question: "What city do you live in?",
+        value: "Phoenix",
+        updatedAt: 1,
+      },
+      [normalizeQuestionKey("What country do you live in?")]: {
+        question: "What country do you live in?",
+        value: "United States",
+        updatedAt: 2,
+      },
+    };
+
+    expect(
+      findBestSavedAnswerMatch(
+        "Which country are you currently based in?",
+        "country",
+        answers
+      )?.value
+    ).toBe("United States");
+
+    expect(
+      findBestSavedAnswerMatch(
+        "Which city are you currently based in?",
+        "city",
+        answers
+      )?.value
+    ).toBe("Phoenix");
+  });
+
+  it("keeps GitHub and LinkedIn answers separated", () => {
+    const answers = {
+      [normalizeQuestionKey("LinkedIn profile URL")]: {
+        question: "LinkedIn profile URL",
+        value: "https://linkedin.com/in/example",
+        updatedAt: 1,
+      },
+      [normalizeQuestionKey("GitHub profile URL")]: {
+        question: "GitHub profile URL",
+        value: "https://github.com/example",
+        updatedAt: 2,
+      },
+    };
+
+    expect(
+      findBestSavedAnswerMatch(
+        "Please share your GitHub profile",
+        "github profile",
+        answers
+      )?.value
+    ).toBe("https://github.com/example");
+
+    expect(
+      findBestSavedAnswerMatch(
+        "Please share your LinkedIn profile",
+        "linkedin profile",
+        answers
+      )?.value
+    ).toBe("https://linkedin.com/in/example");
+  });
 });

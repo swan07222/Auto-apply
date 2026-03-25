@@ -279,7 +279,9 @@ function buildGreenhouseSearchUrl(query: string, currentUrl: string, fallbackOri
   if (isMyGreenhousePortalUrl(currentUrl)) {
     try {
       const parsed = new URL(currentUrl);
-      return new URL(parsed.pathname || "/", `${parsed.protocol}//${parsed.host}`).toString();
+      const url = new URL(parsed.pathname || "/", `${parsed.protocol}//${parsed.host}`);
+      url.searchParams.set("keyword", query);
+      return url.toString();
     } catch {
       return currentUrl;
     }

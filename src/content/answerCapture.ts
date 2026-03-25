@@ -87,7 +87,8 @@ export function readChoiceAnswerForMemory(
   if (
     !normalizedQuestion ||
     normalizedQuestion === normalizedValue ||
-    normalizedQuestion.includes(normalizedValue)
+    normalizedQuestion.includes(normalizedValue) ||
+    isConsentLikeQuestion(normalizedQuestion)
   ) {
     return null;
   }
@@ -181,4 +182,10 @@ function isUsableQuestionText(text: string, valueKey: string): boolean {
   }
 
   return looksLikeQuestion(cleaned) || normalized.split(" ").length >= 3;
+}
+
+function isConsentLikeQuestion(normalizedQuestion: string): boolean {
+  return ["privacy", "terms", "agree", "consent", "policy", "acknowledge", "accept", "gdpr"].some(
+    (token) => normalizedQuestion.includes(token)
+  );
 }

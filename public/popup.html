@@ -9,35 +9,30 @@
   <body>
     <main class="popup-shell">
       <section class="dashboard">
-        <header class="hero">
-          <div class="hero-topline">
-            <span class="hero-badge">Automation Workspace</span>
-            <span class="hero-meta">Profiles, search, resumes</span>
+        <section class="status-panel" id="status-panel" data-phase="idle" aria-live="polite">
+          <div class="status-header">
+            <p class="status-label">Status</p>
+            <span class="status-dot" aria-hidden="true"></span>
           </div>
 
-          <div class="hero-copy">
-            <h1>Remote Job Search</h1>
-            <p class="intro">
-              Keep your search settings, profile, resume, and saved answers ready for faster
-              applications.
-            </p>
+          <div class="status-meta-row">
+            <span class="status-chip">
+              <span class="status-chip-label">Site</span>
+              <span id="site-name" class="status-chip-value">Checking...</span>
+            </span>
+            <span class="status-chip">
+              <span class="status-chip-label">Flow</span>
+              <span id="mode-preview" class="status-chip-value">Job boards</span>
+            </span>
           </div>
-        </header>
+
+          <p id="status-text" class="status-text">Choose a search mode to begin.</p>
+        </section>
 
         <section class="overview-grid" aria-label="Current run summary">
           <article class="overview-card">
             <p class="overview-label">Active profile</p>
             <p id="profile-preview" class="overview-value">Default Profile</p>
-          </article>
-
-          <article class="overview-card">
-            <p class="overview-label">Active site</p>
-            <p id="site-name" class="overview-value pill">Checking...</p>
-          </article>
-
-          <article class="overview-card">
-            <p class="overview-label">Search flow</p>
-            <p id="mode-preview" class="overview-value">Job boards</p>
           </article>
 
           <article class="overview-card">
@@ -77,25 +72,9 @@
           </div>
         </details>
 
-        <div class="utility-stack">
-          <section class="status-panel" id="status-panel" data-phase="idle" aria-live="polite">
-            <div class="status-header">
-              <p class="status-label">Status</p>
-              <span class="status-dot" aria-hidden="true"></span>
-            </div>
-            <p id="status-text" class="status-text">Choose a search mode to begin.</p>
-          </section>
-
-          <p class="hint tip-card">
-            If a site asks you to verify that you are human, finish it manually and the extension
-            will resume. The extension fills fields and uploads files, but it does not auto-submit
-            applications.
-          </p>
-
-          <p id="settings-status" class="settings-status">
-            Settings are stored locally in the extension.
-          </p>
-        </div>
+        <p id="settings-status" class="settings-status">
+          Settings are stored locally in the extension.
+        </p>
 
         <details class="settings-group" open>
           <summary class="group-summary">
@@ -122,16 +101,6 @@
             </label>
 
             <label class="field">
-              <span>Search region</span>
-              <select id="startup-region">
-                <option value="auto">Auto from country</option>
-                <option value="us">US</option>
-                <option value="uk">UK</option>
-                <option value="eu">EU</option>
-              </select>
-            </label>
-
-            <label class="field">
               <span>Date posted</span>
               <select id="date-posted-window">
                 <option value="any">Any time</option>
@@ -141,7 +110,7 @@
               </select>
             </label>
 
-            <label class="field">
+            <label class="field field-search-keywords">
               <span>Search keywords</span>
               <textarea
                 id="search-keywords"
@@ -198,6 +167,26 @@
                 <span>Country</span>
                 <input id="country" type="text" autocomplete="country-name" />
               </label>
+
+              <div class="field field-file-picker">
+                <span>Resume</span>
+                <div class="file-picker">
+                  <button
+                    id="resume-upload-button"
+                    class="secondary-button inline-button"
+                    type="button"
+                  >
+                    Choose File
+                  </button>
+                  <span id="resume-upload-name" class="file-picker-name">No resume saved</span>
+                  <input
+                    id="resume-upload"
+                    class="file-picker-input"
+                    type="file"
+                    accept=".pdf,.doc,.docx,.txt,.md,.rtf"
+                  />
+                </div>
+              </div>
             </div>
           </div>
 
@@ -265,89 +254,43 @@
                   </select>
                 </label>
               </div>
+            </div>
 
+            <div class="subsection">
               <div class="answer-row">
                 <div>
-                  <p class="subsection-title">Custom preference answers</p>
+                  <p class="subsection-title">Saved questions and answers</p>
                   <p class="settings-copy">
-                    Add your own question and answer pairs for preferences the extension should reuse automatically.
+                    Remembered answers from applications and answers you add here are managed together.
                   </p>
                 </div>
-                <button id="add-preference-button" class="secondary-button inline-button" type="button">
-                  Add Question &amp; Answer
-                </button>
+                <div class="answer-toolbar">
+                  <span id="saved-answer-count" class="pill subtle">0</span>
+                  <button id="add-preference-button" class="secondary-button inline-button" type="button">
+                    Add
+                  </button>
+                </div>
               </div>
 
-              <p id="preference-empty-state" class="settings-copy answer-empty-state">
-                No custom preference answers yet.
+              <p id="saved-answer-empty-state" class="settings-copy answer-empty-state">
+                No saved questions or answers yet.
               </p>
 
-              <div id="preference-list" class="answer-list" aria-live="polite"></div>
+              <div id="saved-answer-list" class="answer-list" aria-live="polite"></div>
+
+              <div class="inline-button-row">
+                <button id="clear-answers-button" class="secondary-button inline-button" type="button">
+                  Clear Remembered
+                </button>
+              </div>
             </div>
           </details>
         </details>
 
-        <details class="settings-group" open>
-          <summary class="group-summary">
-            <div class="group-heading">
-              <p class="group-kicker">Documents</p>
-              <h2>Resume Library</h2>
-              <p>Upload one resume for the currently selected profile. This resume is used for uploads and AI drafting.</p>
-            </div>
-          </summary>
-
-          <div class="resume-list">
-            <label class="resume-card">
-              <span class="resume-title">Upload Resume</span>
-              <input id="resume-upload" type="file" accept=".pdf,.doc,.docx,.txt,.md,.rtf" />
-              <span id="resume-upload-name" class="resume-name">No file saved</span>
-            </label>
-          </div>
-        </details>
-
-        <details class="settings-group">
-          <summary class="group-summary">
-            <div class="group-heading">
-              <p class="group-kicker">Memory</p>
-              <h2>Remembered Answers</h2>
-              <p>Manual answers are stored and reused later on matching application questions.</p>
-            </div>
-          </summary>
-
-          <div class="answer-row">
-            <div>
-              <p class="subsection-title">Saved answer count</p>
-              <p class="settings-copy">
-                Edit or remove remembered answers whenever your preferred responses change.
-              </p>
-            </div>
-            <span id="answer-count" class="pill subtle">0</span>
-          </div>
-
-          <p id="answer-empty-state" class="settings-copy answer-empty-state">
-            No remembered answers yet.
-          </p>
-
-          <div id="answer-list" class="answer-list" aria-live="polite"></div>
-
-          <button id="clear-answers-button" class="secondary-button utility-button" type="button">
-            Clear Remembered Answers
-          </button>
-        </details>
-
         <footer class="action-bar">
-          <div class="action-copy">
-            <p class="group-kicker action-kicker">Launch</p>
-            <p class="action-title">Ready when you are</p>
-            <p class="action-note">Save updates anytime, then launch the selected search flow.</p>
-          </div>
-
           <div class="action-row">
             <button id="start-button" class="start-button" type="button" disabled>
               Start Auto Search
-            </button>
-            <button id="save-button" class="secondary-button" type="button">
-              Save Settings
             </button>
           </div>
         </footer>

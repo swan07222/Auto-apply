@@ -33,5 +33,9 @@ export const greenhouseSiteProfile: SiteContentProfile = {
   resultCollectionMinimum: 30,
   resultCollectionMultiplier: 6,
   resultSurfaceSettleMs: 1600,
-  careerJobLinkSelectors: [...CAREER_SITE_JOB_LINK_SELECTORS],
+  careerJobLinkSelectors: [
+    "a[href*='my.greenhouse.io/view_job']",
+    "a[href*='my.greenhouse.io'][href*='job_id=']",
+    ...CAREER_SITE_JOB_LINK_SELECTORS,
+  ],
 };

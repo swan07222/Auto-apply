@@ -94,6 +94,24 @@ export function throwIfRateLimited(
   );
 }
 
+export function shouldBlockApplicationTargetProbeFailure(
+  reason: BrokenPageReason | "unreachable" | null,
+  isExternalTarget: boolean
+): boolean {
+  if (!reason) {
+    return false;
+  }
+
+  if (
+    isExternalTarget &&
+    (reason === "access_denied" || reason === "unreachable")
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 export function shouldTreatCurrentPageAsApplied(
   site: SiteKey,
   dependencies: {

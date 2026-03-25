@@ -56,6 +56,11 @@ const QUESTION_INTENT_PATTERNS: Array<{
     | "motivation"
     | "compensation"
     | "portfolio"
+    | "linkedin"
+    | "github"
+    | "city"
+    | "state"
+    | "country"
     | "location"
     | "notice";
   tokens: string[];
@@ -109,11 +114,31 @@ const QUESTION_INTENT_PATTERNS: Array<{
   },
   {
     intent: "portfolio",
-    tokens: ["portfolio", "website", "github", "linkedin"],
+    tokens: ["portfolio", "personal site", "website"],
+  },
+  {
+    intent: "linkedin",
+    tokens: ["linkedin"],
+  },
+  {
+    intent: "github",
+    tokens: ["github"],
+  },
+  {
+    intent: "city",
+    tokens: ["city"],
+  },
+  {
+    intent: "state",
+    tokens: ["state", "province", "region"],
+  },
+  {
+    intent: "country",
+    tokens: ["country"],
   },
   {
     intent: "location",
-    tokens: ["city", "state", "country", "location"],
+    tokens: ["location"],
   },
   {
     intent: "notice",

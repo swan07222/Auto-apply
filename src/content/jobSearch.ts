@@ -416,11 +416,16 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
 
     case "greenhouse":
       return dedupeJobCandidates([
-        ...collectLabeledActionCandidates(["view job"], 2),
+        ...collectLabeledActionCandidates(
+          ["view job", "view opening", "view role", "job details"],
+          2
+        ),
         ...collectSiteAnchoredJobCandidates(
           [
             "a[href*='greenhouse.io'][href*='/jobs/']",
             "a[href*='greenhouse.io'][href*='gh_jid=']",
+            "a[href*='my.greenhouse.io/view_job']",
+            "a[href*='my.greenhouse.io'][href*='job_id=']",
           ],
           2
         ),

@@ -169,7 +169,6 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
     tabsSendMessage,
     runtimeSendMessage,
     startButton: requireElement<HTMLButtonElement>("#start-button"),
-    saveButton: requireElement<HTMLButtonElement>("#save-button"),
     clearAnswersButton: requireElement<HTMLButtonElement>(
       "#clear-answers-button"
     ),
@@ -191,9 +190,8 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
     profilePreview: requireElement<HTMLElement>("#profile-preview"),
     modePreview: requireElement<HTMLElement>("#mode-preview"),
     regionPreview: requireElement<HTMLElement>("#region-preview"),
-    answerCount: requireElement<HTMLElement>("#answer-count"),
-    answerList: requireElement<HTMLElement>("#answer-list"),
-    preferenceList: requireElement<HTMLElement>("#preference-list"),
+    savedAnswerCount: requireElement<HTMLElement>("#saved-answer-count"),
+    savedAnswerList: requireElement<HTMLElement>("#saved-answer-list"),
     profileSelect: requireElement<HTMLSelectElement>("#profile-select"),
     searchModeInput: requireElement<HTMLSelectElement>("#search-mode"),
     searchKeywordsInput:
@@ -266,6 +264,79 @@ describe("popup workflow", () => {
     });
   });
 
+  it("removes the old top panels and keeps the compact status-first layout", async () => {
+    const popup = await createPopupHarness();
+
+    expect(document.querySelector(".action-copy")).toBeNull();
+    expect(document.querySelector(".hero")).toBeNull();
+    expect(document.querySelector("#startup-region")).toBeNull();
+    expect(document.body.textContent).not.toContain("Ready when you are");
+    expect(document.body.textContent).not.toContain("Automation Workspace");
+    expect(document.body.textContent).not.toContain(
+      "If a site asks you to verify that you are human"
+    );
+    expect(document.body.textContent).not.toContain("Resume Library");
+    expect(document.body.textContent).not.toContain("Remembered Answers");
+    expect(document.body.textContent).not.toContain("Active site");
+    expect(document.body.textContent).not.toContain("Search flow");
+    expect(document.querySelector("#save-button")).toBeNull();
+    expect(document.querySelectorAll(".action-row > button")).toHaveLength(1);
+    expect(document.body.textContent).not.toContain("Save Settings");
+    expect(document.querySelector(".resume-card")).toBeNull();
+    expect(document.querySelector(".file-picker")).not.toBeNull();
+    expect(
+      [...document.querySelectorAll(".subsection-title")].map((element) =>
+        element.textContent?.trim()
+      )
+    ).not.toContain("Resume");
+    expect(document.body.textContent).not.toContain(
+      "Save updates anytime, then launch the selected search flow."
+    );
+    expect(popup.addPreferenceButton.textContent?.trim()).toBe("Add");
+    expect(popup.resumeInput.closest(".settings-group")?.textContent).toContain(
+      "Candidate Profile"
+    );
+  });
+
+  it("keeps paused autofill status visible in the popup even when control moved to the page notification", async () => {
+    const popup = await createPopupHarness({
+      activeTabs: [
+        {
+          id: 42,
+          url: "https://company.example.com/apply",
+        },
+      ],
+      runtimeSendMessage: async (message) => {
+        if (message.type === "get-tab-session") {
+          return {
+            ok: true,
+            session: {
+              tabId: 42,
+              site: "builtin",
+              phase: "paused",
+              message: "Required questions need manual input on this step. Fill them, then press Resume.",
+              updatedAt: Date.now(),
+              shouldResume: false,
+              stage: "autofill-form",
+            },
+          };
+        }
+
+        if (message.type === "resume-automation-session") {
+          return { ok: true };
+        }
+
+        return { ok: true };
+      },
+    });
+
+    await flushAsyncWork(16);
+
+    expect(popup.siteName.textContent).toBe("Built In");
+    expect(popup.statusText.textContent).toContain("press Resume");
+    expect(document.querySelector("#pause-resume-button")).toBeNull();
+  });
+
   it("requires keywords before the run can start", async () => {
     const popup = await createPopupHarness({
       settings: createSettings({ searchKeywords: "" }),
@@ -301,7 +372,7 @@ describe("popup workflow", () => {
     });
 
     expect(popup.siteName.textContent).toBe("Startup Careers");
-    expect(popup.regionPreview.textContent).toBe("Auto (EU)");
+    expect(popup.regionPreview.textContent).toBe("EU");
     expect(popup.statusText.textContent).toBe(
       "Ready to open startup career pages for EU companies."
     );
@@ -561,7 +632,8 @@ describe("popup workflow", () => {
     expect(getTabSessionCalls).toBe(1);
   });
 
-  it("saves trimmed candidate details and normalized keywords through the popup form", async () => {
+  it("auto-saves trimmed candidate details and normalized keywords through the popup form", async () => {
+    vi.useFakeTimers();
     const popup = await createPopupHarness();
 
     popup.fullNameInput.value = "  Ada Lovelace  ";
@@ -569,7 +641,13 @@ describe("popup workflow", () => {
     popup.countryInput.value = " United Kingdom ";
     popup.searchKeywordsInput.value = " software engineer \n react engineer ";
 
-    popup.saveButton.click();
+    popup.fullNameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    popup.emailInput.dispatchEvent(new Event("input", { bubbles: true }));
+    popup.countryInput.dispatchEvent(new Event("input", { bubbles: true }));
+    popup.searchKeywordsInput.dispatchEvent(
+      new Event("input", { bubbles: true })
+    );
+    await vi.advanceTimersByTimeAsync(300);
     await flushAsyncWork();
 
     const latestSettings = popup.getLatestSettings();
@@ -579,8 +657,9 @@ describe("popup workflow", () => {
     expect(latestSettings.searchKeywords).toBe(
       "software engineer\nreact engineer"
     );
-    expect(popup.settingsStatus.textContent).toBe("Settings saved.");
-    expect(popup.regionPreview.textContent).toBe("Auto (UK)");
+    expect(popup.settingsStatus.textContent).toBe("Saved locally.");
+    expect(popup.settingsStatus.dataset.visible).toBe("false");
+    expect(popup.regionPreview.textContent).toBe("UK");
   });
 
   it("switches to other job sites mode and starts the search from the popup", async () => {
@@ -804,6 +883,13 @@ describe("popup workflow", () => {
         updatedAt: 2,
       },
     };
+    secondProfile.preferenceAnswers = {
+      custom: {
+        question: "Preferred schedule?",
+        value: "Flexible",
+        updatedAt: 3,
+      },
+    };
 
     const popup = await createPopupHarness({
       settings: createSettings({
@@ -816,17 +902,21 @@ describe("popup workflow", () => {
       }),
     });
 
-    expect(popup.answerCount.textContent).toBe("1");
+    expect(popup.savedAnswerCount.textContent).toBe("2");
 
     popup.clearAnswersButton.click();
     await flushAsyncWork();
 
     const latestSettings = popup.getLatestSettings();
     expect(latestSettings.profiles["profile-b"]?.answers).toEqual({});
+    expect(latestSettings.profiles["profile-b"]?.preferenceAnswers).toEqual(
+      secondProfile.preferenceAnswers
+    );
     expect(latestSettings.profiles["profile-a"]?.answers).toEqual(
       firstProfile.answers
     );
-    expect(popup.answerCount.textContent).toBe("0");
+    expect(popup.savedAnswerCount.textContent).toBe("1");
+    expect(popup.savedAnswerList.textContent).toContain("Preferred schedule?");
   });
 
   it("edits remembered answers and stores custom preference answers for the active profile", async () => {
@@ -843,8 +933,8 @@ describe("popup workflow", () => {
       }),
     });
 
-    const editButton = popup.answerList.querySelector<HTMLButtonElement>(
-      "[data-answer-key='first'][data-answer-action='edit']"
+    const editButton = popup.savedAnswerList.querySelector<HTMLButtonElement>(
+      "[data-saved-answer-key='first'][data-saved-answer-source='remembered'][data-saved-answer-action='edit']"
     );
     editButton?.click();
     await flushAsyncWork(6);
@@ -874,7 +964,43 @@ describe("popup workflow", () => {
         value: "Yes, when needed.",
       })
     );
-    expect(popup.preferenceList.textContent).toContain("Can you work weekends?");
+    expect(popup.savedAnswerList.textContent).toContain(
+      "Why do you want this company?"
+    );
+    expect(popup.savedAnswerList.textContent).toContain("Can you work weekends?");
+  });
+
+  it("normalizes whitespace when editing remembered answers", async () => {
+    const popup = await createPopupHarness({
+      settings: createSettings({
+        searchKeywords: "software engineer",
+        answers: {
+          first: {
+            question: "Why do you want this role?",
+            value: "Impact.",
+            updatedAt: 1,
+          },
+        },
+      }),
+    });
+
+    const editButton = popup.savedAnswerList.querySelector<HTMLButtonElement>(
+      "[data-saved-answer-key='first'][data-saved-answer-source='remembered'][data-saved-answer-action='edit']"
+    );
+    editButton?.click();
+    await flushAsyncWork(6);
+    await submitPopupDialog(popup, {
+      primary: "  Why   do you want this company?  ",
+      secondary: "  Mission   fit.  ",
+    });
+
+    const latestSettings = popup.getLatestSettings();
+    expect(latestSettings.answers["why do you want this company"]).toEqual(
+      expect.objectContaining({
+        question: "Why do you want this company?",
+        value: "Mission fit.",
+      })
+    );
   });
 
   it("edits and removes custom preference answers for the active profile", async () => {
@@ -891,8 +1017,8 @@ describe("popup workflow", () => {
       }),
     });
 
-    const editButton = popup.preferenceList.querySelector<HTMLButtonElement>(
-      "[data-preference-key='availability'][data-preference-action='edit']"
+    const editButton = popup.savedAnswerList.querySelector<HTMLButtonElement>(
+      "[data-saved-answer-key='availability'][data-saved-answer-source='custom'][data-saved-answer-action='edit']"
     );
     editButton?.click();
     await flushAsyncWork(6);
@@ -910,17 +1036,15 @@ describe("popup workflow", () => {
       })
     );
 
-    const deleteButton = popup.preferenceList.querySelector<HTMLButtonElement>(
-      "[data-preference-key='preferred working schedule'][data-preference-action='delete']"
+    const deleteButton = popup.savedAnswerList.querySelector<HTMLButtonElement>(
+      "[data-saved-answer-key='preferred working schedule'][data-saved-answer-source='custom'][data-saved-answer-action='delete']"
     );
     deleteButton?.click();
     await flushAsyncWork();
 
     latestSettings = popup.getLatestSettings();
     expect(latestSettings.preferenceAnswers).toEqual({});
-    expect(popup.settingsStatus.textContent).toContain(
-      "Removed custom preference answer"
-    );
+    expect(popup.settingsStatus.textContent).toContain("Removed saved answer");
   });
 
   it("validates custom preference prompts before saving", async () => {
@@ -934,7 +1058,7 @@ describe("popup workflow", () => {
     });
 
     expect(popup.dialogError.textContent).toBe("Question cannot be empty.");
-    expect(popup.preferenceList.textContent).not.toContain(
+    expect(popup.savedAnswerList.textContent).not.toContain(
       "Preferred working hours?"
     );
 
@@ -944,7 +1068,7 @@ describe("popup workflow", () => {
     });
 
     expect(popup.dialogError.textContent).toBe("Answer cannot be empty.");
-    expect(popup.preferenceList.textContent).not.toContain(
+    expect(popup.savedAnswerList.textContent).not.toContain(
       "Preferred working hours?"
     );
   });
@@ -964,18 +1088,18 @@ describe("popup workflow", () => {
       }),
     });
 
-    const deleteButton = popup.answerList.querySelector<HTMLButtonElement>(
-      "[data-answer-key='long'][data-answer-action='delete']"
+    const deleteButton = popup.savedAnswerList.querySelector<HTMLButtonElement>(
+      "[data-saved-answer-key='long'][data-saved-answer-source='remembered'][data-saved-answer-action='delete']"
     );
 
     deleteButton?.click();
     await flushAsyncWork();
 
     expect(popup.settingsStatus.textContent).toContain(
-      'Removed remembered answer for "'
+      'Removed saved answer for "'
     );
     expect(popup.settingsStatus.textContent).toContain("...");
-    expect(popup.answerCount.textContent).toBe("0");
+    expect(popup.savedAnswerCount.textContent).toBe("0");
   });
 
   it("stores a single profile resume from the popup upload control", async () => {
@@ -1010,6 +1134,7 @@ describe("popup workflow", () => {
       });
 
       popup.resumeInput.dispatchEvent(new Event("change", { bubbles: true }));
+      expect(popup.resumeNameLabel.textContent).toBe("resume.txt");
       await flushAsyncWork(16);
 
       const latestSettings = popup.getLatestSettings();

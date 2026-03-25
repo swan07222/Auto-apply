@@ -61,6 +61,8 @@ type BackgroundRequest =
   | { type: "start-automation"; tabId: number }
   | { type: "start-startup-automation"; tabId?: number }
   | { type: "start-other-sites-automation"; tabId?: number }
+  | { type: "pause-automation-session"; tabId?: number; message?: string }
+  | { type: "resume-automation-session"; tabId?: number }
   | { type: "extract-monster-search-results" }
   | { type: "reserve-job-openings"; requested: number }
   | {
@@ -438,6 +440,15 @@ async function handleMessage(
     case "start-other-sites-automation":
       return startOtherSitesAutomation(message.tabId);
 
+    case "pause-automation-session":
+      return pauseAutomationSession(
+        resolveRequestedTabId(message.tabId, sender),
+        message.message
+      );
+
+    case "resume-automation-session":
+      return resumeAutomationSession(resolveRequestedTabId(message.tabId, sender));
+
     case "extract-monster-search-results": {
       const tabId = sender.tab?.id;
       if (tabId === undefined) {
@@ -780,6 +791,141 @@ async function updateSessionFromMessage(
   }
 
   return { ok: true };
+}
+
+function resolveRequestedTabId(
+  tabId: number | undefined,
+  sender: chrome.runtime.MessageSender
+): number {
+  if (typeof tabId === "number" && Number.isFinite(tabId)) {
+    return tabId;
+  }
+
+  if (typeof sender.tab?.id === "number") {
+    return sender.tab.id;
+  }
+
+  throw new Error("No active automation tab was available for this request.");
+}
+
+async function sendSessionControlMessage(
+  session: AutomationSession,
+  message:
+    | { type: "pause-automation"; message?: string }
+    | { type: "start-automation"; session: AutomationSession }
+): Promise<void> {
+  if (typeof session.controllerFrameId === "number") {
+    await chrome.tabs.sendMessage(session.tabId, message, {
+      frameId: session.controllerFrameId,
+    });
+    return;
+  }
+
+  await chrome.tabs.sendMessage(session.tabId, message);
+}
+
+async function pauseAutomationSession(
+  tabId: number,
+  message?: string
+): Promise<{
+  ok: boolean;
+  error?: string;
+  session?: AutomationSession;
+}> {
+  const session = await getSession(tabId);
+
+  if (!session || session.site === "unsupported") {
+    return {
+      ok: false,
+      error: "No active automation session was found on this tab.",
+    };
+  }
+
+  if (
+    session.phase !== "running" &&
+    session.phase !== "waiting_for_verification" &&
+    session.phase !== "paused"
+  ) {
+    return {
+      ok: false,
+      error: "Pause is only available while automation is actively running.",
+    };
+  }
+
+  const pauseMessage =
+    message?.trim() || "Automation paused. Press Resume to continue.";
+  const nextSession: AutomationSession = {
+    ...session,
+    phase: "paused",
+    message: pauseMessage,
+    updatedAt: Date.now(),
+    shouldResume: false,
+  };
+
+  await setSession(nextSession);
+
+  try {
+    await sendSessionControlMessage(nextSession, {
+      type: "pause-automation",
+      message: pauseMessage,
+    });
+  } catch {
+    // The content script may still be loading. The stored paused session state
+    // is enough for popup refresh and later resume.
+  }
+
+  return {
+    ok: true,
+    session: nextSession,
+  };
+}
+
+async function resumeAutomationSession(
+  tabId: number
+): Promise<{
+  ok: boolean;
+  error?: string;
+  session?: AutomationSession;
+}> {
+  const session = await getSession(tabId);
+
+  if (!session || session.site === "unsupported") {
+    return {
+      ok: false,
+      error: "No paused automation session was found on this tab.",
+    };
+  }
+
+  if (session.phase !== "paused") {
+    return {
+      ok: false,
+      error: "Resume is only available for paused automation.",
+    };
+  }
+
+  const nextSession: AutomationSession = {
+    ...session,
+    phase: "running",
+    message: "Resuming automation...",
+    updatedAt: Date.now(),
+    shouldResume: true,
+  };
+
+  await setSession(nextSession);
+
+  try {
+    await sendSessionControlMessage(nextSession, {
+      type: "start-automation",
+      session: nextSession,
+    });
+  } catch {
+    // The content script may still be loading; content-ready will restart it.
+  }
+
+  return {
+    ok: true,
+    session: nextSession,
+  };
 }
 
 async function attachSessionToSiteOpenedChildTab(

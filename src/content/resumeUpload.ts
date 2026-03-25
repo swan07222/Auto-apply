@@ -64,6 +64,65 @@ export function hasSelectedMatchingFile(
   return Boolean(selected && desired && selected === desired);
 }
 
+export function hasAcceptedResumeUpload(
+  input: HTMLInputElement,
+  assetName: string
+): boolean {
+  if (hasSelectedMatchingFile(input, assetName) || Boolean(input.files?.length)) {
+    return true;
+  }
+
+  const normalizedAssetName = normalizeChoiceText(cleanText(assetName));
+  const normalizedAssetStem = normalizedAssetName.replace(
+    /\.[a-z0-9]{1,6}\b/g,
+    ""
+  );
+  const containers = new Set<HTMLElement>();
+
+  const addContainer = (element: Element | null | undefined): void => {
+    if (element instanceof HTMLElement) {
+      containers.add(element);
+    }
+  };
+
+  addContainer(findScopedResumeUploadContainer(input));
+  addContainer(input.closest("label"));
+  addContainer(input.parentElement);
+  addContainer(input.closest("[class*='upload']"));
+  addContainer(input.closest("[class*='resume']"));
+  addContainer(input.closest("[class*='dropzone']"));
+  addContainer(input.closest("[data-upload]"));
+  addContainer(input.closest("[data-testid*='upload']"));
+  addContainer(input.closest("[data-testid*='resume']"));
+  addContainer(input.closest("section"));
+  addContainer(input.closest("article"));
+  addContainer(input.closest("fieldset"));
+
+  for (const container of containers) {
+    const text = normalizeChoiceText(
+      cleanText(container.innerText || container.textContent || "").slice(0, 1200)
+    );
+    if (!text) {
+      continue;
+    }
+
+    const mentionsAssetName =
+      normalizedAssetName.length >= 6 && text.includes(normalizedAssetName);
+    const mentionsAssetStem =
+      normalizedAssetStem.length >= 8 && text.includes(normalizedAssetStem);
+    const hasUploadSignal =
+      /\b(upload(?:ed)?|attach(?:ed|ment)?|selected|added|replace|resume|cv|application)\b/.test(
+        text
+      );
+
+    if ((mentionsAssetName || mentionsAssetStem) && hasUploadSignal) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function getResumeAssetUploadKey(
   asset: Pick<ResumeAsset, "name" | "size" | "updatedAt">
 ): string {

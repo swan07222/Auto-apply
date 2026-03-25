@@ -91,6 +91,28 @@ describe("manual review helpers", () => {
     expect(hasPendingRequiredAutofillFields([jobTitle, company])).toBe(false);
   });
 
+  it("ignores hidden required fields outside the active step", () => {
+    document.body.innerHTML = `
+      <form>
+        <div>
+          <label for="email">Email *</label>
+          <input id="email" type="email" required value="dev@example.com" />
+        </div>
+        <div>
+          <label for="future-step" style="display: none;">Future step question *</label>
+          <input id="future-step" type="text" required style="display: none;" />
+        </div>
+      </form>
+    `;
+
+    const email = document.querySelector("#email") as HTMLInputElement;
+    const futureStep = document.querySelector(
+      "#future-step"
+    ) as HTMLInputElement;
+
+    expect(hasPendingRequiredAutofillFields([email, futureStep])).toBe(false);
+  });
+
   it("recognizes final review pages with manual submit actions", () => {
     document.body.innerHTML = `
       <main>

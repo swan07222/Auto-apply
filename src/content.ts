@@ -76,6 +76,7 @@ import {
   findScopedResumeUploadContainer,
   getResumeAssetUploadKey,
   getSelectedFileName,
+  hasAcceptedResumeUpload,
   pickResumeUploadTargets,
   pickResumeAssetForUpload,
   resolveResumeKindForJob,
@@ -149,6 +150,7 @@ import {
   getCurrentSearchKeywordHints,
   looksLikeCurrentFrameApplicationSurface,
   mergeAutofillResult,
+  shouldBlockApplicationTargetProbeFailure,
   shouldPreferMonsterClickContinuation,
   shouldTreatCurrentPageAsApplied,
   throwIfRateLimited,
@@ -159,7 +161,8 @@ import {
 type ContentRequest =
   | { type: "start-automation"; session?: AutomationSession }
   | { type: "get-status" }
-  | { type: "automation-child-tab-opened" };
+  | { type: "automation-child-tab-opened" }
+  | { type: "pause-automation"; message?: string };
 
 type ManagedSessionCompletionKind =
   | "successful"
@@ -183,6 +186,7 @@ const MAX_AUTOFILL_STEPS = 15;
 const OVERLAY_AUTO_HIDE_MS = 10_000;
 const OVERLAY_EDGE_MARGIN = 18;
 const OVERLAY_DRAG_PADDING = 12;
+const OVERLAY_POSITION_STORAGE_KEY = "remote-job-search-overlay-position";
 const MAX_STAGE_DEPTH = 10;
 const IS_TOP_FRAME = window.top === window;
 
@@ -204,6 +208,12 @@ let overlayHideTimerId: number | null = null;
 let childApplicationTabOpened = false;
 let stageRetryState = createStageRetryState();
 let manualReviewPauseUntil = 0;
+let automationPauseRequested = false;
+let automationPauseMessage = "";
+let automationPausePromise: Promise<void> | null = null;
+let automationPauseResolve: (() => void) | null = null;
+let overlayPositionLoadPromise: Promise<void> | null = null;
+let overlayControlPending = false;
 const pendingAnswers = new Map<string, SavedAnswer>();
 const recentResumeUploadAttempts = new WeakMap<
   HTMLInputElement,
@@ -217,14 +227,18 @@ const extensionManagedResumeUploads = new WeakMap<
 const overlay: {
   host: HTMLDivElement | null;
   panel: HTMLElement | null;
+  dragHandle: HTMLElement | null;
   title: HTMLDivElement | null;
   text: HTMLDivElement | null;
+  actionButton: HTMLButtonElement | null;
   position: OverlayPosition | null;
 } = {
   host: null,
   panel: null,
+  dragHandle: null,
   title: null,
   text: null,
+  actionButton: null,
   position: null,
 };
 
@@ -476,6 +490,10 @@ async function ensureApplicationTargetReachable(
     return true;
   }
 
+  if (!shouldBlockApplicationTargetProbeFailure(reason, isExternalUrl(url))) {
+    return true;
+  }
+
   updateStatus(
     "error",
     describeBrokenApplicationTarget(description, reason),
@@ -500,6 +518,232 @@ async function navigateToApplicationTarget(
 }
 
 // ─── MESSAGE LISTENER ────────────────────────────────────────────────────────
+
+function ensureAutomationPausePromise(): Promise<void> {
+  if (!automationPausePromise) {
+    automationPausePromise = new Promise<void>((resolve) => {
+      automationPauseResolve = resolve;
+    });
+  }
+
+  return automationPausePromise;
+}
+
+function markAutomationPaused(message: string): void {
+  automationPauseRequested = true;
+  automationPauseMessage =
+    cleanText(message) || "Automation paused. Press Resume to continue.";
+  ensureAutomationPausePromise();
+}
+
+function clearAutomationPause(updateRunningStatus = false): void {
+  automationPauseRequested = false;
+  automationPauseMessage = "";
+
+  const resolvePause = automationPauseResolve;
+  automationPauseResolve = null;
+  automationPausePromise = null;
+
+  if (updateRunningStatus && status.site !== "unsupported") {
+    updateStatus("running", "Resuming automation...", true, currentStage);
+  }
+
+  resolvePause?.();
+}
+
+async function waitForAutomationResumeIfPaused(): Promise<void> {
+  if (!automationPauseRequested && status.phase !== "paused") {
+    return;
+  }
+
+  const pauseMessage =
+    automationPauseMessage ||
+    status.message ||
+    "Automation paused. Press Resume to continue.";
+  markAutomationPaused(pauseMessage);
+
+  if (status.phase !== "paused" || status.message !== pauseMessage) {
+    updateStatus("paused", pauseMessage, false, currentStage);
+  }
+
+  await ensureAutomationPausePromise();
+}
+
+async function pauseAutomationAndWait(message: string): Promise<void> {
+  markAutomationPaused(message);
+  updateStatus("paused", automationPauseMessage, false, currentStage);
+  await ensureAutomationPausePromise();
+}
+
+function canControlCurrentAutomationFromOverlay(): boolean {
+  return (
+    status.site !== "unsupported" &&
+    (status.phase === "running" ||
+      status.phase === "waiting_for_verification" ||
+      status.phase === "paused")
+  );
+}
+
+function getOverlayActionLabel(): "Pause" | "Resume" | null {
+  if (!canControlCurrentAutomationFromOverlay()) {
+    return null;
+  }
+
+  return status.phase === "paused" ? "Resume" : "Pause";
+}
+
+function isOverlayPositionCandidate(value: unknown): value is OverlayPosition {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Partial<OverlayPosition>;
+  return (
+    typeof candidate.top === "number" &&
+    Number.isFinite(candidate.top) &&
+    typeof candidate.left === "number" &&
+    Number.isFinite(candidate.left)
+  );
+}
+
+function applyOverlayPositionSnapshot(position: OverlayPosition): void {
+  overlay.position = {
+    top: position.top,
+    left: position.left,
+  };
+  syncOverlayPanelPosition();
+}
+
+function loadOverlayPosition(): void {
+  if (overlayPositionLoadPromise) {
+    return;
+  }
+
+  overlayPositionLoadPromise = chrome.storage.local
+    .get(OVERLAY_POSITION_STORAGE_KEY)
+    .then((stored) => {
+      const value =
+        stored[
+          OVERLAY_POSITION_STORAGE_KEY as keyof typeof stored
+        ];
+      if (isOverlayPositionCandidate(value)) {
+        applyOverlayPositionSnapshot(value);
+      }
+    })
+    .catch(() => {
+      // Ignore storage read failures and keep the default overlay position.
+    });
+}
+
+function persistOverlayPosition(): void {
+  if (!overlay.position) {
+    return;
+  }
+
+  const nextPosition =
+    overlay.panel ? clampOverlayPosition(overlay.position, overlay.panel) : overlay.position;
+  overlay.position = nextPosition;
+
+  void chrome.storage.local
+    .set({
+      [OVERLAY_POSITION_STORAGE_KEY]: nextPosition,
+    })
+    .catch(() => {
+      // Ignore storage write failures and keep the in-memory position.
+    });
+}
+
+function applyOverlaySessionSnapshot(session: unknown): void {
+  if (!session || typeof session !== "object") {
+    return;
+  }
+
+  const candidate = session as Partial<AutomationSession>;
+  if (
+    typeof candidate.message !== "string" ||
+    typeof candidate.updatedAt !== "number" ||
+    typeof candidate.site !== "string" ||
+    typeof candidate.phase !== "string"
+  ) {
+    return;
+  }
+
+  if (
+    candidate.phase !== "idle" &&
+    candidate.phase !== "running" &&
+    candidate.phase !== "paused" &&
+    candidate.phase !== "waiting_for_verification" &&
+    candidate.phase !== "completed" &&
+    candidate.phase !== "error"
+  ) {
+    return;
+  }
+
+  if (
+    candidate.stage === "bootstrap" ||
+    candidate.stage === "collect-results" ||
+    candidate.stage === "open-apply" ||
+    candidate.stage === "autofill-form"
+  ) {
+    currentStage = candidate.stage;
+  }
+
+  status = {
+    site: candidate.site,
+    phase: candidate.phase,
+    message: candidate.message,
+    updatedAt: candidate.updatedAt,
+  };
+  renderOverlay();
+}
+
+async function handleOverlayActionClick(): Promise<void> {
+  const actionLabel = getOverlayActionLabel();
+  if (!actionLabel || overlayControlPending) {
+    return;
+  }
+
+  overlayControlPending = true;
+  renderOverlay();
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type:
+        actionLabel === "Resume"
+          ? "resume-automation-session"
+          : "pause-automation-session",
+    });
+
+    if (!response?.ok) {
+      updateStatus(
+        "error",
+        response?.error ??
+          (actionLabel === "Resume"
+            ? "The extension could not resume automation on this tab."
+            : "The extension could not pause automation on this tab."),
+        false,
+        currentStage
+      );
+      return;
+    }
+
+    applyOverlaySessionSnapshot(response.session);
+  } catch (error) {
+    updateStatus(
+      "error",
+      error instanceof Error
+        ? error.message
+        : actionLabel === "Resume"
+          ? "Failed to resume automation."
+          : "Failed to pause automation.",
+      false,
+      currentStage
+    );
+  } finally {
+    overlayControlPending = false;
+    renderOverlay();
+  }
+}
 
 chrome.runtime.onMessage.addListener(
   (message: ContentRequest, _sender, sendResponse) => {
@@ -532,6 +776,18 @@ chrome.runtime.onMessage.addListener(
       return false;
     }
 
+    if (message.type === "pause-automation") {
+      if (status.site === "unsupported") {
+        return false;
+      }
+      markAutomationPaused(
+        message.message || "Automation paused. Press Resume to continue."
+      );
+      updateStatus("paused", automationPauseMessage, false, currentStage);
+      sendResponse({ ok: true, status });
+      return false;
+    }
+
     if (message.type === "start-automation") {
       const detectedSite = detectSiteFromUrl(window.location.href);
       if (message.session) {
@@ -556,6 +812,11 @@ chrome.runtime.onMessage.addListener(
         currentRunId = message.session.runId;
         currentClaimedJobKey = message.session.claimedJobKey;
         currentJobSlots = message.session.jobSlots;
+        if (message.session.phase === "paused" || !message.session.shouldResume) {
+          markAutomationPaused(message.session.message);
+        } else {
+          clearAutomationPause(false);
+        }
         renderOverlay();
       } else {
         currentStage = "bootstrap";
@@ -565,6 +826,7 @@ chrome.runtime.onMessage.addListener(
         currentRunId = undefined;
         currentClaimedJobKey = undefined;
         currentJobSlots = undefined;
+        clearAutomationPause(false);
       }
 
       void ensureAutomationRunning()
@@ -683,6 +945,11 @@ async function resumeAutomationIfNeeded(): Promise<void> {
       currentRunId = s.runId;
       currentClaimedJobKey = s.claimedJobKey;
       currentJobSlots = s.jobSlots;
+      if (s.phase === "paused" || !s.shouldResume) {
+        markAutomationPaused(s.message);
+      } else {
+        clearAutomationPause(false);
+      }
       renderOverlay();
 
       if (response.shouldResume) {
@@ -774,6 +1041,7 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
     "bootstrap"
   );
 
+  await waitForAutomationResumeIfPaused();
   await waitForHumanVerificationToClear();
   throwIfRateLimited(site, {
     detectBrokenPageReason,
@@ -791,25 +1059,21 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
       "Add at least one search keyword in the extension before starting job board automation."
     );
   }
-  const jobSlots = distributeJobSlotsAcrossTargets(
-    settings.jobPageLimit,
-    targets.length
-  );
   const items: SpawnTabRequest[] = targets
-    .map((target, index) => ({
+    .map((target) => ({
       url: target.url,
       site,
       stage: "collect-results" as const,
       runId: currentRunId,
-      jobSlots: jobSlots[index],
       message: `Collecting ${target.label} job pages on ${getSiteLabel(site)}...`,
       label: target.label,
       resumeKind: target.resumeKind,
       profileId: currentProfileId,
       keyword: target.keyword,
     }))
-    .filter((item) => (item.jobSlots ?? 0) > 0);
+    .filter((item) => Boolean(item.url));
 
+  await waitForAutomationResumeIfPaused();
   const response = await spawnTabs(items);
 
   updateStatus(
@@ -843,6 +1107,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     "collect-results"
   );
 
+  await waitForAutomationResumeIfPaused();
   if (effectiveLimit <= 0) {
     updateStatus(
       "completed",
@@ -872,6 +1137,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
           ? 5000
           : 2500;
   await sleep(renderWaitMs);
+  await waitForAutomationResumeIfPaused();
   throwIfRateLimited(site, {
     detectBrokenPageReason,
     document,
@@ -890,6 +1156,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
       "collect-results"
     );
     await waitForMyGreenhouseSearchResults(12_000);
+    await waitForAutomationResumeIfPaused();
     throwIfRateLimited(site, {
       detectBrokenPageReason,
       document,
@@ -910,8 +1177,10 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     site === "glassdoor"
   ) {
     await scrollSearchResultsPage();
+    await waitForAutomationResumeIfPaused();
   }
 
+  await waitForAutomationResumeIfPaused();
   const jobUrls = await collectJobDetailUrls({
     site,
     datePostedWindow: settings.datePostedWindow,
@@ -980,13 +1249,19 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     return !isAppliedJobText(ctx) && !isAppliedJobText(title);
   });
 
-  if (filteredJobUrls.length === 0) {
+  const reachableCollectedJobUrls = await filterReachableCollectedJobUrls(
+    site,
+    filteredJobUrls,
+    effectiveLimit
+  );
+
+  if (reachableCollectedJobUrls.length === 0) {
     if (
       await continueCollectResultsOnNextPage({
         site,
         remainingSlots: effectiveLimit,
-        progressMessage: `All visible ${labelPrefix}${getSiteLabel(site)} jobs were already applied to. Checking the next results page...`,
-        fallbackMessage: `All ${jobUrls.length} jobs on this ${labelPrefix}${getSiteLabel(site)} page were already applied to, and no later results pages were available.`,
+        progressMessage: `No usable ${labelPrefix}${getSiteLabel(site)} job pages were left on this page. Checking the next results page...`,
+        fallbackMessage: `No usable ${labelPrefix}${getSiteLabel(site)} job pages were left after removing applied or broken results.`,
       })
     ) {
       return;
@@ -994,7 +1269,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
 
     updateStatus(
       "completed",
-      `All ${jobUrls.length} jobs on this ${labelPrefix}${getSiteLabel(site)} page were already applied to.`,
+      `No usable ${labelPrefix}${getSiteLabel(site)} job pages were left after removing applied or broken results.`,
       false,
       "collect-results"
     );
@@ -1003,7 +1278,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   }
 
   const claimResult = await claimJobOpenings(
-    filteredJobUrls,
+    reachableCollectedJobUrls,
     effectiveLimit
   );
   const approvedUrls = claimResult.approvedUrls.slice(0, effectiveLimit);
@@ -1065,6 +1340,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     };
   });
 
+  await waitForAutomationResumeIfPaused();
   const response = await spawnTabs(items, effectiveLimit);
   const remainingSlotsAfterSpawn = getRemainingJobSlotsAfterSpawn(
     effectiveLimit,
@@ -1136,6 +1412,7 @@ async function continueCollectResultsOnNextPage(options: {
     safeRemainingSlots
   );
 
+  await waitForAutomationResumeIfPaused();
   const advanceResult = await advanceToNextResultsPage(site);
 
   if (advanceResult === "advanced") {
@@ -1176,6 +1453,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     return;
   }
 
+  await waitForAutomationResumeIfPaused();
   const urlAtStart = window.location.href;
 
   if (
@@ -1248,6 +1526,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     true,
     "open-apply"
   );
+  await waitForAutomationResumeIfPaused();
   await waitForHumanVerificationToClear();
   throwIfRateLimited(site, {
     detectBrokenPageReason,
@@ -1264,6 +1543,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       ? 4000
       : 2500
   );
+  await waitForAutomationResumeIfPaused();
   throwIfRateLimited(site, {
     detectBrokenPageReason,
     document,
@@ -1313,6 +1593,8 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     const maxApplySearchAttempts = site === "indeed" ? 45 : 35;
 
     for (let attempt = 0; attempt < maxApplySearchAttempts; attempt += 1) {
+      await waitForAutomationResumeIfPaused();
+
       // Check both direct URL comparison and MutationObserver detection
       const hasNavigated = window.location.href !== urlAtStart || navigationDetected;
 
@@ -1452,6 +1734,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     return;
   }
 
+  await waitForAutomationResumeIfPaused();
   currentStage = "autofill-form";
 
   if (action.type === "navigate") {
@@ -1590,6 +1873,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   performClickAction(action.element);
 
   for (let wait = 0; wait < 20; wait += 1) {
+    await waitForAutomationResumeIfPaused();
     await sleep(700);
 
     if (childApplicationTabOpened) return;
@@ -1829,6 +2113,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
 async function runAutofillStage(site: SiteKey): Promise<void> {
   if (childApplicationTabOpened) return;
+  await waitForAutomationResumeIfPaused();
 
   if (enterStageRetryScope("autofill-form") > MAX_STAGE_DEPTH) {
     updateStatus(
@@ -1873,6 +2158,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     isProbablyRateLimitPage,
   });
   await waitForLikelyApplicationSurface(site);
+  await waitForAutomationResumeIfPaused();
 
   const standaloneFrameUrl = findStandaloneApplicationFrameUrl();
   if (standaloneFrameUrl) {
@@ -1913,6 +2199,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     attempt += 1
   ) {
     if (childApplicationTabOpened) return;
+    await waitForAutomationResumeIfPaused();
 
     if (window.location.href !== previousUrl) {
       previousUrl = window.location.href;
@@ -1924,6 +2211,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
         isProbablyRateLimitPage,
       });
       await waitForLikelyApplicationSurface(site);
+      await waitForAutomationResumeIfPaused();
       if (childApplicationTabOpened) return;
     }
 
@@ -1939,13 +2227,10 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       )
     ) {
       noProgressCount = 0;
-      updateStatus(
-        "running",
-        "Manual review detected. Pausing automation briefly so you can edit this step.",
-        true,
-        "autofill-form"
+      manualReviewPauseUntil = 0;
+      await pauseAutomationAndWait(
+        "Manual review detected on this step. Press Resume after you finish editing."
       );
-      await sleep(1200);
       continue;
     }
 
@@ -1965,13 +2250,9 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
 
     if (hasPendingRequiredAutofillFields(currentFields)) {
       noProgressCount = 0;
-      updateStatus(
-        "running",
-        "Required questions need manual input on this step. Fill them and automation will continue automatically.",
-        true,
-        "autofill-form"
+      await pauseAutomationAndWait(
+        "Required questions need manual input on this step. Fill them, then press Resume."
       );
-      await sleep(1200);
       continue;
     }
 
@@ -2262,6 +2543,8 @@ async function waitForHumanVerificationToClear(): Promise<void> {
   let lastReminderAt = Date.now();
 
   while (getManualBlockKind()) {
+    await waitForAutomationResumeIfPaused();
+
     const pendingBrokenReason = await confirmBrokenPageReason(
       detectBrokenPageReason(document)
     );
@@ -2498,24 +2781,6 @@ async function uploadResumeIfNeeded(
   return null;
 }
 
-function distributeJobSlotsAcrossTargets(
-  totalSlots: number,
-  targetCount: number
-): number[] {
-  const safeTargetCount = Math.max(0, Math.floor(targetCount));
-  const safeTotalSlots = Math.max(0, Math.floor(totalSlots));
-  const slots = new Array<number>(safeTargetCount).fill(0);
-
-  for (let index = 0; index < safeTotalSlots; index += 1) {
-    if (safeTargetCount === 0) {
-      break;
-    }
-    slots[index % safeTargetCount] += 1;
-  }
-
-  return slots;
-}
-
 function pickResumeAsset(
   settings: AutomationSettings
 ): ResumeAsset | null {
@@ -2659,13 +2924,15 @@ async function setFileInputValue(
 
     let success =
       Boolean(input.files?.length) ||
-      getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase();
+      getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase() ||
+      hasAcceptedResumeUpload(input, asset.name);
 
     if (success) {
       await sleep(900);
       success =
         Boolean(input.files?.length) ||
-        getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase();
+        getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase() ||
+        hasAcceptedResumeUpload(input, asset.name);
     }
 
     if (!success) {
@@ -3027,6 +3294,60 @@ async function spawnTabs(
   return { opened };
 }
 
+async function filterReachableCollectedJobUrls(
+  site: SiteKey,
+  urls: string[],
+  desiredCount: number
+): Promise<string[]> {
+  if ((site !== "indeed" && site !== "greenhouse") || urls.length === 0) {
+    return urls;
+  }
+
+  const safeDesiredCount = Math.max(1, Math.floor(desiredCount));
+  const maxProbeCount = Math.min(urls.length, Math.max(safeDesiredCount * 3, 12));
+  const reachableUrls: string[] = [];
+  let index = 0;
+
+  while (index < maxProbeCount && reachableUrls.length < safeDesiredCount) {
+    await waitForAutomationResumeIfPaused();
+
+    const batch = urls.slice(index, index + 4);
+    const probeResults = await Promise.all(
+      batch.map((url) => probeCollectedJobUrl(url))
+    );
+
+    for (let offset = 0; offset < batch.length; offset += 1) {
+      if (probeResults[offset]) {
+        reachableUrls.push(batch[offset]);
+      }
+    }
+
+    index += batch.length;
+  }
+
+  if (reachableUrls.length === 0 && index >= maxProbeCount) {
+    return [];
+  }
+
+  return [...reachableUrls, ...urls.slice(index)];
+}
+
+async function probeCollectedJobUrl(url: string): Promise<boolean> {
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "probe-application-target",
+      url,
+    });
+    return (
+      response?.ok !== true ||
+      response.reachable !== false ||
+      response.reason !== "not_found"
+    );
+  } catch {
+    return true;
+  }
+}
+
 async function claimJobOpenings(
   urls: string[],
   requested: number
@@ -3249,7 +3570,7 @@ function navigateCurrentTab(url: string): void {
 // ─── STATUS / OVERLAY ────────────────────────────────────────────────────────
 
 async function searchMyGreenhousePortal(keyword: string): Promise<boolean> {
-  if (!isMyGreenhousePortalPage() || hasMyGreenhouseSearchResults()) {
+  if (!isMyGreenhousePortalPage()) {
     return false;
   }
 
@@ -3262,12 +3583,23 @@ async function searchMyGreenhousePortal(keyword: string): Promise<boolean> {
     return false;
   }
 
-  if (cleanText(titleInput.value) !== normalizedKeyword) {
+  const shouldUpdateKeyword = cleanText(titleInput.value) !== normalizedKeyword;
+  const shouldUpdateLocation =
+    Boolean(locationInput) &&
+    cleanText(locationInput?.value ?? "").toLowerCase() !== "united states";
+
+  if (!shouldUpdateKeyword && !shouldUpdateLocation && hasMyGreenhouseSearchResults()) {
+    return false;
+  }
+
+  if (shouldUpdateKeyword) {
     setTextControlValue(titleInput, normalizedKeyword);
   }
-  if (locationInput && cleanText(locationInput.value).toLowerCase() !== "remote") {
-    setTextControlValue(locationInput, "Remote");
+  if (locationInput && shouldUpdateLocation) {
+    setTextControlValue(locationInput, "United States");
   }
+
+  await ensureMyGreenhouseRemoteFilterEnabled();
 
   try {
     titleInput.focus();
@@ -3277,6 +3609,32 @@ async function searchMyGreenhousePortal(keyword: string): Promise<boolean> {
 
   performClickAction(searchButton);
   return true;
+}
+
+async function ensureMyGreenhouseRemoteFilterEnabled(): Promise<void> {
+  const remoteOption = findMyGreenhouseRemoteOption();
+  if (remoteOption && !isMyGreenhouseRemoteOptionSelected(remoteOption)) {
+    performClickAction(remoteOption);
+    await sleep(200);
+    return;
+  }
+
+  const workTypeButton = findMyGreenhouseWorkTypeButton();
+  if (!workTypeButton) {
+    return;
+  }
+
+  performClickAction(workTypeButton);
+  await sleep(200);
+
+  const openedRemoteOption = findMyGreenhouseRemoteOption();
+  if (
+    openedRemoteOption &&
+    !isMyGreenhouseRemoteOptionSelected(openedRemoteOption)
+  ) {
+    performClickAction(openedRemoteOption);
+    await sleep(200);
+  }
 }
 
 async function waitForMyGreenhouseSearchResults(timeoutMs: number): Promise<void> {
@@ -3313,6 +3671,14 @@ function hasMyGreenhouseSearchResults(): boolean {
     return false;
   }
 
+  if (
+    document.querySelector(
+      "a[href*='my.greenhouse.io/view_job'], a[href*='my.greenhouse.io'][href*='job_id='], a[href*='greenhouse.io'][href*='/jobs/'], a[href*='greenhouse.io'][href*='gh_jid=']"
+    )
+  ) {
+    return true;
+  }
+
   for (const element of Array.from(
     document.querySelectorAll<HTMLElement>(
       "a[href], button, [role='button'], [role='link'], input[type='button'], input[type='submit']"
@@ -3333,7 +3699,14 @@ function hasMyGreenhouseSearchResults(): boolean {
         .join(" ")
     ).toLowerCase();
 
-    if (text === "view job" || text.startsWith("view job ")) {
+    if (
+      text === "view job" ||
+      text.startsWith("view job ") ||
+      text === "view opening" ||
+      text.startsWith("view opening ") ||
+      text === "view role" ||
+      text.startsWith("view role ")
+    ) {
       return true;
     }
   }
@@ -3387,6 +3760,94 @@ function findMyGreenhouseSearchButton(): HTMLElement | null {
   }
 
   return null;
+}
+
+function findMyGreenhouseWorkTypeButton(): HTMLElement | null {
+  for (const candidate of Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "button, [role='button'], input[type='submit'], input[type='button']"
+    )
+  )) {
+    if (!isElementInteractive(candidate)) {
+      continue;
+    }
+
+    const text = cleanText(
+      [
+        candidate.innerText || candidate.textContent || "",
+        candidate.getAttribute("aria-label"),
+        candidate.getAttribute("title"),
+        candidate.getAttribute("value"),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    ).toLowerCase();
+
+    if (
+      text === "work type" ||
+      text.startsWith("work type ") ||
+      text === "workplace type" ||
+      text.startsWith("workplace type ") ||
+      text === "location type" ||
+      text.startsWith("location type ") ||
+      text === "work arrangement" ||
+      text.startsWith("work arrangement ")
+    ) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function findMyGreenhouseRemoteOption(): HTMLElement | null {
+  for (const candidate of Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "label, button, [role='button'], [role='checkbox'], [role='option'], [role='menuitemcheckbox']"
+    )
+  )) {
+    const text = cleanText(
+      [
+        candidate.innerText || candidate.textContent || "",
+        candidate.getAttribute("aria-label"),
+        candidate.getAttribute("title"),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    ).toLowerCase();
+
+    if (text === "remote" || text.startsWith("remote ")) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function isMyGreenhouseRemoteOptionSelected(element: HTMLElement): boolean {
+  const control =
+    element.matches("input[type='checkbox'], input[type='radio']")
+      ? (element as HTMLInputElement)
+      : element.querySelector<HTMLInputElement>("input[type='checkbox'], input[type='radio']");
+
+  if (control?.checked) {
+    return true;
+  }
+
+  return (
+    element.getAttribute("aria-checked") === "true" ||
+    element.getAttribute("aria-selected") === "true" ||
+    element.getAttribute("data-state") === "checked" ||
+    /\b(selected|checked|active)\b/i.test(
+      [
+        element.className,
+        element.getAttribute("data-testid"),
+        element.getAttribute("data-test"),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    )
+  );
 }
 
 function findFirstInteractiveElement<T extends HTMLElement>(
@@ -3481,14 +3942,22 @@ function ensureOverlay(): void {
   host.id = "remote-job-search-overlay-host";
   const shadow = host.attachShadow({ mode: "open" });
   const wrapper = document.createElement("section"),
+    header = document.createElement("div"),
     title = document.createElement("div"),
     text = document.createElement("div"),
+    actionButton = document.createElement("button"),
     style = document.createElement("style");
-  style.textContent = `:host{all:initial}section{position:fixed;top:${OVERLAY_EDGE_MARGIN}px;right:${OVERLAY_EDGE_MARGIN}px;z-index:2147483647;width:min(340px,calc(100vw - 36px));padding:14px 16px;border-radius:16px;background:rgba(18,34,53,.94);color:#f6efe2;font-family:"Segoe UI",sans-serif;box-shadow:0 16px 40px rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(12px);transition:opacity .3s;cursor:grab;user-select:none;touch-action:none}.dragging{cursor:grabbing}.title{margin:0 0 6px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#f2b54b}.text{margin:0;font-size:13px;line-height:1.5;color:#f8f5ef}`;
+  style.textContent = `:host{all:initial}.panel{position:fixed;top:${OVERLAY_EDGE_MARGIN}px;right:${OVERLAY_EDGE_MARGIN}px;z-index:2147483647;width:min(340px,calc(100vw - 36px));padding:14px 16px;border-radius:16px;background:rgba(18,34,53,.94);color:#f6efe2;font-family:"Segoe UI",sans-serif;box-shadow:0 16px 40px rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(12px);transition:opacity .3s}.header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 8px;cursor:grab;user-select:none;touch-action:none}.panel.dragging .header{cursor:grabbing}.title{margin:0;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#f2b54b}.text{margin:0;font-size:13px;line-height:1.5;color:#f8f5ef}.action{appearance:none;border:1px solid rgba(242,181,75,.35);background:rgba(255,255,255,.08);color:#f8f5ef;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700;line-height:1;cursor:pointer;white-space:nowrap}.action:hover:not(:disabled){background:rgba(255,255,255,.14)}.action:disabled{opacity:.55;cursor:wait}`;
+  wrapper.className = "panel";
+  header.className = "header";
   title.className = "title";
   text.className = "text";
-  wrapper.title = "Drag to move";
-  wrapper.append(title, text);
+  actionButton.className = "action";
+  actionButton.type = "button";
+  actionButton.hidden = true;
+  header.title = "Drag to move";
+  header.append(title, actionButton);
+  wrapper.append(header, text);
   shadow.append(style, wrapper);
 
   let dragPointerId: number | null = null;
@@ -3513,10 +3982,15 @@ function ensureOverlay(): void {
 
     dragPointerId = null;
     wrapper.classList.remove("dragging");
+    persistOverlayPosition();
   };
 
-  wrapper.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) {
+  header.addEventListener("pointerdown", (event) => {
+    if (
+      event.button !== 0 ||
+      (event.target instanceof HTMLElement &&
+        event.target.closest("button"))
+    ) {
       return;
     }
 
@@ -3537,6 +4011,12 @@ function ensureOverlay(): void {
       }
     }
     event.preventDefault();
+  });
+
+  actionButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void handleOverlayActionClick();
   });
 
   wrapper.addEventListener("pointermove", (event) => {
@@ -3573,8 +4053,11 @@ function ensureOverlay(): void {
     : mount();
   overlay.host = host;
   overlay.panel = wrapper;
+  overlay.dragHandle = header;
   overlay.title = title;
   overlay.text = text;
+  overlay.actionButton = actionButton;
+  loadOverlayPosition();
 }
 
 function clampOverlayPosition(
@@ -3641,7 +4124,8 @@ function renderOverlay(): void {
   if (
     !overlay.host ||
     !overlay.title ||
-    !overlay.text
+    !overlay.text ||
+    !overlay.actionButton
   )
     return;
   const siteText =
@@ -3652,6 +4136,11 @@ function renderOverlay(): void {
     ? `Remote Job Search - ${siteText} - ${getResumeKindLabel(currentResumeKind)}`
     : `Remote Job Search - ${siteText}`;
   overlay.text.textContent = status.message;
+  const actionLabel = getOverlayActionLabel();
+  overlay.actionButton.hidden = !actionLabel;
+  overlay.actionButton.disabled = overlayControlPending;
+  overlay.actionButton.textContent =
+    overlayControlPending && actionLabel ? `${actionLabel}...` : actionLabel ?? "";
   if (status.phase === "idle") {
     overlay.host.style.display = "none";
     return;

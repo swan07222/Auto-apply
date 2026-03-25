@@ -267,6 +267,7 @@ describe("autofill helpers", () => {
     const essay = document.querySelector("#essay") as HTMLTextAreaElement;
 
     expect(isConsentField(consent)).toBe(true);
+    expect(shouldRememberField(consent)).toBe(false);
     expect(shouldRememberField(fullName)).toBe(false);
     expect(shouldRememberField(essay)).toBe(true);
   });

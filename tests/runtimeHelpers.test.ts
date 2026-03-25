@@ -4,6 +4,7 @@ import {
   getCurrentSearchKeywordHints,
   looksLikeCurrentFrameApplicationSurface,
   mergeAutofillResult,
+  shouldBlockApplicationTargetProbeFailure,
   shouldPreferMonsterClickContinuation,
   shouldTreatCurrentPageAsApplied,
   throwIfRateLimited,
@@ -107,6 +108,21 @@ describe("content runtime helpers", () => {
         "https://www.monster.com/jobs/search"
       )
     ).toBe(false);
+  });
+
+  it("does not block external application handoffs when preflight probing is inconclusive", () => {
+    expect(
+      shouldBlockApplicationTargetProbeFailure("access_denied", true)
+    ).toBe(false);
+    expect(
+      shouldBlockApplicationTargetProbeFailure("unreachable", true)
+    ).toBe(false);
+    expect(
+      shouldBlockApplicationTargetProbeFailure("not_found", true)
+    ).toBe(true);
+    expect(
+      shouldBlockApplicationTargetProbeFailure("access_denied", false)
+    ).toBe(true);
   });
 
   it("keeps remaining job-slot math aligned to the configured run limit", () => {
