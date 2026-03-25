@@ -204,7 +204,7 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
   });
 
   await import("../src/popup");
-  await flushAsyncWork();
+  await flushAsyncWork(16);
 
   return {
     getLatestSettings: () =>
@@ -522,6 +522,35 @@ describe("popup workflow", () => {
     expect(greenhousePopup.siteName.textContent).toBe("Greenhouse");
     expect(greenhousePopup.statusText.textContent).toBe("Ready on Greenhouse.");
     expect(greenhousePopup.startButton.disabled).toBe(false);
+  });
+
+  it("treats redirected Greenhouse career pages as Greenhouse when the content script detects them", async () => {
+    const popup = await createPopupHarness({
+      activeTabs: [
+        {
+          id: 77,
+          url: "https://www.figma.com/careers/",
+        },
+      ],
+      tabsSendMessage: async (_tabId, message) => {
+        if (message.type === "get-status") {
+          return {
+            status: {
+              site: "greenhouse",
+              phase: "idle",
+              message: "Ready on Greenhouse.",
+              updatedAt: Date.now(),
+            },
+          };
+        }
+
+        return null;
+      },
+    });
+
+    expect(popup.siteName.textContent).toBe("Greenhouse");
+    expect(popup.statusText.textContent).toBe("Ready on Greenhouse.");
+    expect(popup.startButton.disabled).toBe(false);
   });
 
   it("uses the pending job-board URL when the active tab is still loading", async () => {

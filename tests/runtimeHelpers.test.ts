@@ -1,10 +1,13 @@
 import {
   createEmptyAutofillResult,
+  detectSupportedSiteFromPage,
   getGreenhousePortalSearchKeyword,
   getRemainingJobSlotsAfterSpawn,
   getCurrentSearchKeywordHints,
   looksLikeCurrentFrameApplicationSurface,
   mergeAutofillResult,
+  resolveGreenhouseSearchContextUrl,
+  shouldKeepResultsPageOpenAfterZeroSpawn,
   shouldBlockApplicationTargetProbeFailure,
   shouldPreferMonsterClickContinuation,
   shouldTreatCurrentPageAsApplied,
@@ -57,6 +60,49 @@ describe("content runtime helpers", () => {
     ).toBe("platform engineer");
     expect(getGreenhousePortalSearchKeyword([], "Vercel")).toBe("Vercel");
     expect(getGreenhousePortalSearchKeyword([], undefined)).toBeUndefined();
+  });
+
+  it("detects redirected Greenhouse career pages from embedded board links", () => {
+    document.body.innerHTML = `
+      <main>
+        <a href="https://boards.greenhouse.io/figma/jobs/5813967004?gh_jid=5813967004">
+          Distribution Partner Manager
+        </a>
+      </main>
+    `;
+
+    expect(
+      detectSupportedSiteFromPage("https://www.figma.com/careers/", document)
+    ).toBe("greenhouse");
+    expect(
+      resolveGreenhouseSearchContextUrl("https://www.figma.com/careers/", document)
+    ).toBe("https://boards.greenhouse.io/figma");
+  });
+
+  it("detects redirected Greenhouse career pages from inline script board data", () => {
+    document.body.innerHTML = `
+      <main>
+        <script>
+          window.__CAREERS_DATA__ = {
+            board: {
+              public_url: "https://job-boards.greenhouse.io/figma"
+            },
+            jobs: [
+              {
+                absolute_url: "https://job-boards.greenhouse.io/figma/jobs/5813967004"
+              }
+            ]
+          };
+        </script>
+      </main>
+    `;
+
+    expect(
+      detectSupportedSiteFromPage("https://www.figma.com/careers/", document)
+    ).toBe("greenhouse");
+    expect(
+      resolveGreenhouseSearchContextUrl("https://www.figma.com/careers/", document)
+    ).toBe("https://job-boards.greenhouse.io/figma");
   });
 
   it("builds rate-limit and broken-page failures from page detectors", () => {
@@ -152,5 +198,12 @@ describe("content runtime helpers", () => {
     expect(getRemainingJobSlotsAfterSpawn(5, 0, 0, 5)).toBe(5);
     expect(getRemainingJobSlotsAfterSpawn(5, 1, 0, 3)).toBe(2);
     expect(getRemainingJobSlotsAfterSpawn(5, 2, 1, 4)).toBe(3);
+  });
+
+  it("keeps results pages open when jobs were found but zero new tabs opened", () => {
+    expect(shouldKeepResultsPageOpenAfterZeroSpawn(0, 3, 0)).toBe(true);
+    expect(shouldKeepResultsPageOpenAfterZeroSpawn(1, 3, 0)).toBe(false);
+    expect(shouldKeepResultsPageOpenAfterZeroSpawn(0, 0, 0)).toBe(false);
+    expect(shouldKeepResultsPageOpenAfterZeroSpawn(0, 3, 2)).toBe(false);
   });
 });

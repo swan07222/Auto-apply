@@ -1172,7 +1172,16 @@
         func: () => {
           const preferredKeys = [
             "jobResults",
+            "jobViewResults",
+            "jobViewResultsData",
+            "jobViewResultsDataCompact",
+            "jobViewData",
+            "jobData",
             "jobs",
+            "jobCards",
+            "listings",
+            "edges",
+            "nodes",
             "results",
             "items",
             "searchResults",
@@ -1198,18 +1207,130 @@
               record.jobPosting?.title,
               record.title
             ];
-            return urls.some(
+            const hasRecognizedUrl = urls.some(
               (url) => typeof url === "string" && /monster\.|\/job(?:-openings)?\/|\/jobs\/[^/?#]{4,}/i.test(url)
-            ) || titles.some(
+            );
+            const hasJobIdentity = typeof record.jobId === "string" || typeof record.id === "string" || Boolean(record.jobPosting) || Boolean(record.normalizedJobPosting);
+            return hasRecognizedUrl || hasJobIdentity && titles.some(
               (title) => typeof title === "string" && title.trim().length >= 3
             );
+          };
+          const normalizeMonsterUrl = (rawUrl) => {
+            const normalized = rawUrl.replace(/\\u002f/gi, "/").replace(/\\u0026/gi, "&").replace(/\\\//g, "/").replace(/&amp;/gi, "&").trim();
+            if (!normalized) {
+              return null;
+            }
+            try {
+              const parsed = new URL(normalized, window.location.href);
+              const lower = parsed.toString().toLowerCase();
+              if (!/monster\./.test(parsed.hostname.toLowerCase()) || lower.includes("/jobs/search") || lower.includes("/jobs/browse") || lower.includes("/jobs/q-") || lower.includes("/jobs/l-")) {
+                return null;
+              }
+              parsed.hash = "";
+              return parsed.toString();
+            } catch {
+              return null;
+            }
+          };
+          const isLikelyMonsterJobTitle = (value) => {
+            const title = (value || "").trim();
+            if (!title || title.length < 3 || title.length > 180) {
+              return false;
+            }
+            const lower = title.toLowerCase();
+            return ![
+              "monster",
+              "jobs",
+              "search",
+              "apply",
+              "quick apply",
+              "smart apply",
+              "career advice",
+              "salary",
+              "privacy",
+              "terms",
+              "cookie"
+            ].includes(lower);
+          };
+          const extractMonsterRecordsFromText = (text) => {
+            const normalizedText = text.replace(/\\u002f/gi, "/").replace(/\\u0026/gi, "&").replace(/\\\//g, "/");
+            const urlPattern = /https?:\/\/(?:[\w-]+\.)?monster\.[a-z.]+\/(?:job-openings?\/[^"'\\<>\s]+|job\/[^"'\\<>\s]+|job-detail\/[^"'\\<>\s]+|jobs\/[^"'\\<>\s]{4,})/gi;
+            const records = [];
+            const seenUrls = /* @__PURE__ */ new Set();
+            for (const match of normalizedText.matchAll(urlPattern)) {
+              const rawUrl = match[0] || "";
+              const url = normalizeMonsterUrl(rawUrl);
+              if (!url || seenUrls.has(url)) {
+                continue;
+              }
+              const matchIndex = typeof match.index === "number" ? match.index : -1;
+              const nearbyText = matchIndex >= 0 ? normalizedText.slice(
+                Math.max(0, matchIndex - 500),
+                Math.min(normalizedText.length, matchIndex + 500)
+              ) : normalizedText;
+              const titleMatch = nearbyText.match(
+                /["']?(?:title|jobTitle|job_title|name|jobName)["']?\s*[:=]\s*["']([^"'\n]{3,180})["']/i
+              );
+              const title = titleMatch?.[1]?.replace(/\\u0026/gi, "&")?.replace(/\\u002f/gi, "/")?.replace(/\\\//g, "/")?.trim();
+              seenUrls.add(url);
+              records.push(
+                isLikelyMonsterJobTitle(title) ? { url, title } : { url }
+              );
+            }
+            return records;
+          };
+          const collectMonsterScriptTextRecords = () => {
+            const records = [];
+            const seenUrls = /* @__PURE__ */ new Set();
+            for (const script of Array.from(
+              document.querySelectorAll(
+                "script#__NEXT_DATA__, script[type='application/json'], script[type='application/ld+json'], script:not([src])"
+              )
+            ).slice(0, 40)) {
+              const text = script.textContent?.trim() || "";
+              if (text.length < 40 || !/monster|job-openings|jobview|jobTitle|canonicalUrl/i.test(text)) {
+                continue;
+              }
+              for (const record of extractMonsterRecordsFromText(text)) {
+                if (seenUrls.has(record.url)) {
+                  continue;
+                }
+                seenUrls.add(record.url);
+                records.push(record);
+              }
+            }
+            return records;
+          };
+          const scoreCandidateRecord = (value) => {
+            if (!looksLikeMonsterJobRecord(value)) {
+              return 0;
+            }
+            const record = value;
+            let score = 0;
+            if ([
+              record.normalizedJobPosting?.url,
+              record.jobPosting?.url,
+              record.enrichments?.localizedMonsterUrls?.[0]?.url,
+              record.canonicalUrl,
+              record.url
+            ].some((url) => typeof url === "string" && Boolean(normalizeMonsterUrl(url)))) {
+              score += 3;
+            }
+            if ([
+              record.normalizedJobPosting?.title,
+              record.jobPosting?.title,
+              record.title
+            ].some(
+              (title) => typeof title === "string" && title.trim().length >= 3
+            )) {
+              score += 1;
+            }
+            return score;
           };
           const scoreCandidateArray = (value) => {
             let score = 0;
             for (const entry of value.slice(0, 25)) {
-              if (looksLikeMonsterJobRecord(entry)) {
-                score += 1;
-              }
+              score += scoreCandidateRecord(entry);
             }
             return score;
           };
@@ -1235,8 +1356,9 @@
           ].filter((value) => value !== void 0 && value !== null);
           const visitedObjects = /* @__PURE__ */ new WeakSet();
           const candidateArrays = [];
+          const candidateRecords = [];
           const visit = (value, depth) => {
-            if (depth > 6 || visitedCount > 800) {
+            if (depth > 8 || visitedCount > 2500) {
               return;
             }
             if (Array.isArray(value)) {
@@ -1259,6 +1381,9 @@
             }
             visitedObjects.add(obj);
             visitedCount += 1;
+            if (scoreCandidateRecord(obj) > 0) {
+              candidateRecords.push(obj);
+            }
             for (const key of preferredKeys) {
               if (key in obj) {
                 visit(obj[key], depth + 1);
@@ -1277,7 +1402,30 @@
           candidateArrays.sort(
             (left, right) => scoreCandidateArray(right) - scoreCandidateArray(left) || right.length - left.length
           );
-          return candidateArrays[0] ?? [];
+          if (candidateArrays[0]?.length) {
+            return candidateArrays[0];
+          }
+          const dedupedRecords = [];
+          const seenRecordUrls = /* @__PURE__ */ new Set();
+          for (const record of candidateRecords) {
+            if (!looksLikeMonsterJobRecord(record)) {
+              continue;
+            }
+            const resolvedUrl = normalizeMonsterUrl(
+              String(
+                record.normalizedJobPosting?.url ?? record.jobPosting?.url ?? record.enrichments?.localizedMonsterUrls?.[0]?.url ?? record.canonicalUrl ?? record.url ?? ""
+              )
+            );
+            if (!resolvedUrl || seenRecordUrls.has(resolvedUrl)) {
+              continue;
+            }
+            seenRecordUrls.add(resolvedUrl);
+            dedupedRecords.push(record);
+          }
+          if (dedupedRecords.length > 0) {
+            return dedupedRecords;
+          }
+          return collectMonsterScriptTextRecords();
         }
       });
       const jobResults = Array.isArray(results[0]?.result) ? results[0].result : [];
@@ -1744,7 +1892,10 @@
       };
     }
     const resolvedTabId = tab.id;
-    const site = detectSiteFromUrl(getTabUrl(tab));
+    const site = await detectJobBoardSiteForTab(
+      resolvedTabId,
+      getTabUrl(tab)
+    );
     const settings = await readAutomationSettings();
     const runId = createRunId();
     const searchKeywords = parseSearchKeywords(settings.searchKeywords);
@@ -2946,6 +3097,21 @@
     return new Promise((resolve) => {
       globalThis.setTimeout(resolve, ms);
     });
+  }
+  async function detectJobBoardSiteForTab(tabId, tabUrl) {
+    const detectedFromUrl = detectSiteFromUrl(tabUrl);
+    if (isJobBoardSite(detectedFromUrl)) {
+      return detectedFromUrl;
+    }
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, {
+        type: "get-status"
+      });
+      const contentSite = response?.status?.site;
+      return isJobBoardSite(contentSite) ? contentSite : null;
+    } catch {
+      return null;
+    }
   }
   async function reloadTabAndWait(tabId) {
     await new Promise((resolve, reject) => {

@@ -89,6 +89,7 @@ import {
   normalizeUrl,
   performClickAction,
   isElementInteractive,
+  shouldScrollElementIntoViewBeforeClick,
 } from "./content/dom";
 import {
   collectJobDetailCandidates,
@@ -144,11 +145,14 @@ import {
 } from "./content/manualReview";
 import {
   createEmptyAutofillResult,
+  detectSupportedSiteFromPage,
   getGreenhousePortalSearchKeyword,
   getRemainingJobSlotsAfterSpawn,
   getCurrentSearchKeywordHints,
   looksLikeCurrentFrameApplicationSurface,
   mergeAutofillResult,
+  resolveGreenhouseSearchContextUrl,
+  shouldKeepResultsPageOpenAfterZeroSpawn,
   shouldBlockApplicationTargetProbeFailure,
   shouldPreferMonsterClickContinuation,
   shouldTreatCurrentPageAsApplied,
@@ -257,7 +261,10 @@ async function readCurrentAutomationSettings(): Promise<AutomationSettings> {
 }
 
 function resolveCurrentSiteKey(): SiteKey | null {
-  const detectedSite = detectSiteFromUrl(window.location.href);
+  const detectedSite = detectSupportedSiteFromPage(
+    window.location.href,
+    document
+  );
   if (detectedSite) {
     return detectedSite;
   }
@@ -767,6 +774,23 @@ chrome.runtime.onMessage.addListener(
       if (!IS_TOP_FRAME) {
         return false;
       }
+      const detectedSite = detectSupportedSiteFromPage(
+        window.location.href,
+        document
+      );
+      if (
+        detectedSite &&
+        (status.site === "unsupported" ||
+          (status.phase === "idle" && status.site !== detectedSite))
+      ) {
+        status =
+          status.phase === "idle"
+            ? createStatus(detectedSite, "idle", `Ready on ${getSiteLabel(detectedSite)}.`)
+            : {
+                ...status,
+                site: detectedSite,
+              };
+      }
       sendResponse({ ok: true, status });
       return false;
     }
@@ -805,7 +829,10 @@ chrome.runtime.onMessage.addListener(
     }
 
     if (message.type === "start-automation") {
-      const detectedSite = detectSiteFromUrl(window.location.href);
+      const detectedSite = detectSupportedSiteFromPage(
+        window.location.href,
+        document
+      );
       if (message.session) {
         if (!shouldHandleAutomationInCurrentFrame(message.session, detectedSite)) {
           return false;
@@ -891,7 +918,10 @@ renderOverlay();
 // ─── RESUME / RUN ────────────────────────────────────────────────────────────
 
 async function resumeAutomationIfNeeded(): Promise<void> {
-  const detectedSite = detectSiteFromUrl(window.location.href);
+  const detectedSite = detectSupportedSiteFromPage(
+    window.location.href,
+    document
+  );
   childApplicationTabOpened = false;
   stageRetryState = createStageRetryState();
 
@@ -1046,6 +1076,10 @@ async function runAutomation(): Promise<void> {
 
 async function runBootstrapStage(site: JobBoardSite): Promise<void> {
   const settings = await readCurrentAutomationSettings();
+  const searchContextUrl =
+    site === "greenhouse"
+      ? resolveGreenhouseSearchContextUrl(window.location.href, document)
+      : window.location.href;
 
   updateStatus(
     "running",
@@ -1064,8 +1098,9 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
 
   const targets = buildSearchTargets(
     site,
-    window.location.href,
-    settings.searchKeywords
+    searchContextUrl,
+    settings.searchKeywords,
+    settings.candidate.country
   );
   if (targets.length === 0) {
     throw new Error(
@@ -1170,7 +1205,10 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   if (
     site === "greenhouse" &&
     greenhousePortalKeyword &&
-    (await searchMyGreenhousePortal(greenhousePortalKeyword))
+    (await searchMyGreenhousePortal(
+      greenhousePortalKeyword,
+      settings.candidate.country
+    ))
   ) {
     const greenhouseLabelPrefix = currentLabel ? `${currentLabel} ` : "";
     updateStatus(
@@ -1212,6 +1250,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     detectedSite: status.site === "unsupported" ? null : status.site,
     resumeKind: currentResumeKind,
     searchKeywords: keywordHints,
+    candidateCountry: settings.candidate.country,
     label: currentLabel,
     onOpenListingsSurface: (message) => {
       updateStatus("running", message, true, "collect-results");
@@ -1381,6 +1420,11 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
       ? ` (opened ${approvedUrls.length} unique jobs from ${jobUrls.length} found)`
       : "";
   const openedMessage = `Opened ${response.opened} job tabs from ${labelPrefix}${getSiteLabel(site)} search${extra}.`;
+  const shouldKeepResultsPageOpen = shouldKeepResultsPageOpenAfterZeroSpawn(
+    response.opened,
+    approvedUrls.length,
+    remainingSlotsAfterSpawn
+  );
 
   if (remainingSlotsAfterSpawn > 0) {
     if (
@@ -1393,6 +1437,16 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     ) {
       return;
     }
+  }
+
+  if (shouldKeepResultsPageOpen) {
+    updateStatus(
+      "completed",
+      `Found ${approvedUrls.length} ${labelPrefix}${getSiteLabel(site)} job page${approvedUrls.length === 1 ? "" : "s"} on this results page, but no new job tab opened. Keeping this results page open for review.`,
+      false,
+      "collect-results"
+    );
+    return;
   }
 
   updateStatus(
@@ -1781,8 +1835,10 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     "autofill-form"
   );
 
-  action.element.scrollIntoView({ behavior: "smooth", block: "center" });
-  await sleepWithAutomationChecks(600);
+  if (shouldScrollElementIntoViewBeforeClick(action.element)) {
+    action.element.scrollIntoView({ behavior: "smooth", block: "center" });
+    await sleepWithAutomationChecks(600);
+  }
 
   const urlBeforeClick = window.location.href;
 
@@ -2013,6 +2069,23 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   let retryAction: ApplyAction | null = null;
   if (site === "monster") {
     retryAction = findMonsterApplyAction();
+    if (
+      action.type === "click" &&
+      (!retryAction ||
+        retryAction.type !== "click" ||
+        retryAction.element === action.element)
+    ) {
+      const monsterFallbackElement = action.fallbackElements?.find(
+        (element) => element && element.isConnected && element !== action.element
+      );
+      if (monsterFallbackElement) {
+        retryAction = {
+          type: "click",
+          element: monsterFallbackElement,
+          description: action.description,
+        };
+      }
+    }
   } else if (site === "ziprecruiter") {
     retryAction = findZipRecruiterApplyAction();
   } else if (site === "dice") {
@@ -2032,11 +2105,13 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       true,
       "autofill-form"
     );
-    retryAction.element.scrollIntoView({
-      behavior: "smooth",
-      block: "center",
-    });
-    await sleepWithAutomationChecks(400);
+    if (shouldScrollElementIntoViewBeforeClick(retryAction.element)) {
+      retryAction.element.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+      await sleepWithAutomationChecks(400);
+    }
     performClickAction(retryAction.element);
     await sleepWithAutomationChecks(3000);
 
@@ -2077,11 +2152,13 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       );
       return;
     }
-    retryCompanyAction.element.scrollIntoView({
-      behavior: "smooth",
-      block: "center",
-    });
-    await sleepWithAutomationChecks(400);
+    if (shouldScrollElementIntoViewBeforeClick(retryCompanyAction.element)) {
+      retryCompanyAction.element.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+      await sleepWithAutomationChecks(400);
+    }
     performClickAction(retryCompanyAction.element);
     await sleepWithAutomationChecks(3000);
 
@@ -3579,7 +3656,10 @@ function navigateCurrentTab(url: string): void {
 
 // ─── STATUS / OVERLAY ────────────────────────────────────────────────────────
 
-async function searchMyGreenhousePortal(keyword: string): Promise<boolean> {
+async function searchMyGreenhousePortal(
+  keyword: string,
+  candidateCountry: string
+): Promise<boolean> {
   if (!isMyGreenhousePortalPage()) {
     return false;
   }
@@ -3594,9 +3674,10 @@ async function searchMyGreenhousePortal(keyword: string): Promise<boolean> {
   }
 
   const shouldUpdateKeyword = cleanText(titleInput.value) !== normalizedKeyword;
+  const normalizedCountry = cleanText(candidateCountry) || "United States";
   const shouldUpdateLocation =
     Boolean(locationInput) &&
-    cleanText(locationInput?.value ?? "").toLowerCase() !== "united states";
+    cleanText(locationInput?.value ?? "") !== normalizedCountry;
 
   if (!shouldUpdateKeyword && !shouldUpdateLocation && hasMyGreenhouseSearchResults()) {
     return false;
@@ -3606,7 +3687,7 @@ async function searchMyGreenhousePortal(keyword: string): Promise<boolean> {
     setTextControlValue(titleInput, normalizedKeyword);
   }
   if (locationInput && shouldUpdateLocation) {
-    setTextControlValue(locationInput, "United States");
+    setTextControlValue(locationInput, normalizedCountry);
   }
 
   await ensureMyGreenhouseRemoteFilterEnabled();
@@ -3931,7 +4012,7 @@ function updateStatus(
 }
 
 function createInitialStatus(): AutomationStatus {
-  const site = detectSiteFromUrl(window.location.href);
+  const site = detectSupportedSiteFromPage(window.location.href, document);
   return site
     ? createStatus(
         site,

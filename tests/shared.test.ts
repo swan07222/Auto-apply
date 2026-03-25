@@ -101,7 +101,7 @@ describe("shared automation target logic", () => {
     expect(firstUrl.searchParams.get("location")).toBeNull();
   });
 
-  it("builds Greenhouse search targets from the current board path using the live keyword param", () => {
+  it("builds Greenhouse search targets from the current board path using a remote keyword hint", () => {
     const targets = buildSearchTargets(
       "greenhouse",
       "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
@@ -113,8 +113,23 @@ describe("shared automation target logic", () => {
 
     expect(firstUrl.origin).toBe("https://job-boards.greenhouse.io");
     expect(firstUrl.pathname).toBe("/vercel");
-    expect(firstUrl.searchParams.get("keyword")).toBe("site engineer");
+    expect(firstUrl.searchParams.get("keyword")).toBe("site engineer remote");
     expect(firstUrl.searchParams.get("location")).toBe("Remote");
+  });
+
+  it("uses the candidate country when building Greenhouse search targets", () => {
+    const targets = buildSearchTargets(
+      "greenhouse",
+      "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
+      "site engineer",
+      "United States"
+    );
+
+    expect(targets).toHaveLength(1);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(firstUrl.searchParams.get("keyword")).toBe("site engineer remote");
+    expect(firstUrl.searchParams.get("location")).toBe("United States");
   });
 
   it("keeps MyGreenhouse search targets on the portal page so the in-page search UI can run", () => {

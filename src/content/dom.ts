@@ -404,6 +404,34 @@ export function isElementVisible(el: HTMLElement): boolean {
   return true;
 }
 
+export function shouldScrollElementIntoViewBeforeClick(
+  element: HTMLElement
+): boolean {
+  if (!element || !element.isConnected) {
+    return false;
+  }
+
+  const rect = element.getBoundingClientRect();
+  const viewportHeight =
+    window.innerHeight || document.documentElement.clientHeight || 0;
+  const viewportWidth =
+    window.innerWidth || document.documentElement.clientWidth || 0;
+
+  if (rect.width <= 0 || rect.height <= 0) {
+    return false;
+  }
+
+  const centerX = rect.left + rect.width / 2;
+  const centerY = rect.top + rect.height / 2;
+
+  return (
+    centerY < 0 ||
+    centerY > viewportHeight ||
+    centerX < 0 ||
+    centerX > viewportWidth
+  );
+}
+
 export function performClickAction(element: HTMLElement): void {
   const isNativeSubmitControl =
     (element instanceof HTMLButtonElement &&

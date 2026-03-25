@@ -456,12 +456,12 @@
     }
     return Array.from(deduped.values());
   }
-  function buildSearchTargets(site, currentUrl, searchKeywords) {
+  function buildSearchTargets(site, currentUrl, searchKeywords, candidateCountry = "") {
     return dedupeSearchTargets(
       parseSearchKeywords(searchKeywords).map((keyword) => ({
         label: keyword,
         keyword,
-        url: buildSingleSearchUrl(site, keyword, currentUrl)
+        url: buildSingleSearchUrl(site, keyword, currentUrl, candidateCountry)
       }))
     );
   }
@@ -482,7 +482,7 @@
     }
     return Array.from(deduped.values());
   }
-  function buildSingleSearchUrl(site, query, currentUrl) {
+  function buildSingleSearchUrl(site, query, currentUrl, candidateCountry = "") {
     const baseOrigin = CANONICAL_JOB_BOARD_ORIGINS[site];
     switch (site) {
       case "indeed": {
@@ -508,7 +508,12 @@
       case "glassdoor":
         return buildGlassdoorSearchUrl(query, baseOrigin);
       case "greenhouse":
-        return buildGreenhouseSearchUrl(query, currentUrl, baseOrigin);
+        return buildGreenhouseSearchUrl(
+          query,
+          currentUrl,
+          baseOrigin,
+          candidateCountry
+        );
       case "builtin":
         return buildBuiltInSearchUrl(query, baseOrigin);
     }
@@ -551,7 +556,7 @@
       return fallbackOrigin;
     }
   }
-  function buildGreenhouseSearchUrl(query, currentUrl, fallbackOrigin) {
+  function buildGreenhouseSearchUrl(query, currentUrl, fallbackOrigin, candidateCountry = "") {
     if (isMyGreenhousePortalUrl(currentUrl)) {
       try {
         const parsed = new URL(currentUrl);
@@ -563,9 +568,20 @@
       }
     }
     const url = new URL(resolveGreenhouseBoardBaseUrl(currentUrl, fallbackOrigin));
-    url.searchParams.set("keyword", query);
-    url.searchParams.set("location", "Remote");
+    url.searchParams.set("keyword", buildGreenhouseKeywordQuery(query));
+    url.searchParams.set("location", normalizeGreenhouseSearchLocation(candidateCountry));
     return url.toString();
+  }
+  function buildGreenhouseKeywordQuery(query) {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      return "";
+    }
+    return /\bremote\b/i.test(trimmed) ? trimmed : `${trimmed} remote`;
+  }
+  function normalizeGreenhouseSearchLocation(candidateCountry) {
+    const normalizedCountry = candidateCountry.trim();
+    return normalizedCountry || "Remote";
   }
   function sanitizeHttpUrl(value) {
     const raw = typeof value === "string" ? value.trim() : "";
@@ -1468,6 +1484,20 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
     }
     return true;
+  }
+  function shouldScrollElementIntoViewBeforeClick(element) {
+    if (!element || !element.isConnected) {
+      return false;
+    }
+    const rect = element.getBoundingClientRect();
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+    if (rect.width <= 0 || rect.height <= 0) {
+      return false;
+    }
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    return centerY < 0 || centerY > viewportHeight || centerX < 0 || centerX > viewportWidth;
   }
   function performClickAction(element) {
     const isNativeSubmitControl = element instanceof HTMLButtonElement && element.type.toLowerCase() === "submit" || element instanceof HTMLInputElement && element.type.toLowerCase() === "submit";
@@ -4363,7 +4393,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     return dedupeJobCandidates(candidates);
   }
-  function pickRelevantJobUrls(candidates, site, resumeKind, datePostedWindow = "any", searchKeywords = [], currentUrl = window.location.href) {
+  function pickRelevantJobUrls(candidates, site, resumeKind, datePostedWindow = "any", searchKeywords = [], currentUrl = window.location.href, candidateCountry = "") {
     const valid = preferCanonicalBuiltInHostedCandidates(
       dedupeJobCandidates(candidates).filter(
         (candidate) => isLikelyJobDetailUrl(site, candidate.url, candidate.title, candidate.contextText)
@@ -4373,10 +4403,20 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     );
     const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
     const recencyEligible = datePostedWindow === "any" ? valid : recencyFiltered;
-    const trustGreenhouseKeywordFiltering = site === "greenhouse" && shouldTrustGreenhouseBoardKeywordFiltering(currentUrl);
-    const trustGreenhouseRemoteFiltering = site === "greenhouse" && shouldTrustGreenhouseBoardRemoteFiltering(currentUrl);
-    const eligible = site === "dice" ? recencyEligible.filter((candidate) => isExplicitlyRemoteDiceCandidate(candidate)) : trustGreenhouseRemoteFiltering ? recencyEligible : filterCandidatesForRemotePreference(recencyEligible, site, currentUrl);
-    const shouldKeywordFilter = searchKeywords.length > 0 && (site === "startup" || site === "other_sites" || site === "greenhouse" && !trustGreenhouseKeywordFiltering || site === "builtin");
+    const eligible = site === "dice" ? recencyEligible.filter((candidate) => isExplicitlyRemoteDiceCandidate(candidate)) : filterCandidatesForRemotePreference(
+      recencyEligible,
+      site,
+      currentUrl,
+      candidateCountry
+    );
+    const greenhouseTechnicalEligible = site === "greenhouse" ? eligible.filter((candidate) => looksLikeTechnicalRoleTitle(candidate.title)) : [];
+    if (site === "greenhouse") {
+      const greenhousePool = greenhouseTechnicalEligible.length > 0 ? greenhouseTechnicalEligible : eligible;
+      return sortCandidatesByRecency(greenhousePool, datePostedWindow).map(
+        (candidate) => candidate.url
+      );
+    }
+    const shouldKeywordFilter = searchKeywords.length > 0 && (site === "startup" || site === "other_sites" || site === "builtin");
     const boardKeywordMatchedCandidates = searchKeywords.length > 0 && (site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor") ? eligible.filter(
       (candidate) => scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0
     ) : [];
@@ -4385,7 +4425,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       eligible.length,
       boardKeywordMatchedCandidates.length
     );
-    const isCareerSiteResult = site === "startup" || site === "other_sites" || site === "greenhouse" || site === "builtin";
+    const isCareerSiteResult = site === "startup" || site === "other_sites" || site === "builtin";
     const keywordEligible = shouldKeywordFilter ? eligible.filter(
       (candidate) => matchesConfiguredSearchKeywords(candidate, searchKeywords)
     ) : shouldKeywordFilterBoardResults ? boardKeywordMatchedCandidates : eligible;
@@ -4419,26 +4459,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const fallback = sortCandidatesByRecency(fallbackPool, datePostedWindow).map((candidate) => candidate.url).filter((url) => !preferredSet.has(url));
     return [...preferred, ...fallback];
   }
-  function shouldTrustGreenhouseBoardKeywordFiltering(currentUrl) {
+  function isGreenhouseRemoteScopedResultsPage(currentUrl) {
     try {
       const parsedUrl = new URL(currentUrl);
       const hostname = parsedUrl.hostname.toLowerCase().replace(/^www\./, "");
       if (!hostname.endsWith("greenhouse.io")) {
         return false;
       }
-      return Boolean(parsedUrl.searchParams.get("keyword")?.trim());
-    } catch {
-      return false;
-    }
-  }
-  function shouldTrustGreenhouseBoardRemoteFiltering(currentUrl) {
-    try {
-      const parsedUrl = new URL(currentUrl);
-      const hostname = parsedUrl.hostname.toLowerCase().replace(/^www\./, "");
-      if (!hostname.endsWith("greenhouse.io")) {
-        return false;
-      }
-      return normalizeChoiceText(parsedUrl.searchParams.get("location") || "") === "remote";
+      const location = normalizeChoiceText(parsedUrl.searchParams.get("location") || "");
+      const keyword = normalizeChoiceText(parsedUrl.searchParams.get("keyword") || "");
+      return location === "remote" || keyword.includes("remote");
     } catch {
       return false;
     }
@@ -4470,7 +4500,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return false;
     }
   }
-  function filterCandidatesForRemotePreference(candidates, site, currentUrl) {
+  function filterCandidatesForRemotePreference(candidates, site, currentUrl, candidateCountry = "") {
     const annotated = candidates.map((candidate) => ({
       candidate,
       remoteScore: scoreRemotePreference(candidate)
@@ -4484,7 +4514,91 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (site === "builtin" && isRemoteScopedBuiltInResultsPage(currentUrl)) {
       return annotated.filter((entry) => entry.remoteScore >= 0).map((entry) => entry.candidate);
     }
+    if (site === "greenhouse" && isGreenhouseRemoteScopedResultsPage(currentUrl)) {
+      const remoteScopedCandidates = annotated.filter((entry) => entry.remoteScore >= 0).map((entry) => entry.candidate);
+      return remoteScopedCandidates.filter(
+        (candidate) => matchesGreenhouseCandidateCountryPreference(candidate, candidateCountry)
+      );
+    }
     return annotated.filter((entry) => entry.remoteScore > 0).map((entry) => entry.candidate);
+  }
+  function matchesGreenhouseCandidateCountryPreference(candidate, candidateCountry) {
+    const countryAliases = getCountryMatchAliases(candidateCountry);
+    if (countryAliases.length === 0) {
+      return true;
+    }
+    const locationContext = getGreenhouseCandidateLocationContext(candidate);
+    if (!locationContext) {
+      return true;
+    }
+    const locationScope = stripGreenhouseRemoteScopeTerms(locationContext);
+    if (countryAliases.some(
+      (alias) => locationContextMatchesCountryAlias(locationContext, alias) || locationContextMatchesCountryAlias(locationScope, alias)
+    )) {
+      return true;
+    }
+    if (!locationScope) {
+      return true;
+    }
+    if (looksLikeExplicitGreenhouseLocationContext(locationScope)) {
+      return false;
+    }
+    return true;
+  }
+  function getGreenhouseCandidateLocationContext(candidate) {
+    const normalizedContext = normalizeChoiceText(candidate.contextText);
+    const normalizedTitle = normalizeChoiceText(candidate.title);
+    if (normalizedTitle && normalizedContext.startsWith(normalizedTitle)) {
+      const strippedContext = normalizedContext.slice(normalizedTitle.length).trim();
+      return strippedContext || normalizedContext.trim();
+    }
+    return normalizedContext.trim();
+  }
+  function looksLikeExplicitGreenhouseLocationContext(locationContext) {
+    if (!locationContext) {
+      return false;
+    }
+    const normalizedLocation = normalizeChoiceText(locationContext);
+    return /[a-z]{2,}/.test(normalizedLocation);
+  }
+  function stripGreenhouseRemoteScopeTerms(locationContext) {
+    return normalizeChoiceText(locationContext).replace(/\b(remote|worldwide|global|anywhere|distributed)\b/g, " ").replace(/\s+/g, " ").trim();
+  }
+  function getCountryMatchAliases(candidateCountry) {
+    const normalizedCountry = normalizeChoiceText(candidateCountry);
+    if (!normalizedCountry) {
+      return [];
+    }
+    if (normalizedCountry === "united states" || normalizedCountry === "united states of america" || normalizedCountry === "usa" || normalizedCountry === "us") {
+      return [
+        "united states",
+        "united states of america",
+        "usa",
+        "us only",
+        "u s",
+        "north america",
+        "americas",
+        "amer"
+      ];
+    }
+    if (normalizedCountry === "united kingdom" || normalizedCountry === "uk" || normalizedCountry === "great britain") {
+      return ["united kingdom", "uk", "great britain", "britain"];
+    }
+    return [normalizedCountry];
+  }
+  function locationContextMatchesCountryAlias(locationContext, alias) {
+    if (!alias) {
+      return false;
+    }
+    if (alias.length <= 3) {
+      return new RegExp(`(?:^|\\b)${escapeRegex(alias)}(?:\\b|$)`).test(
+        locationContext
+      );
+    }
+    return locationContext.includes(alias);
+  }
+  function escapeRegex(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
   function isRemoteScopedBuiltInResultsPage(currentUrl) {
     try {
@@ -6631,11 +6745,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       const text = (getActionText(actionElement) || getActionText(element)).trim();
       const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element) ?? extractLikelyApplyUrl(actionElement) ?? extractLikelyApplyUrl(element);
       const score = scoreMonsterApplyCandidate(element, actionElement, text, url);
+      const fallbackElements = collectMonsterClickFallbackElements(
+        element,
+        actionElement
+      );
       if (score < 35) {
         continue;
       }
       viableCandidates.push({
         element: actionElement,
+        fallbackElements,
         score,
         url,
         text,
@@ -6644,6 +6763,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       if (!best || score > best.score) {
         best = {
           element: actionElement,
+          fallbackElements,
           score,
           url,
           text
@@ -6654,7 +6774,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           element: actionElement,
           score,
           url,
-          text
+          text,
+          fallbackElements
         };
       }
     }
@@ -6680,7 +6801,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return {
       type: "click",
       element: best.element,
-      description: best.text || "Monster apply button"
+      description: best.text || "Monster apply button",
+      fallbackElements: best.fallbackElements ?? []
     };
   }
   function getMonsterActionTop(element) {
@@ -6731,6 +6853,66 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
       return 0;
     })[0];
+  }
+  function collectMonsterClickFallbackElements(sourceElement, actionElement) {
+    const fallbacks = [];
+    const seen = /* @__PURE__ */ new Set([actionElement]);
+    for (const element of getMonsterComposedAncestors(actionElement)) {
+      if (element !== actionElement && isElementVisible(element) && isMonsterFallbackClickElement(element)) {
+        seen.add(element);
+        fallbacks.push(element);
+      }
+    }
+    for (const element of getMonsterComposedAncestors(sourceElement)) {
+      if (!seen.has(element) && element !== actionElement && isElementVisible(element) && isMonsterFallbackClickElement(element)) {
+        seen.add(element);
+        fallbacks.push(element);
+      }
+    }
+    return fallbacks;
+  }
+  function getMonsterComposedAncestors(element) {
+    const ancestors = [];
+    const seen = /* @__PURE__ */ new Set();
+    let current = element;
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      ancestors.push(current);
+      current = getMonsterComposedParent(current);
+    }
+    return ancestors;
+  }
+  function getMonsterComposedParent(element) {
+    if (element.parentElement) {
+      return element.parentElement;
+    }
+    const root = element.getRootNode();
+    if (root instanceof ShadowRoot && root.host instanceof HTMLElement) {
+      return root.host;
+    }
+    return null;
+  }
+  function isMonsterFallbackClickElement(element) {
+    const attrs = [
+      element.tagName,
+      element.getAttribute("data-testid"),
+      element.getAttribute("data-track"),
+      element.getAttribute("data-action"),
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.className,
+      element.id
+    ].join(" ").toLowerCase();
+    const tagName = element.tagName.toLowerCase();
+    if (tagName === "apply-button-wc" || tagName === "monster-apply-button" || tagName === "monster-apply-button-wc") {
+      return true;
+    }
+    if (tagName.includes("-") && attrs.includes("apply")) {
+      return true;
+    }
+    return /apply-button-wc|monster-apply-button|applybutton|svx_applybutton/.test(
+      attrs
+    );
   }
   function isMonsterPrimaryApplyLabel(text, url) {
     const normalizedText = text.toLowerCase().replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
@@ -8813,6 +8995,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     detectedSite,
     resumeKind,
     searchKeywords = [],
+    candidateCountry,
     label,
     onOpenListingsSurface
   }) {
@@ -8835,7 +9018,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             detectedSite,
             resumeKind,
             datePostedWindow,
-            searchKeywords
+            searchKeywords,
+            window.location.href,
+            candidateCountry
           )
         )
       );
@@ -8849,7 +9034,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           detectedSite,
           resumeKind,
           datePostedWindow,
-          searchKeywords
+          searchKeywords,
+          candidateCountry
         });
         const mergedUrls = mergeJobUrlLists(bestUrls, urls, embeddedUrls);
         if (mergedUrls.length > bestUrls.length) {
@@ -8881,6 +9067,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             detectedSite,
             resumeKind,
             searchKeywords,
+            candidateCountry,
             label,
             onOpenListingsSurface
           });
@@ -9253,7 +9440,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     detectedSite,
     resumeKind,
     datePostedWindow,
-    searchKeywords = []
+    searchKeywords = [],
+    candidateCountry
   }) {
     try {
       const response = await chrome.runtime.sendMessage({
@@ -9269,7 +9457,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             detectedSite,
             resumeKind,
             datePostedWindow,
-            searchKeywords
+            searchKeywords,
+            window.location.href,
+            candidateCountry
           )
         )
       );
@@ -9290,6 +9480,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     detectedSite,
     resumeKind,
     searchKeywords = [],
+    candidateCountry,
     label,
     onOpenListingsSurface
   }) {
@@ -9327,7 +9518,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         detectedSite,
         resumeKind,
         datePostedWindow,
-        searchKeywords
+        searchKeywords,
+        window.location.href,
+        candidateCountry
       );
       if (updatedUrls.length > 0) {
         return true;
@@ -10071,6 +10264,142 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const trimmedLabel = currentLabel2?.trim();
     return trimmedLabel || void 0;
   }
+  var GREENHOUSE_BOARD_LINK_SELECTORS = [
+    "a[href*='boards.greenhouse.io/'][href*='/jobs/']",
+    "a[href*='job-boards.greenhouse.io/'][href*='/jobs/']",
+    "a[href*='greenhouse.io'][href*='gh_jid=']",
+    "a[href*='my.greenhouse.io/view_job']",
+    "a[href*='my.greenhouse.io'][href*='job_id=']"
+  ];
+  var GREENHOUSE_APPLICATION_FRAME_SELECTORS = [
+    "iframe[src*='greenhouse.io/embed/job_app']",
+    "iframe[data-src*='greenhouse.io/embed/job_app']"
+  ];
+  var GREENHOUSE_INLINE_SCRIPT_SELECTOR = "script:not([src])";
+  var GREENHOUSE_SCRIPT_URL_PATTERN = /https?:\/\/(?:[\w-]+\.)?greenhouse\.io\/[^"'\\<>\s]+/gi;
+  var MAX_GREENHOUSE_SCRIPT_SCAN_COUNT = 20;
+  var MAX_GREENHOUSE_SCRIPT_SCAN_LENGTH = 25e4;
+  function detectSupportedSiteFromPage(currentUrl, doc = document) {
+    const detectedFromUrl = detectSiteFromUrl(currentUrl);
+    if (detectedFromUrl) {
+      return detectedFromUrl;
+    }
+    if (resolveGreenhouseSearchContextUrl(currentUrl, doc) !== currentUrl) {
+      return "greenhouse";
+    }
+    return null;
+  }
+  function resolveGreenhouseSearchContextUrl(currentUrl, doc = document) {
+    if (detectSiteFromUrl(currentUrl) === "greenhouse") {
+      return currentUrl;
+    }
+    for (const selector of GREENHOUSE_BOARD_LINK_SELECTORS) {
+      for (const href of readMatchingAttributes(doc, selector, "href")) {
+        const resolved = deriveGreenhouseBoardBaseUrl(href, currentUrl);
+        if (resolved) {
+          return resolved;
+        }
+      }
+    }
+    for (const selector of GREENHOUSE_APPLICATION_FRAME_SELECTORS) {
+      for (const src of [
+        ...readMatchingAttributes(doc, selector, "src"),
+        ...readMatchingAttributes(doc, selector, "data-src")
+      ]) {
+        const resolved = deriveGreenhouseBoardBaseUrl(src, currentUrl);
+        if (resolved) {
+          return resolved;
+        }
+      }
+    }
+    for (const scriptUrl of readGreenhouseUrlsFromInlineScripts(doc)) {
+      const resolved = deriveGreenhouseBoardBaseUrl(scriptUrl, currentUrl);
+      if (resolved) {
+        return resolved;
+      }
+    }
+    return currentUrl;
+  }
+  function readMatchingAttributes(doc, selector, attribute) {
+    try {
+      return Array.from(doc.querySelectorAll(selector)).map((element) => element.getAttribute(attribute)?.trim() || "").filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+  function readGreenhouseUrlsFromInlineScripts(doc) {
+    try {
+      const matches = [];
+      let scanned = 0;
+      let scannedLength = 0;
+      for (const script of Array.from(
+        doc.querySelectorAll(GREENHOUSE_INLINE_SCRIPT_SELECTOR)
+      )) {
+        if (scanned >= MAX_GREENHOUSE_SCRIPT_SCAN_COUNT) {
+          break;
+        }
+        const rawText = script.textContent?.trim();
+        if (!rawText) {
+          continue;
+        }
+        scanned += 1;
+        scannedLength += rawText.length;
+        const normalizedText = rawText.replace(/\\\//g, "/");
+        for (const match of normalizedText.matchAll(GREENHOUSE_SCRIPT_URL_PATTERN)) {
+          const url = match[0]?.trim();
+          if (url) {
+            matches.push(url);
+          }
+        }
+        if (scannedLength >= MAX_GREENHOUSE_SCRIPT_SCAN_LENGTH) {
+          break;
+        }
+      }
+      return matches;
+    } catch {
+      return [];
+    }
+  }
+  function deriveGreenhouseBoardBaseUrl(rawUrl, currentUrl) {
+    if (!rawUrl) {
+      return null;
+    }
+    try {
+      const parsed = new URL(rawUrl, currentUrl);
+      const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
+      if (!hostname.endsWith("greenhouse.io")) {
+        return null;
+      }
+      const origin = `${parsed.protocol}//${parsed.host}`;
+      const normalizedPath = parsed.pathname.replace(/\/+$/, "");
+      const lowerPath = normalizedPath.toLowerCase();
+      if (hostname === "my.greenhouse.io") {
+        return `${origin}/`;
+      }
+      if (lowerPath.includes("/embed/job_app")) {
+        const boardSlug = parsed.searchParams.get("for")?.trim();
+        if (!boardSlug) {
+          return null;
+        }
+        return new URL(`/${boardSlug}`, origin).toString();
+      }
+      const jobsIndex = lowerPath.indexOf("/jobs/");
+      if (jobsIndex >= 0) {
+        const boardPath = normalizedPath.slice(0, jobsIndex) || "/";
+        return new URL(boardPath || "/", origin).toString();
+      }
+      const pathSegments = normalizedPath.split("/").filter(Boolean);
+      if ((hostname === "boards.greenhouse.io" || hostname === "job-boards.greenhouse.io") && (pathSegments.length === 1 || pathSegments.length === 2 && pathSegments[1] === "jobs")) {
+        return new URL(`/${pathSegments[0]}`, origin).toString();
+      }
+      if (parsed.searchParams.get("gh_jid") && normalizedPath) {
+        return new URL(normalizedPath || "/", origin).toString();
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
   function throwIfRateLimited(site, dependencies) {
     const brokenReason = dependencies.detectBrokenPageReason(dependencies.document);
     if (brokenReason === "access_denied") {
@@ -10154,6 +10483,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       Math.max(0, Math.floor(claimedRemaining)) + reopenedClaimedSlots
     );
   }
+  function shouldKeepResultsPageOpenAfterZeroSpawn(openedCount, approvedCount, remainingSlots) {
+    const safeOpenedCount = Math.max(0, Math.floor(openedCount));
+    const safeApprovedCount = Math.max(0, Math.floor(approvedCount));
+    const safeRemainingSlots = Math.max(0, Math.floor(remainingSlots));
+    return safeApprovedCount > 0 && safeOpenedCount <= 0 && safeRemainingSlots <= 0;
+  }
 
   // src/content.ts
   var MAX_AUTOFILL_STEPS = 15;
@@ -10209,7 +10544,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     );
   }
   function resolveCurrentSiteKey() {
-    const detectedSite = detectSiteFromUrl(window.location.href);
+    const detectedSite = detectSupportedSiteFromPage(
+      window.location.href,
+      document
+    );
     if (detectedSite) {
       return detectedSite;
     }
@@ -10560,6 +10898,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         if (!IS_TOP_FRAME) {
           return false;
         }
+        const detectedSite = detectSupportedSiteFromPage(
+          window.location.href,
+          document
+        );
+        if (detectedSite && (status.site === "unsupported" || status.phase === "idle" && status.site !== detectedSite)) {
+          status = status.phase === "idle" ? createStatus(detectedSite, "idle", `Ready on ${getSiteLabel(detectedSite)}.`) : {
+            ...status,
+            site: detectedSite
+          };
+        }
         sendResponse({ ok: true, status });
         return false;
       }
@@ -10593,7 +10941,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         return false;
       }
       if (message.type === "start-automation") {
-        const detectedSite = detectSiteFromUrl(window.location.href);
+        const detectedSite = detectSupportedSiteFromPage(
+          window.location.href,
+          document
+        );
         if (message.session) {
           if (!shouldHandleAutomationInCurrentFrame(message.session, detectedSite)) {
             return false;
@@ -10662,7 +11013,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   });
   renderOverlay();
   async function resumeAutomationIfNeeded() {
-    const detectedSite = detectSiteFromUrl(window.location.href);
+    const detectedSite = detectSupportedSiteFromPage(
+      window.location.href,
+      document
+    );
     childApplicationTabOpened = false;
     stageRetryState = createStageRetryState();
     const maxAttempts = detectedSite ? 70 : 40;
@@ -10783,6 +11137,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   async function runBootstrapStage(site) {
     const settings = await readCurrentAutomationSettings();
+    const searchContextUrl = site === "greenhouse" ? resolveGreenhouseSearchContextUrl(window.location.href, document) : window.location.href;
     updateStatus(
       "running",
       `Opening ${getSiteLabel(site)} searches for your configured keywords...`,
@@ -10798,8 +11153,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     });
     const targets = buildSearchTargets(
       site,
-      window.location.href,
-      settings.searchKeywords
+      searchContextUrl,
+      settings.searchKeywords,
+      settings.candidate.country
     );
     if (targets.length === 0) {
       throw new Error(
@@ -10872,7 +11228,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       document,
       isProbablyRateLimitPage
     });
-    if (site === "greenhouse" && greenhousePortalKeyword && await searchMyGreenhousePortal(greenhousePortalKeyword)) {
+    if (site === "greenhouse" && greenhousePortalKeyword && await searchMyGreenhousePortal(
+      greenhousePortalKeyword,
+      settings.candidate.country
+    )) {
       const greenhouseLabelPrefix = currentLabel ? `${currentLabel} ` : "";
       updateStatus(
         "running",
@@ -10900,6 +11259,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       detectedSite: status.site === "unsupported" ? null : status.site,
       resumeKind: currentResumeKind,
       searchKeywords: keywordHints,
+      candidateCountry: settings.candidate.country,
       label: currentLabel,
       onOpenListingsSurface: (message) => {
         updateStatus("running", message, true, "collect-results");
@@ -11043,6 +11403,11 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     );
     const extra = jobUrls.length > approvedUrls.length ? ` (opened ${approvedUrls.length} unique jobs from ${jobUrls.length} found)` : "";
     const openedMessage = `Opened ${response.opened} job tabs from ${labelPrefix}${getSiteLabel(site)} search${extra}.`;
+    const shouldKeepResultsPageOpen = shouldKeepResultsPageOpenAfterZeroSpawn(
+      response.opened,
+      approvedUrls.length,
+      remainingSlotsAfterSpawn
+    );
     if (remainingSlotsAfterSpawn > 0) {
       if (await continueCollectResultsOnNextPage({
         site,
@@ -11052,6 +11417,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       })) {
         return;
       }
+    }
+    if (shouldKeepResultsPageOpen) {
+      updateStatus(
+        "completed",
+        `Found ${approvedUrls.length} ${labelPrefix}${getSiteLabel(site)} job page${approvedUrls.length === 1 ? "" : "s"} on this results page, but no new job tab opened. Keeping this results page open for review.`,
+        false,
+        "collect-results"
+      );
+      return;
     }
     updateStatus(
       "completed",
@@ -11375,8 +11749,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       true,
       "autofill-form"
     );
-    action.element.scrollIntoView({ behavior: "smooth", block: "center" });
-    await sleepWithAutomationChecks(600);
+    if (shouldScrollElementIntoViewBeforeClick(action.element)) {
+      action.element.scrollIntoView({ behavior: "smooth", block: "center" });
+      await sleepWithAutomationChecks(600);
+    }
     const urlBeforeClick = window.location.href;
     const anchorElement = action.element.closest("a") ?? (action.element instanceof HTMLAnchorElement ? action.element : null);
     if (anchorElement?.href) {
@@ -11571,6 +11947,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     let retryAction = null;
     if (site === "monster") {
       retryAction = findMonsterApplyAction();
+      if (action.type === "click" && (!retryAction || retryAction.type !== "click" || retryAction.element === action.element)) {
+        const monsterFallbackElement = action.fallbackElements?.find(
+          (element) => element && element.isConnected && element !== action.element
+        );
+        if (monsterFallbackElement) {
+          retryAction = {
+            type: "click",
+            element: monsterFallbackElement,
+            description: action.description
+          };
+        }
+      }
     } else if (site === "ziprecruiter") {
       retryAction = findZipRecruiterApplyAction();
     } else if (site === "dice") {
@@ -11585,11 +11973,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         true,
         "autofill-form"
       );
-      retryAction.element.scrollIntoView({
-        behavior: "smooth",
-        block: "center"
-      });
-      await sleepWithAutomationChecks(400);
+      if (shouldScrollElementIntoViewBeforeClick(retryAction.element)) {
+        retryAction.element.scrollIntoView({
+          behavior: "smooth",
+          block: "center"
+        });
+        await sleepWithAutomationChecks(400);
+      }
       performClickAction(retryAction.element);
       await sleepWithAutomationChecks(3e3);
       if (window.location.href !== urlBeforeClick || hasLikelyApplicationSurface2(site)) {
@@ -11624,11 +12014,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         );
         return;
       }
-      retryCompanyAction.element.scrollIntoView({
-        behavior: "smooth",
-        block: "center"
-      });
-      await sleepWithAutomationChecks(400);
+      if (shouldScrollElementIntoViewBeforeClick(retryCompanyAction.element)) {
+        retryCompanyAction.element.scrollIntoView({
+          behavior: "smooth",
+          block: "center"
+        });
+        await sleepWithAutomationChecks(400);
+      }
       performClickAction(retryCompanyAction.element);
       await sleepWithAutomationChecks(3e3);
       if (window.location.href !== urlBeforeClick) {
@@ -12752,7 +13144,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     window.location.assign(n);
   }
-  async function searchMyGreenhousePortal(keyword) {
+  async function searchMyGreenhousePortal(keyword, candidateCountry) {
     if (!isMyGreenhousePortalPage()) {
       return false;
     }
@@ -12764,7 +13156,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return false;
     }
     const shouldUpdateKeyword = cleanText(titleInput.value) !== normalizedKeyword;
-    const shouldUpdateLocation = Boolean(locationInput) && cleanText(locationInput?.value ?? "").toLowerCase() !== "united states";
+    const normalizedCountry = cleanText(candidateCountry) || "United States";
+    const shouldUpdateLocation = Boolean(locationInput) && cleanText(locationInput?.value ?? "") !== normalizedCountry;
     if (!shouldUpdateKeyword && !shouldUpdateLocation && hasMyGreenhouseSearchResults()) {
       return false;
     }
@@ -12772,7 +13165,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       setTextControlValue(titleInput, normalizedKeyword);
     }
     if (locationInput && shouldUpdateLocation) {
-      setTextControlValue(locationInput, "United States");
+      setTextControlValue(locationInput, normalizedCountry);
     }
     await ensureMyGreenhouseRemoteFilterEnabled();
     try {
@@ -12993,7 +13386,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     });
   }
   function createInitialStatus() {
-    const site = detectSiteFromUrl(window.location.href);
+    const site = detectSupportedSiteFromPage(window.location.href, document);
     return site ? createStatus(
       site,
       "idle",

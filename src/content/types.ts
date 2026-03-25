@@ -4,7 +4,12 @@ import { ResumeAsset } from "../shared";
 
 export type ApplyAction =
   | { type: "navigate"; url: string; description: string }
-  | { type: "click"; element: HTMLElement; description: string };
+  | {
+      type: "click";
+      element: HTMLElement;
+      description: string;
+      fallbackElements?: HTMLElement[];
+    };
 
 export type ProgressionAction = ApplyAction & { text: string };
 

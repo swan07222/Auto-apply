@@ -579,7 +579,8 @@ export function pickRelevantJobUrls(
   resumeKind?: ResumeKind,
   datePostedWindow: DatePostedWindow = "any",
   searchKeywords: string[] = [],
-  currentUrl = window.location.href
+  currentUrl = window.location.href,
+  candidateCountry = ""
 ): string[] {
   const valid = preferCanonicalBuiltInHostedCandidates(
     dedupeJobCandidates(candidates).filter((candidate) =>
@@ -591,21 +592,34 @@ export function pickRelevantJobUrls(
 
   const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
   const recencyEligible = datePostedWindow === "any" ? valid : recencyFiltered;
-  const trustGreenhouseKeywordFiltering =
-    site === "greenhouse" && shouldTrustGreenhouseBoardKeywordFiltering(currentUrl);
-  const trustGreenhouseRemoteFiltering =
-    site === "greenhouse" && shouldTrustGreenhouseBoardRemoteFiltering(currentUrl);
   const eligible =
     site === "dice"
       ? recencyEligible.filter((candidate) => isExplicitlyRemoteDiceCandidate(candidate))
-      : trustGreenhouseRemoteFiltering
-        ? recencyEligible
-      : filterCandidatesForRemotePreference(recencyEligible, site, currentUrl);
+      : filterCandidatesForRemotePreference(
+          recencyEligible,
+          site,
+          currentUrl,
+          candidateCountry
+        );
+  const greenhouseTechnicalEligible =
+    site === "greenhouse"
+      ? eligible.filter((candidate) => looksLikeTechnicalRoleTitle(candidate.title))
+      : [];
+
+  if (site === "greenhouse") {
+    const greenhousePool =
+      greenhouseTechnicalEligible.length > 0
+        ? greenhouseTechnicalEligible
+        : eligible;
+    return sortCandidatesByRecency(greenhousePool, datePostedWindow).map(
+      (candidate) => candidate.url
+    );
+  }
+
   const shouldKeywordFilter =
     searchKeywords.length > 0 &&
     (site === "startup" ||
       site === "other_sites" ||
-      (site === "greenhouse" && !trustGreenhouseKeywordFiltering) ||
       site === "builtin");
   const boardKeywordMatchedCandidates =
     searchKeywords.length > 0 &&
@@ -614,8 +628,8 @@ export function pickRelevantJobUrls(
       site === "dice" ||
       site === "monster" ||
       site === "glassdoor")
-      ? eligible.filter((candidate) =>
-          scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0
+      ? eligible.filter(
+          (candidate) => scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0
         )
       : [];
   const shouldKeywordFilterBoardResults =
@@ -627,7 +641,6 @@ export function pickRelevantJobUrls(
   const isCareerSiteResult =
     site === "startup" ||
     site === "other_sites" ||
-    site === "greenhouse" ||
     site === "builtin";
   const keywordEligible =
     shouldKeywordFilter
@@ -636,7 +649,7 @@ export function pickRelevantJobUrls(
         )
       : shouldKeywordFilterBoardResults
         ? boardKeywordMatchedCandidates
-      : eligible;
+        : eligible;
   const technicalRoleEligible = isCareerSiteResult
     ? eligible.filter((candidate) => looksLikeTechnicalRoleTitle(candidate.title))
     : eligible;
@@ -702,7 +715,7 @@ export function pickRelevantJobUrls(
   return [...preferred, ...fallback];
 }
 
-function shouldTrustGreenhouseBoardKeywordFiltering(currentUrl: string): boolean {
+function isGreenhouseRemoteScopedResultsPage(currentUrl: string): boolean {
   try {
     const parsedUrl = new URL(currentUrl);
     const hostname = parsedUrl.hostname.toLowerCase().replace(/^www\./, "");
@@ -710,21 +723,10 @@ function shouldTrustGreenhouseBoardKeywordFiltering(currentUrl: string): boolean
       return false;
     }
 
-    return Boolean(parsedUrl.searchParams.get("keyword")?.trim());
-  } catch {
-    return false;
-  }
-}
+    const location = normalizeChoiceText(parsedUrl.searchParams.get("location") || "");
+    const keyword = normalizeChoiceText(parsedUrl.searchParams.get("keyword") || "");
 
-function shouldTrustGreenhouseBoardRemoteFiltering(currentUrl: string): boolean {
-  try {
-    const parsedUrl = new URL(currentUrl);
-    const hostname = parsedUrl.hostname.toLowerCase().replace(/^www\./, "");
-    if (!hostname.endsWith("greenhouse.io")) {
-      return false;
-    }
-
-    return normalizeChoiceText(parsedUrl.searchParams.get("location") || "") === "remote";
+    return location === "remote" || keyword.includes("remote");
   } catch {
     return false;
   }
@@ -772,7 +774,8 @@ function isBuiltInCanonicalJobDetailUrl(url: string): boolean {
 function filterCandidatesForRemotePreference(
   candidates: JobCandidate[],
   site: SiteKey | null,
-  currentUrl: string
+  currentUrl: string,
+  candidateCountry = ""
 ): JobCandidate[] {
   const annotated = candidates.map((candidate) => ({
     candidate,
@@ -792,9 +795,145 @@ function filterCandidatesForRemotePreference(
       .map((entry) => entry.candidate);
   }
 
+  if (site === "greenhouse" && isGreenhouseRemoteScopedResultsPage(currentUrl)) {
+    const remoteScopedCandidates = annotated
+      // Greenhouse public-board `location=Remote` pages still expose hybrid roles,
+      // so keep neutral rows but drop explicit hybrid/onsite candidates.
+      .filter((entry) => entry.remoteScore >= 0)
+      .map((entry) => entry.candidate);
+
+    return remoteScopedCandidates.filter((candidate) =>
+      matchesGreenhouseCandidateCountryPreference(candidate, candidateCountry)
+    );
+  }
+
   return annotated
     .filter((entry) => entry.remoteScore > 0)
     .map((entry) => entry.candidate);
+}
+
+function matchesGreenhouseCandidateCountryPreference(
+  candidate: JobCandidate,
+  candidateCountry: string
+): boolean {
+  const countryAliases = getCountryMatchAliases(candidateCountry);
+  if (countryAliases.length === 0) {
+    return true;
+  }
+
+  const locationContext = getGreenhouseCandidateLocationContext(candidate);
+  if (!locationContext) {
+    return true;
+  }
+
+  const locationScope = stripGreenhouseRemoteScopeTerms(locationContext);
+
+  if (
+    countryAliases.some(
+      (alias) =>
+        locationContextMatchesCountryAlias(locationContext, alias) ||
+        locationContextMatchesCountryAlias(locationScope, alias)
+    )
+  ) {
+    return true;
+  }
+
+  if (!locationScope) {
+    return true;
+  }
+
+  if (looksLikeExplicitGreenhouseLocationContext(locationScope)) {
+    return false;
+  }
+
+  return true;
+}
+
+function getGreenhouseCandidateLocationContext(candidate: JobCandidate): string {
+  const normalizedContext = normalizeChoiceText(candidate.contextText);
+  const normalizedTitle = normalizeChoiceText(candidate.title);
+
+  if (
+    normalizedTitle &&
+    normalizedContext.startsWith(normalizedTitle)
+  ) {
+    const strippedContext = normalizedContext.slice(normalizedTitle.length).trim();
+    return strippedContext || normalizedContext.trim();
+  }
+
+  return normalizedContext.trim();
+}
+
+function looksLikeExplicitGreenhouseLocationContext(locationContext: string): boolean {
+  if (!locationContext) {
+    return false;
+  }
+
+  const normalizedLocation = normalizeChoiceText(locationContext);
+  return /[a-z]{2,}/.test(normalizedLocation);
+}
+
+function stripGreenhouseRemoteScopeTerms(locationContext: string): string {
+  return normalizeChoiceText(locationContext)
+    .replace(/\b(remote|worldwide|global|anywhere|distributed)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getCountryMatchAliases(candidateCountry: string): string[] {
+  const normalizedCountry = normalizeChoiceText(candidateCountry);
+  if (!normalizedCountry) {
+    return [];
+  }
+
+  if (
+    normalizedCountry === "united states" ||
+    normalizedCountry === "united states of america" ||
+    normalizedCountry === "usa" ||
+    normalizedCountry === "us"
+  ) {
+    return [
+      "united states",
+      "united states of america",
+      "usa",
+      "us only",
+      "u s",
+      "north america",
+      "americas",
+      "amer",
+    ];
+  }
+
+  if (
+    normalizedCountry === "united kingdom" ||
+    normalizedCountry === "uk" ||
+    normalizedCountry === "great britain"
+  ) {
+    return ["united kingdom", "uk", "great britain", "britain"];
+  }
+
+  return [normalizedCountry];
+}
+
+function locationContextMatchesCountryAlias(
+  locationContext: string,
+  alias: string
+): boolean {
+  if (!alias) {
+    return false;
+  }
+
+  if (alias.length <= 3) {
+    return new RegExp(`(?:^|\\b)${escapeRegex(alias)}(?:\\b|$)`).test(
+      locationContext
+    );
+  }
+
+  return locationContext.includes(alias);
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function isRemoteScopedBuiltInResultsPage(currentUrl: string): boolean {

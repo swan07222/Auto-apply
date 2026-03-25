@@ -447,6 +447,7 @@ type ScoredApplyCandidate = {
   score: number;
   text: string;
   url: string | null;
+  fallbackElements?: HTMLElement[];
 };
 
 function isCompanySiteActionText(text: string): boolean {
@@ -587,19 +588,13 @@ export function findMonsterApplyAction(): ApplyAction | null {
       : collectDeepMatchesFromSelectors(getApplyCandidateSelectors("monster"));
   const viableCandidates: Array<{
     element: HTMLElement;
+    fallbackElements: HTMLElement[];
     score: number;
     url: string | null;
     text: string;
     top: number;
   }> = [];
-  let best:
-    | {
-        element: HTMLElement;
-        score: number;
-        url: string | null;
-        text: string;
-      }
-    | undefined;
+  let best: ScoredApplyCandidate | undefined;
   let bestDirect: ScoredApplyCandidate | undefined;
 
   for (const element of elements) {
@@ -611,6 +606,10 @@ export function findMonsterApplyAction(): ApplyAction | null {
       extractLikelyApplyUrl(actionElement) ??
       extractLikelyApplyUrl(element);
     const score = scoreMonsterApplyCandidate(element, actionElement, text, url);
+    const fallbackElements = collectMonsterClickFallbackElements(
+      element,
+      actionElement
+    );
 
     if (score < 35) {
       continue;
@@ -618,6 +617,7 @@ export function findMonsterApplyAction(): ApplyAction | null {
 
     viableCandidates.push({
       element: actionElement,
+      fallbackElements,
       score,
       url,
       text,
@@ -627,6 +627,7 @@ export function findMonsterApplyAction(): ApplyAction | null {
     if (!best || score > best.score) {
       best = {
         element: actionElement,
+        fallbackElements,
         score,
         url,
         text,
@@ -641,6 +642,7 @@ export function findMonsterApplyAction(): ApplyAction | null {
         score,
         url,
         text,
+        fallbackElements,
       };
     }
   }
@@ -671,6 +673,7 @@ export function findMonsterApplyAction(): ApplyAction | null {
     type: "click",
     element: best.element,
     description: best.text || "Monster apply button",
+    fallbackElements: best.fallbackElements ?? [],
   };
 }
 
@@ -682,6 +685,7 @@ function getMonsterActionTop(element: HTMLElement): number {
 function choosePreferredMonsterPrimaryApplyCandidate(
   candidates: Array<{
     element: HTMLElement;
+    fallbackElements: HTMLElement[];
     score: number;
     url: string | null;
     text: string;
@@ -749,6 +753,101 @@ function choosePreferredMonsterPrimaryApplyCandidate(
     }
     return 0;
   })[0];
+}
+
+function collectMonsterClickFallbackElements(
+  sourceElement: HTMLElement,
+  actionElement: HTMLElement
+): HTMLElement[] {
+  const fallbacks: HTMLElement[] = [];
+  const seen = new Set<HTMLElement>([actionElement]);
+
+  for (const element of getMonsterComposedAncestors(actionElement)) {
+    if (
+      element !== actionElement &&
+      isElementVisible(element) &&
+      isMonsterFallbackClickElement(element)
+    ) {
+      seen.add(element);
+      fallbacks.push(element);
+    }
+  }
+
+  for (const element of getMonsterComposedAncestors(sourceElement)) {
+    if (
+      !seen.has(element) &&
+      element !== actionElement &&
+      isElementVisible(element) &&
+      isMonsterFallbackClickElement(element)
+    ) {
+      seen.add(element);
+      fallbacks.push(element);
+    }
+  }
+
+  return fallbacks;
+}
+
+function getMonsterComposedAncestors(element: HTMLElement): HTMLElement[] {
+  const ancestors: HTMLElement[] = [];
+  const seen = new Set<HTMLElement>();
+  let current: HTMLElement | null = element;
+
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    ancestors.push(current);
+    current = getMonsterComposedParent(current);
+  }
+
+  return ancestors;
+}
+
+function getMonsterComposedParent(element: HTMLElement): HTMLElement | null {
+  if (element.parentElement) {
+    return element.parentElement;
+  }
+
+  const root = element.getRootNode();
+  if (root instanceof ShadowRoot && root.host instanceof HTMLElement) {
+    return root.host;
+  }
+
+  return null;
+}
+
+function isMonsterFallbackClickElement(element: HTMLElement): boolean {
+  const attrs = [
+    element.tagName,
+    element.getAttribute("data-testid"),
+    element.getAttribute("data-track"),
+    element.getAttribute("data-action"),
+    element.getAttribute("aria-label"),
+    element.getAttribute("title"),
+    element.className,
+    element.id,
+  ]
+    .join(" ")
+    .toLowerCase();
+  const tagName = element.tagName.toLowerCase();
+
+  if (
+    tagName === "apply-button-wc" ||
+    tagName === "monster-apply-button" ||
+    tagName === "monster-apply-button-wc"
+  ) {
+    return true;
+  }
+
+  if (
+    tagName.includes("-") &&
+    attrs.includes("apply")
+  ) {
+    return true;
+  }
+
+  return /apply-button-wc|monster-apply-button|applybutton|svx_applybutton/.test(
+    attrs
+  );
 }
 
 function isMonsterPrimaryApplyLabel(text: string, url: string | null): boolean {

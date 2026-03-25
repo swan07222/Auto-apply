@@ -42,13 +42,14 @@ export function hasConfiguredSearchKeywords(value: string): boolean {
 export function buildSearchTargets(
   site: JobBoardSite,
   currentUrl: string,
-  searchKeywords: string
+  searchKeywords: string,
+  candidateCountry = ""
 ): SearchTarget[] {
   return dedupeSearchTargets(
     parseSearchKeywords(searchKeywords).map((keyword) => ({
       label: keyword,
       keyword,
-      url: buildSingleSearchUrl(site, keyword, currentUrl),
+      url: buildSingleSearchUrl(site, keyword, currentUrl, candidateCountry),
     }))
   );
 }
@@ -197,7 +198,8 @@ function dedupeSearchTargets(targets: SearchTarget[]): SearchTarget[] {
 function buildSingleSearchUrl(
   site: JobBoardSite,
   query: string,
-  currentUrl: string
+  currentUrl: string,
+  candidateCountry = ""
 ): string {
   const baseOrigin = CANONICAL_JOB_BOARD_ORIGINS[site];
 
@@ -225,7 +227,12 @@ function buildSingleSearchUrl(
     case "glassdoor":
       return buildGlassdoorSearchUrl(query, baseOrigin);
     case "greenhouse":
-      return buildGreenhouseSearchUrl(query, currentUrl, baseOrigin);
+      return buildGreenhouseSearchUrl(
+        query,
+        currentUrl,
+        baseOrigin,
+        candidateCountry
+      );
     case "builtin":
       return buildBuiltInSearchUrl(query, baseOrigin);
   }
@@ -277,7 +284,12 @@ function resolveGreenhouseBoardBaseUrl(currentUrl: string, fallbackOrigin: strin
   }
 }
 
-function buildGreenhouseSearchUrl(query: string, currentUrl: string, fallbackOrigin: string): string {
+function buildGreenhouseSearchUrl(
+  query: string,
+  currentUrl: string,
+  fallbackOrigin: string,
+  candidateCountry = ""
+): string {
   if (isMyGreenhousePortalUrl(currentUrl)) {
     try {
       const parsed = new URL(currentUrl);
@@ -290,9 +302,23 @@ function buildGreenhouseSearchUrl(query: string, currentUrl: string, fallbackOri
   }
 
   const url = new URL(resolveGreenhouseBoardBaseUrl(currentUrl, fallbackOrigin));
-  url.searchParams.set("keyword", query);
-  url.searchParams.set("location", "Remote");
+  url.searchParams.set("keyword", buildGreenhouseKeywordQuery(query));
+  url.searchParams.set("location", normalizeGreenhouseSearchLocation(candidateCountry));
   return url.toString();
+}
+
+function buildGreenhouseKeywordQuery(query: string): string {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  return /\bremote\b/i.test(trimmed) ? trimmed : `${trimmed} remote`;
+}
+
+function normalizeGreenhouseSearchLocation(candidateCountry: string): string {
+  const normalizedCountry = candidateCountry.trim();
+  return normalizedCountry || "Remote";
 }
 
 function sanitizeHttpUrl(value: unknown): string {

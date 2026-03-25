@@ -274,6 +274,77 @@ describe("background spawn quota handling", () => {
     );
   });
 
+  it("starts automation on redirected Greenhouse career pages when the content script reports Greenhouse", async () => {
+    const redirectedTab = {
+      id: 42,
+      index: 0,
+      windowId: 7,
+      url: "https://www.figma.com/careers/",
+    };
+    const chromeMock = createBackgroundChrome(
+      {
+        "remote-job-search-settings": {
+          ...DEFAULT_SETTINGS,
+          searchKeywords: "software engineer",
+        },
+      },
+      vi.fn()
+    );
+
+    chrome.tabs.get = vi.fn().mockResolvedValue(redirectedTab);
+    chrome.tabs.query = vi.fn().mockResolvedValue([redirectedTab]);
+    chrome.tabs.sendMessage = vi.fn(async (_tabId: number, message: { type?: string }) => {
+      if (message.type === "get-status") {
+        return {
+          status: {
+            site: "greenhouse",
+            phase: "idle",
+            message: "Ready on Greenhouse.",
+            updatedAt: Date.now(),
+          },
+        };
+      }
+
+      return { ok: true };
+    });
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "start-automation",
+        tabId: 42,
+      },
+      {
+        tab: redirectedTab,
+      }
+    );
+
+    expect(response).toEqual(
+      expect.objectContaining({
+        ok: true,
+        session: expect.objectContaining({
+          tabId: 42,
+          site: "greenhouse",
+          phase: "running",
+          stage: "bootstrap",
+          shouldResume: true,
+          profileId: DEFAULT_SETTINGS.activeProfileId,
+        }),
+      })
+    );
+    expect(chrome.tabs.reload).toHaveBeenCalledWith(42);
+    expect(chromeMock.local.state["remote-job-search-session:42"]).toEqual(
+      expect.objectContaining({
+        tabId: 42,
+        site: "greenhouse",
+        stage: "bootstrap",
+        profileId: DEFAULT_SETTINGS.activeProfileId,
+      })
+    );
+  });
+
   it("pauses an active autofill session and forwards the pause message to the controller frame", async () => {
     const sessionKey = "remote-job-search-session:42";
     const chromeMock = createBackgroundChrome(
@@ -834,6 +905,105 @@ describe("background spawn quota handling", () => {
     expect("__visitId" in (monsterResults[0] as Record<string, unknown>)).toBe(
       false
     );
+  });
+
+  it("extracts Monster search results from newer jobViewResultsDataCompact containers", async () => {
+    const chromeMock = createBackgroundChrome({}, vi.fn());
+    const monsterResults = [
+      {
+        canonicalUrl:
+          "https://www.monster.com/job-openings/platform-engineer-remote--beta456",
+        title: "Platform Engineer",
+      },
+    ];
+
+    chrome.scripting.executeScript = vi.fn().mockImplementation(({ func }) => {
+      (window as Window & { __NEXT_DATA__?: unknown }).__NEXT_DATA__ = {
+        props: {
+          pageProps: {
+            jobViewResultsDataCompact: {
+              listings: {
+                items: monsterResults,
+              },
+            },
+          },
+        },
+      };
+
+      try {
+        return Promise.resolve([{ result: func() }]);
+      } finally {
+        delete (window as Window & { __NEXT_DATA__?: unknown }).__NEXT_DATA__;
+      }
+    });
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "extract-monster-search-results",
+      },
+      {
+        tab: {
+          id: 42,
+        },
+      }
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      jobResults: monsterResults,
+    });
+  });
+
+  it("extracts Monster search results from inline script text when structured state is unavailable", async () => {
+    const chromeMock = createBackgroundChrome({}, vi.fn());
+
+    chrome.scripting.executeScript = vi.fn().mockImplementation(({ func }) => {
+      document.body.innerHTML = `
+        <script>
+          window.__MONSTER_BOOTSTRAP__ = {
+            jobs: [
+              {
+                title: "Frontend Engineer",
+                url: "https:\\/\\/www.monster.com\\/job-openings\\/frontend-engineer-remote--alpha123"
+              }
+            ]
+          };
+        </script>
+      `;
+
+      try {
+        return Promise.resolve([{ result: func() }]);
+      } finally {
+        document.body.innerHTML = "";
+      }
+    });
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "extract-monster-search-results",
+      },
+      {
+        tab: {
+          id: 42,
+        },
+      }
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      jobResults: [
+        {
+          title: "Frontend Engineer",
+          url: "https://www.monster.com/job-openings/frontend-engineer-remote--alpha123",
+        },
+      ],
+    });
   });
 
   it("claims only the remaining configured number of job openings for a run", async () => {

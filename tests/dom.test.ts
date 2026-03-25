@@ -11,6 +11,7 @@ import {
   isExternalUrl,
   normalizeUrl,
   performClickAction,
+  shouldScrollElementIntoViewBeforeClick,
 } from "../src/content/dom";
 
 describe("dom helpers", () => {
@@ -176,5 +177,51 @@ describe("dom helpers", () => {
     performClickAction(button);
 
     expect(clickSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not request a pre-click scroll when the button is already visible", () => {
+    document.body.innerHTML = `<button id="apply">Apply</button>`;
+
+    const button = document.querySelector("#apply") as HTMLButtonElement;
+    Object.defineProperty(button, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 96,
+          left: 24,
+          width: 140,
+          height: 44,
+          right: 164,
+          bottom: 140,
+          x: 24,
+          y: 96,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+
+    expect(shouldScrollElementIntoViewBeforeClick(button)).toBe(false);
+  });
+
+  it("requests a pre-click scroll when the button is below the viewport", () => {
+    document.body.innerHTML = `<button id="apply">Apply</button>`;
+
+    const button = document.querySelector("#apply") as HTMLButtonElement;
+    Object.defineProperty(button, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: window.innerHeight + 120,
+          left: 24,
+          width: 140,
+          height: 44,
+          right: 164,
+          bottom: window.innerHeight + 164,
+          x: 24,
+          y: window.innerHeight + 120,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+
+    expect(shouldScrollElementIntoViewBeforeClick(button)).toBe(true);
   });
 });

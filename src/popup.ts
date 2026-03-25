@@ -611,7 +611,7 @@ async function performRefreshStatus(): Promise<void> {
   await refreshActiveTabContext();
 
   const searchMode = getSelectedSearchMode();
-  const activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
+  let activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
   const hasKeywords = getConfiguredKeywords().length > 0;
   activeSession = null;
 
@@ -791,6 +791,12 @@ async function performRefreshStatus(): Promise<void> {
       (!activeJobBoardSite && bgSession.phase !== "idle")
     )
   ) {
+    if (!activeJobBoardSite && isJobBoardSite(bgSession.site)) {
+      activeSite = bgSession.site;
+      activeJobBoardSite = bgSession.site;
+      updateSiteNameDisplay();
+    }
+
     activeSession = parsedBackgroundSession ?? null;
     applyStatus(
       bgSession.phase === "idle"
@@ -815,13 +821,29 @@ async function performRefreshStatus(): Promise<void> {
 
   if (
     contentStatus &&
-    contentStatus.phase !== "idle" &&
     (
       contentStatus.site === activeJobBoardSite ||
       (!activeJobBoardSite && contentStatus.site !== "unsupported")
     )
   ) {
-    applyStatus(contentStatus);
+    if (!activeJobBoardSite && isJobBoardSite(contentStatus.site)) {
+      activeSite = contentStatus.site;
+      activeJobBoardSite = contentStatus.site;
+      updateSiteNameDisplay();
+    }
+
+    applyStatus(
+      contentStatus.phase === "idle"
+        ? createStatus(
+            activeJobBoardSite ?? "unsupported",
+            "idle",
+            contentStatus.message ||
+              (activeJobBoardSite
+                ? `Ready on ${getSiteLabel(activeJobBoardSite)}.`
+                : SUPPORTED_JOB_BOARD_PROMPT)
+          )
+        : contentStatus
+    );
     setStartButtonDisabled(
       shouldDisableStartButtonForSession(searchMode, activeSite, contentStatus)
     );

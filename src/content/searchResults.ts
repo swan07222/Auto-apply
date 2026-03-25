@@ -66,6 +66,7 @@ type WaitForJobDetailUrlsOptions = {
   detectedSite: SiteKey | null;
   resumeKind?: ResumeKind;
   searchKeywords?: string[];
+  candidateCountry?: string;
   label?: string;
   onOpenListingsSurface?: (message: string) => void;
 };
@@ -107,6 +108,7 @@ export async function waitForJobDetailUrls({
   detectedSite,
   resumeKind,
   searchKeywords = [],
+  candidateCountry,
   label,
   onOpenListingsSurface,
 }: WaitForJobDetailUrlsOptions): Promise<string[]> {
@@ -141,7 +143,9 @@ export async function waitForJobDetailUrls({
           detectedSite,
           resumeKind,
           datePostedWindow,
-          searchKeywords
+          searchKeywords,
+          window.location.href,
+          candidateCountry
         )
       )
     );
@@ -163,6 +167,7 @@ export async function waitForJobDetailUrls({
         resumeKind,
         datePostedWindow,
         searchKeywords,
+        candidateCountry,
       });
 
       const mergedUrls = mergeJobUrlLists(bestUrls, urls, embeddedUrls);
@@ -204,6 +209,7 @@ export async function waitForJobDetailUrls({
           detectedSite,
           resumeKind,
           searchKeywords,
+          candidateCountry,
           label,
           onOpenListingsSurface,
         });
@@ -679,9 +685,14 @@ async function collectMonsterEmbeddedUrls({
   resumeKind,
   datePostedWindow,
   searchKeywords = [],
+  candidateCountry,
 }: Pick<
   WaitForJobDetailUrlsOptions,
-  "detectedSite" | "resumeKind" | "datePostedWindow" | "searchKeywords"
+  | "detectedSite"
+  | "resumeKind"
+  | "datePostedWindow"
+  | "searchKeywords"
+  | "candidateCountry"
 >): Promise<string[]> {
   try {
     const response = await chrome.runtime.sendMessage({
@@ -698,7 +709,9 @@ async function collectMonsterEmbeddedUrls({
           detectedSite,
           resumeKind,
           datePostedWindow,
-          searchKeywords
+          searchKeywords,
+          window.location.href,
+          candidateCountry
         )
       )
     );
@@ -724,6 +737,7 @@ async function tryOpenCareerListingsSurface({
   detectedSite,
   resumeKind,
   searchKeywords = [],
+  candidateCountry,
   label,
   onOpenListingsSurface,
 }: Omit<WaitForJobDetailUrlsOptions, "targetCount">): Promise<boolean> {
@@ -769,7 +783,9 @@ async function tryOpenCareerListingsSurface({
       detectedSite,
       resumeKind,
       datePostedWindow,
-      searchKeywords
+      searchKeywords,
+      window.location.href,
+      candidateCountry
     );
     if (updatedUrls.length > 0) {
       return true;

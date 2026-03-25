@@ -1292,7 +1292,7 @@ describe("job search candidate filtering", () => {
     ]);
   });
 
-  it("keeps Greenhouse board results when the board already filtered by keyword but titles do not repeat it", () => {
+  it("trusts visible Greenhouse rows returned by the board even when titles do not repeat the query", () => {
     document.body.innerHTML = `
       <main class="main font-secondary">
         <div class="padding">
@@ -1332,11 +1332,11 @@ describe("job search candidate filtering", () => {
     ).toEqual(["https://job-boards.greenhouse.io/vercel/jobs/5430088004"]);
   });
 
-  it("keeps neutral Greenhouse results on board URLs already filtered to Remote", () => {
+  it("keeps visible technical Greenhouse roles when the board keyword search is fuzzy", () => {
     document.body.innerHTML = `
       <main class="main font-secondary">
         <div class="padding">
-          <h2 class="section-header section-header--large font-primary" data-testid="job-count-header">2 jobs</h2>
+          <h2 class="section-header section-header--large font-primary" data-testid="job-count-header">4 jobs</h2>
           <div class="job-posts">
             <div class="job-posts--table--department">
               <h3 class="section-header font-primary">Engineering</h3>
@@ -1345,9 +1345,25 @@ describe("job search candidate filtering", () => {
                   <tbody>
                     <tr class="job-post">
                       <td class="cell">
-                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5430088004" target="_top">
-                          <p class="body body--medium">Software Engineer, Accounts</p>
-                          <p class="body body__secondary body--metadata">United States</p>
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5732855004" target="_top">
+                          <p class="body body--medium">Site Engineer</p>
+                          <p class="body body__secondary body--metadata">Remote - United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5551619004" target="_top">
+                          <p class="body body--medium">Software Engineer, Compute</p>
+                          <p class="body body__secondary body--metadata">Remote - United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5808590004" target="_top">
+                          <p class="body body--medium">Product Manager - Agent Platform</p>
+                          <p class="body body__secondary body--metadata">Hybrid - San Francisco, New York City</p>
                         </a>
                       </td>
                     </tr>
@@ -1374,10 +1390,381 @@ describe("job search candidate filtering", () => {
         "greenhouse",
         undefined,
         "any",
+        ["platform engineer"],
+        "https://job-boards.greenhouse.io/vercel?keyword=platform%20engineer&location=Remote"
+      )
+    ).toEqual([
+      "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5551619004",
+    ]);
+  });
+
+  it("keeps visible Greenhouse frontend-adjacent roles when the board query uses description matches", () => {
+    document.body.innerHTML = `
+      <main class="main font-secondary">
+        <div class="padding">
+          <h2 class="section-header section-header--large font-primary" data-testid="job-count-header">4 jobs</h2>
+          <div class="job-posts">
+            <div class="job-posts--table--department">
+              <h3 class="section-header font-primary">Engineering</h3>
+              <div class="job-posts--table">
+                <table>
+                  <tbody>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5818258004" target="_top">
+                          <p class="body body--medium">Senior Customer Support Engineer</p>
+                          <p class="body body__secondary body--metadata">Remote - United Kingdom, Germany</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5709080004" target="_top">
+                          <p class="body body--medium">Design Engineer</p>
+                          <p class="body body__secondary body--metadata">Remote - United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5808568004" target="_top">
+                          <p class="body body--medium">Software Engineer, Dashboard</p>
+                          <p class="body body__secondary body--metadata">Remote - United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5732855004" target="_top">
+                          <p class="body body--medium">Site Engineer</p>
+                          <p class="body body__secondary body--metadata">Remote - United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    `;
+
+    expect(
+      pickRelevantJobUrls(
+        collectJobDetailCandidates("greenhouse"),
+        "greenhouse",
+        undefined,
+        "any",
+        ["frontend"],
+        "https://job-boards.greenhouse.io/vercel?keyword=frontend&location=Remote",
+        "United States"
+      )
+    ).toEqual([
+      "https://job-boards.greenhouse.io/vercel/jobs/5709080004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5808568004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
+    ]);
+  });
+
+  it("keeps visible Greenhouse backend-adjacent roles when the board query uses infrastructure titles", () => {
+    document.body.innerHTML = `
+      <main class="main font-secondary">
+        <div class="padding">
+          <h2 class="section-header section-header--large font-primary" data-testid="job-count-header">4 jobs</h2>
+          <div class="job-posts">
+            <div class="job-posts--table--department">
+              <h3 class="section-header font-primary">Engineering</h3>
+              <div class="job-posts--table">
+                <table>
+                  <tbody>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5813134004" target="_top">
+                          <p class="body body--medium">Software Engineer, Domains</p>
+                          <p class="body body__secondary body--metadata">Remote - United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5661583004" target="_top">
+                          <p class="body body--medium">Software Engineer, Lua</p>
+                          <p class="body body__secondary body--metadata">Remote - United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5787232004" target="_top">
+                          <p class="body body--medium">Senior Product Security Engineer</p>
+                          <p class="body body__secondary body--metadata">Remote - United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5199830004" target="_top">
+                          <p class="body body--medium">Head of Product Marketing</p>
+                          <p class="body body__secondary body--metadata">Hybrid - San Francisco, New York City</p>
+                        </a>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    `;
+
+    expect(
+      pickRelevantJobUrls(
+        collectJobDetailCandidates("greenhouse"),
+        "greenhouse",
+        undefined,
+        "any",
+        ["backend"],
+        "https://job-boards.greenhouse.io/vercel?keyword=backend&location=Remote",
+        "United States"
+      )
+    ).toEqual([
+      "https://job-boards.greenhouse.io/vercel/jobs/5813134004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5661583004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5787232004",
+    ]);
+  });
+
+  it("keeps the visible US Greenhouse result instead of zeroing the page out on an exact-keyword miss", () => {
+    document.body.innerHTML = `
+      <main class="main font-secondary">
+        <div class="padding">
+          <h2 class="section-header section-header--large font-primary" data-testid="job-count-header">2 jobs</h2>
+          <div class="job-posts">
+            <div class="job-posts--table--department">
+              <h3 class="section-header font-primary">Engineering</h3>
+              <div class="job-posts--table">
+                <table>
+                  <tbody>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5818258004" target="_top">
+                          <p class="body body--medium">Senior Customer Support Engineer</p>
+                          <p class="body body__secondary body--metadata">Remote - United Kingdom, Germany</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5732855004" target="_top">
+                          <p class="body body--medium">Site Engineer</p>
+                          <p class="body body__secondary body--metadata">Remote - United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    `;
+
+    expect(
+      pickRelevantJobUrls(
+        collectJobDetailCandidates("greenhouse"),
+        "greenhouse",
+        undefined,
+        "any",
+        ["frontend engineer"],
+        "https://job-boards.greenhouse.io/vercel?keyword=frontend%20engineer&location=Remote",
+        "United States"
+      )
+    ).toEqual(["https://job-boards.greenhouse.io/vercel/jobs/5732855004"]);
+  });
+
+  it("keeps visible technical Greenhouse roles on redirected careers pages even when the board keyword params are stripped", () => {
+    document.body.innerHTML = `
+      <main class="main font-secondary">
+        <div class="padding">
+          <h2 class="section-header section-header--large font-primary" data-testid="job-count-header">4 jobs</h2>
+          <div class="job-posts">
+            <div class="job-posts--table--department">
+              <h3 class="section-header font-primary">Engineering</h3>
+              <div class="job-posts--table">
+                <table>
+                  <tbody>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5732855004" target="_top">
+                          <p class="body body--medium">Site Engineer</p>
+                          <p class="body body__secondary body--metadata">Remote - United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5551619004" target="_top">
+                          <p class="body body--medium">Software Engineer, Compute</p>
+                          <p class="body body__secondary body--metadata">Remote - United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5808590004" target="_top">
+                          <p class="body body--medium">Customer Success Engineering</p>
+                          <p class="body body__secondary body--metadata">Remote - Germany</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5624231004" target="_top">
+                          <p class="body body--medium">Account Executive- Startups, Greenfield</p>
+                          <p class="body body__secondary body--metadata">Hybrid - San Francisco, New York City, Austin</p>
+                        </a>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    `;
+
+    expect(
+      pickRelevantJobUrls(
+        collectJobDetailCandidates("greenhouse"),
+        "greenhouse",
+        undefined,
+        "any",
+        ["platform engineer"],
+        "https://www.vercel.com/careers/"
+      )
+    ).toEqual([
+      "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5551619004",
+    ]);
+  });
+
+  it("drops hybrid Greenhouse engineering roles even when the board URL says Remote", () => {
+    document.body.innerHTML = `
+      <main class="main font-secondary">
+        <div class="padding">
+          <h2 class="section-header section-header--large font-primary" data-testid="job-count-header">3 jobs</h2>
+          <div class="job-posts">
+            <div class="job-posts--table--department">
+              <h3 class="section-header font-primary">Engineering</h3>
+              <div class="job-posts--table">
+                <table>
+                  <tbody>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5430088004" target="_top">
+                          <p class="body body--medium">Software Engineer, Accounts</p>
+                          <p class="body body__secondary body--metadata">United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5624231004" target="_top">
+                          <p class="body body--medium">Account Executive- Startups, Greenfield</p>
+                          <p class="body body__secondary body--metadata">Hybrid - San Francisco, New York City, Austin</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5798406004" target="_top">
+                          <p class="body body--medium">Software Engineer, AI Gateway</p>
+                          <p class="body body__secondary body--metadata">Hybrid - San Francisco, New York City</p>
+                        </a>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    `;
+
+    expect(
+      pickRelevantJobUrls(
+        collectJobDetailCandidates("greenhouse"),
+        "greenhouse",
+        undefined,
+        "any",
         ["software engineer"],
-        "https://job-boards.greenhouse.io/vercel?keyword=software%20engineer&location=Remote"
+        "https://job-boards.greenhouse.io/vercel?keyword=software%20engineer&location=Remote",
+        "United States"
       )
     ).toEqual(["https://job-boards.greenhouse.io/vercel/jobs/5430088004"]);
+  });
+
+  it("drops foreign Greenhouse remote rows during a United States remote run", () => {
+    document.body.innerHTML = `
+      <main class="main font-secondary">
+        <div class="padding">
+          <h2 class="section-header section-header--large font-primary" data-testid="job-count-header">3 jobs</h2>
+          <div class="job-posts">
+            <div class="job-posts--table--department">
+              <h3 class="section-header font-primary">Engineering</h3>
+              <div class="job-posts--table">
+                <table>
+                  <tbody>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5818258004" target="_top">
+                          <p class="body body--medium">Senior Customer Support Engineer</p>
+                          <p class="body body__secondary body--metadata">Remote - United Kingdom, Germany</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5817808004" target="_top">
+                          <p class="body body--medium">Senior Customer Support Engineer</p>
+                          <p class="body body__secondary body--metadata">Remote - Australia</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5732855004" target="_top">
+                          <p class="body body--medium">Site Engineer</p>
+                          <p class="body body__secondary body--metadata">Remote - United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    `;
+
+    expect(
+      pickRelevantJobUrls(
+        collectJobDetailCandidates("greenhouse"),
+        "greenhouse",
+        undefined,
+        "any",
+        ["engineer"],
+        "https://job-boards.greenhouse.io/vercel?keyword=engineer%20remote&location=United%20States",
+        "United States"
+      )
+    ).toEqual(["https://job-boards.greenhouse.io/vercel/jobs/5732855004"]);
   });
 
   it("falls back to technical Greenhouse roles for broad software-engineer searches on plain boards", () => {

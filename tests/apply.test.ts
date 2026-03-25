@@ -407,6 +407,10 @@ describe("application progression actions", () => {
     expect(action).not.toBeNull();
     expect(action?.type).toBe("click");
     expect(action?.description).toBe("Apply now");
+    if (action?.type === "click") {
+      expect(action.element).toBe(shadow.querySelector("a"));
+      expect(action.fallbackElements).toContain(component);
+    }
   });
 
   it("ignores broken apply.monster URLs and uses the real Monster apply target", () => {
