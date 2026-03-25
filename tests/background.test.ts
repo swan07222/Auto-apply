@@ -569,6 +569,90 @@ describe("background spawn quota handling", () => {
     expect(createTabMock).not.toHaveBeenCalled();
   });
 
+  it("opens the first other-site search tab as active so result review is visible", async () => {
+    const createTabMock = vi.fn().mockImplementation(async (properties) => ({
+      id: 100 + createTabMock.mock.calls.length,
+      ...properties,
+    }));
+    const chromeMock = createBackgroundChrome(
+      {
+        "remote-job-search-settings": {
+          ...DEFAULT_SETTINGS,
+          searchMode: "other_job_sites",
+          startupRegion: "us",
+          searchKeywords: "software engineer",
+          candidate: {
+            ...DEFAULT_SETTINGS.candidate,
+            country: "United States",
+          },
+        },
+      },
+      createTabMock
+    );
+
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: vi.fn().mockResolvedValue({
+        status: 200,
+        headers: {
+          get: vi.fn().mockReturnValue("text/html"),
+        },
+        url: "https://example.com/search",
+        text: vi.fn().mockResolvedValue("<html><body>ok</body></html>"),
+      }),
+    });
+
+    chrome.tabs.get = vi.fn().mockResolvedValue({
+      id: 42,
+      index: 0,
+      windowId: 7,
+      url: "https://example.com",
+    });
+    chrome.tabs.query = vi.fn().mockResolvedValue([
+      {
+        id: 42,
+        index: 0,
+        windowId: 7,
+        url: "https://example.com",
+      },
+    ]);
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "start-other-sites-automation",
+        tabId: 42,
+      },
+      {
+        tab: {
+          id: 42,
+          index: 0,
+          windowId: 7,
+          url: "https://example.com",
+        },
+      }
+    );
+
+    expect(response).toEqual(
+      expect.objectContaining({
+        ok: true,
+        opened: expect.any(Number),
+      })
+    );
+    expect(createTabMock).toHaveBeenCalled();
+    expect(createTabMock.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        active: true,
+      })
+    );
+    expect(
+      createTabMock.mock.calls.slice(1).every((call) => call[0]?.active === false)
+    ).toBe(true);
+  });
+
   it("reports hard failures for broken external application targets before navigation", async () => {
     const chromeMock = createBackgroundChrome({}, vi.fn());
 
@@ -1032,6 +1116,66 @@ describe("background spawn quota handling", () => {
       approvedUrls: [freshUrl],
       remaining: 2,
       limit: 3,
+    });
+  });
+
+  it("falls back to previously reviewed jobs when they are the only remaining candidates", async () => {
+    const runId = "run-reviewed-fallback";
+    const senderTabId = 42;
+    const reviewedUrl = "https://www.indeed.com/viewjob?jk=alpha123";
+    const reviewedKey = getJobDedupKey(reviewedUrl)!;
+    const runStateKey = `remote-job-search-run:${runId}`;
+    const sessionKey = `remote-job-search-session:${senderTabId}`;
+
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 2,
+          openedJobPages: 0,
+          openedJobKeys: [],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          updatedAt: 1,
+        },
+        [sessionKey]: {
+          tabId: senderTabId,
+          site: "indeed",
+          phase: "running",
+          message: "Collecting job pages...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "collect-results",
+          runId,
+        },
+        "remote-job-search-reviewed-job-keys": [reviewedKey],
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "claim-job-openings",
+        requested: 1,
+        candidates: [{ url: reviewedUrl, key: reviewedKey }],
+      },
+      {
+        tab: {
+          id: senderTabId,
+          index: 0,
+        },
+      }
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      approved: 1,
+      approvedUrls: [reviewedUrl],
+      remaining: 1,
+      limit: 2,
     });
   });
 
@@ -1909,23 +2053,13 @@ describe("background spawn quota handling", () => {
     );
   });
 
-  it("skips opening managed job tabs that were already reviewed before", async () => {
-    const runId = "run-reviewed-open-skip";
+  it("opens reviewed managed job tabs when every requested item was previously reviewed", async () => {
+    const runId = "run-reviewed-open-fallback";
     const reviewedUrl = "https://www.indeed.com/viewjob?jk=alpha123";
     const reviewedKey = getJobDedupKey(reviewedUrl)!;
-    const runStateKey = `remote-job-search-run:${runId}`;
-    const createTabMock = vi.fn();
+    const createTabMock = vi.fn().mockResolvedValueOnce({ id: 101 });
     const chromeMock = createBackgroundChrome(
       {
-        [runStateKey]: {
-          id: runId,
-          jobPageLimit: 1,
-          openedJobPages: 1,
-          openedJobKeys: [reviewedKey],
-          successfulJobPages: 0,
-          successfulJobKeys: [],
-          updatedAt: 1,
-        },
         "remote-job-search-reviewed-job-keys": [reviewedKey],
       },
       createTabMock
@@ -1957,15 +2091,9 @@ describe("background spawn quota handling", () => {
 
     expect(response).toEqual({
       ok: true,
-      opened: 0,
+      opened: 1,
     });
-    expect(createTabMock).not.toHaveBeenCalled();
-    expect(chromeMock.local.state[runStateKey]).toEqual(
-      expect.objectContaining({
-        openedJobPages: 0,
-        openedJobKeys: [],
-      })
-    );
+    expect(createTabMock).toHaveBeenCalledTimes(1);
   });
 
   it("skips opening a managed job tab when the same target is already open in the run", async () => {

@@ -132,7 +132,7 @@ export const OTHER_JOB_SITE_DEFINITIONS: CuratedJobSiteDefinition[] = [
 ];
 
 export const SEARCH_OPEN_DELAY_MS = 900;
-export const VERIFICATION_POLL_MS = 2500;
+export const VERIFICATION_POLL_MS = 600;
 export const VERIFICATION_TIMEOUT_MS = 300_000;
 export const AUTOMATION_SETTINGS_STORAGE_KEY = "remote-job-search-settings";
 export const STARTUP_COMPANIES_CACHE_STORAGE_KEY =

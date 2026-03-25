@@ -1,5 +1,6 @@
 import {
   createEmptyAutofillResult,
+  getGreenhousePortalSearchKeyword,
   getRemainingJobSlotsAfterSpawn,
   getCurrentSearchKeywordHints,
   looksLikeCurrentFrameApplicationSurface,
@@ -35,11 +36,27 @@ describe("content runtime helpers", () => {
     ).toEqual(["platform engineer"]);
     expect(
       getCurrentSearchKeywordHints(
+        "greenhouse",
+        DEFAULT_SETTINGS,
+        "Vercel",
+        "platform engineer\nstaff engineer"
+      )
+    ).toEqual(["platform engineer", "staff engineer"]);
+    expect(
+      getCurrentSearchKeywordHints(
         "other_sites",
         DEFAULT_SETTINGS,
         "Built In: platform engineer\nstaff engineer"
       )
     ).toEqual(["platform engineer", "staff engineer"]);
+  });
+
+  it("prefers explicit keyword hints for the MyGreenhouse portal search", () => {
+    expect(
+      getGreenhousePortalSearchKeyword(["platform engineer", "staff engineer"], "Vercel")
+    ).toBe("platform engineer");
+    expect(getGreenhousePortalSearchKeyword([], "Vercel")).toBe("Vercel");
+    expect(getGreenhousePortalSearchKeyword([], undefined)).toBeUndefined();
   });
 
   it("builds rate-limit and broken-page failures from page detectors", () => {
@@ -132,5 +149,8 @@ describe("content runtime helpers", () => {
     expect(getRemainingJobSlotsAfterSpawn(5, 7)).toBe(0);
     expect(getRemainingJobSlotsAfterSpawn(5, 2, 1)).toBe(1);
     expect(getRemainingJobSlotsAfterSpawn(5, 1, 0)).toBe(0);
+    expect(getRemainingJobSlotsAfterSpawn(5, 0, 0, 5)).toBe(5);
+    expect(getRemainingJobSlotsAfterSpawn(5, 1, 0, 3)).toBe(2);
+    expect(getRemainingJobSlotsAfterSpawn(5, 2, 1, 4)).toBe(3);
   });
 });

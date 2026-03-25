@@ -36,6 +36,10 @@ export const greenhouseSiteProfile: SiteContentProfile = {
   careerJobLinkSelectors: [
     "a[href*='my.greenhouse.io/view_job']",
     "a[href*='my.greenhouse.io'][href*='job_id=']",
+    "a[href*='greenhouse.io'][href*='/jobs/']",
+    "a[href*='greenhouse.io'][href*='gh_jid=']",
+    "a[href^='/'][href*='/jobs/']:not([href$='/jobs'], [href$='/jobs/'])",
+    "a[href*='/view_job']",
     ...CAREER_SITE_JOB_LINK_SELECTORS,
   ],
 };

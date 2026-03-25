@@ -78,6 +78,25 @@ describe("job search candidate filtering", () => {
     }
   });
 
+  it("collects Indeed job cards rendered inside a shadow root", () => {
+    const host = document.createElement("section");
+    const shadowRoot = host.attachShadow({ mode: "open" });
+    shadowRoot.innerHTML = `
+      <article data-jk="shadow123">
+        <a class="jcs-JobTitle" href="/rc/clk?jk=shadow123">Senior Full Stack Engineer</a>
+      </article>
+    `;
+    document.body.appendChild(host);
+
+    expect(collectJobDetailCandidates("indeed")).toEqual([
+      {
+        url: "https://example.com/viewjob?jk=shadow123",
+        title: "Senior Full Stack Engineer",
+        contextText: "Senior Full Stack Engineer",
+      },
+    ]);
+  });
+
   it("keeps candidates when a posted-date filter is requested but the board exposes no recency metadata", () => {
     const candidates: JobCandidate[] = [
       {
@@ -1273,6 +1292,142 @@ describe("job search candidate filtering", () => {
     ]);
   });
 
+  it("keeps Greenhouse board results when the board already filtered by keyword but titles do not repeat it", () => {
+    document.body.innerHTML = `
+      <main class="main font-secondary">
+        <div class="padding">
+          <h2 class="section-header section-header--large font-primary" data-testid="job-count-header">1 job</h2>
+          <div class="job-posts">
+            <div class="job-posts--table--department">
+              <h3 class="section-header font-primary">Engineering</h3>
+              <div class="job-posts--table">
+                <table>
+                  <tbody>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5430088004" target="_top">
+                          <p class="body body--medium">Software Engineer, Accounts</p>
+                          <p class="body body__secondary body--metadata">Remote - United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    `;
+
+    expect(
+      pickRelevantJobUrls(
+        collectJobDetailCandidates("greenhouse"),
+        "greenhouse",
+        undefined,
+        "any",
+        ["iam"],
+        "https://job-boards.greenhouse.io/vercel?keyword=iam&location=Remote"
+      )
+    ).toEqual(["https://job-boards.greenhouse.io/vercel/jobs/5430088004"]);
+  });
+
+  it("keeps neutral Greenhouse results on board URLs already filtered to Remote", () => {
+    document.body.innerHTML = `
+      <main class="main font-secondary">
+        <div class="padding">
+          <h2 class="section-header section-header--large font-primary" data-testid="job-count-header">2 jobs</h2>
+          <div class="job-posts">
+            <div class="job-posts--table--department">
+              <h3 class="section-header font-primary">Engineering</h3>
+              <div class="job-posts--table">
+                <table>
+                  <tbody>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5430088004" target="_top">
+                          <p class="body body--medium">Software Engineer, Accounts</p>
+                          <p class="body body__secondary body--metadata">United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5624231004" target="_top">
+                          <p class="body body--medium">Account Executive- Startups, Greenfield</p>
+                          <p class="body body__secondary body--metadata">Hybrid - San Francisco, New York City, Austin</p>
+                        </a>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    `;
+
+    expect(
+      pickRelevantJobUrls(
+        collectJobDetailCandidates("greenhouse"),
+        "greenhouse",
+        undefined,
+        "any",
+        ["software engineer"],
+        "https://job-boards.greenhouse.io/vercel?keyword=software%20engineer&location=Remote"
+      )
+    ).toEqual(["https://job-boards.greenhouse.io/vercel/jobs/5430088004"]);
+  });
+
+  it("falls back to technical Greenhouse roles for broad software-engineer searches on plain boards", () => {
+    document.body.innerHTML = `
+      <main class="main font-secondary">
+        <div class="padding">
+          <h2 class="section-header section-header--large font-primary" data-testid="job-count-header">2 jobs</h2>
+          <div class="job-posts">
+            <div class="job-posts--table--department">
+              <h3 class="section-header font-primary">Engineering</h3>
+              <div class="job-posts--table">
+                <table>
+                  <tbody>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5430088004" target="_top">
+                          <p class="body body--medium">Platform Engineer</p>
+                          <p class="body body__secondary body--metadata">Remote - United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                    <tr class="job-post">
+                      <td class="cell">
+                        <a href="https://job-boards.greenhouse.io/vercel/jobs/5624231004" target="_top">
+                          <p class="body body--medium">Account Executive- Startups, Greenfield</p>
+                          <p class="body body__secondary body--metadata">Remote - United States</p>
+                        </a>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    `;
+
+    expect(
+      pickRelevantJobUrls(
+        collectJobDetailCandidates("greenhouse"),
+        "greenhouse",
+        undefined,
+        "any",
+        ["software engineer"],
+        "https://job-boards.greenhouse.io/vercel"
+      )
+    ).toEqual(["https://job-boards.greenhouse.io/vercel/jobs/5430088004"]);
+  });
+
   it("collects MyGreenhouse view-job cards and opens the matching technical roles", () => {
     document.body.innerHTML = `
       <section class="results-grid">
@@ -1306,12 +1461,12 @@ describe("job search candidate filtering", () => {
         <article class="job-card">
           <h3>Backend Engineer</h3>
           <p>Remote - United States</p>
-          <a href="https://my.greenhouse.io/view_job?job_id=111222333">View opening</a>
+          <a href="/view_job?job_id=111222333">View opening</a>
         </article>
         <article class="job-card">
           <h3>Sales Manager</h3>
           <p>Remote - United States</p>
-          <a href="https://my.greenhouse.io/view_job?job_id=444555666">View opening</a>
+          <a href="/view_job?job_id=444555666">View opening</a>
         </article>
       </section>
     `;
@@ -1324,7 +1479,30 @@ describe("job search candidate filtering", () => {
         "any",
         ["backend engineer"]
       )
-    ).toEqual(["https://my.greenhouse.io/view_job?job_id=111222333"]);
+    ).toEqual(["https://example.com/view_job?job_id=111222333"]);
+  });
+
+  it("collects MyGreenhouse job cards rendered inside a shadow root", () => {
+    const host = document.createElement("section");
+    const shadowRoot = host.attachShadow({ mode: "open" });
+    shadowRoot.innerHTML = `
+      <article class="job-card">
+        <h3>Staff Full Stack Engineer</h3>
+        <p>Remote - United States</p>
+        <a href="/view_job?job_id=987654321">View opening</a>
+      </article>
+    `;
+    document.body.appendChild(host);
+
+    expect(
+      pickRelevantJobUrls(
+        collectJobDetailCandidates("greenhouse"),
+        "greenhouse",
+        undefined,
+        "any",
+        ["full stack"]
+      )
+    ).toEqual(["https://example.com/view_job?job_id=987654321"]);
   });
 
   it("keeps only the explicit remote Built In result when sparse cards mix with a known remote signal", () => {

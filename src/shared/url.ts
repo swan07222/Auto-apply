@@ -1,7 +1,16 @@
 const IDENTIFYING_PARAMS = [
   "jk", "vjk", "jobid", "job_id", "jid", "gh_jid", "ashby_jid",
-  "requisitionid", "requisition_id", "reqid", "id", "posting_id", "req_id",
+  "requisitionid", "requisition_id", "reqid", "posting_id", "req_id",
 ];
+
+const GENERIC_IDENTIFYING_PARAMS = ["id"];
+const TRACKING_PARAM_NAMES = new Set([
+  "fbclid",
+  "gclid",
+  "gh_src",
+  "mc_cid",
+  "mc_eid",
+]);
 
 export function getJobDedupKey(url: string): string {
   const raw = url.trim().toLowerCase();
@@ -116,6 +125,13 @@ export function getJobDedupKey(url: string): string {
       }
     }
 
+    for (const param of GENERIC_IDENTIFYING_PARAMS) {
+      const value = parsed.searchParams.get(param);
+      if (value) {
+        return buildGenericParamKey(hostname, path, parsed.searchParams);
+      }
+    }
+
     return `${hostname}${path}`;
   } catch {
     return raw;
@@ -135,4 +151,40 @@ export function getSpawnDedupKey(url: string): string {
   } catch {
     return raw;
   }
+}
+
+function buildGenericParamKey(
+  hostname: string,
+  path: string,
+  searchParams: URLSearchParams
+): string {
+  const stableEntries: Array<readonly [string, string]> = [];
+
+  searchParams.forEach((value, name) => {
+    if (!isTrackingParam(name)) {
+      stableEntries.push([name.toLowerCase(), value.toLowerCase()]);
+    }
+  });
+
+  stableEntries.sort(([leftName, leftValue], [rightName, rightValue]) => {
+      if (leftName === rightName) {
+        return leftValue.localeCompare(rightValue);
+      }
+      return leftName.localeCompare(rightName);
+    });
+
+  if (stableEntries.length === 0) {
+    return `${hostname}${path}`;
+  }
+
+  const normalizedQuery = stableEntries
+    .map(([name, value]) => `${name}=${value}`)
+    .join("&");
+
+  return `${hostname}${path}?${normalizedQuery}`;
+}
+
+function isTrackingParam(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  return normalized.startsWith("utm_") || TRACKING_PARAM_NAMES.has(normalized);
 }

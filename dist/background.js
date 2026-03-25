@@ -203,13 +203,14 @@
       updatedAt: Date.now()
     };
   }
-  function createSession(tabId, site, phase, message, shouldResume, stage, runId, label, resumeKind, profileId) {
+  function createSession(tabId, site, phase, message, shouldResume, stage, runId, label, keyword, resumeKind, profileId) {
     return {
       tabId,
       shouldResume,
       stage,
       runId,
       label,
+      keyword,
       resumeKind,
       profileId,
       ...createStatus(site, phase, message)
@@ -418,6 +419,7 @@
     return Array.from(deduped.values());
   }
   function buildStartupSearchTargets(settings, companies = STARTUP_COMPANIES) {
+    const keywordHints = parseSearchKeywords(settings.searchKeywords).join("\n");
     const regionSet = new Set(
       resolveStartupTargetRegions(
         settings.startupRegion,
@@ -430,7 +432,8 @@
     return dedupeSearchTargets(
       matchingCompanies.map((company) => ({
         label: company.name,
-        url: company.careersUrl
+        url: company.careersUrl,
+        keyword: keywordHints || void 0
       }))
     );
   }
@@ -572,10 +575,17 @@
     "requisitionid",
     "requisition_id",
     "reqid",
-    "id",
     "posting_id",
     "req_id"
   ];
+  var GENERIC_IDENTIFYING_PARAMS = ["id"];
+  var TRACKING_PARAM_NAMES = /* @__PURE__ */ new Set([
+    "fbclid",
+    "gclid",
+    "gh_src",
+    "mc_cid",
+    "mc_eid"
+  ]);
   function getJobDedupKey(url) {
     const raw = url.trim().toLowerCase();
     if (!raw) return "";
@@ -658,6 +668,12 @@
           return `${hostname}${path}?${param}=${value.toLowerCase()}`;
         }
       }
+      for (const param of GENERIC_IDENTIFYING_PARAMS) {
+        const value = parsed.searchParams.get(param);
+        if (value) {
+          return buildGenericParamKey(hostname, path, parsed.searchParams);
+        }
+      }
       return `${hostname}${path}`;
     } catch {
       return raw;
@@ -675,6 +691,29 @@
     } catch {
       return raw;
     }
+  }
+  function buildGenericParamKey(hostname, path, searchParams) {
+    const stableEntries = [];
+    searchParams.forEach((value, name) => {
+      if (!isTrackingParam(name)) {
+        stableEntries.push([name.toLowerCase(), value.toLowerCase()]);
+      }
+    });
+    stableEntries.sort(([leftName, leftValue], [rightName, rightValue]) => {
+      if (leftName === rightName) {
+        return leftValue.localeCompare(rightValue);
+      }
+      return leftName.localeCompare(rightName);
+    });
+    if (stableEntries.length === 0) {
+      return `${hostname}${path}`;
+    }
+    const normalizedQuery = stableEntries.map(([name, value]) => `${name}=${value}`).join("&");
+    return `${hostname}${path}?${normalizedQuery}`;
+  }
+  function isTrackingParam(name) {
+    const normalized = name.trim().toLowerCase();
+    return normalized.startsWith("utm_") || TRACKING_PARAM_NAMES.has(normalized);
   }
 
   // src/shared/pageSignals.ts
@@ -1363,13 +1402,14 @@
           items: unreviewedItemsToOpen,
           skippedItems: skippedReviewedItems
         } = await filterReviewedManagedSpawnItems(itemsToOpen);
-        itemsToOpen = unreviewedItemsToOpen;
+        const shouldFallbackToReviewedItems = unreviewedItemsToOpen.length === 0 && skippedReviewedItems.length > 0 && itemsToOpen.length > 0 && itemsToOpen.every((item) => isManagedJobStage(item.stage));
+        itemsToOpen = shouldFallbackToReviewedItems ? itemsToOpen : unreviewedItemsToOpen;
         const {
           items: filteredItemsToOpen,
           skippedItems: skippedAlreadyOpenItems
         } = await filterAlreadyOpenManagedSpawnItems(itemsToOpen);
         itemsToOpen = filteredItemsToOpen;
-        if (skippedReviewedItems.length > 0) {
+        if (!shouldFallbackToReviewedItems && skippedReviewedItems.length > 0) {
           await releaseJobOpeningsForItems(skippedReviewedItems);
         }
         if (skippedAlreadyOpenItems.length > 0) {
@@ -1422,6 +1462,7 @@
               item.stage,
               item.runId,
               item.label,
+              item.keyword,
               item.resumeKind,
               item.profileId
             );
@@ -1507,6 +1548,7 @@
       runId: existingSession?.runId,
       jobSlots: typeof message.jobSlots === "number" && Number.isFinite(message.jobSlots) ? Math.max(0, Math.floor(message.jobSlots)) : existingSession?.jobSlots,
       label: message.label ?? existingSession?.label,
+      keyword: existingSession?.keyword,
       resumeKind: message.resumeKind ?? existingSession?.resumeKind,
       profileId: message.profileId ?? existingSession?.profileId,
       controllerFrameId,
@@ -1660,6 +1702,7 @@
       "open-apply",
       openerSession.runId,
       openerSession.label,
+      openerSession.keyword,
       openerSession.resumeKind,
       openerSession.profileId
     );
@@ -1737,6 +1780,7 @@
       runId,
       void 0,
       void 0,
+      void 0,
       settings.activeProfileId
     );
     await setSession(session);
@@ -1788,6 +1832,7 @@
       stage: "collect-results",
       runId,
       jobSlots: jobSlots[index],
+      active: index === 0,
       message: `Collecting ${target.label} roles...`,
       label: target.label,
       resumeKind: target.resumeKind,
@@ -1844,6 +1889,7 @@
           item.stage,
           item.runId,
           item.label,
+          item.keyword,
           item.resumeKind,
           item.profileId ?? settings.activeProfileId
         );
@@ -1897,6 +1943,7 @@
       stage: "collect-results",
       runId,
       jobSlots: jobSlots[index],
+      active: index === 0,
       message: `Collecting ${target.label} roles...`,
       label: target.label,
       resumeKind: target.resumeKind,
@@ -1953,6 +2000,7 @@
           item.stage,
           item.runId,
           item.label,
+          item.keyword,
           item.resumeKind,
           item.profileId ?? settings.activeProfileId
         );
@@ -2130,11 +2178,15 @@
     const reviewedJobKeys = await getReviewedJobKeySet();
     if (!runId) {
       const settings = await readAutomationSettings();
-      const approvedUrls = pickUniqueCandidateUrls(
+      const safeLimit = Math.min(Math.max(0, requested), settings.jobPageLimit);
+      let approvedUrls = pickUniqueCandidateUrls(
         candidates,
-        Math.min(Math.max(0, requested), settings.jobPageLimit),
+        safeLimit,
         reviewedJobKeys
       );
+      if (approvedUrls.length === 0 && safeLimit > 0 && candidates.length > 0) {
+        approvedUrls = pickUniqueCandidateUrls(candidates, safeLimit);
+      }
       return {
         ok: true,
         approved: approvedUrls.length,
@@ -2192,17 +2244,34 @@
       const seenKeys = new Set(runState.openedJobKeys ?? []);
       const reviewedJobKeys = await getReviewedJobKeySet();
       const approvedUrls = [];
+      const fallbackReviewedCandidates = [];
       for (const candidate of candidates) {
         if (approvedUrls.length >= targetCount) {
           break;
         }
         const url = candidate.url.trim();
         const key = candidate.key?.trim() || getJobDedupKey(url);
-        if (!url || !key || seenKeys.has(key) || reviewedJobKeys.has(key)) {
+        if (!url || !key || seenKeys.has(key)) {
+          continue;
+        }
+        if (reviewedJobKeys.has(key)) {
+          fallbackReviewedCandidates.push({ url, key });
           continue;
         }
         seenKeys.add(key);
         approvedUrls.push(url);
+      }
+      if (approvedUrls.length === 0 && targetCount > 0) {
+        for (const candidate of fallbackReviewedCandidates) {
+          if (approvedUrls.length >= targetCount) {
+            break;
+          }
+          if (seenKeys.has(candidate.key)) {
+            continue;
+          }
+          seenKeys.add(candidate.key);
+          approvedUrls.push(candidate.url);
+        }
       }
       if (approvedUrls.length > 0) {
         await setRunState({

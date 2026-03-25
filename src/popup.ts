@@ -144,6 +144,7 @@ let pendingAutoSaveRevision = 0;
 let savedAutoSaveRevision = 0;
 let settingsWriteQueue: Promise<void> = Promise.resolve();
 let settings = createEmptySettings();
+let chromeTabListenersRegistered = false;
 const popupDialog = createPopupDialogController({
   root: dialogRoot,
   backdrop: dialogBackdrop,
@@ -293,6 +294,7 @@ window.addEventListener("beforeunload", () => {
   if (autoSaveTimerId !== null) {
     window.clearTimeout(autoSaveTimerId);
   }
+  unregisterChromeTabListeners();
 });
 
 document.addEventListener("visibilitychange", () => {
@@ -305,6 +307,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 async function initialize(): Promise<void> {
+  registerChromeTabListeners();
   await refreshActiveTabContext();
   let settingsLoadFailed = false;
 
@@ -585,7 +588,7 @@ function stopPeriodicRefresh(): void {
   refreshPollTimerId = null;
 }
 
-function schedulePeriodicRefresh(delayMs = 1500): void {
+function schedulePeriodicRefresh(delayMs = 900): void {
   stopPeriodicRefresh();
 
   if (document.visibilityState === "hidden") {
@@ -923,6 +926,59 @@ function updateSiteNameDisplay(): void {
         ? getSiteLabel(sessionSite)
         : "No supported site";
   }
+}
+
+function handleChromeTabContextChanged(): void {
+  scheduleRefreshStatus(0);
+}
+
+function registerChromeTabListeners(): void {
+  if (chromeTabListenersRegistered) {
+    return;
+  }
+
+  chrome.tabs.onUpdated?.addListener(handleChromeTabUpdated);
+  chrome.tabs.onActivated?.addListener(handleChromeTabActivated);
+  chrome.tabs.onRemoved?.addListener(handleChromeTabRemoved);
+  chromeTabListenersRegistered = true;
+}
+
+function unregisterChromeTabListeners(): void {
+  if (!chromeTabListenersRegistered) {
+    return;
+  }
+
+  chrome.tabs.onUpdated?.removeListener(handleChromeTabUpdated);
+  chrome.tabs.onActivated?.removeListener(handleChromeTabActivated);
+  chrome.tabs.onRemoved?.removeListener(handleChromeTabRemoved);
+  chromeTabListenersRegistered = false;
+}
+
+function handleChromeTabUpdated(
+  _tabId: number,
+  changeInfo: {
+    url?: string;
+    status?: string;
+    title?: string;
+  }
+): void {
+  if (
+    !changeInfo.url &&
+    !changeInfo.status &&
+    !changeInfo.title
+  ) {
+    return;
+  }
+
+  handleChromeTabContextChanged();
+}
+
+function handleChromeTabActivated(): void {
+  handleChromeTabContextChanged();
+}
+
+function handleChromeTabRemoved(): void {
+  handleChromeTabContextChanged();
 }
 
 function applyStatus(status: AutomationStatus): void {

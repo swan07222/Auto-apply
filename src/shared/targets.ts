@@ -57,6 +57,7 @@ export function buildStartupSearchTargets(
   settings: AutomationSettings,
   companies: StartupCompany[] = STARTUP_COMPANIES
 ): SearchTarget[] {
+  const keywordHints = parseSearchKeywords(settings.searchKeywords).join("\n");
   const regionSet = new Set(
     resolveStartupTargetRegions(
       settings.startupRegion,
@@ -71,6 +72,7 @@ export function buildStartupSearchTargets(
     matchingCompanies.map((company) => ({
       label: company.name,
       url: company.careersUrl,
+      keyword: keywordHints || undefined,
     }))
   );
 }

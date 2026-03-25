@@ -6,6 +6,7 @@ import {
   looksLikeTechnicalRoleTitle,
   scoreCandidateKeywordRelevance,
   scoreJobTitleForResume,
+  shouldAllowBroadTechnicalKeywordFallback,
   shouldFinishJobResultScan,
 } from "../src/content/jobSearchHeuristics";
 import type { JobCandidate } from "../src/content/types";
@@ -20,6 +21,13 @@ describe("job search heuristic helpers", () => {
 
     expect(scoreCandidateKeywordRelevance(candidate, ["frontend engineer"])).toBe(100);
     expect(scoreCandidateKeywordRelevance(candidate, ["sales manager"])).toBe(0);
+  });
+
+  it("only broad technical searches can fall back to generic technical roles", () => {
+    expect(shouldAllowBroadTechnicalKeywordFallback(["software engineer"])).toBe(true);
+    expect(shouldAllowBroadTechnicalKeywordFallback(["senior software engineer"])).toBe(true);
+    expect(shouldAllowBroadTechnicalKeywordFallback(["backend engineer"])).toBe(false);
+    expect(shouldAllowBroadTechnicalKeywordFallback(["full stack engineer"])).toBe(false);
   });
 
   it("parses posted-age text and filters recent candidates", () => {

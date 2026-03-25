@@ -869,6 +869,7 @@ var pendingAutoSaveRevision = 0;
 var savedAutoSaveRevision = 0;
 var settingsWriteQueue = Promise.resolve();
 var settings = createEmptySettings();
+var chromeTabListenersRegistered = false;
 var popupDialog = createPopupDialogController({
   root: dialogRoot,
   backdrop: dialogBackdrop,
@@ -991,6 +992,7 @@ window.addEventListener("beforeunload", () => {
   if (autoSaveTimerId !== null) {
     window.clearTimeout(autoSaveTimerId);
   }
+  unregisterChromeTabListeners();
 });
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") {
@@ -1000,6 +1002,7 @@ document.addEventListener("visibilitychange", () => {
   schedulePeriodicRefresh(150);
 });
 async function initialize() {
+  registerChromeTabListeners();
   await refreshActiveTabContext();
   let settingsLoadFailed = false;
   try {
@@ -1220,7 +1223,7 @@ function stopPeriodicRefresh() {
   window.clearTimeout(refreshPollTimerId);
   refreshPollTimerId = null;
 }
-function schedulePeriodicRefresh(delayMs = 1500) {
+function schedulePeriodicRefresh(delayMs = 900) {
   stopPeriodicRefresh();
   if (document.visibilityState === "hidden") {
     return;
@@ -1461,6 +1464,39 @@ function updateSiteNameDisplay() {
     const sessionSite = activeSession?.site && activeSession.site !== "unsupported" ? activeSession.site : isJobBoardSite(currentStatusSnapshot.site) ? currentStatusSnapshot.site : null;
     siteName.textContent = isJobBoardSite(activeSite) ? getSiteLabel(activeSite) : sessionSite ? getSiteLabel(sessionSite) : "No supported site";
   }
+}
+function handleChromeTabContextChanged() {
+  scheduleRefreshStatus(0);
+}
+function registerChromeTabListeners() {
+  if (chromeTabListenersRegistered) {
+    return;
+  }
+  chrome.tabs.onUpdated?.addListener(handleChromeTabUpdated);
+  chrome.tabs.onActivated?.addListener(handleChromeTabActivated);
+  chrome.tabs.onRemoved?.addListener(handleChromeTabRemoved);
+  chromeTabListenersRegistered = true;
+}
+function unregisterChromeTabListeners() {
+  if (!chromeTabListenersRegistered) {
+    return;
+  }
+  chrome.tabs.onUpdated?.removeListener(handleChromeTabUpdated);
+  chrome.tabs.onActivated?.removeListener(handleChromeTabActivated);
+  chrome.tabs.onRemoved?.removeListener(handleChromeTabRemoved);
+  chromeTabListenersRegistered = false;
+}
+function handleChromeTabUpdated(_tabId, changeInfo) {
+  if (!changeInfo.url && !changeInfo.status && !changeInfo.title) {
+    return;
+  }
+  handleChromeTabContextChanged();
+}
+function handleChromeTabActivated() {
+  handleChromeTabContextChanged();
+}
+function handleChromeTabRemoved() {
+  handleChromeTabContextChanged();
 }
 function applyStatus(status) {
   currentStatusSnapshot = status;

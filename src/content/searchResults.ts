@@ -30,6 +30,7 @@ import {
   includesAnyToken,
 } from "./sitePatterns";
 import {
+  getCareerSiteJobLinkSelectors,
   getSiteJobResultCollectionTargetCount,
   getSiteResultSurfaceSettleMs,
 } from "./sites";
@@ -50,6 +51,8 @@ const NEXT_PAGE_ARROW_LABELS = new Set([
   "\u27e9",
   "\u276f",
 ]);
+const NEXT_PAGE_ADVANCE_TIMEOUT_MS = 6_000;
+const NEXT_PAGE_ADVANCE_POLL_MS = 200;
 
 export type SearchResultsAdvanceResult =
   | "advanced"
@@ -77,7 +80,7 @@ export async function scrollPageForLazyContent(): Promise<void> {
     );
     const viewportHeight = Math.max(window.innerHeight, 1);
     const target = Math.min(totalHeight, viewportHeight * (step + 1));
-    window.scrollTo({ top: target, behavior: "smooth" });
+    setWindowScrollTop(target);
     await waitForDomSettle(1_000, 350);
 
     if (totalHeight <= previousHeight && step >= 2) {
@@ -86,7 +89,7 @@ export async function scrollPageForLazyContent(): Promise<void> {
     previousHeight = totalHeight;
   }
 
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  setWindowScrollTop(0);
   await waitForDomSettle(700, 250);
 }
 
@@ -210,27 +213,15 @@ export async function waitForJobDetailUrls({
       }
 
       if (attempt % 5 === 0) {
-        window.scrollTo({
-          top: document.body.scrollHeight,
-          behavior: "smooth",
-        });
+        advanceCareerSiteResultsSurface(site, attempt);
       } else if (attempt % 5 === 1) {
-        window.scrollTo({
-          top: document.body.scrollHeight / 2,
-          behavior: "smooth",
-        });
+        advanceCareerSiteResultsSurface(site, attempt);
       } else if (attempt % 5 === 2) {
-        window.scrollTo({ top: 0, behavior: "smooth" });
+        advanceCareerSiteResultsSurface(site, attempt);
       } else if (attempt % 5 === 3) {
-        window.scrollTo({
-          top: document.body.scrollHeight / 3,
-          behavior: "smooth",
-        });
+        advanceCareerSiteResultsSurface(site, attempt);
       } else {
-        window.scrollTo({
-          top: (document.body.scrollHeight * 2) / 3,
-          behavior: "smooth",
-        });
+        advanceCareerSiteResultsSurface(site, attempt);
       }
 
       if (attempt === 10 || attempt === 20 || attempt === 30) {
@@ -255,22 +246,13 @@ export async function waitForJobDetailUrls({
       site === "glassdoor"
     ) {
       if (attempt % 4 === 0) {
-        window.scrollTo({
-          top: document.body.scrollHeight,
-          behavior: "smooth",
-        });
+        setWindowScrollTop(document.body.scrollHeight);
       } else if (attempt % 4 === 1) {
-        window.scrollTo({ top: 0, behavior: "smooth" });
+        setWindowScrollTop(0);
       } else if (attempt % 4 === 2) {
-        window.scrollTo({
-          top: document.body.scrollHeight / 2,
-          behavior: "smooth",
-        });
+        setWindowScrollTop(document.body.scrollHeight / 2);
       } else {
-        window.scrollTo({
-          top: document.body.scrollHeight / 3,
-          behavior: "smooth",
-        });
+        setWindowScrollTop(document.body.scrollHeight / 3);
       }
 
       if (
@@ -289,10 +271,7 @@ export async function waitForJobDetailUrls({
       attempt === 20 ||
       attempt === 25
     ) {
-      window.scrollTo({
-        top: document.body.scrollHeight,
-        behavior: "smooth",
-      });
+      setWindowScrollTop(document.body.scrollHeight);
     }
 
     await waitForResultSurfaceSettle(site);
@@ -324,6 +303,58 @@ function mergeJobUrlLists(...lists: string[][]): string[] {
 
 async function waitForResultSurfaceSettle(site: SiteKey): Promise<void> {
   await waitForDomSettle(getSiteResultSurfaceSettleMs(site), 350);
+}
+
+function advanceCareerSiteResultsSurface(
+  site: "startup" | "other_sites" | "greenhouse" | "builtin",
+  attempt: number
+): void {
+  const container = findCareerSiteScrollableResultsContainer(site);
+
+  if (container) {
+    const maxScrollTop = Math.max(container.scrollHeight - container.clientHeight, 0);
+    const stride = Math.max(Math.round(container.clientHeight * 0.9), 280);
+    const phase = attempt % 5;
+    let nextTop = container.scrollTop;
+
+    if (maxScrollTop > 0) {
+      if (phase === 0) {
+        nextTop = Math.min(maxScrollTop, container.scrollTop + stride);
+      } else if (phase === 1) {
+        nextTop = Math.min(maxScrollTop, container.scrollTop + stride);
+      } else if (phase === 2) {
+        nextTop = 0;
+      } else if (phase === 3) {
+        nextTop = Math.min(maxScrollTop, Math.round(maxScrollTop / 2));
+      } else {
+        nextTop = maxScrollTop;
+      }
+
+      if (nextTop !== container.scrollTop) {
+        setElementScrollTop(container, nextTop);
+        container.dispatchEvent(new Event("scroll", { bubbles: true }));
+      }
+      return;
+    }
+  }
+
+  const pageHeight = Math.max(
+    document.body.scrollHeight,
+    document.documentElement?.scrollHeight ?? 0
+  );
+  const phase = attempt % 5;
+
+  if (phase === 0) {
+    setWindowScrollTop(pageHeight);
+  } else if (phase === 1) {
+    setWindowScrollTop(pageHeight / 2);
+  } else if (phase === 2) {
+    setWindowScrollTop(0);
+  } else if (phase === 3) {
+    setWindowScrollTop(pageHeight / 3);
+  } else {
+    setWindowScrollTop((pageHeight * 2) / 3);
+  }
 }
 
 function advanceMonsterResultsSurface(attempt: number): void {
@@ -365,14 +396,113 @@ function advanceMonsterResultsSurface(attempt: number): void {
   const pagePhase = attempt % 4;
 
   if (pagePhase === 0) {
-    window.scrollTo({ top: pageHeight / 3, behavior: "smooth" });
+    setWindowScrollTop(pageHeight / 3);
   } else if (pagePhase === 1) {
-    window.scrollTo({ top: pageHeight, behavior: "smooth" });
+    setWindowScrollTop(pageHeight);
   } else if (pagePhase === 2) {
-    window.scrollTo({ top: pageHeight / 2, behavior: "smooth" });
+    setWindowScrollTop(pageHeight / 2);
   } else {
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    setWindowScrollTop(0);
   }
+}
+
+function findCareerSiteScrollableResultsContainer(
+  site: "startup" | "other_sites" | "greenhouse" | "builtin"
+): HTMLElement | null {
+  const selectors = [
+    "[data-testid*='job-results' i]",
+    "[data-testid*='search-results' i]",
+    "[data-testid*='results-list' i]",
+    "[data-testid*='job-list' i]",
+    "[aria-label*='job results' i]",
+    "[aria-label*='search results' i]",
+    "[class*='job-posts' i]",
+    "[class*='search-results' i]",
+    "[class*='results-list' i]",
+    "[class*='job-list' i]",
+    "[class*='openings' i]",
+    "[class*='listing' i]",
+    "[class*='positions' i]",
+    "[class*='roles' i]",
+    "main",
+    "section",
+    "div",
+  ];
+  const candidates: Array<{ element: HTMLElement; score: number }> = [];
+  const seen = new Set<HTMLElement>();
+
+  const pushCandidate = (element: HTMLElement, baseScore = 0) => {
+    if (seen.has(element) || !isElementVisible(element) || !isScrollableElement(element)) {
+      return;
+    }
+
+    seen.add(element);
+
+    const jobLinkCount = countCareerSiteJobLinks(element, site);
+    if (jobLinkCount === 0) {
+      return;
+    }
+
+    const attrs = [
+      element.getAttribute("data-testid"),
+      element.getAttribute("aria-label"),
+      element.className,
+      element.id,
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    let score = baseScore + jobLinkCount * 10;
+    if (/job-posts|search-results|results-list|job-list/.test(attrs)) score += 40;
+    if (/opening|listing|position|role|career|result/.test(attrs)) score += 18;
+    if (element.clientWidth > 0 && element.clientWidth < window.innerWidth * 0.95) {
+      score += 8;
+    }
+
+    candidates.push({ element, score });
+  };
+
+  for (const selector of selectors) {
+    for (const element of collectDeepMatches<HTMLElement>(selector)) {
+      pushCandidate(element);
+    }
+  }
+
+  for (const selector of getCareerSiteJobLinkSelectors(site)) {
+    for (const link of collectDeepMatches<HTMLAnchorElement>(selector)) {
+      let depth = 0;
+      let ancestor = link.parentElement;
+      while (ancestor && depth < 6) {
+        pushCandidate(ancestor, Math.max(24 - depth * 4, 0));
+        ancestor = ancestor.parentElement;
+        depth += 1;
+      }
+    }
+  }
+
+  return candidates.sort((left, right) => right.score - left.score)[0]?.element ?? null;
+}
+
+function countCareerSiteJobLinks(
+  container: HTMLElement,
+  site: "startup" | "other_sites" | "greenhouse" | "builtin"
+): number {
+  const matches = new Set<HTMLAnchorElement>();
+
+  for (const selector of getCareerSiteJobLinkSelectors(site)) {
+    let anchors: HTMLAnchorElement[] = [];
+    try {
+      anchors = Array.from(container.querySelectorAll<HTMLAnchorElement>(selector));
+    } catch {
+      continue;
+    }
+
+    for (const anchor of anchors) {
+      matches.add(anchor);
+    }
+  }
+
+  return matches.size;
 }
 
 function findMonsterScrollableResultsRail(): HTMLElement | null {
@@ -476,7 +606,7 @@ function isScrollableElement(element: HTMLElement): boolean {
   ]
     .join(" ")
     .toLowerCase();
-  const likelyResultsContainer = /search-results|job-results|results-list|job-list|dashboard|pane|panel|rail|left/.test(
+  const likelyResultsContainer = /search-results|job-results|results-list|job-list|job-posts|opening|listing|position|role|dashboard|pane|panel|rail|left/.test(
     attrs
   );
 
@@ -489,13 +619,22 @@ function isScrollableElement(element: HTMLElement): boolean {
 function setElementScrollTop(element: HTMLElement, top: number): void {
   element.scrollTop = top;
   try {
-    element.scrollTo({ top, behavior: "smooth" });
+    element.scrollTo({ top, behavior: "auto" });
   } catch {
     try {
       element.scrollTo(0, top);
     } catch {
       // Ignore non-scrollable polyfill gaps.
     }
+  }
+}
+
+function setWindowScrollTop(top: number): void {
+  const normalizedTop = Math.max(0, Math.floor(top));
+  try {
+    window.scrollTo({ top: normalizedTop, behavior: "auto" });
+  } catch {
+    window.scrollTo(0, normalizedTop);
   }
 }
 
@@ -782,7 +921,7 @@ export function findNextResultsPageAction(
   let bestAction: SearchResultsPageAction | null = null;
 
   for (const element of collectDeepMatches<HTMLElement>(
-    "a[href], button, input[type='button'], input[type='submit'], [role='button']"
+    "a[href], button, input[type='button'], input[type='submit'], [role='button'], [role='link']"
   )) {
     const candidate = scoreNextResultsPageAction(element, site);
     if (!candidate) {
@@ -808,7 +947,16 @@ export function findNextResultsPageAction(
 export async function advanceToNextResultsPage(
   site: SiteKey
 ): Promise<SearchResultsAdvanceResult> {
-  const action = findNextResultsPageAction(site);
+  let action = findNextResultsPageAction(site);
+  if (!action) {
+    window.scrollTo({
+      top: document.body.scrollHeight,
+      behavior: "smooth",
+    });
+    await waitForResultSurfaceSettle(site);
+    action = findNextResultsPageAction(site);
+  }
+
   if (!action) {
     return "none";
   }
@@ -821,24 +969,22 @@ export async function advanceToNextResultsPage(
     return "navigating";
   }
 
-  performClickAction(action.element);
-  await waitForResultSurfaceSettle(site);
-
-  const afterUrl = normalizeUrl(window.location.href);
-  const afterSignature = getResultPageSignature(site);
-
-  if ((afterUrl && afterUrl !== beforeUrl) || afterSignature !== beforeSignature) {
-    return afterUrl && afterUrl !== beforeUrl ? "navigating" : "advanced";
+  try {
+    action.element.scrollIntoView({ behavior: "smooth", block: "center" });
+  } catch {
+    // Some controls cannot be scrolled into view programmatically.
   }
 
-  return "none";
+  await sleep(200);
+  performClickAction(action.element);
+  return waitForResultsPageAdvance(site, beforeUrl, beforeSignature);
 }
 
 function scoreNextResultsPageAction(
   element: HTMLElement,
   site: SiteKey
 ): SearchResultsPageAction | null {
-  if (!isElementVisible(element) || !isElementInteractive(element)) {
+  if (!isPaginationControlVisible(element) || !isPaginationControlInteractive(element)) {
     return null;
   }
 
@@ -863,8 +1009,10 @@ function scoreNextResultsPageAction(
       .join(" ")
   ).toLowerCase();
   const insidePagination = isInsidePaginationContainer(element);
+  const hasSiblingPaginationContext = hasSiblingPageIndicators(element);
   const hasPaginationContext =
     insidePagination ||
+    hasSiblingPaginationContext ||
     attrs.includes("pagination") ||
     attrs.includes("paginator") ||
     attrs.includes("pager") ||
@@ -881,9 +1029,7 @@ function scoreNextResultsPageAction(
   }
 
   if (
-    element.getAttribute("aria-current") === "page" ||
-    element.getAttribute("aria-selected") === "true" ||
-    /^\d+$/.test(text)
+    isCurrentPageIndicator(element)
   ) {
     return null;
   }
@@ -892,22 +1038,36 @@ function scoreNextResultsPageAction(
     text.includes("next page") ||
     text.includes("next results") ||
     text.includes("next jobs") ||
+    /(?:^|\b)next(?:\b|$)/.test(text) ||
     text === "next" ||
     attrs.includes("next page") ||
     attrs.includes("next results") ||
     attrs.includes("next jobs") ||
+    /(?:^|\b)next(?:\b|$)/.test(attrs) ||
     attrs.includes("pagination-next") ||
     attrs.includes("pager-next") ||
     attrs.includes("rel next");
+  const isTrailingAdvanceControl = isTrailingPaginationAdvanceControl(
+    element,
+    text,
+    attrs,
+    navUrl
+  );
+  const isNextNumberedPage = isNextNumberedPaginationControl(element);
   const isArrowNext =
-    insidePagination &&
+    (insidePagination || hasSiblingPaginationContext) &&
     (text === "next" || NEXT_PAGE_ARROW_LABELS.has(text));
 
-  if (!isExplicitNext && !isArrowNext) {
+  if (!isExplicitNext && !isArrowNext && !isTrailingAdvanceControl && !isNextNumberedPage) {
     return null;
   }
 
-  if (!hasPaginationContext && !text.includes("next page") && !attrs.includes("next page")) {
+  if (
+    !hasPaginationContext &&
+    !text.includes("next page") &&
+    !attrs.includes("next page") &&
+    !isNextNumberedPage
+  ) {
     return null;
   }
 
@@ -919,8 +1079,17 @@ function scoreNextResultsPageAction(
   if (isArrowNext) {
     score += 24;
   }
+  if (isTrailingAdvanceControl) {
+    score += 22;
+  }
+  if (isNextNumberedPage) {
+    score += 26;
+  }
   if (insidePagination) {
     score += 18;
+  }
+  if (hasSiblingPaginationContext) {
+    score += 12;
   }
   if (hasPaginationUrlSignal(navUrl)) {
     score += 16;
@@ -937,6 +1106,9 @@ function scoreNextResultsPageAction(
   if (site === "dice" && (attrs.includes("pagination") || attrs.includes("pager"))) {
     score += 10;
   }
+  if (site === "greenhouse" && hasSiblingPaginationContext) {
+    score += 12;
+  }
 
   return {
     element,
@@ -944,6 +1116,208 @@ function scoreNextResultsPageAction(
     score,
     text,
   };
+}
+
+function hasSiblingPageIndicators(element: HTMLElement): boolean {
+  const controls = findSiblingPaginationControls(element);
+  if (controls.length < 2) {
+    return false;
+  }
+
+  const hasCurrentPageIndicator = controls.some(
+    (candidate) => isCurrentPageIndicator(candidate)
+  );
+  const hasAnotherPaginationControl = controls.some((candidate) => {
+    if (candidate === element) {
+      return false;
+    }
+
+    const text = getPaginationControlText(candidate);
+    return (
+      /^\d+$/.test(text) ||
+      text === "previous" ||
+      text === "prev" ||
+      text === "next" ||
+      NEXT_PAGE_ARROW_LABELS.has(text)
+    );
+  });
+
+  return hasCurrentPageIndicator && hasAnotherPaginationControl;
+}
+
+function findSiblingPaginationControls(element: HTMLElement): HTMLElement[] {
+  let container = element.parentElement;
+
+  for (let depth = 0; container && depth < 4; depth += 1) {
+    const controls = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        "a[href], button, input[type='button'], input[type='submit'], [role='button'], [role='link'], [aria-current='page'], [aria-selected='true']"
+      )
+    ).filter((candidate) => isPaginationControlVisible(candidate));
+
+    if (controls.length >= 2 && controls.includes(element)) {
+      const hasCurrent = controls.some((candidate) =>
+        isCurrentPageIndicator(candidate)
+      );
+      const hasRecognizablePaginationControl = controls.some((candidate) => {
+        const text = getPaginationControlText(candidate);
+        return (
+          /^\d+$/.test(text) ||
+          text === "previous" ||
+          text === "prev" ||
+          text === "next" ||
+          NEXT_PAGE_ARROW_LABELS.has(text)
+        );
+      });
+
+      if (hasCurrent || hasRecognizablePaginationControl) {
+        return controls;
+      }
+    }
+
+    container = container.parentElement;
+  }
+
+  return [];
+}
+
+function getPaginationControlText(element: HTMLElement): string {
+  return cleanText(getActionText(element)).toLowerCase();
+}
+
+function getPaginationControlAttrs(element: HTMLElement): string {
+  return cleanText(
+    [
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.getAttribute("data-testid"),
+      element.getAttribute("data-test"),
+      element.getAttribute("data-current"),
+      element.getAttribute("data-selected"),
+      element.className,
+    ]
+      .filter(Boolean)
+      .join(" ")
+  ).toLowerCase();
+}
+
+function isCurrentPageIndicator(element: HTMLElement): boolean {
+  const attrs = getPaginationControlAttrs(element);
+
+  return (
+    element.getAttribute("aria-current") === "page" ||
+    element.getAttribute("aria-current") === "true" ||
+    element.getAttribute("aria-selected") === "true" ||
+    element.getAttribute("data-current") === "true" ||
+    element.getAttribute("data-selected") === "true" ||
+    /(?:^|\b)(active|selected|current|page-active|page-current)(?:\b|$)/.test(
+      attrs
+    )
+  );
+}
+
+function extractPaginationPageNumber(element: HTMLElement): number | null {
+  const text = getPaginationControlText(element);
+  if (/^\d+$/.test(text)) {
+    return Number.parseInt(text, 10);
+  }
+
+  const attrs = getPaginationControlAttrs(element);
+  const match = attrs.match(/(?:go to\s+)?page\s+(\d+)/i);
+  if (!match?.[1]) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(match[1], 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getCurrentPaginationPageNumber(controls: HTMLElement[]): number | null {
+  for (const control of controls) {
+    if (!isCurrentPageIndicator(control)) {
+      continue;
+    }
+
+    const pageNumber = extractPaginationPageNumber(control);
+    if (pageNumber !== null) {
+      return pageNumber;
+    }
+  }
+
+  return null;
+}
+
+function isNextNumberedPaginationControl(element: HTMLElement): boolean {
+  const controls = findSiblingPaginationControls(element);
+  if (controls.length < 2 || isCurrentPageIndicator(element)) {
+    return false;
+  }
+
+  const text = getPaginationControlText(element);
+  const attrs = getPaginationControlAttrs(element);
+  if (
+    /(?:^|\b)(previous|prev|back)(?:\b|$)/.test(text) ||
+    /(?:^|\b)(previous|prev|back)(?:\b|$)/.test(attrs)
+  ) {
+    return false;
+  }
+
+  const pageNumber = extractPaginationPageNumber(element);
+  const currentPage = getCurrentPaginationPageNumber(controls);
+  if (pageNumber === null || currentPage === null || pageNumber <= currentPage) {
+    return false;
+  }
+
+  const nextAvailablePage = controls
+    .map((control) => extractPaginationPageNumber(control))
+    .filter((value): value is number => value !== null && value > currentPage)
+    .sort((left, right) => left - right)[0];
+
+  return nextAvailablePage === pageNumber;
+}
+
+function isTrailingPaginationAdvanceControl(
+  element: HTMLElement,
+  text: string,
+  attrs: string,
+  navUrl: string | null
+): boolean {
+  const controls = findSiblingPaginationControls(element);
+  if (controls.length < 2) {
+    return false;
+  }
+
+  const elementIndex = controls.indexOf(element);
+  if (elementIndex < 0 || elementIndex !== controls.length - 1) {
+    return false;
+  }
+
+  if (
+    isCurrentPageIndicator(element) ||
+    /(?:^|\b)(previous|prev|back)(?:\b|$)/.test(text) ||
+    /(?:^|\b)(previous|prev|back)(?:\b|$)/.test(attrs)
+  ) {
+    return false;
+  }
+
+  const previousControls = controls.slice(0, elementIndex);
+  const hasCurrentBefore = previousControls.some((candidate) =>
+    isCurrentPageIndicator(candidate)
+  );
+  const hasNumberedPagesBefore = previousControls.some((candidate) =>
+    /^\d+$/.test(getPaginationControlText(candidate))
+  );
+
+  if (!hasCurrentBefore || !hasNumberedPagesBefore) {
+    return false;
+  }
+
+  return (
+    !text ||
+    NEXT_PAGE_ARROW_LABELS.has(text) ||
+    hasPaginationUrlSignal(navUrl) ||
+    /(?:^|\b)(next|forward|right|chevron|arrow|page-next)(?:\b|$)/.test(attrs)
+  );
 }
 
 function isInsidePaginationContainer(element: HTMLElement): boolean {
@@ -967,10 +1341,57 @@ function isDisabledPaginationElement(element: HTMLElement): boolean {
 
   return Boolean(
     element.matches("[disabled], [aria-disabled='true'], [data-disabled='true']") ||
-      /(?:^|\b)(disabled|is-disabled|pagination-disabled|pager-disabled)(?:\b|$)/.test(
+      /(?:^|\b)(disabled|is-disabled|inactive|is-inactive|pagination-disabled|pager-disabled)(?:\b|$)/.test(
         attrs
       )
   );
+}
+
+function isPaginationControlVisible(element: HTMLElement): boolean {
+  if (isElementVisible(element)) {
+    return true;
+  }
+
+  if (!element?.isConnected) {
+    return false;
+  }
+
+  const styles = window.getComputedStyle(element);
+  const opacity = Number.parseFloat(styles.opacity);
+  if (
+    styles.visibility === "hidden" ||
+    styles.visibility === "collapse" ||
+    styles.display === "none" ||
+    (Number.isFinite(opacity) && opacity <= 0.01)
+  ) {
+    return false;
+  }
+
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return false;
+  }
+
+  return isInsidePaginationContainer(element);
+}
+
+function isPaginationControlInteractive(element: HTMLElement): boolean {
+  if (!isPaginationControlVisible(element)) {
+    return false;
+  }
+
+  if (
+    element.hasAttribute("disabled") ||
+    (element as HTMLButtonElement | HTMLInputElement).disabled
+  ) {
+    return false;
+  }
+
+  if (element.getAttribute("aria-disabled") === "true") {
+    return false;
+  }
+
+  return window.getComputedStyle(element).pointerEvents !== "none";
 }
 
 function hasPaginationUrlSignal(url: string | null): boolean {
@@ -1010,10 +1431,8 @@ function hasPaginationUrlSignal(url: string | null): boolean {
 
 function getResultPageSignature(site: SiteKey): string {
   const currentUrl = normalizeUrl(window.location.href) ?? "";
-  const pageMarkers = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      "[aria-current='page'], [aria-selected='true'], [data-current='true'], .selected, .active"
-    )
+  const pageMarkers = collectDeepMatches<HTMLElement>(
+    "[aria-current='page'], [aria-selected='true'], [data-current='true'], .selected, .active"
   )
     .filter((element) => isElementVisible(element))
     .map((element) => cleanText(getActionText(element)).toLowerCase())
@@ -1026,6 +1445,29 @@ function getResultPageSignature(site: SiteKey): string {
     .join("|");
 
   return [currentUrl, pageMarkers, candidateMarkers].join("::");
+}
+
+async function waitForResultsPageAdvance(
+  site: SiteKey,
+  beforeUrl: string | null,
+  beforeSignature: string
+): Promise<SearchResultsAdvanceResult> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < NEXT_PAGE_ADVANCE_TIMEOUT_MS) {
+    await waitForResultSurfaceSettle(site);
+
+    const afterUrl = normalizeUrl(window.location.href);
+    const afterSignature = getResultPageSignature(site);
+
+    if ((afterUrl && afterUrl !== beforeUrl) || afterSignature !== beforeSignature) {
+      return afterUrl && afterUrl !== beforeUrl ? "navigating" : "advanced";
+    }
+
+    await sleep(NEXT_PAGE_ADVANCE_POLL_MS);
+  }
+
+  return "none";
 }
 
 function isMyGreenhousePortalHost(): boolean {

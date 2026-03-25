@@ -544,14 +544,21 @@ async function handleMessage(
         items: unreviewedItemsToOpen,
         skippedItems: skippedReviewedItems,
       } = await filterReviewedManagedSpawnItems(itemsToOpen);
-      itemsToOpen = unreviewedItemsToOpen;
+      const shouldFallbackToReviewedItems =
+        unreviewedItemsToOpen.length === 0 &&
+        skippedReviewedItems.length > 0 &&
+        itemsToOpen.length > 0 &&
+        itemsToOpen.every((item) => isManagedJobStage(item.stage));
+      itemsToOpen = shouldFallbackToReviewedItems
+        ? itemsToOpen
+        : unreviewedItemsToOpen;
       const {
         items: filteredItemsToOpen,
         skippedItems: skippedAlreadyOpenItems,
       } = await filterAlreadyOpenManagedSpawnItems(itemsToOpen);
       itemsToOpen = filteredItemsToOpen;
 
-      if (skippedReviewedItems.length > 0) {
+      if (!shouldFallbackToReviewedItems && skippedReviewedItems.length > 0) {
         await releaseJobOpeningsForItems(skippedReviewedItems);
       }
 
@@ -618,6 +625,7 @@ async function handleMessage(
             item.stage,
             item.runId,
             item.label,
+            item.keyword,
             item.resumeKind,
             item.profileId
           );
@@ -745,6 +753,7 @@ async function updateSessionFromMessage(
         ? Math.max(0, Math.floor(message.jobSlots))
         : existingSession?.jobSlots,
     label: message.label ?? existingSession?.label,
+    keyword: existingSession?.keyword,
     resumeKind: message.resumeKind ?? existingSession?.resumeKind,
     profileId: message.profileId ?? existingSession?.profileId,
     controllerFrameId,
@@ -978,6 +987,7 @@ async function attachSessionToSiteOpenedChildTab(
     "open-apply",
     openerSession.runId,
     openerSession.label,
+    openerSession.keyword,
     openerSession.resumeKind,
     openerSession.profileId
   );
@@ -1089,6 +1099,7 @@ async function startAutomationForTab(
     runId,
     undefined,
     undefined,
+    undefined,
     settings.activeProfileId
   );
 
@@ -1157,6 +1168,7 @@ async function startStartupAutomation(
       stage: "collect-results" as const,
       runId,
       jobSlots: jobSlots[index],
+      active: index === 0,
       message: `Collecting ${target.label} roles...`,
       label: target.label,
       resumeKind: target.resumeKind,
@@ -1225,6 +1237,7 @@ async function startStartupAutomation(
         item.stage,
         item.runId,
         item.label,
+        item.keyword,
         item.resumeKind,
         item.profileId ?? settings.activeProfileId
       );
@@ -1298,6 +1311,7 @@ async function startOtherSitesAutomation(
       stage: "collect-results" as const,
       runId,
       jobSlots: jobSlots[index],
+      active: index === 0,
       message: `Collecting ${target.label} roles...`,
       label: target.label,
       resumeKind: target.resumeKind,
@@ -1366,6 +1380,7 @@ async function startOtherSitesAutomation(
         item.stage,
         item.runId,
         item.label,
+        item.keyword,
         item.resumeKind,
         item.profileId ?? settings.activeProfileId
       );
@@ -1637,11 +1652,15 @@ async function claimJobOpeningsForSender(
 
   if (!runId) {
     const settings = await readAutomationSettings();
-    const approvedUrls = pickUniqueCandidateUrls(
+    const safeLimit = Math.min(Math.max(0, requested), settings.jobPageLimit);
+    let approvedUrls = pickUniqueCandidateUrls(
       candidates,
-      Math.min(Math.max(0, requested), settings.jobPageLimit),
+      safeLimit,
       reviewedJobKeys
     );
+    if (approvedUrls.length === 0 && safeLimit > 0 && candidates.length > 0) {
+      approvedUrls = pickUniqueCandidateUrls(candidates, safeLimit);
+    }
     return {
       ok: true,
       approved: approvedUrls.length,
@@ -1720,6 +1739,7 @@ async function claimJobOpeningsForRunId(
     const seenKeys = new Set(runState.openedJobKeys ?? []);
     const reviewedJobKeys = await getReviewedJobKeySet();
     const approvedUrls: string[] = [];
+    const fallbackReviewedCandidates: Array<{ url: string; key: string }> = [];
 
     for (const candidate of candidates) {
       if (approvedUrls.length >= targetCount) {
@@ -1730,12 +1750,32 @@ async function claimJobOpeningsForRunId(
       // Use the candidate's provided key if available and non-empty, otherwise recompute from URL
       const key = candidate.key?.trim() || getJobDedupKey(url);
 
-      if (!url || !key || seenKeys.has(key) || reviewedJobKeys.has(key)) {
+      if (!url || !key || seenKeys.has(key)) {
+        continue;
+      }
+
+      if (reviewedJobKeys.has(key)) {
+        fallbackReviewedCandidates.push({ url, key });
         continue;
       }
 
       seenKeys.add(key);
       approvedUrls.push(url);
+    }
+
+    if (approvedUrls.length === 0 && targetCount > 0) {
+      for (const candidate of fallbackReviewedCandidates) {
+        if (approvedUrls.length >= targetCount) {
+          break;
+        }
+
+        if (seenKeys.has(candidate.key)) {
+          continue;
+        }
+
+        seenKeys.add(candidate.key);
+        approvedUrls.push(candidate.url);
+      }
     }
 
     if (approvedUrls.length > 0) {

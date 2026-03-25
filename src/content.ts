@@ -21,12 +21,10 @@ import {
   getResumeKindLabel,
   getJobDedupKey,
   getSiteLabel,
-  isJobBoardSite,
   isProbablyAuthGatePage,
   isProbablyRateLimitPage,
   isProbablyHumanVerificationPage,
   normalizeQuestionKey,
-  parseSearchKeywords,
   readAutomationSettings,
   resolveSessionSite,
   resolveAutomationSettingsForProfile,
@@ -146,6 +144,7 @@ import {
 } from "./content/manualReview";
 import {
   createEmptyAutofillResult,
+  getGreenhousePortalSearchKeyword,
   getRemainingJobSlotsAfterSpawn,
   getCurrentSearchKeywordHints,
   looksLikeCurrentFrameApplicationSurface,
@@ -189,6 +188,8 @@ const OVERLAY_DRAG_PADDING = 12;
 const OVERLAY_POSITION_STORAGE_KEY = "remote-job-search-overlay-position";
 const MAX_STAGE_DEPTH = 10;
 const IS_TOP_FRAME = window.top === window;
+const CONTENT_READY_POLL_MS = 150;
+const RESPONSIVE_WAIT_SLICE_MS = 150;
 
 // ─── RESULT HELPERS ──────────────────────────────────────────────────────────
 
@@ -197,6 +198,7 @@ const IS_TOP_FRAME = window.top === window;
 let status = createInitialStatus();
 let currentStage: AutomationStage = "bootstrap";
 let currentLabel: string | undefined;
+let currentKeyword: string | undefined;
 let currentResumeKind: ResumeKind | undefined;
 let currentProfileId: string | undefined;
 let currentRunId: string | undefined;
@@ -291,7 +293,7 @@ async function confirmBrokenPageReason(
     return null;
   }
 
-  await sleep(site === "monster" ? 2_500 : 1_200);
+  await sleepWithAutomationChecks(site === "monster" ? 2_500 : 1_200);
 
   const refreshedReason = detectBrokenPageReason(document);
   if (refreshedReason !== "not_found") {
@@ -575,6 +577,20 @@ async function pauseAutomationAndWait(message: string): Promise<void> {
   await ensureAutomationPausePromise();
 }
 
+async function sleepWithAutomationChecks(ms: number): Promise<void> {
+  let remaining = Math.max(0, Math.floor(ms));
+
+  while (remaining > 0) {
+    if (automationPauseRequested || status.phase === "paused") {
+      await waitForAutomationResumeIfPaused();
+    }
+
+    const slice = Math.min(RESPONSIVE_WAIT_SLICE_MS, remaining);
+    await sleep(slice);
+    remaining -= slice;
+  }
+}
+
 function canControlCurrentAutomationFromOverlay(): boolean {
   return (
     status.site !== "unsupported" &&
@@ -807,6 +823,7 @@ chrome.runtime.onMessage.addListener(
         };
         currentStage = message.session.stage;
         currentLabel = message.session.label;
+        currentKeyword = message.session.keyword;
         currentResumeKind = message.session.resumeKind;
         currentProfileId = message.session.profileId;
         currentRunId = message.session.runId;
@@ -821,6 +838,7 @@ chrome.runtime.onMessage.addListener(
       } else {
         currentStage = "bootstrap";
         currentLabel = undefined;
+        currentKeyword = undefined;
         currentResumeKind = undefined;
         currentProfileId = undefined;
         currentRunId = undefined;
@@ -877,7 +895,7 @@ async function resumeAutomationIfNeeded(): Promise<void> {
   childApplicationTabOpened = false;
   stageRetryState = createStageRetryState();
 
-  const maxAttempts = detectedSite ? 30 : 18;
+  const maxAttempts = detectedSite ? 70 : 40;
   let lastSessionState: string | null = null;
   let unchangedCount = 0;
 
@@ -917,7 +935,7 @@ async function resumeAutomationIfNeeded(): Promise<void> {
           typeof s.controllerFrameId !== "number" &&
           attempt < maxAttempts - 1
         ) {
-          await sleep(400);
+          await sleepWithAutomationChecks(CONTENT_READY_POLL_MS);
           continue;
         }
         return;
@@ -940,6 +958,7 @@ async function resumeAutomationIfNeeded(): Promise<void> {
       };
       currentStage = s.stage;
       currentLabel = s.label;
+      currentKeyword = s.keyword;
       currentResumeKind = s.resumeKind;
       currentProfileId = s.profileId;
       currentRunId = s.runId;
@@ -953,13 +972,7 @@ async function resumeAutomationIfNeeded(): Promise<void> {
       renderOverlay();
 
       if (response.shouldResume) {
-        const freshResponse = await chrome.runtime.sendMessage({
-          type: "get-tab-session",
-          tabId: -1,
-        }).catch(() => null);
-        if (freshResponse?.session?.shouldResume ?? response.shouldResume) {
-          await ensureAutomationRunning();
-        }
+        await ensureAutomationRunning();
         return;
       }
 
@@ -968,7 +981,7 @@ async function resumeAutomationIfNeeded(): Promise<void> {
         typeof s.controllerFrameId !== "number" &&
         attempt < maxAttempts - 1
       ) {
-        await sleep(400);
+        await sleepWithAutomationChecks(CONTENT_READY_POLL_MS);
         continue;
       }
       return;
@@ -976,7 +989,7 @@ async function resumeAutomationIfNeeded(): Promise<void> {
 
     if (attempt >= maxAttempts - 1) return;
 
-    await sleep(400);
+    await sleepWithAutomationChecks(CONTENT_READY_POLL_MS);
   }
 }
 
@@ -1060,11 +1073,12 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
     );
   }
   const items: SpawnTabRequest[] = targets
-    .map((target) => ({
+    .map((target, index) => ({
       url: target.url,
       site,
       stage: "collect-results" as const,
       runId: currentRunId,
+      active: index === 0,
       message: `Collecting ${target.label} job pages on ${getSiteLabel(site)}...`,
       label: target.label,
       resumeKind: target.resumeKind,
@@ -1098,7 +1112,16 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     site,
     effectiveLimit
   );
-  const keywordHints = getCurrentSearchKeywordHints(site, settings, currentLabel);
+  const keywordHints = getCurrentSearchKeywordHints(
+    site,
+    settings,
+    currentLabel,
+    currentKeyword
+  );
+  const greenhousePortalKeyword = getGreenhousePortalSearchKeyword(
+    keywordHints,
+    currentLabel
+  );
 
   updateStatus(
     "running",
@@ -1136,7 +1159,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
         : site === "monster"
           ? 5000
           : 2500;
-  await sleep(renderWaitMs);
+  await sleepWithAutomationChecks(renderWaitMs);
   await waitForAutomationResumeIfPaused();
   throwIfRateLimited(site, {
     detectBrokenPageReason,
@@ -1146,12 +1169,13 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
 
   if (
     site === "greenhouse" &&
-    currentLabel &&
-    (await searchMyGreenhousePortal(currentLabel))
+    greenhousePortalKeyword &&
+    (await searchMyGreenhousePortal(greenhousePortalKeyword))
   ) {
+    const greenhouseLabelPrefix = currentLabel ? `${currentLabel} ` : "";
     updateStatus(
       "running",
-      `Opened ${currentLabel} Greenhouse results. Collecting job pages...`,
+      `Opened ${greenhouseLabelPrefix}Greenhouse results. Collecting job pages...`,
       true,
       "collect-results"
     );
@@ -1305,7 +1329,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     return;
   }
 
-  const items: SpawnTabRequest[] = approvedUrls.map((url) => {
+  const items: SpawnTabRequest[] = approvedUrls.map((url, index) => {
     const claimedJobKey = getJobDedupKey(url) || undefined;
     const jobTitle = titleMap.get(getJobDedupKey(url)) ?? "";
     const itemResumeKind = resolveResumeKindForJob({
@@ -1313,6 +1337,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
       label: currentLabel,
       jobTitle,
     });
+    const shouldActivateSpawn = index === 0;
 
     if (isLikelyApplyUrl(url, site)) {
       return {
@@ -1320,6 +1345,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
         site,
         stage: "autofill-form" as const,
         runId: currentRunId,
+        active: shouldActivateSpawn,
         message: `Autofilling ${labelPrefix}${getSiteLabel(site)} apply page...`,
         claimedJobKey,
         label: currentLabel,
@@ -1332,6 +1358,7 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
       site,
       stage: "open-apply" as const,
       runId: currentRunId,
+      active: shouldActivateSpawn,
       message: `Opening ${labelPrefix}${getSiteLabel(site)} job page...`,
       claimedJobKey,
       label: currentLabel,
@@ -1345,7 +1372,8 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   const remainingSlotsAfterSpawn = getRemainingJobSlotsAfterSpawn(
     effectiveLimit,
     response.opened,
-    claimResult.remaining
+    claimResult.remaining,
+    approvedUrls.length
   );
 
   const extra =
@@ -1388,19 +1416,6 @@ async function continueCollectResultsOnNextPage(options: {
 
   if (safeRemainingSlots <= 0) {
     return false;
-  }
-
-  if (site === "greenhouse" && isMyGreenhousePortalHost()) {
-    updateStatus(
-      "completed",
-      fallbackMessage,
-      false,
-      "collect-results",
-      undefined,
-      safeRemainingSlots
-    );
-    await closeCurrentTab();
-    return true;
   }
 
   updateStatus(
@@ -1535,7 +1550,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   });
 
   // Dice apply surfaces may appear after their custom elements finish booting.
-  await sleep(
+  await sleepWithAutomationChecks(
     site === "indeed" ||
       site === "dice" ||
       site === "monster" ||
@@ -1600,7 +1615,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
     if (hasNavigated) {
       cleanupObserver();
-      await sleep(2500);
+      await sleepWithAutomationChecks(2500);
       await waitForHumanVerificationToClear();
       throwIfRateLimited(site, {
         detectBrokenPageReason,
@@ -1703,7 +1718,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       });
     }
 
-    await sleep(700);
+    await sleepWithAutomationChecks(700);
     }
   } finally {
     // Disconnect the observer if nothing navigated before timeout.
@@ -1767,7 +1782,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   );
 
   action.element.scrollIntoView({ behavior: "smooth", block: "center" });
-  await sleep(600);
+  await sleepWithAutomationChecks(600);
 
   const urlBeforeClick = window.location.href;
 
@@ -1874,12 +1889,12 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
   for (let wait = 0; wait < 20; wait += 1) {
     await waitForAutomationResumeIfPaused();
-    await sleep(700);
+    await sleepWithAutomationChecks(700);
 
     if (childApplicationTabOpened) return;
 
     if (window.location.href !== urlBeforeClick) {
-      await sleep(2500);
+      await sleepWithAutomationChecks(2500);
       await waitForHumanVerificationToClear();
 
       if (hasLikelyApplicationSurface(site)) {
@@ -1916,7 +1931,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
         true,
         "autofill-form"
       );
-      await sleep(1500);
+      await sleepWithAutomationChecks(1500);
       await runAutofillStage(site);
       return;
     }
@@ -2021,9 +2036,9 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       behavior: "smooth",
       block: "center",
     });
-    await sleep(400);
+    await sleepWithAutomationChecks(400);
     performClickAction(retryAction.element);
-    await sleep(3000);
+    await sleepWithAutomationChecks(3000);
 
     if (
       window.location.href !== urlBeforeClick ||
@@ -2066,9 +2081,9 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       behavior: "smooth",
       block: "center",
     });
-    await sleep(400);
+    await sleepWithAutomationChecks(400);
     performClickAction(retryCompanyAction.element);
-    await sleep(3000);
+    await sleepWithAutomationChecks(3000);
 
     if (window.location.href !== urlBeforeClick) {
       await waitForHumanVerificationToClear();
@@ -2105,9 +2120,6 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     "successful"
   );
 }
-
-// src/content.ts
-// Part 2 of 3 – continues from Part 1
 
 // ─── AUTOFILL ────────────────────────────────────────────────────────────────
 
@@ -2283,7 +2295,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
         }
         return;
       }
-      await sleep(
+      await sleepWithAutomationChecks(
         pendingResumeUploadSurface
           ? 1_200
           : result.uploadedResume
@@ -2340,9 +2352,9 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
         behavior: "smooth",
         block: "center",
       });
-      await sleep(400);
+      await sleepWithAutomationChecks(400);
       performClickAction(followUp.element);
-      await sleep(2800);
+      await sleepWithAutomationChecks(2800);
 
       if (window.location.href !== previousUrl) {
         await waitForHumanVerificationToClear();
@@ -2394,9 +2406,9 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
           behavior: "smooth",
           block: "center",
         });
-        await sleep(400);
+        await sleepWithAutomationChecks(400);
         performClickAction(companySiteAction.element);
-        await sleep(2800);
+        await sleepWithAutomationChecks(2800);
 
         if (window.location.href !== previousUrl) {
           await waitForHumanVerificationToClear();
@@ -2412,7 +2424,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
 
     if (hasPendingResumeUploadSurface(applicationSurfaceCollectors)) {
       noProgressCount = 0;
-      await sleep(site === "indeed" ? 1_500 : 1_000);
+      await sleepWithAutomationChecks(site === "indeed" ? 1_500 : 1_000);
       continue;
     }
 
@@ -2437,7 +2449,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     noProgressCount += 1;
     if (noProgressCount >= 4) break;
 
-    await sleep(1200);
+    await sleepWithAutomationChecks(1200);
   }
 
   const finalSettings = await readCurrentAutomationSettings();
@@ -2575,7 +2587,7 @@ async function waitForHumanVerificationToClear(): Promise<void> {
       );
       lastReminderAt = Date.now();
     }
-    await sleep(VERIFICATION_POLL_MS);
+    await sleepWithAutomationChecks(VERIFICATION_POLL_MS);
   }
 
   updateStatus(
@@ -2583,7 +2595,7 @@ async function waitForHumanVerificationToClear(): Promise<void> {
     "Verification cleared. Continuing...",
     true
   );
-  await sleep(1500);
+  await sleepWithAutomationChecks(300);
 }
 
 
@@ -2592,12 +2604,6 @@ async function waitForHumanVerificationToClear(): Promise<void> {
 
 
 
-
-
-// ─── CHATGPT AI ANSWER ──────────────────────────────────────────────────────
-
-// src/content.ts
-// Part 3 of 3 – continues from Part 2
 
 // ─── AUTOFILL HELPERS ────────────────────────────────────────────────────────
 
@@ -2920,7 +2926,7 @@ async function setFileInputValue(
     }
 
     // Give the page time to accept or clear the selected file.
-    await sleep(500);
+    await sleepWithAutomationChecks(500);
 
     let success =
       Boolean(input.files?.length) ||
@@ -2928,7 +2934,7 @@ async function setFileInputValue(
       hasAcceptedResumeUpload(input, asset.name);
 
     if (success) {
-      await sleep(900);
+      await sleepWithAutomationChecks(900);
       success =
         Boolean(input.files?.length) ||
         getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase() ||
@@ -3326,7 +3332,11 @@ async function filterReachableCollectedJobUrls(
   }
 
   if (reachableUrls.length === 0 && index >= maxProbeCount) {
-    return [];
+    // Some Indeed and Greenhouse job pages reject background probing even when
+    // the visible results can still be opened in a normal tab. If every probe
+    // says "not found", trust the collected result URLs instead of closing the
+    // search page without opening anything.
+    return urls;
   }
 
   return [...reachableUrls, ...urls.slice(index)];
@@ -3615,7 +3625,7 @@ async function ensureMyGreenhouseRemoteFilterEnabled(): Promise<void> {
   const remoteOption = findMyGreenhouseRemoteOption();
   if (remoteOption && !isMyGreenhouseRemoteOptionSelected(remoteOption)) {
     performClickAction(remoteOption);
-    await sleep(200);
+    await sleepWithAutomationChecks(200);
     return;
   }
 
@@ -3625,7 +3635,7 @@ async function ensureMyGreenhouseRemoteFilterEnabled(): Promise<void> {
   }
 
   performClickAction(workTypeButton);
-  await sleep(200);
+  await sleepWithAutomationChecks(200);
 
   const openedRemoteOption = findMyGreenhouseRemoteOption();
   if (
@@ -3633,7 +3643,7 @@ async function ensureMyGreenhouseRemoteFilterEnabled(): Promise<void> {
     !isMyGreenhouseRemoteOptionSelected(openedRemoteOption)
   ) {
     performClickAction(openedRemoteOption);
-    await sleep(200);
+    await sleepWithAutomationChecks(200);
   }
 }
 
@@ -3645,7 +3655,7 @@ async function waitForMyGreenhouseSearchResults(timeoutMs: number): Promise<void
       return;
     }
 
-    await sleep(250);
+    await sleepWithAutomationChecks(250);
   }
 }
 
@@ -3673,7 +3683,7 @@ function hasMyGreenhouseSearchResults(): boolean {
 
   if (
     document.querySelector(
-      "a[href*='my.greenhouse.io/view_job'], a[href*='my.greenhouse.io'][href*='job_id='], a[href*='greenhouse.io'][href*='/jobs/'], a[href*='greenhouse.io'][href*='gh_jid=']"
+      "a[href*='my.greenhouse.io/view_job'], a[href*='my.greenhouse.io'][href*='job_id='], a[href*='/view_job'], a[href*='greenhouse.io'][href*='/jobs/'], a[href*='greenhouse.io'][href*='gh_jid=']"
     )
   ) {
     return true;
@@ -4267,7 +4277,9 @@ async function flushPendingAnswers(): Promise<void> {
             }
             break;
           }
-          await sleep(ANSWER_FLUSH_RETRY_DELAY_MS * retryCount);
+          await sleepWithAutomationChecks(
+            ANSWER_FLUSH_RETRY_DELAY_MS * retryCount
+          );
         }
       }
     }

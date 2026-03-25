@@ -43,6 +43,7 @@ export interface AutomationSession extends AutomationStatus {
   runId?: string;
   jobSlots?: number;
   label?: string;
+  keyword?: string;
   resumeKind?: ResumeKind;
   profileId?: string;
   controllerFrameId?: number;

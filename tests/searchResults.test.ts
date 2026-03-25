@@ -3,6 +3,7 @@
 import { vi } from "vitest";
 
 import {
+  advanceToNextResultsPage,
   findNextResultsPageAction,
   getJobResultCollectionTargetCount,
   waitForJobDetailUrls,
@@ -248,6 +249,97 @@ describe("search result collection", () => {
     expect(pageScrollSpy).not.toHaveBeenCalled();
   });
 
+  it("scrolls an inner Greenhouse results container to load additional jobs before finishing review", async () => {
+    document.body.innerHTML = `
+      <main>
+        <section
+          id="greenhouse-results-rail"
+          class="job-posts"
+          aria-label="Job results"
+        >
+          <div class="job-posts--table--department">
+            <div class="job-posts--table">
+              <table>
+                <tbody>
+                  <tr class="job-post">
+                    <td class="cell">
+                      <a href="https://job-boards.greenhouse.io/vercel/jobs/5430088004">
+                        <p>Software Engineer, Accounts</p>
+                        <p>Remote - United States</p>
+                      </a>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </main>
+    `;
+
+    const rail = document.getElementById("greenhouse-results-rail") as HTMLElement;
+    let scrollTop = 0;
+
+    Object.defineProperty(rail, "clientHeight", {
+      configurable: true,
+      get: () => 420,
+    });
+    Object.defineProperty(rail, "scrollHeight", {
+      configurable: true,
+      get: () => 2200,
+    });
+    Object.defineProperty(rail, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+        if (value >= 300 && !rail.querySelector("#second-greenhouse-job")) {
+          rail.insertAdjacentHTML(
+            "beforeend",
+            `
+              <div class="job-posts--table--department" id="second-greenhouse-job">
+                <div class="job-posts--table">
+                  <table>
+                    <tbody>
+                      <tr class="job-post">
+                        <td class="cell">
+                          <a href="https://job-boards.greenhouse.io/vercel/jobs/5813134004">
+                            <p>Software Engineer, Domains</p>
+                            <p>Remote - United States</p>
+                          </a>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            `
+          );
+        }
+      },
+    });
+
+    const pageScrollSpy = vi.spyOn(window, "scrollTo");
+
+    const promise = waitForJobDetailUrls({
+      site: "greenhouse",
+      datePostedWindow: "any",
+      targetCount: 2,
+      detectedSite: "greenhouse",
+      searchKeywords: ["software engineer"],
+    });
+
+    await vi.runAllTimersAsync();
+    const urls = await promise;
+
+    expect(urls).toEqual([
+      "https://job-boards.greenhouse.io/vercel/jobs/5430088004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5813134004",
+    ]);
+    expect(scrollTop).toBeGreaterThan(0);
+    expect(pageScrollSpy).not.toHaveBeenCalled();
+  });
+
   it("finds Indeed next-page pagination controls without confusing generic next buttons", () => {
     document.body.innerHTML = `
       <section role="dialog" aria-modal="true">
@@ -311,6 +403,201 @@ describe("search result collection", () => {
     const action = findNextResultsPageAction("dice");
 
     expect(action?.navUrl).toContain("page=2");
+  });
+
+  it("finds Greenhouse next-page controls from sibling page indicators even outside a nav wrapper", () => {
+    document.body.innerHTML = `
+      <section class="results-pagination">
+        <button type="button">Previous</button>
+        <button type="button" aria-current="page">1</button>
+        <button type="button" data-testid="results-next">Next</button>
+      </section>
+    `;
+
+    const action = findNextResultsPageAction("greenhouse");
+
+    expect(action?.text).toBe("next");
+  });
+
+  it("finds the live Greenhouse public-board next button from pagination classes and aria labels", () => {
+    document.body.innerHTML = `
+      <section class="pagination">
+        <button
+          type="button"
+          aria-label="Previous page"
+          class="pagination__btn pagination__previous pagination__previous--inactive"
+        ></button>
+        <button
+          type="button"
+          aria-label="Go to page 1"
+          class="pagination__link pagination__link--active"
+        >
+          1
+        </button>
+        <button type="button" aria-label="Go to page 2" class="pagination__link">2</button>
+        <button type="button" aria-label="Next page" class="pagination__btn pagination__next"></button>
+      </section>
+    `;
+
+    const action = findNextResultsPageAction("greenhouse");
+
+    expect(action?.text).toBe("next page");
+  });
+
+  it("falls back to the next numbered pagination control when there is no explicit next button", () => {
+    document.body.innerHTML = `
+      <section class="pagination">
+        <button
+          type="button"
+          aria-label="Go to page 1"
+          class="pagination__link pagination__link--active"
+        >
+          1
+        </button>
+        <button type="button" aria-label="Go to page 2" class="pagination__link">2</button>
+        <button type="button" aria-label="Go to page 3" class="pagination__link">3</button>
+      </section>
+    `;
+
+    const action = findNextResultsPageAction("greenhouse");
+
+    expect(action?.text).toBe("2");
+  });
+
+  it("ignores inactive Greenhouse next buttons on the last results page", () => {
+    document.body.innerHTML = `
+      <section class="pagination">
+        <button type="button" aria-label="Previous page" class="pagination__btn pagination__previous"></button>
+        <button type="button" aria-label="Go to page 1" class="pagination__link">1</button>
+        <button
+          type="button"
+          aria-label="Go to page 2"
+          class="pagination__link pagination__link--active"
+        >
+          2
+        </button>
+        <button
+          type="button"
+          aria-label="Next page"
+          class="pagination__btn pagination__next pagination__next--inactive"
+        ></button>
+      </section>
+    `;
+
+    const action = findNextResultsPageAction("greenhouse");
+
+    expect(action).toBeNull();
+  });
+
+  it("can find off-screen Greenhouse pagination controls on long result pages", () => {
+    document.body.innerHTML = `
+      <section class="pagination">
+        <button type="button" aria-label="Previous page" class="pagination__btn pagination__previous"></button>
+        <button
+          type="button"
+          aria-label="Go to page 1"
+          class="pagination__link pagination__link--active"
+        >
+          1
+        </button>
+        <button type="button" aria-label="Go to page 2" class="pagination__link">2</button>
+        <button type="button" aria-label="Next page" class="pagination__btn pagination__next"></button>
+      </section>
+    `;
+
+    const originalInnerHeight = window.innerHeight;
+
+    try {
+      Object.defineProperty(window, "innerHeight", {
+        configurable: true,
+        value: 800,
+      });
+
+      for (const element of Array.from(document.querySelectorAll<HTMLElement>(".pagination button"))) {
+        Object.defineProperty(element, "getBoundingClientRect", {
+          configurable: true,
+          value: () =>
+            ({
+              width: 48,
+              height: 32,
+              top: 3_000,
+              bottom: 3_032,
+              left: 32,
+              right: 80,
+              x: 32,
+              y: 3_000,
+              toJSON: () => ({}),
+            }) as DOMRect,
+        });
+      }
+
+      const action = findNextResultsPageAction("greenhouse");
+
+      expect(action?.text).toBe("next page");
+    } finally {
+      Object.defineProperty(window, "innerHeight", {
+        configurable: true,
+        value: originalInnerHeight,
+      });
+    }
+  });
+
+  it("finds icon-only next-page controls at the end of a numbered pagination row", () => {
+    document.body.innerHTML = `
+      <section class="results-pagination">
+        <button type="button" aria-current="page">1</button>
+        <button type="button">2</button>
+        <button type="button">3</button>
+        <button type="button" class="pager-chevron">
+          <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M6 3l5 5-5 5"></path></svg>
+        </button>
+      </section>
+    `;
+
+    const action = findNextResultsPageAction("builtin");
+
+    expect(action).not.toBeNull();
+  });
+
+  it("waits for delayed in-place pagination updates before giving up on the next page", async () => {
+    document.body.innerHTML = `
+      <main>
+        <section class="results-pagination">
+          <button type="button" aria-current="page">1</button>
+          <button type="button">2</button>
+          <button type="button" id="next-page" class="pager-chevron">
+            <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M6 3l5 5-5 5"></path></svg>
+          </button>
+        </section>
+        <article class="job-result">
+          <a href="https://www.indeed.com/viewjob?jk=alpha123">Software Engineer</a>
+        </article>
+      </main>
+    `;
+
+    document.getElementById("next-page")?.addEventListener("click", () => {
+      setTimeout(() => {
+        document.body.innerHTML = `
+          <main>
+            <section class="results-pagination">
+              <button type="button">1</button>
+              <button type="button" aria-current="page">2</button>
+              <button type="button">3</button>
+            </section>
+            <article class="job-result">
+              <a href="https://www.indeed.com/viewjob?jk=beta456">Platform Engineer</a>
+            </article>
+          </main>
+        `;
+      }, 900);
+    });
+
+    const promise = advanceToNextResultsPage("indeed");
+
+    await vi.runAllTimersAsync();
+
+    await expect(promise).resolves.toBe("advanced");
+    expect(document.body.textContent).toContain("Platform Engineer");
   });
 
   it("respects the selected date window when collecting career-site job URLs", async () => {

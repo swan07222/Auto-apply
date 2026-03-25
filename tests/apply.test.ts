@@ -225,6 +225,31 @@ describe("application progression actions", () => {
     }
   });
 
+  it("treats internal Indeed conversation gateways as broken direct-navigation targets", () => {
+    window.history.replaceState({}, "", "/viewjob?jk=abc123");
+    document.body.innerHTML = `
+      <section>
+        <p>You will be redirected to the company website to apply.</p>
+        <a href="https://gdc.indeed.com/conv/orgIndApp?c=US&vjk=abc123">Apply on company site</a>
+      </section>
+      <script type="application/json">
+        {
+          "applyUrl": "https://jobs.workday.com/example/job/software-engineer/apply"
+        }
+      </script>
+    `;
+
+    const action = findCompanySiteAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe(
+        "https://jobs.workday.com/example/job/software-engineer/apply"
+      );
+    }
+  });
+
   it("ignores ATS image assets when discovering external company-site apply URLs", () => {
     document.body.innerHTML = `
       <main>

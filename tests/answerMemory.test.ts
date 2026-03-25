@@ -176,4 +176,74 @@ describe("answer memory helpers", () => {
       )?.value
     ).toBe("https://linkedin.com/in/example");
   });
+
+  it("keeps technology-specific experience answers separated", () => {
+    const answers = {
+      [normalizeQuestionKey("How many years of React experience do you have?")]: {
+        question: "How many years of React experience do you have?",
+        value: "5",
+        updatedAt: 1,
+      },
+      [normalizeQuestionKey("How many years of Python experience do you have?")]: {
+        question: "How many years of Python experience do you have?",
+        value: "3",
+        updatedAt: 2,
+      },
+    };
+
+    expect(
+      findBestSavedAnswerMatch(
+        "How many years of React experience do you have?",
+        "react experience years",
+        answers
+      )?.value
+    ).toBe("5");
+
+    expect(
+      findBestSavedAnswerMatch(
+        "How many years of Python experience do you have?",
+        "python experience years",
+        answers
+      )?.value
+    ).toBe("3");
+
+    const relevant = getRelevantSavedAnswers(
+      "How many years of React experience do you have?",
+      answers
+    );
+
+    expect(relevant.map((entry) => entry.value)).toContain("5");
+    expect(relevant.map((entry) => entry.value)).not.toContain("3");
+  });
+
+  it("keeps notice period and start-date answers separated", () => {
+    const answers = {
+      [normalizeQuestionKey("What is your notice period?")]: {
+        question: "What is your notice period?",
+        value: "2 weeks",
+        updatedAt: 1,
+      },
+      [normalizeQuestionKey("When can you start?")]: {
+        question: "When can you start?",
+        value: "Immediately",
+        updatedAt: 2,
+      },
+    };
+
+    expect(
+      findBestSavedAnswerMatch(
+        "Please share your notice period",
+        "notice period",
+        answers
+      )?.value
+    ).toBe("2 weeks");
+
+    expect(
+      findBestSavedAnswerMatch(
+        "What is your earliest available start date?",
+        "available to start",
+        answers
+      )?.value
+    ).toBe("Immediately");
+  });
 });

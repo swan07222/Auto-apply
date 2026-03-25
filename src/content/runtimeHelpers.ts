@@ -32,9 +32,14 @@ export function mergeAutofillResult(
 export function getCurrentSearchKeywordHints(
   site: SiteKey,
   settings: AutomationSettings,
-  currentLabel?: string
+  currentLabel?: string,
+  currentKeyword?: string
 ): string[] {
   const configured = parseSearchKeywords(settings.searchKeywords);
+  const explicitKeyword = parseSearchKeywords(currentKeyword ?? "");
+  if (explicitKeyword.length > 0) {
+    return explicitKeyword;
+  }
   const trimmedLabel = currentLabel?.trim() ?? "";
 
   if (!trimmedLabel) {
@@ -56,6 +61,21 @@ export function getCurrentSearchKeywordHints(
   }
 
   return configured;
+}
+
+export function getGreenhousePortalSearchKeyword(
+  keywordHints: string[],
+  currentLabel?: string
+): string | undefined {
+  for (const keyword of keywordHints) {
+    const trimmed = keyword.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+
+  const trimmedLabel = currentLabel?.trim();
+  return trimmedLabel || undefined;
 }
 
 export function throwIfRateLimited(
@@ -196,7 +216,8 @@ export function shouldPreferMonsterClickContinuation(
 export function getRemainingJobSlotsAfterSpawn(
   requestedLimit: number,
   openedCount: number,
-  claimedRemaining?: number
+  claimedRemaining?: number,
+  approvedCount?: number
 ): number {
   const safeRequestedLimit = Math.max(0, Math.floor(requestedLimit));
   const safeOpenedCount = Math.max(0, Math.floor(openedCount));
@@ -206,8 +227,14 @@ export function getRemainingJobSlotsAfterSpawn(
     return remainingFromOpened;
   }
 
+  const safeApprovedCount =
+    typeof approvedCount === "number" && Number.isFinite(approvedCount)
+      ? Math.max(0, Math.floor(approvedCount))
+      : safeOpenedCount;
+  const reopenedClaimedSlots = Math.max(0, safeApprovedCount - safeOpenedCount);
+
   return Math.min(
     remainingFromOpened,
-    Math.max(0, Math.floor(claimedRemaining))
+    Math.max(0, Math.floor(claimedRemaining)) + reopenedClaimedSlots
   );
 }

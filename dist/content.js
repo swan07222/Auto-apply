@@ -114,7 +114,7 @@
     back_end: "Back End",
     full_stack: "Full Stack"
   };
-  var VERIFICATION_POLL_MS = 2500;
+  var VERIFICATION_POLL_MS = 600;
   var VERIFICATION_TIMEOUT_MS = 3e5;
   var AUTOMATION_SETTINGS_STORAGE_KEY = "remote-job-search-settings";
   var STARTUP_COMPANIES_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1e3;
@@ -596,10 +596,17 @@
     "requisitionid",
     "requisition_id",
     "reqid",
-    "id",
     "posting_id",
     "req_id"
   ];
+  var GENERIC_IDENTIFYING_PARAMS = ["id"];
+  var TRACKING_PARAM_NAMES = /* @__PURE__ */ new Set([
+    "fbclid",
+    "gclid",
+    "gh_src",
+    "mc_cid",
+    "mc_eid"
+  ]);
   function getJobDedupKey(url) {
     const raw = url.trim().toLowerCase();
     if (!raw) return "";
@@ -682,10 +689,39 @@
           return `${hostname}${path}?${param}=${value.toLowerCase()}`;
         }
       }
+      for (const param of GENERIC_IDENTIFYING_PARAMS) {
+        const value = parsed.searchParams.get(param);
+        if (value) {
+          return buildGenericParamKey(hostname, path, parsed.searchParams);
+        }
+      }
       return `${hostname}${path}`;
     } catch {
       return raw;
     }
+  }
+  function buildGenericParamKey(hostname, path, searchParams) {
+    const stableEntries = [];
+    searchParams.forEach((value, name) => {
+      if (!isTrackingParam(name)) {
+        stableEntries.push([name.toLowerCase(), value.toLowerCase()]);
+      }
+    });
+    stableEntries.sort(([leftName, leftValue], [rightName, rightValue]) => {
+      if (leftName === rightName) {
+        return leftValue.localeCompare(rightValue);
+      }
+      return leftName.localeCompare(rightName);
+    });
+    if (stableEntries.length === 0) {
+      return `${hostname}${path}`;
+    }
+    const normalizedQuery = stableEntries.map(([name, value]) => `${name}=${value}`).join("&");
+    return `${hostname}${path}?${normalizedQuery}`;
+  }
+  function isTrackingParam(name) {
+    const normalized = name.trim().toLowerCase();
+    return normalized.startsWith("utm_") || TRACKING_PARAM_NAMES.has(normalized);
   }
 
   // src/shared/pageSignals.ts
@@ -2036,10 +2072,40 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       tokens: ["location"]
     },
     {
-      intent: "notice",
-      tokens: ["notice period", "start date", "available to start"]
+      intent: "notice_period",
+      tokens: ["notice period"]
+    },
+    {
+      intent: "start_date",
+      tokens: ["start date", "available to start", "can you start"]
     }
   ];
+  var EXPERIENCE_SUBJECT_STOP_WORDS = /* @__PURE__ */ new Set([
+    "background",
+    "experience",
+    "experienced",
+    "expertise",
+    "familiar",
+    "familiarity",
+    "have",
+    "how",
+    "in",
+    "many",
+    "much",
+    "of",
+    "overall",
+    "professional",
+    "relevant",
+    "skill",
+    "skills",
+    "total",
+    "using",
+    "with",
+    "work",
+    "working",
+    "year",
+    "years"
+  ]);
   function createRememberedAnswer(question, value, now = Date.now()) {
     const cleanedQuestion = cleanText(question);
     const cleanedValue = cleanText(value);
@@ -2057,27 +2123,23 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     };
   }
   function findBestSavedAnswerMatch(question, descriptor, answers) {
-    const lookupKeys = buildAnswerLookupKeys(question, descriptor);
-    const lookupTokens = buildLookupTokenSet(question, descriptor);
-    const lookupIntents = detectQuestionIntents(question, descriptor);
-    if (lookupKeys.length === 0) {
+    const lookup = buildQuestionMatchContext(question, descriptor);
+    if (lookup.keys.length === 0) {
       return null;
     }
     let best = null;
     for (const [key, answer] of Object.entries(answers)) {
-      const candidateKeys = buildAnswerLookupKeys(answer.question || key, key);
-      const candidateTokens = buildLookupTokenSet(answer.question || key, key);
-      const candidateIntents = detectQuestionIntents(answer.question || key, key);
-      if (candidateKeys.length === 0) {
+      const candidate = buildQuestionMatchContext(answer.question || key, key);
+      if (candidate.keys.length === 0) {
         continue;
       }
-      if (!hasCompatibleQuestionIntents(lookupIntents, candidateIntents)) {
+      if (!isCompatibleQuestionMatchContext(lookup, candidate)) {
         continue;
       }
-      const sharesIntent = lookupIntents.size > 0 && candidateIntents.size > 0 && hasCompatibleQuestionIntents(lookupIntents, candidateIntents);
+      const sharesIntent = lookup.intents.size > 0 && candidate.intents.size > 0 && hasCompatibleQuestionIntents(lookup.intents, candidate.intents);
       let score = 0;
-      for (const lookupKey of lookupKeys) {
-        for (const candidateKey of candidateKeys) {
+      for (const lookupKey of lookup.keys) {
+        for (const candidateKey of candidate.keys) {
           if (lookupKey === candidateKey) {
             score = Math.max(score, 1);
             continue;
@@ -2088,7 +2150,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           score = Math.max(score, textSimilarity(lookupKey, candidateKey));
         }
       }
-      const overlap = calculateTokenOverlap(lookupTokens, candidateTokens);
+      const overlap = calculateTokenOverlap(lookup.tokens, candidate.tokens);
       if (overlap === 0 && !sharesIntent && score < 0.92) {
         continue;
       }
@@ -2099,7 +2161,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       if (overlap > 0) {
         score = Math.max(score, score * 0.8 + overlap * 0.2);
       }
-      if (lookupIntents.size > 0 && candidateIntents.size > 0) {
+      if (lookup.intents.size > 0 && candidate.intents.size > 0) {
         score = Math.min(1, score + 0.05);
       }
       if (!best || score > best.score) {
@@ -2107,6 +2169,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
     }
     return best && best.score >= 0.78 ? best.answer : null;
+  }
+  function buildQuestionMatchContext(question, descriptor = "") {
+    const tokens = buildLookupTokenSet(question, descriptor);
+    const intents = detectQuestionIntents(question, descriptor);
+    return {
+      keys: buildAnswerLookupKeys(question, descriptor),
+      tokens,
+      intents,
+      experienceSubjects: extractExperienceSubjects(tokens),
+      experienceLike: isExperienceLikeQuestion(tokens)
+    };
   }
   function buildAnswerLookupKeys(question, descriptor = "") {
     const keys = /* @__PURE__ */ new Set();
@@ -2151,6 +2224,35 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     for (const intent of lookupIntents) {
       if (candidateIntents.has(intent)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function isCompatibleQuestionMatchContext(lookup, candidate) {
+    if (!hasCompatibleQuestionIntents(lookup.intents, candidate.intents)) {
+      return false;
+    }
+    if (lookup.experienceLike && candidate.experienceLike && lookup.experienceSubjects.size > 0 && candidate.experienceSubjects.size > 0 && !setsIntersect(lookup.experienceSubjects, candidate.experienceSubjects)) {
+      return false;
+    }
+    return true;
+  }
+  function extractExperienceSubjects(tokens) {
+    const subjects = /* @__PURE__ */ new Set();
+    for (const token of tokens) {
+      if (!EXPERIENCE_SUBJECT_STOP_WORDS.has(token)) {
+        subjects.add(token);
+      }
+    }
+    return subjects;
+  }
+  function isExperienceLikeQuestion(tokens) {
+    return tokens.has("experience") || tokens.has("year") || tokens.has("years");
+  }
+  function setsIntersect(left, right) {
+    for (const value of left) {
+      if (right.has(value)) {
         return true;
       }
     }
@@ -3153,6 +3255,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     careerJobLinkSelectors: [
       "a[href*='my.greenhouse.io/view_job']",
       "a[href*='my.greenhouse.io'][href*='job_id=']",
+      "a[href*='greenhouse.io'][href*='/jobs/']",
+      "a[href*='greenhouse.io'][href*='gh_jid=']",
+      "a[href^='/'][href*='/jobs/']:not([href$='/jobs'], [href$='/jobs/'])",
+      "a[href*='/view_job']",
       ...CAREER_SITE_JOB_LINK_SELECTORS
     ]
   };
@@ -3361,6 +3467,42 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
 
   // src/content/jobSearchHeuristics.ts
+  var BROAD_TECHNICAL_SEARCH_TOKENS = /* @__PURE__ */ new Set([
+    "software",
+    "engineer",
+    "engineers",
+    "developer",
+    "developers",
+    "development",
+    "technical",
+    "tech",
+    "programmer",
+    "programmers",
+    "architect",
+    "architects"
+  ]);
+  var TECHNICAL_SEARCH_NOISE_TOKENS = /* @__PURE__ */ new Set([
+    "a",
+    "an",
+    "and",
+    "for",
+    "in",
+    "jr",
+    "junior",
+    "lead",
+    "mid",
+    "or",
+    "principal",
+    "remote",
+    "senior",
+    "sr",
+    "staff",
+    "states",
+    "the",
+    "united",
+    "us",
+    "usa"
+  ]);
   function shouldFilterBoardResultsByKeyword(site, eligibleCount, matchedCount) {
     if (matchedCount <= 0 || eligibleCount <= 0) {
       return false;
@@ -3372,6 +3514,23 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function matchesConfiguredSearchKeywords(candidate, searchKeywords) {
     return scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0;
+  }
+  function shouldAllowBroadTechnicalKeywordFallback(searchKeywords) {
+    if (searchKeywords.length === 0) {
+      return false;
+    }
+    return searchKeywords.every((keyword) => {
+      const tokens = normalizeChoiceText(keyword).split(/\s+/).filter(
+        (token) => token.length >= 2 && !TECHNICAL_SEARCH_NOISE_TOKENS.has(token)
+      );
+      if (tokens.length === 0) {
+        return false;
+      }
+      const hasBroadRoleToken = tokens.some(
+        (token) => token === "engineer" || token === "developer" || token === "programmer" || token === "architect"
+      );
+      return hasBroadRoleToken && tokens.every((token) => BROAD_TECHNICAL_SEARCH_TOKENS.has(token));
+    });
   }
   function scoreCandidateKeywordRelevance(candidate, searchKeywords) {
     const haystack = normalizeChoiceText(`${candidate.title} ${candidate.contextText}`);
@@ -4106,7 +4265,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
               "a[href*='greenhouse.io'][href*='/jobs/']",
               "a[href*='greenhouse.io'][href*='gh_jid=']",
               "a[href*='my.greenhouse.io/view_job']",
-              "a[href*='my.greenhouse.io'][href*='job_id=']"
+              "a[href*='my.greenhouse.io'][href*='job_id=']",
+              "a[href*='/view_job']",
+              "a[href^='/'][href*='/jobs/']:not([href$='/jobs'], [href$='/jobs/'])"
             ],
             2
           ),
@@ -4212,8 +4373,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     );
     const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
     const recencyEligible = datePostedWindow === "any" ? valid : recencyFiltered;
-    const eligible = site === "dice" ? recencyEligible.filter((candidate) => isExplicitlyRemoteDiceCandidate(candidate)) : filterCandidatesForRemotePreference(recencyEligible, site, currentUrl);
-    const shouldKeywordFilter = searchKeywords.length > 0 && (site === "startup" || site === "other_sites" || site === "greenhouse" || site === "builtin");
+    const trustGreenhouseKeywordFiltering = site === "greenhouse" && shouldTrustGreenhouseBoardKeywordFiltering(currentUrl);
+    const trustGreenhouseRemoteFiltering = site === "greenhouse" && shouldTrustGreenhouseBoardRemoteFiltering(currentUrl);
+    const eligible = site === "dice" ? recencyEligible.filter((candidate) => isExplicitlyRemoteDiceCandidate(candidate)) : trustGreenhouseRemoteFiltering ? recencyEligible : filterCandidatesForRemotePreference(recencyEligible, site, currentUrl);
+    const shouldKeywordFilter = searchKeywords.length > 0 && (site === "startup" || site === "other_sites" || site === "greenhouse" && !trustGreenhouseKeywordFiltering || site === "builtin");
     const boardKeywordMatchedCandidates = searchKeywords.length > 0 && (site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor") ? eligible.filter(
       (candidate) => scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0
     ) : [];
@@ -4222,20 +4385,24 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       eligible.length,
       boardKeywordMatchedCandidates.length
     );
+    const isCareerSiteResult = site === "startup" || site === "other_sites" || site === "greenhouse" || site === "builtin";
     const keywordEligible = shouldKeywordFilter ? eligible.filter(
       (candidate) => matchesConfiguredSearchKeywords(candidate, searchKeywords)
     ) : shouldKeywordFilterBoardResults ? boardKeywordMatchedCandidates : eligible;
-    const technicalEligible = site === "startup" || site === "other_sites" || site === "greenhouse" || site === "builtin" ? keywordEligible.filter(
+    const technicalRoleEligible = isCareerSiteResult ? eligible.filter((candidate) => looksLikeTechnicalRoleTitle(candidate.title)) : eligible;
+    const shouldFallbackToBroadTechnicalRoles = shouldKeywordFilter && keywordEligible.length === 0 && technicalRoleEligible.length > 0 && isCareerSiteResult && shouldAllowBroadTechnicalKeywordFallback(searchKeywords);
+    const effectiveKeywordEligible = shouldFallbackToBroadTechnicalRoles ? technicalRoleEligible : keywordEligible;
+    const technicalEligible = isCareerSiteResult ? effectiveKeywordEligible.filter(
       (candidate) => looksLikeTechnicalRoleTitle(candidate.title)
-    ) : keywordEligible;
-    if (shouldKeywordFilter && keywordEligible.length === 0) {
+    ) : effectiveKeywordEligible;
+    if (shouldKeywordFilter && keywordEligible.length === 0 && !shouldFallbackToBroadTechnicalRoles) {
       return [];
     }
     if (!resumeKind) {
-      const fallbackPool2 = technicalEligible.length > 0 ? technicalEligible : keywordEligible;
+      const fallbackPool2 = technicalEligible.length > 0 ? technicalEligible : effectiveKeywordEligible;
       return sortCandidatesByRecency(fallbackPool2, datePostedWindow).map((candidate) => candidate.url);
     }
-    const fallbackPool = site === "startup" || site === "other_sites" || site === "greenhouse" || site === "builtin" ? technicalEligible : keywordEligible;
+    const fallbackPool = isCareerSiteResult ? technicalEligible : effectiveKeywordEligible;
     const scored = fallbackPool.map((candidate, index) => ({
       candidate,
       index,
@@ -4251,6 +4418,30 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const preferredSet = new Set(preferred);
     const fallback = sortCandidatesByRecency(fallbackPool, datePostedWindow).map((candidate) => candidate.url).filter((url) => !preferredSet.has(url));
     return [...preferred, ...fallback];
+  }
+  function shouldTrustGreenhouseBoardKeywordFiltering(currentUrl) {
+    try {
+      const parsedUrl = new URL(currentUrl);
+      const hostname = parsedUrl.hostname.toLowerCase().replace(/^www\./, "");
+      if (!hostname.endsWith("greenhouse.io")) {
+        return false;
+      }
+      return Boolean(parsedUrl.searchParams.get("keyword")?.trim());
+    } catch {
+      return false;
+    }
+  }
+  function shouldTrustGreenhouseBoardRemoteFiltering(currentUrl) {
+    try {
+      const parsedUrl = new URL(currentUrl);
+      const hostname = parsedUrl.hostname.toLowerCase().replace(/^www\./, "");
+      if (!hostname.endsWith("greenhouse.io")) {
+        return false;
+      }
+      return normalizeChoiceText(parsedUrl.searchParams.get("location") || "") === "remote";
+    } catch {
+      return false;
+    }
   }
   function preferCanonicalBuiltInHostedCandidates(candidates, site, currentUrl) {
     if (site !== "builtin" || !isBuiltInHostedPage(currentUrl)) {
@@ -4456,7 +4647,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       case "greenhouse":
       case "builtin": {
         try {
-          const parsed = new URL(lowerUrl);
+          const parsed = new URL(url, window.location.href);
           if (hasJobIdentifyingSearchParam(parsed)) {
             return true;
           }
@@ -4474,7 +4665,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         const pathSignals = [
           "/jobs/",
           "/job/",
+          "/view-job",
           "/view-job/",
+          "/view_job",
           "/view_job/",
           "/role/",
           "/roles/",
@@ -4493,7 +4686,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         ];
         if (pathSignals.some((token) => lowerUrl.includes(token))) {
           try {
-            const parsed = new URL(lowerUrl);
+            const parsed = new URL(url, window.location.href);
             const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
             const segments = path.split("/").filter(Boolean);
             const lastSegment = segments[segments.length - 1] ?? "";
@@ -4515,7 +4708,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         const hasCareerPath = lowerUrl.includes("/careers/") || lowerUrl.includes("/career/");
         if (hasCareerPath) {
           try {
-            const parsed = new URL(lowerUrl);
+            const parsed = new URL(url, window.location.href);
             const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
             const segments = path.split("/").filter(Boolean);
             const lastSegment = segments[segments.length - 1] ?? "";
@@ -4527,7 +4720,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           return looksLikeTechnicalRoleTitle(text);
         }
         try {
-          const parsed = new URL(lowerUrl);
+          const parsed = new URL(url, window.location.href);
           const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
           const segments = path.split("/").filter(Boolean);
           const lastSegment = segments[segments.length - 1] ?? "";
@@ -4630,7 +4823,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const containers = [];
     for (const selector of containerSelectors) {
       try {
-        for (const el of Array.from(document.querySelectorAll(selector))) {
+        for (const el of collectDeepMatches(selector)) {
           containers.push(el);
         }
       } catch {
@@ -4700,7 +4893,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const candidates = [];
     for (const selector of selectors) {
       try {
-        for (const anchor of Array.from(document.querySelectorAll(selector))) {
+        for (const anchor of collectDeepMatches(selector)) {
           const contextText = buildCandidateContextText(
             anchor.closest("article, li, section, div"),
             anchor
@@ -4726,7 +4919,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const candidates = [];
     for (const selector of getCareerSiteJobLinkSelectors(site)) {
       try {
-        for (const anchor of Array.from(document.querySelectorAll(selector))) {
+        for (const anchor of collectDeepMatches(selector)) {
           if (!hasJobDetailAtsUrl(anchor.href)) {
             continue;
           }
@@ -4753,7 +4946,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const candidates = [];
     for (const selector of selectors) {
       try {
-        for (const anchor of Array.from(document.querySelectorAll(selector))) {
+        for (const anchor of collectDeepMatches(selector)) {
           const title = resolveAnchorCandidateTitle(
             anchor,
             cleanText(getReadableText(anchor) || anchor.getAttribute("aria-label") || "")
@@ -4777,10 +4970,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   function collectLabeledActionCandidates(labels, maxSiblingJobAnchors) {
     const candidates = [];
     const normalizedLabels = labels.map((label) => normalizeChoiceText(label));
-    for (const element of Array.from(
-      document.querySelectorAll(
-        "a[href], button, [role='link'], [role='button'], input[type='button'], input[type='submit']"
-      )
+    for (const element of collectDeepMatches(
+      "a[href], button, [role='link'], [role='button'], input[type='button'], input[type='submit']"
     )) {
       const actionText = normalizeChoiceText(getActionText(element));
       if (!actionText || !normalizedLabels.some((label) => actionText.includes(label))) {
@@ -6157,8 +6348,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return false;
     }
     try {
-      const hostname = new URL(url, window.location.href).hostname.toLowerCase();
-      return KNOWN_BROKEN_APPLY_HOSTS.includes(hostname);
+      const parsed = new URL(url, window.location.href);
+      const hostname = parsed.hostname.toLowerCase();
+      const path = parsed.pathname.toLowerCase();
+      if (KNOWN_BROKEN_APPLY_HOSTS.includes(hostname)) {
+        return true;
+      }
+      if (hostname.includes("indeed.com") && (path.includes("/orgindapp") || path.includes("/conv/orgindapp"))) {
+        return true;
+      }
+      return false;
     } catch {
       return false;
     }
@@ -8583,6 +8782,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     "\u27E9",
     "\u276F"
   ]);
+  var NEXT_PAGE_ADVANCE_TIMEOUT_MS = 6e3;
+  var NEXT_PAGE_ADVANCE_POLL_MS = 200;
   async function scrollPageForLazyContent() {
     let previousHeight = 0;
     for (let step = 0; step < 10; step += 1) {
@@ -8592,14 +8793,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       );
       const viewportHeight = Math.max(window.innerHeight, 1);
       const target = Math.min(totalHeight, viewportHeight * (step + 1));
-      window.scrollTo({ top: target, behavior: "smooth" });
+      setWindowScrollTop(target);
       await waitForDomSettle(1e3, 350);
       if (totalHeight <= previousHeight && step >= 2) {
         break;
       }
       previousHeight = totalHeight;
     }
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    setWindowScrollTop(0);
     await waitForDomSettle(700, 250);
   }
   function getJobResultCollectionTargetCount(site, jobPageLimit) {
@@ -8688,27 +8889,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           }
         }
         if (attempt % 5 === 0) {
-          window.scrollTo({
-            top: document.body.scrollHeight,
-            behavior: "smooth"
-          });
+          advanceCareerSiteResultsSurface(site, attempt);
         } else if (attempt % 5 === 1) {
-          window.scrollTo({
-            top: document.body.scrollHeight / 2,
-            behavior: "smooth"
-          });
+          advanceCareerSiteResultsSurface(site, attempt);
         } else if (attempt % 5 === 2) {
-          window.scrollTo({ top: 0, behavior: "smooth" });
+          advanceCareerSiteResultsSurface(site, attempt);
         } else if (attempt % 5 === 3) {
-          window.scrollTo({
-            top: document.body.scrollHeight / 3,
-            behavior: "smooth"
-          });
+          advanceCareerSiteResultsSurface(site, attempt);
         } else {
-          window.scrollTo({
-            top: document.body.scrollHeight * 2 / 3,
-            behavior: "smooth"
-          });
+          advanceCareerSiteResultsSurface(site, attempt);
         }
         if (attempt === 10 || attempt === 20 || attempt === 30) {
           tryClickLoadMoreButton();
@@ -8720,31 +8909,19 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         }
       } else if (site === "indeed" || site === "dice" || site === "ziprecruiter" || site === "glassdoor") {
         if (attempt % 4 === 0) {
-          window.scrollTo({
-            top: document.body.scrollHeight,
-            behavior: "smooth"
-          });
+          setWindowScrollTop(document.body.scrollHeight);
         } else if (attempt % 4 === 1) {
-          window.scrollTo({ top: 0, behavior: "smooth" });
+          setWindowScrollTop(0);
         } else if (attempt % 4 === 2) {
-          window.scrollTo({
-            top: document.body.scrollHeight / 2,
-            behavior: "smooth"
-          });
+          setWindowScrollTop(document.body.scrollHeight / 2);
         } else {
-          window.scrollTo({
-            top: document.body.scrollHeight / 3,
-            behavior: "smooth"
-          });
+          setWindowScrollTop(document.body.scrollHeight / 3);
         }
         if (attempt === 6 || attempt === 12 || attempt === 18 || attempt === 24 || attempt === 32) {
           tryClickLoadMoreButton();
         }
       } else if (attempt === 5 || attempt === 10 || attempt === 15 || attempt === 20 || attempt === 25) {
-        window.scrollTo({
-          top: document.body.scrollHeight,
-          behavior: "smooth"
-        });
+        setWindowScrollTop(document.body.scrollHeight);
       }
       await waitForResultSurfaceSettle(site);
     }
@@ -8768,6 +8945,49 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   async function waitForResultSurfaceSettle(site) {
     await waitForDomSettle(getSiteResultSurfaceSettleMs(site), 350);
+  }
+  function advanceCareerSiteResultsSurface(site, attempt) {
+    const container = findCareerSiteScrollableResultsContainer(site);
+    if (container) {
+      const maxScrollTop = Math.max(container.scrollHeight - container.clientHeight, 0);
+      const stride = Math.max(Math.round(container.clientHeight * 0.9), 280);
+      const phase2 = attempt % 5;
+      let nextTop = container.scrollTop;
+      if (maxScrollTop > 0) {
+        if (phase2 === 0) {
+          nextTop = Math.min(maxScrollTop, container.scrollTop + stride);
+        } else if (phase2 === 1) {
+          nextTop = Math.min(maxScrollTop, container.scrollTop + stride);
+        } else if (phase2 === 2) {
+          nextTop = 0;
+        } else if (phase2 === 3) {
+          nextTop = Math.min(maxScrollTop, Math.round(maxScrollTop / 2));
+        } else {
+          nextTop = maxScrollTop;
+        }
+        if (nextTop !== container.scrollTop) {
+          setElementScrollTop(container, nextTop);
+          container.dispatchEvent(new Event("scroll", { bubbles: true }));
+        }
+        return;
+      }
+    }
+    const pageHeight = Math.max(
+      document.body.scrollHeight,
+      document.documentElement?.scrollHeight ?? 0
+    );
+    const phase = attempt % 5;
+    if (phase === 0) {
+      setWindowScrollTop(pageHeight);
+    } else if (phase === 1) {
+      setWindowScrollTop(pageHeight / 2);
+    } else if (phase === 2) {
+      setWindowScrollTop(0);
+    } else if (phase === 3) {
+      setWindowScrollTop(pageHeight / 3);
+    } else {
+      setWindowScrollTop(pageHeight * 2 / 3);
+    }
   }
   function advanceMonsterResultsSurface(attempt) {
     const rail = findMonsterScrollableResultsRail();
@@ -8803,14 +9023,92 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     );
     const pagePhase = attempt % 4;
     if (pagePhase === 0) {
-      window.scrollTo({ top: pageHeight / 3, behavior: "smooth" });
+      setWindowScrollTop(pageHeight / 3);
     } else if (pagePhase === 1) {
-      window.scrollTo({ top: pageHeight, behavior: "smooth" });
+      setWindowScrollTop(pageHeight);
     } else if (pagePhase === 2) {
-      window.scrollTo({ top: pageHeight / 2, behavior: "smooth" });
+      setWindowScrollTop(pageHeight / 2);
     } else {
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      setWindowScrollTop(0);
     }
+  }
+  function findCareerSiteScrollableResultsContainer(site) {
+    const selectors = [
+      "[data-testid*='job-results' i]",
+      "[data-testid*='search-results' i]",
+      "[data-testid*='results-list' i]",
+      "[data-testid*='job-list' i]",
+      "[aria-label*='job results' i]",
+      "[aria-label*='search results' i]",
+      "[class*='job-posts' i]",
+      "[class*='search-results' i]",
+      "[class*='results-list' i]",
+      "[class*='job-list' i]",
+      "[class*='openings' i]",
+      "[class*='listing' i]",
+      "[class*='positions' i]",
+      "[class*='roles' i]",
+      "main",
+      "section",
+      "div"
+    ];
+    const candidates = [];
+    const seen = /* @__PURE__ */ new Set();
+    const pushCandidate = (element, baseScore = 0) => {
+      if (seen.has(element) || !isElementVisible(element) || !isScrollableElement(element)) {
+        return;
+      }
+      seen.add(element);
+      const jobLinkCount = countCareerSiteJobLinks(element, site);
+      if (jobLinkCount === 0) {
+        return;
+      }
+      const attrs = [
+        element.getAttribute("data-testid"),
+        element.getAttribute("aria-label"),
+        element.className,
+        element.id
+      ].join(" ").toLowerCase();
+      let score = baseScore + jobLinkCount * 10;
+      if (/job-posts|search-results|results-list|job-list/.test(attrs)) score += 40;
+      if (/opening|listing|position|role|career|result/.test(attrs)) score += 18;
+      if (element.clientWidth > 0 && element.clientWidth < window.innerWidth * 0.95) {
+        score += 8;
+      }
+      candidates.push({ element, score });
+    };
+    for (const selector of selectors) {
+      for (const element of collectDeepMatches(selector)) {
+        pushCandidate(element);
+      }
+    }
+    for (const selector of getCareerSiteJobLinkSelectors(site)) {
+      for (const link of collectDeepMatches(selector)) {
+        let depth = 0;
+        let ancestor = link.parentElement;
+        while (ancestor && depth < 6) {
+          pushCandidate(ancestor, Math.max(24 - depth * 4, 0));
+          ancestor = ancestor.parentElement;
+          depth += 1;
+        }
+      }
+    }
+    return candidates.sort((left, right) => right.score - left.score)[0]?.element ?? null;
+  }
+  function countCareerSiteJobLinks(container, site) {
+    const matches = /* @__PURE__ */ new Set();
+    for (const selector of getCareerSiteJobLinkSelectors(site)) {
+      let anchors = [];
+      try {
+        anchors = Array.from(container.querySelectorAll(selector));
+      } catch {
+        continue;
+      }
+      for (const anchor of anchors) {
+        matches.add(anchor);
+      }
+    }
+    return matches.size;
   }
   function findMonsterScrollableResultsRail() {
     const selectors = [
@@ -8898,7 +9196,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       element.className,
       element.id
     ].join(" ").toLowerCase();
-    const likelyResultsContainer = /search-results|job-results|results-list|job-list|dashboard|pane|panel|rail|left/.test(
+    const likelyResultsContainer = /search-results|job-results|results-list|job-list|job-posts|opening|listing|position|role|dashboard|pane|panel|rail|left/.test(
       attrs
     );
     return element.scrollHeight > element.clientHeight + 80 && (allowsScroll || likelyResultsContainer);
@@ -8906,12 +9204,20 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   function setElementScrollTop(element, top) {
     element.scrollTop = top;
     try {
-      element.scrollTo({ top, behavior: "smooth" });
+      element.scrollTo({ top, behavior: "auto" });
     } catch {
       try {
         element.scrollTo(0, top);
       } catch {
       }
+    }
+  }
+  function setWindowScrollTop(top) {
+    const normalizedTop = Math.max(0, Math.floor(top));
+    try {
+      window.scrollTo({ top: normalizedTop, behavior: "auto" });
+    } catch {
+      window.scrollTo(0, normalizedTop);
     }
   }
   async function waitForDomSettle(maxWaitMs, quietWindowMs) {
@@ -9123,7 +9429,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   function findNextResultsPageAction(site) {
     let bestAction = null;
     for (const element of collectDeepMatches(
-      "a[href], button, input[type='button'], input[type='submit'], [role='button']"
+      "a[href], button, input[type='button'], input[type='submit'], [role='button'], [role='link']"
     )) {
       const candidate = scoreNextResultsPageAction(element, site);
       if (!candidate) {
@@ -9143,7 +9449,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     };
   }
   async function advanceToNextResultsPage(site) {
-    const action = findNextResultsPageAction(site);
+    let action = findNextResultsPageAction(site);
+    if (!action) {
+      window.scrollTo({
+        top: document.body.scrollHeight,
+        behavior: "smooth"
+      });
+      await waitForResultSurfaceSettle(site);
+      action = findNextResultsPageAction(site);
+    }
     if (!action) {
       return "none";
     }
@@ -9153,17 +9467,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       window.location.assign(action.navUrl);
       return "navigating";
     }
-    performClickAction(action.element);
-    await waitForResultSurfaceSettle(site);
-    const afterUrl = normalizeUrl(window.location.href);
-    const afterSignature = getResultPageSignature(site);
-    if (afterUrl && afterUrl !== beforeUrl || afterSignature !== beforeSignature) {
-      return afterUrl && afterUrl !== beforeUrl ? "navigating" : "advanced";
+    try {
+      action.element.scrollIntoView({ behavior: "smooth", block: "center" });
+    } catch {
     }
-    return "none";
+    await sleep(200);
+    performClickAction(action.element);
+    return waitForResultsPageAdvance(site, beforeUrl, beforeSignature);
   }
   function scoreNextResultsPageAction(element, site) {
-    if (!isElementVisible(element) || !isElementInteractive(element)) {
+    if (!isPaginationControlVisible(element) || !isPaginationControlInteractive(element)) {
       return null;
     }
     if (isDisabledPaginationElement(element)) {
@@ -9184,19 +9497,27 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       ].filter(Boolean).join(" ")
     ).toLowerCase();
     const insidePagination = isInsidePaginationContainer(element);
-    const hasPaginationContext = insidePagination || attrs.includes("pagination") || attrs.includes("paginator") || attrs.includes("pager") || lowerNavUrl.includes("page=") || lowerNavUrl.includes("offset=") || lowerNavUrl.includes("start=") || hasPaginationUrlSignal(navUrl);
+    const hasSiblingPaginationContext = hasSiblingPageIndicators(element);
+    const hasPaginationContext = insidePagination || hasSiblingPaginationContext || attrs.includes("pagination") || attrs.includes("paginator") || attrs.includes("pager") || lowerNavUrl.includes("page=") || lowerNavUrl.includes("offset=") || lowerNavUrl.includes("start=") || hasPaginationUrlSignal(navUrl);
     if (/(?:^|\b)(previous|prev|back)(?:\b|$)/.test(text) || /(?:^|\b)(previous|prev|back)(?:\b|$)/.test(attrs)) {
       return null;
     }
-    if (element.getAttribute("aria-current") === "page" || element.getAttribute("aria-selected") === "true" || /^\d+$/.test(text)) {
+    if (isCurrentPageIndicator(element)) {
       return null;
     }
-    const isExplicitNext = text.includes("next page") || text.includes("next results") || text.includes("next jobs") || text === "next" || attrs.includes("next page") || attrs.includes("next results") || attrs.includes("next jobs") || attrs.includes("pagination-next") || attrs.includes("pager-next") || attrs.includes("rel next");
-    const isArrowNext = insidePagination && (text === "next" || NEXT_PAGE_ARROW_LABELS.has(text));
-    if (!isExplicitNext && !isArrowNext) {
+    const isExplicitNext = text.includes("next page") || text.includes("next results") || text.includes("next jobs") || /(?:^|\b)next(?:\b|$)/.test(text) || text === "next" || attrs.includes("next page") || attrs.includes("next results") || attrs.includes("next jobs") || /(?:^|\b)next(?:\b|$)/.test(attrs) || attrs.includes("pagination-next") || attrs.includes("pager-next") || attrs.includes("rel next");
+    const isTrailingAdvanceControl = isTrailingPaginationAdvanceControl(
+      element,
+      text,
+      attrs,
+      navUrl
+    );
+    const isNextNumberedPage = isNextNumberedPaginationControl(element);
+    const isArrowNext = (insidePagination || hasSiblingPaginationContext) && (text === "next" || NEXT_PAGE_ARROW_LABELS.has(text));
+    if (!isExplicitNext && !isArrowNext && !isTrailingAdvanceControl && !isNextNumberedPage) {
       return null;
     }
-    if (!hasPaginationContext && !text.includes("next page") && !attrs.includes("next page")) {
+    if (!hasPaginationContext && !text.includes("next page") && !attrs.includes("next page") && !isNextNumberedPage) {
       return null;
     }
     let score = 0;
@@ -9206,8 +9527,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (isArrowNext) {
       score += 24;
     }
+    if (isTrailingAdvanceControl) {
+      score += 22;
+    }
+    if (isNextNumberedPage) {
+      score += 26;
+    }
     if (insidePagination) {
       score += 18;
+    }
+    if (hasSiblingPaginationContext) {
+      score += 12;
     }
     if (hasPaginationUrlSignal(navUrl)) {
       score += 16;
@@ -9224,12 +9554,145 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (site === "dice" && (attrs.includes("pagination") || attrs.includes("pager"))) {
       score += 10;
     }
+    if (site === "greenhouse" && hasSiblingPaginationContext) {
+      score += 12;
+    }
     return {
       element,
       navUrl,
       score,
       text
     };
+  }
+  function hasSiblingPageIndicators(element) {
+    const controls = findSiblingPaginationControls(element);
+    if (controls.length < 2) {
+      return false;
+    }
+    const hasCurrentPageIndicator = controls.some(
+      (candidate) => isCurrentPageIndicator(candidate)
+    );
+    const hasAnotherPaginationControl = controls.some((candidate) => {
+      if (candidate === element) {
+        return false;
+      }
+      const text = getPaginationControlText(candidate);
+      return /^\d+$/.test(text) || text === "previous" || text === "prev" || text === "next" || NEXT_PAGE_ARROW_LABELS.has(text);
+    });
+    return hasCurrentPageIndicator && hasAnotherPaginationControl;
+  }
+  function findSiblingPaginationControls(element) {
+    let container = element.parentElement;
+    for (let depth = 0; container && depth < 4; depth += 1) {
+      const controls = Array.from(
+        container.querySelectorAll(
+          "a[href], button, input[type='button'], input[type='submit'], [role='button'], [role='link'], [aria-current='page'], [aria-selected='true']"
+        )
+      ).filter((candidate) => isPaginationControlVisible(candidate));
+      if (controls.length >= 2 && controls.includes(element)) {
+        const hasCurrent = controls.some(
+          (candidate) => isCurrentPageIndicator(candidate)
+        );
+        const hasRecognizablePaginationControl = controls.some((candidate) => {
+          const text = getPaginationControlText(candidate);
+          return /^\d+$/.test(text) || text === "previous" || text === "prev" || text === "next" || NEXT_PAGE_ARROW_LABELS.has(text);
+        });
+        if (hasCurrent || hasRecognizablePaginationControl) {
+          return controls;
+        }
+      }
+      container = container.parentElement;
+    }
+    return [];
+  }
+  function getPaginationControlText(element) {
+    return cleanText(getActionText(element)).toLowerCase();
+  }
+  function getPaginationControlAttrs(element) {
+    return cleanText(
+      [
+        element.getAttribute("aria-label"),
+        element.getAttribute("title"),
+        element.getAttribute("data-testid"),
+        element.getAttribute("data-test"),
+        element.getAttribute("data-current"),
+        element.getAttribute("data-selected"),
+        element.className
+      ].filter(Boolean).join(" ")
+    ).toLowerCase();
+  }
+  function isCurrentPageIndicator(element) {
+    const attrs = getPaginationControlAttrs(element);
+    return element.getAttribute("aria-current") === "page" || element.getAttribute("aria-current") === "true" || element.getAttribute("aria-selected") === "true" || element.getAttribute("data-current") === "true" || element.getAttribute("data-selected") === "true" || /(?:^|\b)(active|selected|current|page-active|page-current)(?:\b|$)/.test(
+      attrs
+    );
+  }
+  function extractPaginationPageNumber(element) {
+    const text = getPaginationControlText(element);
+    if (/^\d+$/.test(text)) {
+      return Number.parseInt(text, 10);
+    }
+    const attrs = getPaginationControlAttrs(element);
+    const match = attrs.match(/(?:go to\s+)?page\s+(\d+)/i);
+    if (!match?.[1]) {
+      return null;
+    }
+    const parsed = Number.parseInt(match[1], 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  function getCurrentPaginationPageNumber(controls) {
+    for (const control of controls) {
+      if (!isCurrentPageIndicator(control)) {
+        continue;
+      }
+      const pageNumber = extractPaginationPageNumber(control);
+      if (pageNumber !== null) {
+        return pageNumber;
+      }
+    }
+    return null;
+  }
+  function isNextNumberedPaginationControl(element) {
+    const controls = findSiblingPaginationControls(element);
+    if (controls.length < 2 || isCurrentPageIndicator(element)) {
+      return false;
+    }
+    const text = getPaginationControlText(element);
+    const attrs = getPaginationControlAttrs(element);
+    if (/(?:^|\b)(previous|prev|back)(?:\b|$)/.test(text) || /(?:^|\b)(previous|prev|back)(?:\b|$)/.test(attrs)) {
+      return false;
+    }
+    const pageNumber = extractPaginationPageNumber(element);
+    const currentPage = getCurrentPaginationPageNumber(controls);
+    if (pageNumber === null || currentPage === null || pageNumber <= currentPage) {
+      return false;
+    }
+    const nextAvailablePage = controls.map((control) => extractPaginationPageNumber(control)).filter((value) => value !== null && value > currentPage).sort((left, right) => left - right)[0];
+    return nextAvailablePage === pageNumber;
+  }
+  function isTrailingPaginationAdvanceControl(element, text, attrs, navUrl) {
+    const controls = findSiblingPaginationControls(element);
+    if (controls.length < 2) {
+      return false;
+    }
+    const elementIndex = controls.indexOf(element);
+    if (elementIndex < 0 || elementIndex !== controls.length - 1) {
+      return false;
+    }
+    if (isCurrentPageIndicator(element) || /(?:^|\b)(previous|prev|back)(?:\b|$)/.test(text) || /(?:^|\b)(previous|prev|back)(?:\b|$)/.test(attrs)) {
+      return false;
+    }
+    const previousControls = controls.slice(0, elementIndex);
+    const hasCurrentBefore = previousControls.some(
+      (candidate) => isCurrentPageIndicator(candidate)
+    );
+    const hasNumberedPagesBefore = previousControls.some(
+      (candidate) => /^\d+$/.test(getPaginationControlText(candidate))
+    );
+    if (!hasCurrentBefore || !hasNumberedPagesBefore) {
+      return false;
+    }
+    return !text || NEXT_PAGE_ARROW_LABELS.has(text) || hasPaginationUrlSignal(navUrl) || /(?:^|\b)(next|forward|right|chevron|arrow|page-next)(?:\b|$)/.test(attrs);
   }
   function isInsidePaginationContainer(element) {
     return Boolean(
@@ -9247,10 +9710,40 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       ].filter(Boolean).join(" ")
     ).toLowerCase();
     return Boolean(
-      element.matches("[disabled], [aria-disabled='true'], [data-disabled='true']") || /(?:^|\b)(disabled|is-disabled|pagination-disabled|pager-disabled)(?:\b|$)/.test(
+      element.matches("[disabled], [aria-disabled='true'], [data-disabled='true']") || /(?:^|\b)(disabled|is-disabled|inactive|is-inactive|pagination-disabled|pager-disabled)(?:\b|$)/.test(
         attrs
       )
     );
+  }
+  function isPaginationControlVisible(element) {
+    if (isElementVisible(element)) {
+      return true;
+    }
+    if (!element?.isConnected) {
+      return false;
+    }
+    const styles = window.getComputedStyle(element);
+    const opacity = Number.parseFloat(styles.opacity);
+    if (styles.visibility === "hidden" || styles.visibility === "collapse" || styles.display === "none" || Number.isFinite(opacity) && opacity <= 0.01) {
+      return false;
+    }
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return false;
+    }
+    return isInsidePaginationContainer(element);
+  }
+  function isPaginationControlInteractive(element) {
+    if (!isPaginationControlVisible(element)) {
+      return false;
+    }
+    if (element.hasAttribute("disabled") || element.disabled) {
+      return false;
+    }
+    if (element.getAttribute("aria-disabled") === "true") {
+      return false;
+    }
+    return window.getComputedStyle(element).pointerEvents !== "none";
   }
   function hasPaginationUrlSignal(url) {
     if (!url) {
@@ -9283,13 +9776,24 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function getResultPageSignature(site) {
     const currentUrl = normalizeUrl(window.location.href) ?? "";
-    const pageMarkers = Array.from(
-      document.querySelectorAll(
-        "[aria-current='page'], [aria-selected='true'], [data-current='true'], .selected, .active"
-      )
+    const pageMarkers = collectDeepMatches(
+      "[aria-current='page'], [aria-selected='true'], [data-current='true'], .selected, .active"
     ).filter((element) => isElementVisible(element)).map((element) => cleanText(getActionText(element)).toLowerCase()).filter(Boolean).slice(0, 6).join("|");
     const candidateMarkers = collectJobDetailCandidates(site).slice(0, 12).map((candidate) => normalizeUrl(candidate.url) ?? candidate.url).join("|");
     return [currentUrl, pageMarkers, candidateMarkers].join("::");
+  }
+  async function waitForResultsPageAdvance(site, beforeUrl, beforeSignature) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < NEXT_PAGE_ADVANCE_TIMEOUT_MS) {
+      await waitForResultSurfaceSettle(site);
+      const afterUrl = normalizeUrl(window.location.href);
+      const afterSignature = getResultPageSignature(site);
+      if (afterUrl && afterUrl !== beforeUrl || afterSignature !== beforeSignature) {
+        return afterUrl && afterUrl !== beforeUrl ? "navigating" : "advanced";
+      }
+      await sleep(NEXT_PAGE_ADVANCE_POLL_MS);
+    }
+    return "none";
   }
   function isMyGreenhousePortalHost() {
     try {
@@ -9533,8 +10037,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       target.uploadedResume = source.uploadedResume;
     }
   }
-  function getCurrentSearchKeywordHints(site, settings, currentLabel2) {
+  function getCurrentSearchKeywordHints(site, settings, currentLabel2, currentKeyword2) {
     const configured = parseSearchKeywords(settings.searchKeywords);
+    const explicitKeyword = parseSearchKeywords(currentKeyword2 ?? "");
+    if (explicitKeyword.length > 0) {
+      return explicitKeyword;
+    }
     const trimmedLabel = currentLabel2?.trim() ?? "";
     if (!trimmedLabel) {
       return configured;
@@ -9552,6 +10060,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
     }
     return configured;
+  }
+  function getGreenhousePortalSearchKeyword(keywordHints, currentLabel2) {
+    for (const keyword of keywordHints) {
+      const trimmed = keyword.trim();
+      if (trimmed) {
+        return trimmed;
+      }
+    }
+    const trimmedLabel = currentLabel2?.trim();
+    return trimmedLabel || void 0;
   }
   function throwIfRateLimited(site, dependencies) {
     const brokenReason = dependencies.detectBrokenPageReason(dependencies.document);
@@ -9622,16 +10140,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return false;
     }
   }
-  function getRemainingJobSlotsAfterSpawn(requestedLimit, openedCount, claimedRemaining) {
+  function getRemainingJobSlotsAfterSpawn(requestedLimit, openedCount, claimedRemaining, approvedCount) {
     const safeRequestedLimit = Math.max(0, Math.floor(requestedLimit));
     const safeOpenedCount = Math.max(0, Math.floor(openedCount));
     const remainingFromOpened = Math.max(0, safeRequestedLimit - safeOpenedCount);
     if (typeof claimedRemaining !== "number" || !Number.isFinite(claimedRemaining)) {
       return remainingFromOpened;
     }
+    const safeApprovedCount = typeof approvedCount === "number" && Number.isFinite(approvedCount) ? Math.max(0, Math.floor(approvedCount)) : safeOpenedCount;
+    const reopenedClaimedSlots = Math.max(0, safeApprovedCount - safeOpenedCount);
     return Math.min(
       remainingFromOpened,
-      Math.max(0, Math.floor(claimedRemaining))
+      Math.max(0, Math.floor(claimedRemaining)) + reopenedClaimedSlots
     );
   }
 
@@ -9643,9 +10163,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   var OVERLAY_POSITION_STORAGE_KEY = "remote-job-search-overlay-position";
   var MAX_STAGE_DEPTH = 10;
   var IS_TOP_FRAME = window.top === window;
+  var CONTENT_READY_POLL_MS = 150;
+  var RESPONSIVE_WAIT_SLICE_MS = 150;
   var status = createInitialStatus();
   var currentStage = "bootstrap";
   var currentLabel;
+  var currentKeyword;
   var currentResumeKind;
   var currentProfileId;
   var currentRunId;
@@ -9709,7 +10232,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (hasUsableApplicationSignalsForSite(site)) {
       return null;
     }
-    await sleep(site === "monster" ? 2500 : 1200);
+    await sleepWithAutomationChecks(site === "monster" ? 2500 : 1200);
     const refreshedReason = detectBrokenPageReason(document);
     if (refreshedReason !== "not_found") {
       return refreshedReason;
@@ -9919,6 +10442,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     updateStatus("paused", automationPauseMessage, false, currentStage);
     await ensureAutomationPausePromise();
   }
+  async function sleepWithAutomationChecks(ms) {
+    let remaining = Math.max(0, Math.floor(ms));
+    while (remaining > 0) {
+      if (automationPauseRequested || status.phase === "paused") {
+        await waitForAutomationResumeIfPaused();
+      }
+      const slice = Math.min(RESPONSIVE_WAIT_SLICE_MS, remaining);
+      await sleep(slice);
+      remaining -= slice;
+    }
+  }
   function canControlCurrentAutomationFromOverlay() {
     return status.site !== "unsupported" && (status.phase === "running" || status.phase === "waiting_for_verification" || status.phase === "paused");
   }
@@ -10076,6 +10610,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           };
           currentStage = message.session.stage;
           currentLabel = message.session.label;
+          currentKeyword = message.session.keyword;
           currentResumeKind = message.session.resumeKind;
           currentProfileId = message.session.profileId;
           currentRunId = message.session.runId;
@@ -10090,6 +10625,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         } else {
           currentStage = "bootstrap";
           currentLabel = void 0;
+          currentKeyword = void 0;
           currentResumeKind = void 0;
           currentProfileId = void 0;
           currentRunId = void 0;
@@ -10129,7 +10665,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const detectedSite = detectSiteFromUrl(window.location.href);
     childApplicationTabOpened = false;
     stageRetryState = createStageRetryState();
-    const maxAttempts = detectedSite ? 30 : 18;
+    const maxAttempts = detectedSite ? 70 : 40;
     let lastSessionState = null;
     let unchangedCount = 0;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -10157,7 +10693,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         const s = response.session;
         if (!shouldHandleAutomationInCurrentFrame(s, detectedSite)) {
           if (s.stage === "autofill-form" && typeof s.controllerFrameId !== "number" && attempt < maxAttempts - 1) {
-            await sleep(400);
+            await sleepWithAutomationChecks(CONTENT_READY_POLL_MS);
             continue;
           }
           return;
@@ -10178,6 +10714,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         };
         currentStage = s.stage;
         currentLabel = s.label;
+        currentKeyword = s.keyword;
         currentResumeKind = s.resumeKind;
         currentProfileId = s.profileId;
         currentRunId = s.runId;
@@ -10190,23 +10727,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         }
         renderOverlay();
         if (response.shouldResume) {
-          const freshResponse = await chrome.runtime.sendMessage({
-            type: "get-tab-session",
-            tabId: -1
-          }).catch(() => null);
-          if (freshResponse?.session?.shouldResume ?? response.shouldResume) {
-            await ensureAutomationRunning();
-          }
+          await ensureAutomationRunning();
           return;
         }
         if (s.stage === "autofill-form" && typeof s.controllerFrameId !== "number" && attempt < maxAttempts - 1) {
-          await sleep(400);
+          await sleepWithAutomationChecks(CONTENT_READY_POLL_MS);
           continue;
         }
         return;
       }
       if (attempt >= maxAttempts - 1) return;
-      await sleep(400);
+      await sleepWithAutomationChecks(CONTENT_READY_POLL_MS);
     }
   }
   async function ensureAutomationRunning() {
@@ -10275,11 +10806,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         "Add at least one search keyword in the extension before starting job board automation."
       );
     }
-    const items = targets.map((target) => ({
+    const items = targets.map((target, index) => ({
       url: target.url,
       site,
       stage: "collect-results",
       runId: currentRunId,
+      active: index === 0,
       message: `Collecting ${target.label} job pages on ${getSiteLabel(site)}...`,
       label: target.label,
       resumeKind: target.resumeKind,
@@ -10304,7 +10836,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       site,
       effectiveLimit
     );
-    const keywordHints = getCurrentSearchKeywordHints(site, settings, currentLabel);
+    const keywordHints = getCurrentSearchKeywordHints(
+      site,
+      settings,
+      currentLabel,
+      currentKeyword
+    );
+    const greenhousePortalKeyword = getGreenhousePortalSearchKeyword(
+      keywordHints,
+      currentLabel
+    );
     updateStatus(
       "running",
       `Scanning ${labelPrefix}${getSiteLabel(site)} results for job pages${postedWindowDescription}...`,
@@ -10324,17 +10865,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     await waitForHumanVerificationToClear();
     const renderWaitMs = site === "startup" || site === "other_sites" || site === "greenhouse" || site === "builtin" ? 5e3 : site === "indeed" || site === "dice" || site === "ziprecruiter" || site === "glassdoor" ? 5e3 : site === "monster" ? 5e3 : 2500;
-    await sleep(renderWaitMs);
+    await sleepWithAutomationChecks(renderWaitMs);
     await waitForAutomationResumeIfPaused();
     throwIfRateLimited(site, {
       detectBrokenPageReason,
       document,
       isProbablyRateLimitPage
     });
-    if (site === "greenhouse" && currentLabel && await searchMyGreenhousePortal(currentLabel)) {
+    if (site === "greenhouse" && greenhousePortalKeyword && await searchMyGreenhousePortal(greenhousePortalKeyword)) {
+      const greenhouseLabelPrefix = currentLabel ? `${currentLabel} ` : "";
       updateStatus(
         "running",
-        `Opened ${currentLabel} Greenhouse results. Collecting job pages...`,
+        `Opened ${greenhouseLabelPrefix}Greenhouse results. Collecting job pages...`,
         true,
         "collect-results"
       );
@@ -10455,7 +10997,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       await closeCurrentTab();
       return;
     }
-    const items = approvedUrls.map((url) => {
+    const items = approvedUrls.map((url, index) => {
       const claimedJobKey = getJobDedupKey(url) || void 0;
       const jobTitle = titleMap.get(getJobDedupKey(url)) ?? "";
       const itemResumeKind = resolveResumeKindForJob({
@@ -10463,12 +11005,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         label: currentLabel,
         jobTitle
       });
+      const shouldActivateSpawn = index === 0;
       if (isLikelyApplyUrl(url, site)) {
         return {
           url,
           site,
           stage: "autofill-form",
           runId: currentRunId,
+          active: shouldActivateSpawn,
           message: `Autofilling ${labelPrefix}${getSiteLabel(site)} apply page...`,
           claimedJobKey,
           label: currentLabel,
@@ -10481,6 +11025,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         site,
         stage: "open-apply",
         runId: currentRunId,
+        active: shouldActivateSpawn,
         message: `Opening ${labelPrefix}${getSiteLabel(site)} job page...`,
         claimedJobKey,
         label: currentLabel,
@@ -10493,7 +11038,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const remainingSlotsAfterSpawn = getRemainingJobSlotsAfterSpawn(
       effectiveLimit,
       response.opened,
-      claimResult.remaining
+      claimResult.remaining,
+      approvedUrls.length
     );
     const extra = jobUrls.length > approvedUrls.length ? ` (opened ${approvedUrls.length} unique jobs from ${jobUrls.length} found)` : "";
     const openedMessage = `Opened ${response.opened} job tabs from ${labelPrefix}${getSiteLabel(site)} search${extra}.`;
@@ -10520,18 +11066,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const safeRemainingSlots = Math.max(0, Math.floor(remainingSlots));
     if (safeRemainingSlots <= 0) {
       return false;
-    }
-    if (site === "greenhouse" && isMyGreenhousePortalHost2()) {
-      updateStatus(
-        "completed",
-        fallbackMessage,
-        false,
-        "collect-results",
-        void 0,
-        safeRemainingSlots
-      );
-      await closeCurrentTab();
-      return true;
     }
     updateStatus(
       "running",
@@ -10642,7 +11176,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       document,
       isProbablyRateLimitPage
     });
-    await sleep(
+    await sleepWithAutomationChecks(
       site === "indeed" || site === "dice" || site === "monster" || site === "glassdoor" ? 4e3 : 2500
     );
     await waitForAutomationResumeIfPaused();
@@ -10697,7 +11231,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         const hasNavigated = window.location.href !== urlAtStart || navigationDetected;
         if (hasNavigated) {
           cleanupObserver();
-          await sleep(2500);
+          await sleepWithAutomationChecks(2500);
           await waitForHumanVerificationToClear();
           throwIfRateLimited(site, {
             detectBrokenPageReason,
@@ -10786,7 +11320,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             behavior: "smooth"
           });
         }
-        await sleep(700);
+        await sleepWithAutomationChecks(700);
       }
     } finally {
       cleanupObserver();
@@ -10842,7 +11376,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "autofill-form"
     );
     action.element.scrollIntoView({ behavior: "smooth", block: "center" });
-    await sleep(600);
+    await sleepWithAutomationChecks(600);
     const urlBeforeClick = window.location.href;
     const anchorElement = action.element.closest("a") ?? (action.element instanceof HTMLAnchorElement ? action.element : null);
     if (anchorElement?.href) {
@@ -10930,10 +11464,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     performClickAction(action.element);
     for (let wait = 0; wait < 20; wait += 1) {
       await waitForAutomationResumeIfPaused();
-      await sleep(700);
+      await sleepWithAutomationChecks(700);
       if (childApplicationTabOpened) return;
       if (window.location.href !== urlBeforeClick) {
-        await sleep(2500);
+        await sleepWithAutomationChecks(2500);
         await waitForHumanVerificationToClear();
         if (hasLikelyApplicationSurface2(site)) {
           await waitForLikelyApplicationSurface2(site);
@@ -10966,7 +11500,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           true,
           "autofill-form"
         );
-        await sleep(1500);
+        await sleepWithAutomationChecks(1500);
         await runAutofillStage(site);
         return;
       }
@@ -11055,9 +11589,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         behavior: "smooth",
         block: "center"
       });
-      await sleep(400);
+      await sleepWithAutomationChecks(400);
       performClickAction(retryAction.element);
-      await sleep(3e3);
+      await sleepWithAutomationChecks(3e3);
       if (window.location.href !== urlBeforeClick || hasLikelyApplicationSurface2(site)) {
         if (window.location.href !== urlBeforeClick) {
           await waitForHumanVerificationToClear();
@@ -11094,9 +11628,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         behavior: "smooth",
         block: "center"
       });
-      await sleep(400);
+      await sleepWithAutomationChecks(400);
       performClickAction(retryCompanyAction.element);
-      await sleep(3e3);
+      await sleepWithAutomationChecks(3e3);
       if (window.location.href !== urlBeforeClick) {
         await waitForHumanVerificationToClear();
         await runOpenApplyStage(site);
@@ -11266,7 +11800,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           }
           return;
         }
-        await sleep(
+        await sleepWithAutomationChecks(
           pendingResumeUploadSurface ? 1200 : result.uploadedResume ? 3500 : 1800
         );
         continue;
@@ -11314,9 +11848,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           behavior: "smooth",
           block: "center"
         });
-        await sleep(400);
+        await sleepWithAutomationChecks(400);
         performClickAction(followUp.element);
-        await sleep(2800);
+        await sleepWithAutomationChecks(2800);
         if (window.location.href !== previousUrl) {
           await waitForHumanVerificationToClear();
           if (hasLikelyApplicationSurface2(site)) {
@@ -11362,9 +11896,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             behavior: "smooth",
             block: "center"
           });
-          await sleep(400);
+          await sleepWithAutomationChecks(400);
           performClickAction(companySiteAction.element);
-          await sleep(2800);
+          await sleepWithAutomationChecks(2800);
           if (window.location.href !== previousUrl) {
             await waitForHumanVerificationToClear();
             currentStage = "open-apply";
@@ -11377,7 +11911,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
       if (hasPendingResumeUploadSurface(applicationSurfaceCollectors)) {
         noProgressCount = 0;
-        await sleep(site === "indeed" ? 1500 : 1e3);
+        await sleepWithAutomationChecks(site === "indeed" ? 1500 : 1e3);
         continue;
       }
       if (site === "indeed" || site === "ziprecruiter") {
@@ -11399,7 +11933,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
       noProgressCount += 1;
       if (noProgressCount >= 4) break;
-      await sleep(1200);
+      await sleepWithAutomationChecks(1200);
     }
     const finalSettings = await readCurrentAutomationSettings();
     const finalResult = await autofillVisibleApplication(finalSettings);
@@ -11507,14 +12041,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         );
         lastReminderAt = Date.now();
       }
-      await sleep(VERIFICATION_POLL_MS);
+      await sleepWithAutomationChecks(VERIFICATION_POLL_MS);
     }
     updateStatus(
       "running",
       "Verification cleared. Continuing...",
       true
     );
-    await sleep(1500);
+    await sleepWithAutomationChecks(300);
   }
   function collectAutofillFields() {
     return collectDeepMatches(
@@ -11763,10 +12297,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         } catch {
         }
       }
-      await sleep(500);
+      await sleepWithAutomationChecks(500);
       let success = Boolean(input.files?.length) || getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase() || hasAcceptedResumeUpload(input, asset.name);
       if (success) {
-        await sleep(900);
+        await sleepWithAutomationChecks(900);
         success = Boolean(input.files?.length) || getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase() || hasAcceptedResumeUpload(input, asset.name);
       }
       if (!success) {
@@ -12049,7 +12583,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       index += batch.length;
     }
     if (reachableUrls.length === 0 && index >= maxProbeCount) {
-      return [];
+      return urls;
     }
     return [...reachableUrls, ...urls.slice(index)];
   }
@@ -12252,7 +12786,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const remoteOption = findMyGreenhouseRemoteOption();
     if (remoteOption && !isMyGreenhouseRemoteOptionSelected(remoteOption)) {
       performClickAction(remoteOption);
-      await sleep(200);
+      await sleepWithAutomationChecks(200);
       return;
     }
     const workTypeButton = findMyGreenhouseWorkTypeButton();
@@ -12260,11 +12794,11 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return;
     }
     performClickAction(workTypeButton);
-    await sleep(200);
+    await sleepWithAutomationChecks(200);
     const openedRemoteOption = findMyGreenhouseRemoteOption();
     if (openedRemoteOption && !isMyGreenhouseRemoteOptionSelected(openedRemoteOption)) {
       performClickAction(openedRemoteOption);
-      await sleep(200);
+      await sleepWithAutomationChecks(200);
     }
   }
   async function waitForMyGreenhouseSearchResults(timeoutMs) {
@@ -12273,7 +12807,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       if (hasMyGreenhouseSearchResults()) {
         return;
       }
-      await sleep(250);
+      await sleepWithAutomationChecks(250);
     }
   }
   function isMyGreenhousePortalPage() {
@@ -12295,7 +12829,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return false;
     }
     if (document.querySelector(
-      "a[href*='my.greenhouse.io/view_job'], a[href*='my.greenhouse.io'][href*='job_id='], a[href*='greenhouse.io'][href*='/jobs/'], a[href*='greenhouse.io'][href*='gh_jid=']"
+      "a[href*='my.greenhouse.io/view_job'], a[href*='my.greenhouse.io'][href*='job_id='], a[href*='/view_job'], a[href*='greenhouse.io'][href*='/jobs/'], a[href*='greenhouse.io'][href*='gh_jid=']"
     )) {
       return true;
     }
@@ -12712,7 +13246,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
               }
               break;
             }
-            await sleep(ANSWER_FLUSH_RETRY_DELAY_MS * retryCount);
+            await sleepWithAutomationChecks(
+              ANSWER_FLUSH_RETRY_DELAY_MS * retryCount
+            );
           }
         }
       }

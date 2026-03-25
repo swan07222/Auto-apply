@@ -138,8 +138,22 @@ function isKnownBrokenApplyUrl(url: string | null | undefined): boolean {
   }
 
   try {
-    const hostname = new URL(url, window.location.href).hostname.toLowerCase();
-    return KNOWN_BROKEN_APPLY_HOSTS.includes(hostname);
+    const parsed = new URL(url, window.location.href);
+    const hostname = parsed.hostname.toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+
+    if (KNOWN_BROKEN_APPLY_HOSTS.includes(hostname)) {
+      return true;
+    }
+
+    if (
+      hostname.includes("indeed.com") &&
+      (path.includes("/orgindapp") || path.includes("/conv/orgindapp"))
+    ) {
+      return true;
+    }
+
+    return false;
   } catch {
     return false;
   }

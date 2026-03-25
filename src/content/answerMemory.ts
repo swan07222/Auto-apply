@@ -62,7 +62,8 @@ const QUESTION_INTENT_PATTERNS: Array<{
     | "state"
     | "country"
     | "location"
-    | "notice";
+    | "notice_period"
+    | "start_date";
   tokens: string[];
 }> = [
   {
@@ -141,10 +142,49 @@ const QUESTION_INTENT_PATTERNS: Array<{
     tokens: ["location"],
   },
   {
-    intent: "notice",
-    tokens: ["notice period", "start date", "available to start"],
+    intent: "notice_period",
+    tokens: ["notice period"],
+  },
+  {
+    intent: "start_date",
+    tokens: ["start date", "available to start", "can you start"],
   },
 ];
+
+const EXPERIENCE_SUBJECT_STOP_WORDS = new Set([
+  "background",
+  "experience",
+  "experienced",
+  "expertise",
+  "familiar",
+  "familiarity",
+  "have",
+  "how",
+  "in",
+  "many",
+  "much",
+  "of",
+  "overall",
+  "professional",
+  "relevant",
+  "skill",
+  "skills",
+  "total",
+  "using",
+  "with",
+  "work",
+  "working",
+  "year",
+  "years",
+]);
+
+type QuestionMatchContext = {
+  keys: string[];
+  tokens: Set<string>;
+  intents: Set<string>;
+  experienceSubjects: Set<string>;
+  experienceLike: boolean;
+};
 
 export function createRememberedAnswer(
   question: string,
@@ -174,34 +214,30 @@ export function findBestSavedAnswerMatch(
   descriptor: string,
   answers: Record<string, SavedAnswer>
 ): SavedAnswer | null {
-  const lookupKeys = buildAnswerLookupKeys(question, descriptor);
-  const lookupTokens = buildLookupTokenSet(question, descriptor);
-  const lookupIntents = detectQuestionIntents(question, descriptor);
-  if (lookupKeys.length === 0) {
+  const lookup = buildQuestionMatchContext(question, descriptor);
+  if (lookup.keys.length === 0) {
     return null;
   }
 
   let best: { answer: SavedAnswer; score: number } | null = null;
 
   for (const [key, answer] of Object.entries(answers)) {
-    const candidateKeys = buildAnswerLookupKeys(answer.question || key, key);
-    const candidateTokens = buildLookupTokenSet(answer.question || key, key);
-    const candidateIntents = detectQuestionIntents(answer.question || key, key);
-    if (candidateKeys.length === 0) {
+    const candidate = buildQuestionMatchContext(answer.question || key, key);
+    if (candidate.keys.length === 0) {
       continue;
     }
-    if (!hasCompatibleQuestionIntents(lookupIntents, candidateIntents)) {
+    if (!isCompatibleQuestionMatchContext(lookup, candidate)) {
       continue;
     }
     const sharesIntent =
-      lookupIntents.size > 0 &&
-      candidateIntents.size > 0 &&
-      hasCompatibleQuestionIntents(lookupIntents, candidateIntents);
+      lookup.intents.size > 0 &&
+      candidate.intents.size > 0 &&
+      hasCompatibleQuestionIntents(lookup.intents, candidate.intents);
 
     let score = 0;
 
-    for (const lookupKey of lookupKeys) {
-      for (const candidateKey of candidateKeys) {
+    for (const lookupKey of lookup.keys) {
+      for (const candidateKey of candidate.keys) {
         if (lookupKey === candidateKey) {
           score = Math.max(score, 1);
           continue;
@@ -218,7 +254,7 @@ export function findBestSavedAnswerMatch(
       }
     }
 
-    const overlap = calculateTokenOverlap(lookupTokens, candidateTokens);
+    const overlap = calculateTokenOverlap(lookup.tokens, candidate.tokens);
     if (overlap === 0 && !sharesIntent && score < 0.92) {
       continue;
     }
@@ -230,7 +266,7 @@ export function findBestSavedAnswerMatch(
     if (overlap > 0) {
       score = Math.max(score, score * 0.8 + overlap * 0.2);
     }
-    if (lookupIntents.size > 0 && candidateIntents.size > 0) {
+    if (lookup.intents.size > 0 && candidate.intents.size > 0) {
       score = Math.min(1, score + 0.05);
     }
 
@@ -246,25 +282,38 @@ export function getRelevantSavedAnswers(
   question: string,
   answers: Record<string, SavedAnswer>
 ): SavedAnswer[] {
-  const lookupTokens = buildLookupTokenSet(question);
-  const lookupIntents = detectQuestionIntents(question);
+  const lookup = buildQuestionMatchContext(question);
 
   return Object.values(answers)
     .filter((answer) => {
-      const candidateTokens = buildLookupTokenSet(answer.question);
-      const candidateIntents = detectQuestionIntents(answer.question);
-
-      if (!hasCompatibleQuestionIntents(lookupIntents, candidateIntents)) {
+      const candidate = buildQuestionMatchContext(answer.question);
+      if (!isCompatibleQuestionMatchContext(lookup, candidate)) {
         return false;
       }
 
       return (
         textSimilarity(question, answer.question) >= 0.78 ||
-        calculateTokenOverlap(lookupTokens, candidateTokens) >= 0.5 ||
-        (lookupIntents.size > 0 && candidateIntents.size > 0)
+        calculateTokenOverlap(lookup.tokens, candidate.tokens) >= 0.5 ||
+        (lookup.intents.size > 0 && candidate.intents.size > 0)
       );
     })
     .sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
+function buildQuestionMatchContext(
+  question: string,
+  descriptor = ""
+): QuestionMatchContext {
+  const tokens = buildLookupTokenSet(question, descriptor);
+  const intents = detectQuestionIntents(question, descriptor);
+
+  return {
+    keys: buildAnswerLookupKeys(question, descriptor),
+    tokens,
+    intents,
+    experienceSubjects: extractExperienceSubjects(tokens),
+    experienceLike: isExperienceLikeQuestion(tokens),
+  };
 }
 
 function buildAnswerLookupKeys(
@@ -330,6 +379,53 @@ function hasCompatibleQuestionIntents(
 
   for (const intent of lookupIntents) {
     if (candidateIntents.has(intent)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isCompatibleQuestionMatchContext(
+  lookup: QuestionMatchContext,
+  candidate: QuestionMatchContext
+): boolean {
+  if (!hasCompatibleQuestionIntents(lookup.intents, candidate.intents)) {
+    return false;
+  }
+
+  if (
+    lookup.experienceLike &&
+    candidate.experienceLike &&
+    lookup.experienceSubjects.size > 0 &&
+    candidate.experienceSubjects.size > 0 &&
+    !setsIntersect(lookup.experienceSubjects, candidate.experienceSubjects)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function extractExperienceSubjects(tokens: Set<string>): Set<string> {
+  const subjects = new Set<string>();
+
+  for (const token of tokens) {
+    if (!EXPERIENCE_SUBJECT_STOP_WORDS.has(token)) {
+      subjects.add(token);
+    }
+  }
+
+  return subjects;
+}
+
+function isExperienceLikeQuestion(tokens: Set<string>): boolean {
+  return tokens.has("experience") || tokens.has("year") || tokens.has("years");
+}
+
+function setsIntersect(left: Set<string>, right: Set<string>): boolean {
+  for (const value of left) {
+    if (right.has(value)) {
       return true;
     }
   }

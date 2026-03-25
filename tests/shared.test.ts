@@ -205,6 +205,7 @@ describe("shared automation target logic", () => {
     expect(urls).toContain("https://careers.veeva.com/job-search-results/");
     expect(urls).not.toContain("https://job-boards.greenhouse.io/monzo");
     expect(targets.every((target) => target.resumeKind === undefined)).toBe(true);
+    expect(targets.every((target) => target.keyword === "software engineer")).toBe(true);
   });
 
   it("includes Veeva in UK and EU startup targets", () => {
@@ -340,6 +341,22 @@ describe("shared automation target logic", () => {
     expect(
       getJobDedupKey("https://boards.greenhouse.io/example/jobs/1234567?gh_jid=1234567#apply")
     ).toBe("boards.greenhouse.io/example/jobs/1234567?gh_jid=1234567");
+  });
+
+  it("keeps distinct jobs separate when a generic id param appears alongside meaningful query params", () => {
+    const canonicalUrl =
+      "https://jobs.example.com/apply?id=123&job=frontend-engineer&utm_source=linkedin";
+    const trackingVariant =
+      "https://jobs.example.com/apply?id=123&job=frontend-engineer&utm_source=indeed";
+    const distinctJobUrl =
+      "https://jobs.example.com/apply?id=123&job=platform-engineer&utm_source=linkedin";
+
+    expect(getJobDedupKey(canonicalUrl)).toBe(
+      getJobDedupKey(trackingVariant)
+    );
+    expect(getJobDedupKey(canonicalUrl)).not.toBe(
+      getJobDedupKey(distinctJobUrl)
+    );
   });
 
   it("infers resume kind from technical job titles", () => {

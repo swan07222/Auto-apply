@@ -66,6 +66,17 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
       url: "https://www.indeed.com/viewjob?jk=abc123",
     },
   ];
+  const tabUpdatedListeners: Array<
+    (
+      tabId: number,
+      changeInfo: Record<string, unknown>,
+      tab: MockTab
+    ) => void
+  > = [];
+  const tabActivatedListeners: Array<
+    (activeInfo: { tabId: number; windowId?: number }) => void
+  > = [];
+  const tabRemovedListeners: Array<(tabId: number) => void> = [];
 
   const tabsQuery = vi.fn(async () =>
     activeTabs.map((tab) => ({
@@ -145,6 +156,39 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
       tabs: {
         query: tabsQuery,
         sendMessage: tabsSendMessage,
+        onUpdated: {
+          addListener: vi.fn((listener) => {
+            tabUpdatedListeners.push(listener);
+          }),
+          removeListener: vi.fn((listener) => {
+            const index = tabUpdatedListeners.indexOf(listener);
+            if (index >= 0) {
+              tabUpdatedListeners.splice(index, 1);
+            }
+          }),
+        },
+        onActivated: {
+          addListener: vi.fn((listener) => {
+            tabActivatedListeners.push(listener);
+          }),
+          removeListener: vi.fn((listener) => {
+            const index = tabActivatedListeners.indexOf(listener);
+            if (index >= 0) {
+              tabActivatedListeners.splice(index, 1);
+            }
+          }),
+        },
+        onRemoved: {
+          addListener: vi.fn((listener) => {
+            tabRemovedListeners.push(listener);
+          }),
+          removeListener: vi.fn((listener) => {
+            const index = tabRemovedListeners.indexOf(listener);
+            if (index >= 0) {
+              tabRemovedListeners.splice(index, 1);
+            }
+          }),
+        },
       },
       runtime: {
         sendMessage: runtimeSendMessage,
@@ -190,6 +234,28 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
     modePreview: requireElement<HTMLElement>("#mode-preview"),
     savedAnswerCount: requireElement<HTMLElement>("#saved-answer-count"),
     savedAnswerList: requireElement<HTMLElement>("#saved-answer-list"),
+    setActiveTabs(nextTabs: MockTab[]) {
+      activeTabs.splice(0, activeTabs.length, ...nextTabs);
+    },
+    dispatchTabUpdated(
+      tabId: number,
+      changeInfo: Record<string, unknown>,
+      tab: MockTab
+    ) {
+      for (const listener of [...tabUpdatedListeners]) {
+        listener(tabId, changeInfo, tab);
+      }
+    },
+    dispatchTabActivated(activeInfo: { tabId: number; windowId?: number }) {
+      for (const listener of [...tabActivatedListeners]) {
+        listener(activeInfo);
+      }
+    },
+    dispatchTabRemoved(tabId: number) {
+      for (const listener of [...tabRemovedListeners]) {
+        listener(tabId);
+      }
+    },
     profileSelect: requireElement<HTMLSelectElement>("#profile-select"),
     searchModeInput: requireElement<HTMLSelectElement>("#search-mode"),
     searchKeywordsInput: requireElement<HTMLInputElement>("#search-keywords"),
@@ -476,6 +542,40 @@ describe("popup workflow", () => {
       type: "get-tab-session",
       tabId: 91,
     });
+  });
+
+  it("refreshes the detected site immediately when the active tab updates", async () => {
+    vi.useFakeTimers();
+    const popup = await createPopupHarness({
+      activeTabs: [
+        {
+          id: 42,
+          url: "https://example.com/jobs",
+        },
+      ],
+    });
+
+    expect(popup.siteName.textContent).toBe("No supported site");
+
+    popup.setActiveTabs([
+      {
+        id: 42,
+        url: "https://job-boards.greenhouse.io/vercel",
+      },
+    ]);
+    popup.dispatchTabUpdated(
+      42,
+      { url: "https://job-boards.greenhouse.io/vercel" },
+      {
+        id: 42,
+        url: "https://job-boards.greenhouse.io/vercel",
+      }
+    );
+    await vi.runOnlyPendingTimersAsync();
+    await flushAsyncWork(16);
+
+    expect(popup.siteName.textContent).toBe("Greenhouse");
+    expect(popup.statusText.textContent).toBe("Ready on Greenhouse.");
   });
 
   it("prefers a supported job-board tab when multiple active candidates are returned", async () => {

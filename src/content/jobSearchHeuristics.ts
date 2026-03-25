@@ -2,6 +2,44 @@ import { type DatePostedWindow, type ResumeKind, type SiteKey } from "../shared"
 import { cleanText, normalizeChoiceText } from "./text";
 import { type JobCandidate } from "./types";
 
+const BROAD_TECHNICAL_SEARCH_TOKENS = new Set([
+  "software",
+  "engineer",
+  "engineers",
+  "developer",
+  "developers",
+  "development",
+  "technical",
+  "tech",
+  "programmer",
+  "programmers",
+  "architect",
+  "architects",
+]);
+
+const TECHNICAL_SEARCH_NOISE_TOKENS = new Set([
+  "a",
+  "an",
+  "and",
+  "for",
+  "in",
+  "jr",
+  "junior",
+  "lead",
+  "mid",
+  "or",
+  "principal",
+  "remote",
+  "senior",
+  "sr",
+  "staff",
+  "states",
+  "the",
+  "united",
+  "us",
+  "usa",
+]);
+
 export function shouldFilterBoardResultsByKeyword(
   site: SiteKey | null,
   eligibleCount: number,
@@ -23,6 +61,40 @@ export function matchesConfiguredSearchKeywords(
   searchKeywords: string[]
 ): boolean {
   return scoreCandidateKeywordRelevance(candidate, searchKeywords) > 0;
+}
+
+export function shouldAllowBroadTechnicalKeywordFallback(
+  searchKeywords: string[]
+): boolean {
+  if (searchKeywords.length === 0) {
+    return false;
+  }
+
+  return searchKeywords.every((keyword) => {
+    const tokens = normalizeChoiceText(keyword)
+      .split(/\s+/)
+      .filter(
+        (token) =>
+          token.length >= 2 && !TECHNICAL_SEARCH_NOISE_TOKENS.has(token)
+      );
+
+    if (tokens.length === 0) {
+      return false;
+    }
+
+    const hasBroadRoleToken = tokens.some(
+      (token) =>
+        token === "engineer" ||
+        token === "developer" ||
+        token === "programmer" ||
+        token === "architect"
+    );
+
+    return (
+      hasBroadRoleToken &&
+      tokens.every((token) => BROAD_TECHNICAL_SEARCH_TOKENS.has(token))
+    );
+  });
 }
 
 export function scoreCandidateKeywordRelevance(

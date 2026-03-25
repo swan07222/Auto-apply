@@ -63,6 +63,7 @@ export function createSession(
   stage: AutomationStage,
   runId?: string,
   label?: string,
+  keyword?: string,
   resumeKind?: ResumeKind,
   profileId?: string
 ): AutomationSession {
@@ -72,6 +73,7 @@ export function createSession(
     stage,
     runId,
     label,
+    keyword,
     resumeKind,
     profileId,
     ...createStatus(site, phase, message),

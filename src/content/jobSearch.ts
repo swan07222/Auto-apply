@@ -4,6 +4,7 @@ import { DatePostedWindow, ResumeKind, SiteKey, getJobDedupKey } from "../shared
 import { JobCandidate } from "./types";
 import { cleanText, getReadableText, normalizeChoiceText } from "./text";
 import {
+  collectDeepMatches,
   collectShadowHosts,
   getActionText,
   getNavigationUrl,
@@ -31,6 +32,7 @@ import {
   matchesConfiguredSearchKeywords,
   scoreCandidateKeywordRelevance,
   scoreJobTitleForResume,
+  shouldAllowBroadTechnicalKeywordFallback,
   shouldFilterBoardResultsByKeyword,
   shouldFinishJobResultScan,
   sortCandidatesByRecency,
@@ -426,6 +428,8 @@ export function collectJobDetailCandidates(site: SiteKey): JobCandidate[] {
             "a[href*='greenhouse.io'][href*='gh_jid=']",
             "a[href*='my.greenhouse.io/view_job']",
             "a[href*='my.greenhouse.io'][href*='job_id=']",
+            "a[href*='/view_job']",
+            "a[href^='/'][href*='/jobs/']:not([href$='/jobs'], [href$='/jobs/'])",
           ],
           2
         ),
@@ -587,15 +591,21 @@ export function pickRelevantJobUrls(
 
   const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
   const recencyEligible = datePostedWindow === "any" ? valid : recencyFiltered;
+  const trustGreenhouseKeywordFiltering =
+    site === "greenhouse" && shouldTrustGreenhouseBoardKeywordFiltering(currentUrl);
+  const trustGreenhouseRemoteFiltering =
+    site === "greenhouse" && shouldTrustGreenhouseBoardRemoteFiltering(currentUrl);
   const eligible =
     site === "dice"
       ? recencyEligible.filter((candidate) => isExplicitlyRemoteDiceCandidate(candidate))
+      : trustGreenhouseRemoteFiltering
+        ? recencyEligible
       : filterCandidatesForRemotePreference(recencyEligible, site, currentUrl);
   const shouldKeywordFilter =
     searchKeywords.length > 0 &&
     (site === "startup" ||
       site === "other_sites" ||
-      site === "greenhouse" ||
+      (site === "greenhouse" && !trustGreenhouseKeywordFiltering) ||
       site === "builtin");
   const boardKeywordMatchedCandidates =
     searchKeywords.length > 0 &&
@@ -614,6 +624,11 @@ export function pickRelevantJobUrls(
       eligible.length,
       boardKeywordMatchedCandidates.length
     );
+  const isCareerSiteResult =
+    site === "startup" ||
+    site === "other_sites" ||
+    site === "greenhouse" ||
+    site === "builtin";
   const keywordEligible =
     shouldKeywordFilter
       ? eligible.filter((candidate) =>
@@ -622,33 +637,42 @@ export function pickRelevantJobUrls(
       : shouldKeywordFilterBoardResults
         ? boardKeywordMatchedCandidates
       : eligible;
-  const technicalEligible =
-    site === "startup" ||
-    site === "other_sites" ||
-    site === "greenhouse" ||
-    site === "builtin"
-      ? keywordEligible.filter((candidate) =>
-          looksLikeTechnicalRoleTitle(candidate.title)
-        )
-      : keywordEligible;
+  const technicalRoleEligible = isCareerSiteResult
+    ? eligible.filter((candidate) => looksLikeTechnicalRoleTitle(candidate.title))
+    : eligible;
+  const shouldFallbackToBroadTechnicalRoles =
+    shouldKeywordFilter &&
+    keywordEligible.length === 0 &&
+    technicalRoleEligible.length > 0 &&
+    isCareerSiteResult &&
+    shouldAllowBroadTechnicalKeywordFallback(searchKeywords);
+  const effectiveKeywordEligible = shouldFallbackToBroadTechnicalRoles
+    ? technicalRoleEligible
+    : keywordEligible;
+  const technicalEligible = isCareerSiteResult
+    ? effectiveKeywordEligible.filter((candidate) =>
+        looksLikeTechnicalRoleTitle(candidate.title)
+      )
+    : effectiveKeywordEligible;
 
-  if (shouldKeywordFilter && keywordEligible.length === 0) {
+  if (
+    shouldKeywordFilter &&
+    keywordEligible.length === 0 &&
+    !shouldFallbackToBroadTechnicalRoles
+  ) {
     return [];
   }
 
   if (!resumeKind) {
     const fallbackPool =
-      technicalEligible.length > 0 ? technicalEligible : keywordEligible;
+      technicalEligible.length > 0 ? technicalEligible : effectiveKeywordEligible;
     return sortCandidatesByRecency(fallbackPool, datePostedWindow).map((candidate) => candidate.url);
   }
 
   const fallbackPool =
-    site === "startup" ||
-    site === "other_sites" ||
-    site === "greenhouse" ||
-    site === "builtin"
+    isCareerSiteResult
       ? technicalEligible
-      : keywordEligible;
+      : effectiveKeywordEligible;
 
   const scored = fallbackPool.map((candidate, index) => ({
     candidate,
@@ -676,6 +700,34 @@ export function pickRelevantJobUrls(
     .filter((url) => !preferredSet.has(url));
 
   return [...preferred, ...fallback];
+}
+
+function shouldTrustGreenhouseBoardKeywordFiltering(currentUrl: string): boolean {
+  try {
+    const parsedUrl = new URL(currentUrl);
+    const hostname = parsedUrl.hostname.toLowerCase().replace(/^www\./, "");
+    if (!hostname.endsWith("greenhouse.io")) {
+      return false;
+    }
+
+    return Boolean(parsedUrl.searchParams.get("keyword")?.trim());
+  } catch {
+    return false;
+  }
+}
+
+function shouldTrustGreenhouseBoardRemoteFiltering(currentUrl: string): boolean {
+  try {
+    const parsedUrl = new URL(currentUrl);
+    const hostname = parsedUrl.hostname.toLowerCase().replace(/^www\./, "");
+    if (!hostname.endsWith("greenhouse.io")) {
+      return false;
+    }
+
+    return normalizeChoiceText(parsedUrl.searchParams.get("location") || "") === "remote";
+  } catch {
+    return false;
+  }
 }
 
 function preferCanonicalBuiltInHostedCandidates(
@@ -1029,7 +1081,7 @@ export function isLikelyJobDetailUrl(
     case "greenhouse":
     case "builtin": {
       try {
-        const parsed = new URL(lowerUrl);
+        const parsed = new URL(url, window.location.href);
         if (hasJobIdentifyingSearchParam(parsed)) {
           return true;
         }
@@ -1050,7 +1102,9 @@ export function isLikelyJobDetailUrl(
       const pathSignals = [
         "/jobs/",
         "/job/",
+        "/view-job",
         "/view-job/",
+        "/view_job",
         "/view_job/",
         "/role/",
         "/roles/",
@@ -1070,7 +1124,7 @@ export function isLikelyJobDetailUrl(
 
       if (pathSignals.some((token) => lowerUrl.includes(token))) {
         try {
-          const parsed = new URL(lowerUrl);
+          const parsed = new URL(url, window.location.href);
           const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
           const segments = path.split("/").filter(Boolean);
           const lastSegment = segments[segments.length - 1] ?? "";
@@ -1104,7 +1158,7 @@ export function isLikelyJobDetailUrl(
       const hasCareerPath = lowerUrl.includes("/careers/") || lowerUrl.includes("/career/");
       if (hasCareerPath) {
         try {
-          const parsed = new URL(lowerUrl);
+          const parsed = new URL(url, window.location.href);
           const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
           const segments = path.split("/").filter(Boolean);
           const lastSegment = segments[segments.length - 1] ?? "";
@@ -1119,7 +1173,7 @@ export function isLikelyJobDetailUrl(
       }
 
       try {
-        const parsed = new URL(lowerUrl);
+        const parsed = new URL(url, window.location.href);
         const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
         const segments = path.split("/").filter(Boolean);
         const lastSegment = segments[segments.length - 1] ?? "";
@@ -1280,7 +1334,7 @@ function collectCandidatesFromContainers(
   const containers: HTMLElement[] = [];
   for (const selector of containerSelectors) {
     try {
-      for (const el of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
+      for (const el of collectDeepMatches<HTMLElement>(selector)) {
         containers.push(el);
       }
     } catch {
@@ -1372,7 +1426,7 @@ function collectCandidatesFromAnchors(selectors: string[]): JobCandidate[] {
 
   for (const selector of selectors) {
     try {
-      for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>(selector))) {
+      for (const anchor of collectDeepMatches<HTMLAnchorElement>(selector)) {
         const contextText = buildCandidateContextText(
           anchor.closest<HTMLElement>("article, li, section, div"),
           anchor
@@ -1404,7 +1458,7 @@ function collectFocusedAtsLinkCandidates(
 
   for (const selector of getCareerSiteJobLinkSelectors(site)) {
     try {
-      for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>(selector))) {
+      for (const anchor of collectDeepMatches<HTMLAnchorElement>(selector)) {
         if (!hasJobDetailAtsUrl(anchor.href)) {
           continue;
         }
@@ -1443,7 +1497,7 @@ function collectSiteAnchoredJobCandidates(
 
   for (const selector of selectors) {
     try {
-      for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>(selector))) {
+      for (const anchor of collectDeepMatches<HTMLAnchorElement>(selector)) {
         const title = resolveAnchorCandidateTitle(
           anchor,
           cleanText(getReadableText(anchor) || anchor.getAttribute("aria-label") || "")
@@ -1475,10 +1529,8 @@ function collectLabeledActionCandidates(
   const candidates: JobCandidate[] = [];
   const normalizedLabels = labels.map((label) => normalizeChoiceText(label));
 
-  for (const element of Array.from(
-    document.querySelectorAll<HTMLElement>(
-      "a[href], button, [role='link'], [role='button'], input[type='button'], input[type='submit']"
-    )
+  for (const element of collectDeepMatches<HTMLElement>(
+    "a[href], button, [role='link'], [role='button'], input[type='button'], input[type='submit']"
   )) {
     const actionText = normalizeChoiceText(getActionText(element));
     if (!actionText || !normalizedLabels.some((label) => actionText.includes(label))) {
