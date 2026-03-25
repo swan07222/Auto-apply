@@ -187,15 +187,12 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
     statusText: requireElement<HTMLElement>("#status-text"),
     settingsStatus: requireElement<HTMLElement>("#settings-status"),
     siteName: requireElement<HTMLElement>("#site-name"),
-    profilePreview: requireElement<HTMLElement>("#profile-preview"),
     modePreview: requireElement<HTMLElement>("#mode-preview"),
-    regionPreview: requireElement<HTMLElement>("#region-preview"),
     savedAnswerCount: requireElement<HTMLElement>("#saved-answer-count"),
     savedAnswerList: requireElement<HTMLElement>("#saved-answer-list"),
     profileSelect: requireElement<HTMLSelectElement>("#profile-select"),
     searchModeInput: requireElement<HTMLSelectElement>("#search-mode"),
-    searchKeywordsInput:
-      requireElement<HTMLTextAreaElement>("#search-keywords"),
+    searchKeywordsInput: requireElement<HTMLInputElement>("#search-keywords"),
     countryInput: requireElement<HTMLInputElement>("#country"),
     fullNameInput: requireElement<HTMLInputElement>("#full-name"),
     emailInput: requireElement<HTMLInputElement>("#email"),
@@ -205,8 +202,12 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
     dialogForm: requireElement<HTMLFormElement>("#popup-dialog-form"),
     dialogTitle: requireElement<HTMLElement>("#popup-dialog-title"),
     dialogDescription: requireElement<HTMLElement>("#popup-dialog-description"),
+    dialogPrimaryField: requireElement<HTMLElement>("#popup-dialog-primary-field"),
     dialogPrimaryInput: requireElement<HTMLInputElement>(
       "#popup-dialog-primary-input"
+    ),
+    dialogSecondaryField: requireElement<HTMLElement>(
+      "#popup-dialog-secondary-field"
     ),
     dialogSecondaryInput: requireElement<HTMLTextAreaElement>(
       "#popup-dialog-secondary-input"
@@ -253,7 +254,6 @@ describe("popup workflow", () => {
     const popup = await createPopupHarness();
 
     expect(popup.siteName.textContent).toBe("Indeed");
-    expect(popup.profilePreview.textContent).toBe("Default Profile");
     expect(popup.modePreview.textContent).toBe("Job boards");
     expect(popup.statusText.textContent).toBe("Ready on Indeed.");
     expect(popup.startButton.disabled).toBe(false);
@@ -279,6 +279,8 @@ describe("popup workflow", () => {
     expect(document.body.textContent).not.toContain("Remembered Answers");
     expect(document.body.textContent).not.toContain("Active site");
     expect(document.body.textContent).not.toContain("Search flow");
+    expect(document.body.textContent).not.toContain("Active profile");
+    expect(document.body.textContent).not.toContain("Target region");
     expect(document.querySelector("#save-button")).toBeNull();
     expect(document.querySelectorAll(".action-row > button")).toHaveLength(1);
     expect(document.body.textContent).not.toContain("Save Settings");
@@ -291,6 +293,9 @@ describe("popup workflow", () => {
     ).not.toContain("Resume");
     expect(document.body.textContent).not.toContain(
       "Save updates anytime, then launch the selected search flow."
+    );
+    expect(document.body.textContent).not.toContain(
+      "Automatically upload the matching resume whenever a resume or CV field is detected."
     );
     expect(popup.addPreferenceButton.textContent?.trim()).toBe("Add");
     expect(popup.resumeInput.closest(".settings-group")?.textContent).toContain(
@@ -372,7 +377,6 @@ describe("popup workflow", () => {
     });
 
     expect(popup.siteName.textContent).toBe("Startup Careers");
-    expect(popup.regionPreview.textContent).toBe("EU");
     expect(popup.statusText.textContent).toBe(
       "Ready to open startup career pages for EU companies."
     );
@@ -639,7 +643,7 @@ describe("popup workflow", () => {
     popup.fullNameInput.value = "  Ada Lovelace  ";
     popup.emailInput.value = " ada@example.com ";
     popup.countryInput.value = " United Kingdom ";
-    popup.searchKeywordsInput.value = " software engineer \n react engineer ";
+    popup.searchKeywordsInput.value = " software engineer , react engineer ";
 
     popup.fullNameInput.dispatchEvent(new Event("input", { bubbles: true }));
     popup.emailInput.dispatchEvent(new Event("input", { bubbles: true }));
@@ -659,7 +663,6 @@ describe("popup workflow", () => {
     );
     expect(popup.settingsStatus.textContent).toBe("Saved locally.");
     expect(popup.settingsStatus.dataset.visible).toBe("false");
-    expect(popup.regionPreview.textContent).toBe("UK");
   });
 
   it("switches to other job sites mode and starts the search from the popup", async () => {
@@ -688,7 +691,6 @@ describe("popup workflow", () => {
 
     expect(popup.siteName.textContent).toBe("Other Job Sites");
     expect(popup.modePreview.textContent).toBe("Other job sites");
-    expect(popup.regionPreview.textContent).toBe("EU");
     expect(popup.startButton.textContent).toBe("Start Other Sites Search");
     expect(popup.startButton.disabled).toBe(false);
 
@@ -758,7 +760,6 @@ describe("popup workflow", () => {
 
     expect(popup.getLatestSettings().activeProfileId).toBe("profile-b");
     expect(popup.fullNameInput.value).toBe("Grace Hopper");
-    expect(popup.profilePreview.textContent).toBe("Profile B");
   });
 
   it("preserves unsaved edits on the current profile before switching away", async () => {
@@ -821,6 +822,8 @@ describe("popup workflow", () => {
 
     popup.createProfileButton.click();
     await flushAsyncWork(6);
+    expect(popup.dialogPrimaryField.style.display).not.toBe("none");
+    expect(popup.dialogSecondaryField.style.display).toBe("none");
     await submitPopupDialog(popup, { primary: "   " });
 
     expect(popup.dialogError.textContent).toBe("Profile name cannot be empty.");
@@ -834,6 +837,9 @@ describe("popup workflow", () => {
 
     popup.createProfileButton.click();
     await flushAsyncWork(6);
+    expect(popup.dialogTitle.textContent).toBe("Create Profile");
+    expect(popup.dialogPrimaryField.style.display).not.toBe("none");
+    expect(popup.dialogSecondaryField.style.display).toBe("none");
     await submitPopupDialog(popup, { primary: "New Profile" });
 
     let latestSettings = popup.getLatestSettings();
@@ -846,15 +852,22 @@ describe("popup workflow", () => {
 
     popup.renameProfileButton.click();
     await flushAsyncWork(6);
+    expect(popup.dialogTitle.textContent).toBe("Rename Profile");
+    expect(popup.dialogPrimaryField.style.display).not.toBe("none");
+    expect(popup.dialogSecondaryField.style.display).toBe("none");
     await submitPopupDialog(popup, { primary: "Renamed Profile" });
 
     latestSettings = popup.getLatestSettings();
     expect(latestSettings.profiles[createdProfileId]?.name).toBe(
       "Renamed Profile"
     );
+    expect(popup.settingsStatus.dataset.visible).toBe("false");
 
     popup.deleteProfileButton.click();
     await flushAsyncWork(6);
+    expect(popup.dialogTitle.textContent).toBe("Delete Profile");
+    expect(popup.dialogPrimaryField.style.display).toBe("none");
+    expect(popup.dialogSecondaryField.style.display).toBe("none");
     await submitPopupDialog(popup);
 
     latestSettings = popup.getLatestSettings();
@@ -864,6 +877,7 @@ describe("popup workflow", () => {
         (profile) => profile.name === "Renamed Profile"
       )
     ).toBe(false);
+    expect(popup.settingsStatus.dataset.visible).toBe("false");
   });
 
   it("clears remembered answers only for the selected profile", async () => {
@@ -1045,6 +1059,7 @@ describe("popup workflow", () => {
     latestSettings = popup.getLatestSettings();
     expect(latestSettings.preferenceAnswers).toEqual({});
     expect(popup.settingsStatus.textContent).toContain("Removed saved answer");
+    expect(popup.settingsStatus.dataset.visible).toBe("false");
   });
 
   it("validates custom preference prompts before saving", async () => {
@@ -1099,6 +1114,7 @@ describe("popup workflow", () => {
       'Removed saved answer for "'
     );
     expect(popup.settingsStatus.textContent).toContain("...");
+    expect(popup.settingsStatus.dataset.visible).toBe("false");
     expect(popup.savedAnswerCount.textContent).toBe("0");
   });
 
@@ -1154,6 +1170,7 @@ describe("popup workflow", () => {
       );
       expect(popup.resumeNameLabel.textContent).toBe("resume.txt (1 KB)");
       expect(popup.settingsStatus.textContent).toBe("Resume saved: resume.txt");
+      expect(popup.settingsStatus.dataset.visible).toBe("false");
     } finally {
       Object.defineProperty(globalThis, "FileReader", {
         configurable: true,

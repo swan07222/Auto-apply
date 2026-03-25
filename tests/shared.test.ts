@@ -685,7 +685,7 @@ describe("shared automation target logic", () => {
     });
 
     expect(settings.jobPageLimit).toBe(25);
-    expect(settings.autoUploadResumes).toBe(false);
+    expect(settings.autoUploadResumes).toBe(true);
     expect(settings.searchMode).toBe("other_job_sites");
     expect(settings.startupRegion).toBe("uk");
     expect(settings.datePostedWindow).toBe("24h");

@@ -203,7 +203,7 @@ function sanitizeAutomationSettings(raw) {
   }
   const baseSettings = {
     jobPageLimit: clampJobPageLimit(source.jobPageLimit),
-    autoUploadResumes: typeof source.autoUploadResumes === "boolean" ? source.autoUploadResumes : DEFAULT_SETTINGS.autoUploadResumes,
+    autoUploadResumes: true,
     searchMode: sanitizeSearchMode(source.searchMode),
     startupRegion: sanitizeStartupRegion(source.startupRegion),
     datePostedWindow: sanitizeDatePostedWindow(source.datePostedWindow),
@@ -555,10 +555,12 @@ function createPopupDialogController(elements) {
     elements.submitButton.textContent = config.submitLabel;
     elements.submitButton.dataset.tone = config.submitTone ?? "default";
     elements.primaryField.hidden = !config.showPrimaryField;
+    elements.primaryField.style.display = config.showPrimaryField ? "" : "none";
     elements.primaryLabel.textContent = config.primaryLabel ?? "";
     elements.primaryInput.value = config.primaryValue ?? "";
     elements.primaryInput.placeholder = config.primaryPlaceholder ?? "";
     elements.secondaryField.hidden = !config.showSecondaryField;
+    elements.secondaryField.style.display = config.showSecondaryField ? "" : "none";
     elements.secondaryLabel.textContent = config.secondaryLabel ?? "";
     elements.secondaryInput.value = config.secondaryValue ?? "";
     elements.secondaryInput.placeholder = config.secondaryPlaceholder ?? "";
@@ -775,7 +777,6 @@ var AUTO_SAVE_DELAY_MS = 220;
 var startButton = requireElement("#start-button");
 var clearAnswersButton = requireElement("#clear-answers-button");
 var siteName = requireElement("#site-name");
-var profilePreview = requireElement("#profile-preview");
 var statusPanel = requireElement("#status-panel");
 var statusText = requireElement("#status-text");
 var settingsStatus = requireElement("#settings-status");
@@ -785,7 +786,6 @@ var savedAnswerEmptyState = requireElement(
   "#saved-answer-empty-state"
 );
 var modePreview = requireElement("#mode-preview");
-var regionPreview = requireElement("#region-preview");
 var profileSelect = requireElement("#profile-select");
 var createProfileButton = requireElement(
   "#create-profile-button"
@@ -800,7 +800,6 @@ var searchModeInput = requireElement("#search-mode");
 var datePostedWindowInput = requireElement("#date-posted-window");
 var searchKeywordsInput = requireElement("#search-keywords");
 var jobLimitInput = requireElement("#job-limit");
-var autoUploadInput = requireElement("#auto-upload");
 var fullNameInput = requireElement("#full-name");
 var emailInput = requireElement("#email");
 var phoneInput = requireElement("#phone");
@@ -940,10 +939,6 @@ searchKeywordsInput.addEventListener("input", () => {
   scheduleAutoSave();
 });
 datePostedWindowInput.addEventListener("change", () => {
-  updateOverviewPreview();
-  scheduleAutoSave();
-});
-autoUploadInput.addEventListener("change", () => {
   updateOverviewPreview();
   scheduleAutoSave();
 });
@@ -1476,7 +1471,7 @@ function applyStatus(status) {
 function setSettingsStatus(message, tone = "muted", visible = true) {
   settingsStatus.textContent = message;
   settingsStatus.dataset.tone = tone;
-  settingsStatus.dataset.visible = visible ? "true" : "false";
+  settingsStatus.dataset.visible = visible && tone === "error" ? "true" : "false";
 }
 function buildUpdatedProfileFromForm(baseProfile) {
   return {
@@ -1508,7 +1503,7 @@ function buildFormSettingsUpdate(current, profileId, activeProfileId) {
     datePostedWindow: getSelectedDatePostedWindow(),
     searchKeywords: normalizeSearchKeywordsInput(),
     jobPageLimit: Number(jobLimitInput.value) || 5,
-    autoUploadResumes: autoUploadInput.checked,
+    autoUploadResumes: true,
     activeProfileId,
     profiles: {
       ...current.profiles,
@@ -1658,7 +1653,7 @@ async function renameSelectedProfile() {
   await flushPendingAutoSave();
   const activeProfile = getActiveAutomationProfile(settings);
   const nextName = await promptForProfileName(
-    "Edit Profile Name",
+    "Rename Profile",
     activeProfile.name
   );
   if (!nextName || nextName === activeProfile.name) {
@@ -1698,8 +1693,8 @@ async function deleteSelectedProfile() {
   const shouldDelete = await popupDialog.confirm({
     kicker: "Profiles",
     title: "Delete Profile",
-    description: `Delete "${activeProfile.name}"? Its resume, remembered answers, and custom preference answers will also be removed.`,
-    submitLabel: "Delete Profile",
+    description: `Delete "${activeProfile.name}"?`,
+    submitLabel: "Delete",
     submitTone: "danger"
   });
   if (!shouldDelete) {
@@ -1972,12 +1967,12 @@ function populateSettingsForm(nextSettings) {
   const activeProfile = getActiveAutomationProfile(scopedSettings);
   settings = scopedSettings;
   renderProfileOptions(scopedSettings.profiles, scopedSettings.activeProfileId);
-  profilePreview.textContent = activeProfile.name;
   searchModeInput.value = scopedSettings.searchMode;
   datePostedWindowInput.value = scopedSettings.datePostedWindow;
-  searchKeywordsInput.value = scopedSettings.searchKeywords;
+  searchKeywordsInput.value = formatSearchKeywordsInput(
+    scopedSettings.searchKeywords
+  );
   jobLimitInput.value = String(scopedSettings.jobPageLimit);
-  autoUploadInput.checked = scopedSettings.autoUploadResumes;
   fullNameInput.value = activeProfile.candidate.fullName;
   emailInput.value = activeProfile.candidate.email;
   phoneInput.value = activeProfile.candidate.phone;
@@ -2248,9 +2243,7 @@ function updateModeUi() {
   updateSiteNameDisplay();
 }
 function updateOverviewPreview() {
-  profilePreview.textContent = getActiveAutomationProfile(settings).name;
   modePreview.textContent = getModePreviewLabel();
-  regionPreview.textContent = getRegionPreviewLabel();
 }
 function getSelectedSearchMode2() {
   return getSelectedSearchMode(searchModeInput.value);
@@ -2269,7 +2262,10 @@ function getConfiguredKeywords() {
   return parseSearchKeywords(searchKeywordsInput.value);
 }
 function normalizeSearchKeywordsInput() {
-  return getConfiguredKeywords().join("\n");
+  return getConfiguredKeywords().join(", ");
+}
+function formatSearchKeywordsInput(value) {
+  return parseSearchKeywords(value).join(", ");
 }
 function createProfileId() {
   return crypto.randomUUID?.() ?? `profile-${Date.now()}`;
@@ -2282,7 +2278,7 @@ async function promptForProfileName(title, initialValue) {
     label: "Profile name",
     initialValue,
     placeholder: "Senior Frontend Profile",
-    submitLabel: initialValue ? "Save Name" : "Create Profile",
+    submitLabel: initialValue ? "Save" : "Create",
     validate: (value) => value.trim() ? null : "Profile name cannot be empty."
   });
 }
@@ -2330,10 +2326,6 @@ function getModePreviewLabel() {
   if (searchMode === "startup_careers") return "Startup careers";
   if (searchMode === "other_job_sites") return "Other job sites";
   return "Job boards";
-}
-function getRegionPreviewLabel() {
-  const country = countryInput.value.trim();
-  return country ? getStartupRegionLabel() : "US / UK / EU";
 }
 function getSelectedStartupRegions() {
   return resolveStartupTargetRegions("auto", countryInput.value.trim());

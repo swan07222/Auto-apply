@@ -141,10 +141,7 @@ export function sanitizeAutomationSettings(raw: unknown): AutomationSettings {
 
   const baseSettings: AutomationSettings = {
     jobPageLimit: clampJobPageLimit(source.jobPageLimit),
-    autoUploadResumes:
-      typeof source.autoUploadResumes === "boolean"
-        ? source.autoUploadResumes
-        : DEFAULT_SETTINGS.autoUploadResumes,
+    autoUploadResumes: true,
     searchMode: sanitizeSearchMode(source.searchMode),
     startupRegion: sanitizeStartupRegion(source.startupRegion),
     datePostedWindow: sanitizeDatePostedWindow(source.datePostedWindow),

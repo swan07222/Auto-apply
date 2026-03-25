@@ -75,6 +75,8 @@ describe("popupDialog", () => {
     expect(elements.root.hidden).toBe(false);
     expect(elements.root.getAttribute("aria-hidden")).toBe("false");
     expect(elements.root.hasAttribute("inert")).toBe(false);
+    expect(elements.primaryField.style.display).not.toBe("none");
+    expect(elements.secondaryField.style.display).toBe("none");
     expect(elements.primaryInput).toBe(document.activeElement);
 
     elements.primaryInput.value = "   ";
@@ -111,6 +113,8 @@ describe("popupDialog", () => {
     });
 
     await flushMicrotasks();
+    expect(elements.primaryField.style.display).not.toBe("none");
+    expect(elements.secondaryField.style.display).not.toBe("none");
     elements.form.requestSubmit();
 
     await expect(resultPromise).resolves.toEqual({
@@ -142,6 +146,8 @@ describe("popupDialog", () => {
 
     await expect(firstPromise).resolves.toBeNull();
     expect(elements.submitButton.dataset.tone).toBe("danger");
+    expect(elements.primaryField.style.display).toBe("none");
+    expect(elements.secondaryField.style.display).toBe("none");
 
     elements.backdrop.click();
     await expect(secondPromise).resolves.toBe(false);

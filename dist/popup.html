@@ -29,18 +29,6 @@
           <p id="status-text" class="status-text">Choose a search mode to begin.</p>
         </section>
 
-        <section class="overview-grid" aria-label="Current run summary">
-          <article class="overview-card">
-            <p class="overview-label">Active profile</p>
-            <p id="profile-preview" class="overview-value">Default Profile</p>
-          </article>
-
-          <article class="overview-card">
-            <p class="overview-label">Target region</p>
-            <p id="region-preview" class="overview-value">Auto</p>
-          </article>
-        </section>
-
         <details class="settings-group" open>
           <summary class="group-summary">
             <div class="group-heading">
@@ -81,7 +69,7 @@
             <div class="group-heading">
               <p class="group-kicker">Automation</p>
               <h2>Automation Setup</h2>
-              <p>Choose where to search, how broadly to open roles, and how uploads should behave.</p>
+              <p>Choose where to search and how broadly to open roles.</p>
             </div>
           </summary>
 
@@ -112,16 +100,11 @@
 
             <label class="field field-search-keywords">
               <span>Search keywords</span>
-              <textarea
+              <input
                 id="search-keywords"
-                rows="3"
-                placeholder="software engineer&#10;frontend engineer&#10;react developer"
-              ></textarea>
-            </label>
-
-            <label class="toggle-field">
-              <input id="auto-upload" type="checkbox" />
-              <span>Automatically upload the matching resume whenever a resume or CV field is detected.</span>
+                type="text"
+                placeholder="software engineer, frontend engineer, react developer"
+              />
             </label>
           </div>
         </details>

@@ -216,11 +216,13 @@ export function createPopupDialogController(
     elements.submitButton.dataset.tone = config.submitTone ?? "default";
 
     elements.primaryField.hidden = !config.showPrimaryField;
+    elements.primaryField.style.display = config.showPrimaryField ? "" : "none";
     elements.primaryLabel.textContent = config.primaryLabel ?? "";
     elements.primaryInput.value = config.primaryValue ?? "";
     elements.primaryInput.placeholder = config.primaryPlaceholder ?? "";
 
     elements.secondaryField.hidden = !config.showSecondaryField;
+    elements.secondaryField.style.display = config.showSecondaryField ? "" : "none";
     elements.secondaryLabel.textContent = config.secondaryLabel ?? "";
     elements.secondaryInput.value = config.secondaryValue ?? "";
     elements.secondaryInput.placeholder = config.secondaryPlaceholder ?? "";
