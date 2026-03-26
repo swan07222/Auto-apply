@@ -114,11 +114,16 @@ export function shouldDisableStartButtonForSession(
   activeSite: SiteKey | null,
   session: AutomationStatus | null | undefined
 ): boolean {
+  const sessionIsActive =
+    session?.phase === "running" ||
+    session?.phase === "paused" ||
+    session?.phase === "waiting_for_verification";
+
   if (searchMode === "job_board") {
-    return !isJobBoardSite(activeSite) || Boolean(session && session.phase !== "idle");
+    return !isJobBoardSite(activeSite) || sessionIsActive;
   }
 
-  return Boolean(session && session.phase !== "idle");
+  return sessionIsActive;
 }
 
 function isJobBoardSite(site: SiteKey | null): boolean {

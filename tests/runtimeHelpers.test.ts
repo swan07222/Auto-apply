@@ -6,10 +6,13 @@ import {
   getCurrentSearchKeywordHints,
   looksLikeCurrentFrameApplicationSurface,
   mergeAutofillResult,
+  shouldAvoidApplyClickFocus,
   resolveGreenhouseSearchContextUrl,
+  shouldAvoidApplyScroll,
   shouldKeepResultsPageOpenAfterZeroSpawn,
   shouldBlockApplicationTargetProbeFailure,
   shouldPreferMonsterClickContinuation,
+  shouldRetryAlternateApplyTargets,
   shouldTreatCurrentPageAsApplied,
   throwIfRateLimited,
 } from "../src/content/runtimeHelpers";
@@ -171,6 +174,19 @@ describe("content runtime helpers", () => {
         "https://www.monster.com/jobs/search"
       )
     ).toBe(false);
+  });
+
+  it("skips apply-search scrolling only on Monster pages", () => {
+    expect(shouldAvoidApplyScroll("monster")).toBe(true);
+    expect(shouldAvoidApplyScroll("indeed")).toBe(false);
+    expect(shouldAvoidApplyScroll("greenhouse")).toBe(false);
+  });
+
+  it("skips pre-click focus and alternate apply retries only on Monster pages", () => {
+    expect(shouldAvoidApplyClickFocus("monster")).toBe(true);
+    expect(shouldAvoidApplyClickFocus("indeed")).toBe(false);
+    expect(shouldRetryAlternateApplyTargets("monster")).toBe(false);
+    expect(shouldRetryAlternateApplyTargets("indeed")).toBe(true);
   });
 
   it("does not block external application handoffs when preflight probing is inconclusive", () => {

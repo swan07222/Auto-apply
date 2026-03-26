@@ -560,9 +560,10 @@
     if (isMyGreenhousePortalUrl(currentUrl)) {
       try {
         const parsed = new URL(currentUrl);
-        const url2 = new URL(parsed.pathname || "/", `${parsed.protocol}//${parsed.host}`);
-        url2.searchParams.set("keyword", query);
-        return url2.toString();
+        return buildMyGreenhousePortalSearchUrl(
+          `${parsed.protocol}//${parsed.host}`,
+          buildMyGreenhousePortalQuery(query)
+        );
       } catch {
         return currentUrl;
       }
@@ -572,6 +573,12 @@
     url.searchParams.set("location", normalizeGreenhouseSearchLocation(candidateCountry));
     return url.toString();
   }
+  function buildMyGreenhousePortalQuery(query) {
+    return query.trim();
+  }
+  function buildMyGreenhousePortalSearchUrl(origin, query) {
+    return `${origin}/jobs?query=${encodeURIComponent(query)}&location=United%20States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type[]=remote`;
+  }
   function buildGreenhouseKeywordQuery(query) {
     const trimmed = query.trim();
     if (!trimmed) {
@@ -580,8 +587,35 @@
     return /\bremote\b/i.test(trimmed) ? trimmed : `${trimmed} remote`;
   }
   function normalizeGreenhouseSearchLocation(candidateCountry) {
-    const normalizedCountry = candidateCountry.trim();
-    return normalizedCountry || "Remote";
+    return normalizeGreenhouseCountryLabel(candidateCountry) || "Remote";
+  }
+  function normalizeGreenhouseCountryLabel(candidateCountry) {
+    const trimmedCountry = candidateCountry.trim();
+    const normalizedCountry = normalizeQuestionKey(trimmedCountry);
+    if (!normalizedCountry) {
+      return "";
+    }
+    if ([
+      "us",
+      "usa",
+      "u s a",
+      "u s",
+      "america",
+      "united states",
+      "united states of america"
+    ].includes(normalizedCountry)) {
+      return "United States";
+    }
+    if ([
+      "uk",
+      "u k",
+      "united kingdom",
+      "great britain",
+      "britain"
+    ].includes(normalizedCountry)) {
+      return "United Kingdom";
+    }
+    return trimmedCountry;
   }
   function sanitizeHttpUrl(value) {
     const raw = typeof value === "string" ? value.trim() : "";
@@ -1499,15 +1533,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const centerY = rect.top + rect.height / 2;
     return centerY < 0 || centerY > viewportHeight || centerX < 0 || centerX > viewportWidth;
   }
-  function performClickAction(element) {
+  function performClickAction(element, options) {
     const isNativeSubmitControl = element instanceof HTMLButtonElement && element.type.toLowerCase() === "submit" || element instanceof HTMLInputElement && element.type.toLowerCase() === "submit";
     const isNativeInteractiveElement = element instanceof HTMLButtonElement || element instanceof HTMLAnchorElement || element instanceof HTMLInputElement && ["button", "submit", "checkbox", "radio"].includes(
       element.type.toLowerCase()
     );
     const shouldDispatchKeyboardFallback = !isNativeInteractiveElement && (element.getAttribute("role") === "button" || element.getAttribute("tabindex") !== null);
-    try {
-      element.focus();
-    } catch {
+    if (!options?.skipFocus) {
+      try {
+        element.focus();
+      } catch {
+      }
     }
     if (isNativeSubmitControl) {
       try {
@@ -2934,6 +2970,273 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       alreadySatisfied: null,
       targets: usable.length > 0 ? usable : eligibleInputs.length === 1 ? eligibleInputs : []
     };
+  }
+
+  // src/content/greenhouseSearch.ts
+  var GREENHOUSE_RESULT_SURFACE_SELECTOR = "a[href*='view_job'], a[href*='job_id='], a[href*='/jobs/'], [class*='job-card'], [class*='result-card'], [class*='search-result'], article[class*='job'], article[class*='result']";
+  var GREENHOUSE_OVERLAY_SCOPE_SELECTOR = "[role='listbox'], [role='menu'], [role='dialog'], [class*='popover'], [class*='dropdown'], [class*='menu']";
+  function readGreenhouseControlText(element) {
+    const input = element;
+    return cleanText(
+      [
+        input.value,
+        element.innerText || element.textContent || "",
+        element.getAttribute("aria-label"),
+        element.getAttribute("aria-labelledby"),
+        element.getAttribute("aria-description"),
+        element.getAttribute("aria-placeholder"),
+        element.getAttribute("placeholder"),
+        element.getAttribute("title"),
+        element.getAttribute("name"),
+        element.getAttribute("id"),
+        element.getAttribute("data-testid"),
+        element.getAttribute("data-test"),
+        element.className
+      ].filter(Boolean).join(" ")
+    ).toLowerCase();
+  }
+  function readGreenhouseFieldCueText(element) {
+    const container = element.closest(
+      "label, fieldset, [role='group'], [role='combobox'], [data-testid], [data-test], [class*='field'], [class*='filter'], [class*='input'], [class*='control']"
+    );
+    return cleanText(
+      [
+        readGreenhouseControlText(element),
+        container?.innerText || container?.textContent || "",
+        container?.getAttribute("aria-label") || "",
+        container?.getAttribute("title") || "",
+        container?.getAttribute("data-testid") || "",
+        container?.getAttribute("data-test") || "",
+        container?.className || ""
+      ].filter(Boolean).join(" ")
+    ).toLowerCase();
+  }
+  function looksLikeMyGreenhouseLocationControl(element) {
+    return /\b(location|country|where|region)\b/.test(
+      readGreenhouseFieldCueText(element)
+    );
+  }
+  function collectInteractiveMatches(selectors, predicate) {
+    const matches = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const selector of selectors) {
+      for (const element of collectDeepMatches(selector)) {
+        if (seen.has(element) || !isElementInteractive(element)) {
+          continue;
+        }
+        if (predicate && !predicate(element)) {
+          continue;
+        }
+        seen.add(element);
+        matches.push(element);
+      }
+    }
+    return matches;
+  }
+  function collectVisibleOverlayScopes() {
+    return collectDeepMatches(GREENHOUSE_OVERLAY_SCOPE_SELECTOR).filter(
+      (candidate) => isElementInteractive(candidate)
+    );
+  }
+  function getMyGreenhouseControlValue(control) {
+    if (!control) {
+      return "";
+    }
+    const input = control;
+    return cleanText(input.value || control.innerText || control.textContent || "");
+  }
+  function findMyGreenhouseKeywordInput() {
+    return collectInteractiveMatches([
+      "input[placeholder*='job title' i]",
+      "input[aria-label*='job title' i]",
+      "input[placeholder*='search' i]",
+      "input[aria-label*='search' i]",
+      "input[name*='job' i]",
+      "input[name*='title' i]",
+      "input[name*='keyword' i]",
+      "input[id*='keyword' i]",
+      "input[type='search']"
+    ])[0] ?? null;
+  }
+  function findMyGreenhouseLocationControl() {
+    const directInput = collectInteractiveMatches(
+      [
+        "input[placeholder*='location' i]",
+        "input[aria-label*='location' i]",
+        "input[placeholder*='country' i]",
+        "input[aria-label*='country' i]",
+        "input[placeholder*='where' i]",
+        "input[aria-label*='where' i]",
+        "input[name*='location' i]",
+        "input[id*='location' i]",
+        "input[name*='country' i]",
+        "input[id*='country' i]",
+        "input[aria-autocomplete='list']",
+        "[role='combobox'] input"
+      ],
+      (element) => looksLikeMyGreenhouseLocationControl(element)
+    )[0] ?? null;
+    if (directInput) {
+      return directInput;
+    }
+    return collectInteractiveMatches(
+      [
+        "button",
+        "[role='button']",
+        "[role='combobox']",
+        "[aria-haspopup='listbox']"
+      ],
+      (element) => isMyGreenhouseFilterCandidate(element) && looksLikeMyGreenhouseLocationControl(element)
+    )[0] ?? null;
+  }
+  function findMyGreenhouseLocationOverlayInput() {
+    const scopes = collectVisibleOverlayScopes();
+    for (const scope of scopes) {
+      const input = collectInteractiveMatches(
+        [
+          "input[placeholder*='location' i]",
+          "input[aria-label*='location' i]",
+          "input[placeholder*='country' i]",
+          "input[aria-label*='country' i]",
+          "input[placeholder*='where' i]",
+          "input[aria-label*='where' i]",
+          "input[placeholder*='search' i]",
+          "input[aria-label*='search' i]",
+          "input[type='search']",
+          "input"
+        ],
+        (element) => scope.contains(element)
+      )[0];
+      if (input) {
+        return input;
+      }
+    }
+    return null;
+  }
+  function findMyGreenhouseSearchButton() {
+    return collectInteractiveMatches([
+      "button",
+      "[role='button']",
+      "input[type='submit']",
+      "input[type='button']"
+    ]).find((candidate) => {
+      const text = readGreenhouseControlText(candidate);
+      return text === "search" || text.startsWith("search ") || text.includes("search jobs");
+    }) ?? null;
+  }
+  function findMyGreenhouseWorkTypeButton() {
+    const workTypeTokens = [
+      "work type",
+      "job type",
+      "employment type",
+      "workplace type",
+      "location type",
+      "work arrangement"
+    ];
+    return collectInteractiveMatches(
+      [
+        "button",
+        "[role='button']",
+        "[role='combobox']",
+        "[aria-haspopup='listbox']"
+      ],
+      (element) => {
+        if (!isMyGreenhouseFilterCandidate(element)) {
+          return false;
+        }
+        const text = readGreenhouseControlText(element);
+        return workTypeTokens.some((token) => text.includes(token));
+      }
+    )[0] ?? null;
+  }
+  function findMyGreenhouseRemoteOption(preferOverlayScope = false) {
+    const overlayScopes = preferOverlayScope ? collectVisibleOverlayScopes() : [];
+    const scopes = overlayScopes.length > 0 ? overlayScopes : [document];
+    for (const scope of scopes) {
+      let candidates = [];
+      try {
+        candidates = Array.from(
+          scope.querySelectorAll(
+            "label, button, [role='button'], [role='checkbox'], [role='option'], [role='menuitemcheckbox'], [role='menuitemradio']"
+          )
+        );
+      } catch {
+        continue;
+      }
+      for (const candidate of candidates) {
+        if (!isMyGreenhouseFilterCandidate(candidate)) {
+          continue;
+        }
+        const text = readGreenhouseControlText(candidate);
+        if (text === "remote" || text.startsWith("remote ") || text === "fully remote" || text.startsWith("fully remote ") || text === "remote only" || text.startsWith("remote only ")) {
+          return candidate;
+        }
+      }
+    }
+    return null;
+  }
+  function isMyGreenhouseRemoteOptionSelected(element) {
+    const control = element.matches("input[type='checkbox'], input[type='radio']") ? element : element.querySelector("input[type='checkbox'], input[type='radio']");
+    if (control?.checked) {
+      return true;
+    }
+    return element.getAttribute("aria-checked") === "true" || element.getAttribute("aria-selected") === "true" || element.getAttribute("data-state") === "checked" || /\b(selected|checked|active)\b/i.test(
+      [
+        element.className,
+        element.getAttribute("data-testid"),
+        element.getAttribute("data-test")
+      ].filter(Boolean).join(" ")
+    );
+  }
+  function isMyGreenhouseFilterCandidate(element) {
+    if (!element || !isElementInteractive(element)) {
+      return false;
+    }
+    if (element.closest(GREENHOUSE_RESULT_SURFACE_SELECTOR)) {
+      return false;
+    }
+    const navigationUrl = getNavigationUrl(element);
+    if (navigationUrl && /\/view_job|job_id=|\/jobs\//i.test(navigationUrl)) {
+      return false;
+    }
+    return true;
+  }
+  function findMyGreenhouseLocationOption(value, preferOverlayScope = false) {
+    const normalizedValue = normalizeQuestionKey(value);
+    if (!normalizedValue) {
+      return null;
+    }
+    const scopes = preferOverlayScope && collectVisibleOverlayScopes().length > 0 ? collectVisibleOverlayScopes() : [document];
+    for (const scope of scopes) {
+      let candidates = [];
+      try {
+        candidates = Array.from(
+          scope.querySelectorAll(
+            "[role='option'], [role='listbox'] *, [class*='option'], [id*='option' i]"
+          )
+        );
+      } catch {
+        continue;
+      }
+      for (const candidate of candidates) {
+        if (candidate.closest(GREENHOUSE_RESULT_SURFACE_SELECTOR)) {
+          continue;
+        }
+        const text = normalizeQuestionKey(
+          cleanText(
+            [
+              candidate.innerText || candidate.textContent || "",
+              candidate.getAttribute("aria-label"),
+              candidate.getAttribute("title")
+            ].filter(Boolean).join(" ")
+          )
+        );
+        if (text === normalizedValue || text.startsWith(`${normalizedValue} `) || text.includes(normalizedValue)) {
+          return candidate;
+        }
+      }
+    }
+    return null;
   }
 
   // src/content/sitePatterns.ts
@@ -4466,9 +4769,22 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       if (!hostname.endsWith("greenhouse.io")) {
         return false;
       }
-      const location = normalizeChoiceText(parsedUrl.searchParams.get("location") || "");
-      const keyword = normalizeChoiceText(parsedUrl.searchParams.get("keyword") || "");
-      return location === "remote" || keyword.includes("remote");
+      const location = normalizeChoiceText(
+        parsedUrl.searchParams.get("location") || parsedUrl.searchParams.get("locations") || ""
+      );
+      const keyword = normalizeChoiceText(
+        parsedUrl.searchParams.get("keyword") || parsedUrl.searchParams.get("query") || ""
+      );
+      const workTypes = parsedUrl.searchParams.getAll("work_type[]").concat(parsedUrl.searchParams.getAll("work_type")).map((value) => normalizeChoiceText(value));
+      return location === "remote" || keyword.includes("remote") || workTypes.some((value) => value === "remote" || value.includes("remote"));
+    } catch {
+      return false;
+    }
+  }
+  function isMyGreenhousePortalResultsPage(currentUrl) {
+    try {
+      const parsedUrl = new URL(currentUrl);
+      return parsedUrl.hostname.toLowerCase().replace(/^www\./, "") === "my.greenhouse.io";
     } catch {
       return false;
     }
@@ -4516,7 +4832,11 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     if (site === "greenhouse" && isGreenhouseRemoteScopedResultsPage(currentUrl)) {
       const remoteScopedCandidates = annotated.filter((entry) => entry.remoteScore >= 0).map((entry) => entry.candidate);
-      return remoteScopedCandidates.filter(
+      const explicitRemoteCandidates = remoteScopedCandidates.filter(
+        (candidate) => scoreRemotePreference(candidate) > 0
+      );
+      const preferredRemotePool = isMyGreenhousePortalResultsPage(currentUrl) && explicitRemoteCandidates.length > 0 ? explicitRemoteCandidates : remoteScopedCandidates;
+      return preferredRemotePool.filter(
         (candidate) => matchesGreenhouseCandidateCountryPreference(candidate, candidateCountry)
       );
     }
@@ -6802,8 +7122,20 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       type: "click",
       element: best.element,
       description: best.text || "Monster apply button",
-      fallbackElements: best.fallbackElements ?? []
+      fallbackElements: best.fallbackElements ?? [],
+      fallbackUrl: resolveMonsterFallbackUrl(best.url)
     };
+  }
+  function resolveMonsterFallbackUrl(url) {
+    if (!url || isKnownBrokenApplyUrl(url)) {
+      return void 0;
+    }
+    const normalizedUrl = normalizeUrl(url);
+    const normalizedCurrentUrl = normalizeUrl(window.location.href);
+    if (!normalizedUrl || normalizedUrl === normalizedCurrentUrl) {
+      return void 0;
+    }
+    return normalizedUrl;
   }
   function getMonsterActionTop(element) {
     const rect = element.getBoundingClientRect();
@@ -6813,31 +7145,43 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const primaryApplyCandidates = candidates.filter(
       (candidate) => !isMonsterSecondaryApplyContext(candidate.element) && isMonsterPrimaryApplyLabel(candidate.text, candidate.url)
     );
+    const detailBoundary = findMonsterPrimaryDetailBoundary();
+    const primaryTitleAnchor = findMonsterPrimaryTitleAnchor();
+    const titleAnchoredPrimaryCandidates = primaryTitleAnchor ? primaryApplyCandidates.filter(
+      (candidate) => isMonsterCandidateInPrimaryTitleRegion(
+        candidate.element,
+        primaryTitleAnchor,
+        detailBoundary
+      )
+    ) : [];
+    const primaryCandidatesAboveDetailBoundary = detailBoundary ? primaryApplyCandidates.filter(
+      (candidate) => isMonsterCandidateAboveDetailBoundary(candidate.element, detailBoundary)
+    ) : [];
+    if (titleAnchoredPrimaryCandidates.length >= 1) {
+      return sortMonsterApplyCandidates(titleAnchoredPrimaryCandidates)[0];
+    }
+    if (primaryCandidatesAboveDetailBoundary.length >= 1) {
+      return sortMonsterApplyCandidates(primaryCandidatesAboveDetailBoundary)[0];
+    }
     if (primaryApplyCandidates.length >= 1) {
-      return primaryApplyCandidates.sort((left, right) => {
-        if (left.top !== right.top) {
-          return left.top - right.top;
-        }
-        if (left.score !== right.score) {
-          return right.score - left.score;
-        }
-        const position = left.element.compareDocumentPosition(right.element);
-        if (position & Node.DOCUMENT_POSITION_FOLLOWING) {
-          return -1;
-        }
-        if (position & Node.DOCUMENT_POSITION_PRECEDING) {
-          return 1;
-        }
-        return 0;
-      })[0];
+      return sortMonsterApplyCandidates(primaryApplyCandidates)[0];
     }
     const nonSecondaryCandidates = candidates.filter(
       (candidate) => !isMonsterSecondaryApplyContext(candidate.element)
     );
+    const nonSecondaryCandidatesAboveDetailBoundary = detailBoundary ? nonSecondaryCandidates.filter(
+      (candidate) => isMonsterCandidateAboveDetailBoundary(candidate.element, detailBoundary)
+    ) : [];
+    if (nonSecondaryCandidatesAboveDetailBoundary.length >= 1) {
+      return sortMonsterApplyCandidates(nonSecondaryCandidatesAboveDetailBoundary)[0];
+    }
     if (nonSecondaryCandidates.length < 2) {
       return nonSecondaryCandidates[0];
     }
-    return nonSecondaryCandidates.sort((left, right) => {
+    return sortMonsterApplyCandidates(nonSecondaryCandidates)[0];
+  }
+  function sortMonsterApplyCandidates(candidates) {
+    return candidates.sort((left, right) => {
       if (left.top !== right.top) {
         return left.top - right.top;
       }
@@ -6852,7 +7196,98 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         return 1;
       }
       return 0;
-    })[0];
+    });
+  }
+  function findMonsterPrimaryDetailBoundary() {
+    const markers = Array.from(
+      document.querySelectorAll(
+        "h2, h3, h4, [role='heading'], [data-testid*='description' i], [data-testid*='profile' i], [class*='profileInsights'], [class*='profile-insights']"
+      )
+    );
+    let bestMarker = null;
+    let bestTop = Number.POSITIVE_INFINITY;
+    for (const marker of markers) {
+      if (!isElementVisible(marker)) {
+        continue;
+      }
+      const text = cleanText(
+        [
+          marker.innerText || marker.textContent || "",
+          marker.getAttribute("aria-label"),
+          marker.getAttribute("title"),
+          marker.getAttribute("data-testid"),
+          marker.className
+        ].filter(Boolean).join(" ")
+      ).toLowerCase();
+      if (text !== "profile insights" && text !== "description" && text !== "job description") {
+        continue;
+      }
+      const top = getMonsterActionTop(marker);
+      if (top < bestTop) {
+        bestTop = top;
+        bestMarker = marker;
+      }
+    }
+    return bestMarker;
+  }
+  function findMonsterPrimaryTitleAnchor() {
+    const selectors = [
+      "h1",
+      "[data-testid*='job-title' i]",
+      "[data-testid*='jobTitle' i]",
+      "[class*='job-title']",
+      "[class*='jobTitle']"
+    ];
+    let bestTitle = null;
+    let bestTop = Number.POSITIVE_INFINITY;
+    for (const selector of selectors) {
+      let matches;
+      try {
+        matches = Array.from(document.querySelectorAll(selector));
+      } catch {
+        continue;
+      }
+      for (const match of matches) {
+        if (!isElementVisible(match)) {
+          continue;
+        }
+        const text = cleanText(match.innerText || match.textContent || "");
+        if (text.length < 3) {
+          continue;
+        }
+        const top = getMonsterActionTop(match);
+        if (top < bestTop) {
+          bestTop = top;
+          bestTitle = match;
+        }
+      }
+    }
+    return bestTitle;
+  }
+  function isMonsterCandidateInPrimaryTitleRegion(element, titleAnchor, detailBoundary) {
+    if (detailBoundary && !isMonsterCandidateAboveDetailBoundary(element, detailBoundary)) {
+      return false;
+    }
+    const titleRect = titleAnchor.getBoundingClientRect();
+    const elementRect = element.getBoundingClientRect();
+    if (!Number.isFinite(titleRect.top) || !Number.isFinite(titleRect.bottom) || !Number.isFinite(elementRect.top) || !Number.isFinite(elementRect.bottom)) {
+      return false;
+    }
+    const verticalGapBelow = elementRect.top - titleRect.bottom;
+    const verticalGapAbove = titleRect.top - elementRect.bottom;
+    return verticalGapBelow <= 220 && verticalGapAbove <= 80;
+  }
+  function isMonsterCandidateAboveDetailBoundary(element, detailBoundary) {
+    if (detailBoundary.contains(element)) {
+      return false;
+    }
+    const boundaryTop = getMonsterActionTop(detailBoundary);
+    const elementTop = getMonsterActionTop(element);
+    if (elementTop < boundaryTop - 8) {
+      return true;
+    }
+    const position = element.compareDocumentPosition(detailBoundary);
+    return Boolean(position & Node.DOCUMENT_POSITION_FOLLOWING);
   }
   function collectMonsterClickFallbackElements(sourceElement, actionElement) {
     const fallbacks = [];
@@ -6908,6 +7343,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return true;
     }
     if (tagName.includes("-") && attrs.includes("apply")) {
+      return true;
+    }
+    const text = cleanText(
+      getActionText(element) || element.getAttribute("aria-label") || element.getAttribute("title") || ""
+    );
+    const url = getNavigationUrl(element);
+    if ((element.matches("a[href], button, input[type='submit'], input[type='button'], [role='button']") || element.hasAttribute("onclick")) && isMonsterPrimaryApplyLabel(text, url)) {
       return true;
     }
     return /apply-button-wc|monster-apply-button|applybutton|svx_applybutton/.test(
@@ -7714,6 +8156,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         getActionText(element) || element.getAttribute("aria-label") || element.getAttribute("title") || ""
       );
       const metadata = getElementActionMetadata(element);
+      const displayText = text || metadata;
       const lower = metadata.toLowerCase();
       const lowerText = text.toLowerCase();
       if (!lower) {
@@ -7830,7 +8273,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           element,
           score,
           url: getMeaningfulProgressionUrl(element),
-          text
+          text: displayText
         };
       }
     }
@@ -7940,6 +8383,41 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           "[class*='continue']",
           "[class*='next']",
           "[class*='review']",
+          "[class*='apply']",
+          ...generic
+        ];
+      case "monster":
+        return [
+          "button[data-testid*='continue' i]",
+          "button[data-testid*='next' i]",
+          "button[data-testid*='start' i]",
+          "button[data-testid*='review' i]",
+          "button[data-testid*='apply' i]",
+          "button[data-testid*='resume' i]",
+          "[data-testid*='continue' i]",
+          "[data-testid*='next' i]",
+          "[data-testid*='start' i]",
+          "[data-testid*='review' i]",
+          "[data-testid*='apply' i]",
+          "[data-testid*='resume' i]",
+          "[data-test*='continue' i]",
+          "[data-test*='next' i]",
+          "[data-test*='start' i]",
+          "[data-test*='review' i]",
+          "[data-test*='apply' i]",
+          "[data-test*='resume' i]",
+          "[aria-label*='continue' i]",
+          "[aria-label*='next' i]",
+          "[aria-label*='start' i]",
+          "[aria-label*='review' i]",
+          "[aria-label*='apply' i]",
+          "[aria-label*='resume' i]",
+          "[class*='continue']",
+          "[class*='next']",
+          "[class*='start']",
+          "[class*='review']",
+          "[class*='resume']",
+          "[class*='candidate']",
           "[class*='apply']",
           ...generic
         ];
@@ -8563,12 +9041,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
 
   // src/content/applicationSurface.ts
   var APPLICATION_FRAME_SELECTOR = "iframe[src*='apply'], iframe[src*='application'], iframe[id*='apply'], iframe[class*='apply'], iframe[src*='greenhouse'], iframe[src*='lever'], iframe[src*='workday'], iframe[data-src*='apply'], iframe[data-src*='application'], iframe[data-src*='greenhouse'], iframe[data-src*='lever'], iframe[data-src*='workday']";
+  var MONSTER_APPLICATION_SHELL_SELECTOR = "[role='dialog'], [aria-modal='true'], [class*='modal'], [class*='drawer'], [class*='overlay'], [class*='sheet'], [class*='popup'], [data-testid*='apply'], [data-testid*='application'], [data-testid*='candidate'], [data-testid*='resume'], [data-test*='apply'], [data-test*='application'], [data-test*='candidate'], [data-test*='resume'], [class*='application'], [class*='candidate'], [class*='resume'], [class*='upload'], [id*='application'], [id*='candidate'], [id*='resume']";
   async function waitForLikelyApplicationSurface(site, collectors) {
     for (let attempt = 0; attempt < 30; attempt += 1) {
       if (hasLikelyApplicationSurface(site, collectors)) {
         return true;
       }
-      if (attempt === 5 || attempt === 10 || attempt === 15 || attempt === 20) {
+      if (site !== "monster" && (attempt === 5 || attempt === 10 || attempt === 15 || attempt === 20)) {
         window.scrollTo({
           top: document.body.scrollHeight / 2,
           behavior: "smooth"
@@ -8666,12 +9145,99 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (site === "ziprecruiter" && hasZipRecruiterApplyModal()) {
       return true;
     }
+    if (site === "monster" && hasMonsterInlineApplySurface(collectors)) {
+      return true;
+    }
     const onApplyLikeUrl = isAlreadyOnApplyPage(site, window.location.href);
     const hasPageContent = hasLikelyApplicationPageContent();
     const hasProgression = Boolean(findProgressionAction(site));
     const hasCompanySiteStep = Boolean(findCompanySiteAction());
     const stillLooksLikeJobPage = Boolean(findApplyAction(site, "job-page"));
     return hasLikelyApplicationForm(collectors) || hasLikelyApplicationFrame() || onApplyLikeUrl && (hasPageContent || hasProgression || hasCompanySiteStep) || hasPageContent && (hasProgression || hasCompanySiteStep) && !stillLooksLikeJobPage || onApplyLikeUrl && hasPageContent;
+  }
+  function hasMonsterInlineApplySurface(collectors) {
+    const relevantFields = collectors.collectAutofillFields().filter(
+      (field) => shouldAutofillField(field, true, true) && isLikelyApplicationField(field)
+    );
+    const relevantResumeInputs = collectors.collectResumeFileInputs().filter(
+      (input) => shouldAutofillField(input, true, true) && isLikelyApplicationField(input)
+    );
+    const progression = findProgressionAction("monster");
+    const progressionElement = progression?.type === "click" ? progression.element : null;
+    for (const shell of collectDeepMatches(
+      MONSTER_APPLICATION_SHELL_SELECTOR
+    )) {
+      if (!isElementVisible(shell)) {
+        continue;
+      }
+      const text = cleanText(shell.innerText || shell.textContent || "").toLowerCase().slice(0, 2e3);
+      if (!text) {
+        continue;
+      }
+      const metadata = cleanText(
+        [
+          shell.id,
+          typeof shell.className === "string" ? shell.className : "",
+          shell.getAttribute("data-testid"),
+          shell.getAttribute("data-test"),
+          shell.getAttribute("aria-label"),
+          shell.getAttribute("title"),
+          shell.getAttribute("role")
+        ].filter(Boolean).join(" ")
+      ).toLowerCase();
+      const signalCount = [
+        "apply",
+        "application",
+        "resume",
+        "upload",
+        "continue",
+        "next",
+        "start",
+        "candidate",
+        "email",
+        "phone",
+        "password",
+        "account",
+        "work authorization",
+        "cover letter"
+      ].filter((token) => text.includes(token) || metadata.includes(token)).length;
+      const modalLike = shell.matches("[role='dialog'], [aria-modal='true']") || /\b(modal|drawer|overlay|sheet|popup)\b/.test(metadata);
+      const applyLike = /\b(apply|application|candidate|resume|upload)\b/.test(
+        metadata
+      );
+      const shellFieldCount = relevantFields.filter(
+        (field) => shell.contains(field)
+      ).length;
+      const hasResumeUpload = relevantResumeInputs.some(
+        (input) => shell.contains(input)
+      );
+      const hasAccountField = Boolean(
+        shell.querySelector(
+          "input[type='email'], input[type='tel'], input[type='password']"
+        )
+      );
+      const hasActionControl = Boolean(
+        shell.querySelector(
+          "button, a[href], [role='button'], input[type='submit'], input[type='button']"
+        )
+      );
+      const hasProgressionControl = Boolean(
+        progressionElement && progressionElement !== shell && shell.contains(progressionElement)
+      );
+      if (shellFieldCount >= 1 || hasResumeUpload) {
+        return true;
+      }
+      if (hasProgressionControl && (modalLike || applyLike || signalCount >= 2)) {
+        return true;
+      }
+      if (modalLike && hasActionControl && signalCount >= 2 && (hasAccountField || text.includes("resume") || text.includes("apply"))) {
+        return true;
+      }
+      if (applyLike && hasActionControl && hasAccountField && signalCount >= 3) {
+        return true;
+      }
+    }
+    return false;
   }
   function isLikelyApplicationField(field) {
     const question = getQuestionText(field);
@@ -8901,12 +9467,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       navigateCurrentTab2(progression.url);
       return false;
     }
-    progression.element.scrollIntoView({
-      behavior: "smooth",
-      block: "center"
+    if (site !== "monster") {
+      progression.element.scrollIntoView({
+        behavior: "smooth",
+        block: "center"
+      });
+      await sleep(400);
+    }
+    performClickAction(progression.element, {
+      skipFocus: site === "monster"
     });
-    await sleep(400);
-    performClickAction(progression.element);
     await sleep(site === "indeed" || site === "ziprecruiter" ? 3400 : 2800);
     if (window.location.href !== previousUrl) {
       await waitForHumanVerificationToClear2();
@@ -9875,6 +10445,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (isCurrentPageIndicator(element) || /(?:^|\b)(previous|prev|back)(?:\b|$)/.test(text) || /(?:^|\b)(previous|prev|back)(?:\b|$)/.test(attrs)) {
       return false;
     }
+    if (extractPaginationPageNumber(element) !== null) {
+      return false;
+    }
     const previousControls = controls.slice(0, elementIndex);
     const hasCurrentBefore = previousControls.some(
       (candidate) => isCurrentPageIndicator(candidate)
@@ -10468,6 +11041,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     } catch {
       return false;
     }
+  }
+  function shouldAvoidApplyScroll(site) {
+    return site === "monster";
+  }
+  function shouldAvoidApplyClickFocus(site) {
+    return site === "monster";
+  }
+  function shouldRetryAlternateApplyTargets(site) {
+    return site !== "monster";
   }
   function getRemainingJobSlotsAfterSpawn(requestedLimit, openedCount, claimedRemaining, approvedCount) {
     const safeRequestedLimit = Math.max(0, Math.floor(requestedLimit));
@@ -11667,32 +12249,34 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           await runAutofillStage(site);
           return;
         }
-        if (attempt < SCROLL_POSITIONS.length) {
-          const pos = SCROLL_POSITIONS[attempt];
-          switch (pos) {
-            case SCROLL_HALF_PAGE:
-              window.scrollTo({
-                top: document.body.scrollHeight / 2,
-                behavior: "smooth"
-              });
-              break;
-            case SCROLL_RESET:
-              window.scrollTo({ top: 0, behavior: "smooth" });
-              break;
-            case SCROLL_BOTTOM:
-              window.scrollTo({
-                top: document.body.scrollHeight,
-                behavior: "smooth"
-              });
-              break;
-            default:
-              window.scrollTo({ top: pos, behavior: "smooth" });
+        if (!shouldAvoidApplyScroll(site)) {
+          if (attempt < SCROLL_POSITIONS.length) {
+            const pos = SCROLL_POSITIONS[attempt];
+            switch (pos) {
+              case SCROLL_HALF_PAGE:
+                window.scrollTo({
+                  top: document.body.scrollHeight / 2,
+                  behavior: "smooth"
+                });
+                break;
+              case SCROLL_RESET:
+                window.scrollTo({ top: 0, behavior: "smooth" });
+                break;
+              case SCROLL_BOTTOM:
+                window.scrollTo({
+                  top: document.body.scrollHeight,
+                  behavior: "smooth"
+                });
+                break;
+              default:
+                window.scrollTo({ top: pos, behavior: "smooth" });
+            }
+          } else if (attempt % 4 === 0) {
+            window.scrollTo({
+              top: document.body.scrollHeight * Math.random(),
+              behavior: "smooth"
+            });
           }
-        } else if (attempt % 4 === 0) {
-          window.scrollTo({
-            top: document.body.scrollHeight * Math.random(),
-            behavior: "smooth"
-          });
         }
         await sleepWithAutomationChecks(700);
       }
@@ -11749,11 +12333,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       true,
       "autofill-form"
     );
-    if (shouldScrollElementIntoViewBeforeClick(action.element)) {
+    if (!shouldAvoidApplyScroll(site) && shouldScrollElementIntoViewBeforeClick(action.element)) {
       action.element.scrollIntoView({ behavior: "smooth", block: "center" });
       await sleepWithAutomationChecks(600);
     }
     const urlBeforeClick = window.location.href;
+    const skipApplyClickFocus = shouldAvoidApplyClickFocus(site);
     const anchorElement = action.element.closest("a") ?? (action.element instanceof HTMLAnchorElement ? action.element : null);
     if (anchorElement?.href) {
       const href = normalizeUrl(anchorElement.href);
@@ -11837,7 +12422,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         return;
       }
     }
-    performClickAction(action.element);
+    performClickAction(action.element, { skipFocus: skipApplyClickFocus });
     for (let wait = 0; wait < 20; wait += 1) {
       await waitForAutomationResumeIfPaused();
       await sleepWithAutomationChecks(700);
@@ -11946,18 +12531,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (childApplicationTabOpened) return;
     let retryAction = null;
     if (site === "monster") {
-      retryAction = findMonsterApplyAction();
-      if (action.type === "click" && (!retryAction || retryAction.type !== "click" || retryAction.element === action.element)) {
-        const monsterFallbackElement = action.fallbackElements?.find(
-          (element) => element && element.isConnected && element !== action.element
-        );
-        if (monsterFallbackElement) {
-          retryAction = {
-            type: "click",
-            element: monsterFallbackElement,
-            description: action.description
-          };
-        }
+      const monsterFallbackElement = action.fallbackElements?.find(
+        (element) => element && element.isConnected && element !== action.element
+      );
+      if (monsterFallbackElement) {
+        retryAction = {
+          type: "click",
+          element: monsterFallbackElement,
+          description: action.description
+        };
       }
     } else if (site === "ziprecruiter") {
       retryAction = findZipRecruiterApplyAction();
@@ -11973,14 +12555,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         true,
         "autofill-form"
       );
-      if (shouldScrollElementIntoViewBeforeClick(retryAction.element)) {
+      if (!shouldAvoidApplyScroll(site) && shouldScrollElementIntoViewBeforeClick(retryAction.element)) {
         retryAction.element.scrollIntoView({
           behavior: "smooth",
           block: "center"
         });
         await sleepWithAutomationChecks(400);
       }
-      performClickAction(retryAction.element);
+      performClickAction(retryAction.element, {
+        skipFocus: skipApplyClickFocus
+      });
       await sleepWithAutomationChecks(3e3);
       if (window.location.href !== urlBeforeClick || hasLikelyApplicationSurface2(site)) {
         if (window.location.href !== urlBeforeClick) {
@@ -11998,7 +12582,26 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         return;
       }
     }
-    const retryCompanyAction = site === "ziprecruiter" ? null : findCompanySiteAction();
+    const monsterFallbackUrl = resolveMonsterApplyFallbackUrl(
+      site,
+      action,
+      retryAction
+    );
+    if (monsterFallbackUrl) {
+      updateStatus(
+        "running",
+        `Quick Apply did not open inline. Navigating to ${action.description} target...`,
+        true,
+        "open-apply"
+      );
+      await navigateToApplicationTarget(
+        monsterFallbackUrl,
+        site,
+        action.description
+      );
+      return;
+    }
+    const retryCompanyAction = !shouldRetryAlternateApplyTargets(site) || site === "ziprecruiter" ? null : findCompanySiteAction();
     if (retryCompanyAction) {
       updateStatus(
         "running",
@@ -12014,14 +12617,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         );
         return;
       }
-      if (shouldScrollElementIntoViewBeforeClick(retryCompanyAction.element)) {
+      if (!shouldAvoidApplyScroll(site) && shouldScrollElementIntoViewBeforeClick(retryCompanyAction.element)) {
         retryCompanyAction.element.scrollIntoView({
           behavior: "smooth",
           block: "center"
         });
         await sleepWithAutomationChecks(400);
       }
-      performClickAction(retryCompanyAction.element);
+      performClickAction(retryCompanyAction.element, {
+        skipFocus: skipApplyClickFocus
+      });
       await sleepWithAutomationChecks(3e3);
       if (window.location.href !== urlBeforeClick) {
         await waitForHumanVerificationToClear();
@@ -12241,7 +12846,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           block: "center"
         });
         await sleepWithAutomationChecks(400);
-        performClickAction(followUp.element);
+        performClickAction(followUp.element, {
+          skipFocus: shouldAvoidApplyClickFocus(site)
+        });
         await sleepWithAutomationChecks(2800);
         if (window.location.href !== previousUrl) {
           await waitForHumanVerificationToClear();
@@ -12289,7 +12896,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             block: "center"
           });
           await sleepWithAutomationChecks(400);
-          performClickAction(companySiteAction.element);
+          performClickAction(companySiteAction.element, {
+            skipFocus: shouldAvoidApplyClickFocus(site)
+          });
           await sleepWithAutomationChecks(2800);
           if (window.location.href !== previousUrl) {
             await waitForHumanVerificationToClear();
@@ -13144,51 +13753,98 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     window.location.assign(n);
   }
+  function resolveMonsterApplyFallbackUrl(site, initialAction, retryAction) {
+    if (site !== "monster") {
+      return null;
+    }
+    const candidates = [initialAction, retryAction];
+    for (const candidate of candidates) {
+      if (candidate?.type !== "click" || !candidate.fallbackUrl) {
+        continue;
+      }
+      const normalizedFallbackUrl = normalizeUrl(candidate.fallbackUrl);
+      const normalizedCurrentUrl = normalizeUrl(window.location.href);
+      if (normalizedFallbackUrl && normalizedCurrentUrl && normalizedFallbackUrl !== normalizedCurrentUrl) {
+        return normalizedFallbackUrl;
+      }
+    }
+    return null;
+  }
+  function navigateCurrentTabPreservingInput(url) {
+    const trimmedUrl = url.trim();
+    const normalizedUrl = normalizeUrl(trimmedUrl);
+    if (!normalizedUrl) throw new Error("Invalid URL.");
+    if (tryContinueEmbeddedApplication(normalizedUrl)) {
+      return;
+    }
+    window.location.assign(trimmedUrl);
+  }
   async function searchMyGreenhousePortal(keyword, candidateCountry) {
     if (!isMyGreenhousePortalPage()) {
       return false;
     }
+    const canonicalPortalTarget = buildSearchTargets(
+      "greenhouse",
+      window.location.href,
+      keyword,
+      candidateCountry
+    )[0]?.url;
+    const normalizedCurrentUrl = normalizeUrl(window.location.href);
+    const normalizedPortalTarget = normalizeUrl(canonicalPortalTarget || "");
+    if (normalizedPortalTarget && normalizedCurrentUrl && normalizedPortalTarget !== normalizedCurrentUrl) {
+      navigateCurrentTabPreservingInput(canonicalPortalTarget);
+      return true;
+    }
     const titleInput = findMyGreenhouseKeywordInput();
-    const locationInput = findMyGreenhouseLocationInput();
+    const locationControl = findMyGreenhouseLocationControl();
     const searchButton = findMyGreenhouseSearchButton();
     const normalizedKeyword = cleanText(keyword);
-    if (!titleInput || !searchButton || !normalizedKeyword) {
+    if (!titleInput || !normalizedKeyword) {
       return false;
     }
     const shouldUpdateKeyword = cleanText(titleInput.value) !== normalizedKeyword;
-    const normalizedCountry = cleanText(candidateCountry) || "United States";
-    const shouldUpdateLocation = Boolean(locationInput) && cleanText(locationInput?.value ?? "") !== normalizedCountry;
+    const normalizedCountry = normalizeGreenhouseCountryLabel(candidateCountry) || "United States";
+    const shouldUpdateLocation = Boolean(locationControl) && getMyGreenhouseControlValue(locationControl) !== normalizedCountry;
     if (!shouldUpdateKeyword && !shouldUpdateLocation && hasMyGreenhouseSearchResults()) {
       return false;
     }
     if (shouldUpdateKeyword) {
       setTextControlValue(titleInput, normalizedKeyword);
     }
-    if (locationInput && shouldUpdateLocation) {
-      setTextControlValue(locationInput, normalizedCountry);
+    if (locationControl && shouldUpdateLocation) {
+      await setMyGreenhouseLocationControlValue(locationControl, normalizedCountry);
     }
     await ensureMyGreenhouseRemoteFilterEnabled();
     try {
       titleInput.focus();
     } catch {
     }
-    performClickAction(searchButton);
+    if (searchButton) {
+      performClickAction(searchButton);
+    } else {
+      dispatchMyGreenhouseKeyboardEvent(titleInput, "keydown", "Enter");
+      dispatchMyGreenhouseKeyboardEvent(titleInput, "keyup", "Enter");
+    }
     return true;
   }
   async function ensureMyGreenhouseRemoteFilterEnabled() {
     const remoteOption = findMyGreenhouseRemoteOption();
-    if (remoteOption && !isMyGreenhouseRemoteOptionSelected(remoteOption)) {
-      performClickAction(remoteOption);
-      await sleepWithAutomationChecks(200);
+    if (remoteOption && isMyGreenhouseRemoteOptionSelected(remoteOption)) {
       return;
     }
     const workTypeButton = findMyGreenhouseWorkTypeButton();
     if (!workTypeButton) {
+      if (remoteOption && !isMyGreenhouseRemoteOptionSelected(remoteOption)) {
+        performClickAction(remoteOption);
+        await sleepWithAutomationChecks(200);
+      }
       return;
     }
-    performClickAction(workTypeButton);
-    await sleepWithAutomationChecks(200);
-    const openedRemoteOption = findMyGreenhouseRemoteOption();
+    if (workTypeButton) {
+      performClickAction(workTypeButton);
+      await sleepWithAutomationChecks(200);
+    }
+    const openedRemoteOption = findMyGreenhouseRemoteOption(true);
     if (openedRemoteOption && !isMyGreenhouseRemoteOptionSelected(openedRemoteOption)) {
       performClickAction(openedRemoteOption);
       await sleepWithAutomationChecks(200);
@@ -13207,7 +13863,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (!isMyGreenhousePortalHost2()) {
       return false;
     }
-    return Boolean(findMyGreenhouseKeywordInput() && findMyGreenhouseSearchButton());
+    return Boolean(findMyGreenhouseKeywordInput());
   }
   function isMyGreenhousePortalHost2() {
     try {
@@ -13248,113 +13904,61 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     return false;
   }
-  function findMyGreenhouseKeywordInput() {
-    return findFirstInteractiveElement([
-      "input[placeholder*='job title' i]",
-      "input[aria-label*='job title' i]",
-      "input[name*='job' i]",
-      "input[name*='title' i]",
-      "input[type='search']"
-    ]);
-  }
-  function findMyGreenhouseLocationInput() {
-    return findFirstInteractiveElement([
-      "input[placeholder*='location' i]",
-      "input[aria-label*='location' i]",
-      "input[name*='location' i]",
-      "input[id*='location' i]"
-    ]);
-  }
-  function findMyGreenhouseSearchButton() {
-    for (const candidate of Array.from(
-      document.querySelectorAll(
-        "button, [role='button'], input[type='submit'], input[type='button']"
-      )
-    )) {
-      if (!isElementInteractive(candidate)) {
-        continue;
-      }
-      const text = cleanText(
-        [
-          candidate.innerText || candidate.textContent || "",
-          candidate.getAttribute("aria-label"),
-          candidate.getAttribute("title"),
-          candidate.getAttribute("value")
-        ].filter(Boolean).join(" ")
-      ).toLowerCase();
-      if (text === "search" || text.startsWith("search ")) {
-        return candidate;
-      }
+  async function setMyGreenhouseLocationControlValue(control, value) {
+    const input = control instanceof HTMLInputElement ? control : null;
+    if (!input) {
+      performClickAction(control);
+      await sleepWithAutomationChecks(200);
     }
-    return null;
-  }
-  function findMyGreenhouseWorkTypeButton() {
-    for (const candidate of Array.from(
-      document.querySelectorAll(
-        "button, [role='button'], input[type='submit'], input[type='button']"
-      )
-    )) {
-      if (!isElementInteractive(candidate)) {
-        continue;
-      }
-      const text = cleanText(
-        [
-          candidate.innerText || candidate.textContent || "",
-          candidate.getAttribute("aria-label"),
-          candidate.getAttribute("title"),
-          candidate.getAttribute("value")
-        ].filter(Boolean).join(" ")
-      ).toLowerCase();
-      if (text === "work type" || text.startsWith("work type ") || text === "workplace type" || text.startsWith("workplace type ") || text === "location type" || text.startsWith("location type ") || text === "work arrangement" || text.startsWith("work arrangement ")) {
-        return candidate;
-      }
-    }
-    return null;
-  }
-  function findMyGreenhouseRemoteOption() {
-    for (const candidate of Array.from(
-      document.querySelectorAll(
-        "label, button, [role='button'], [role='checkbox'], [role='option'], [role='menuitemcheckbox']"
-      )
-    )) {
-      const text = cleanText(
-        [
-          candidate.innerText || candidate.textContent || "",
-          candidate.getAttribute("aria-label"),
-          candidate.getAttribute("title")
-        ].filter(Boolean).join(" ")
-      ).toLowerCase();
-      if (text === "remote" || text.startsWith("remote ")) {
-        return candidate;
-      }
-    }
-    return null;
-  }
-  function isMyGreenhouseRemoteOptionSelected(element) {
-    const control = element.matches("input[type='checkbox'], input[type='radio']") ? element : element.querySelector("input[type='checkbox'], input[type='radio']");
-    if (control?.checked) {
-      return true;
-    }
-    return element.getAttribute("aria-checked") === "true" || element.getAttribute("aria-selected") === "true" || element.getAttribute("data-state") === "checked" || /\b(selected|checked|active)\b/i.test(
-      [
-        element.className,
-        element.getAttribute("data-testid"),
-        element.getAttribute("data-test")
-      ].filter(Boolean).join(" ")
-    );
-  }
-  function findFirstInteractiveElement(selectors) {
-    for (const selector of selectors) {
+    const editableControl = input ?? findMyGreenhouseLocationOverlayInput();
+    if (editableControl) {
       try {
-        for (const element of Array.from(document.querySelectorAll(selector))) {
-          if (isElementInteractive(element)) {
-            return element;
-          }
-        }
+        editableControl.focus();
+        editableControl.select();
       } catch {
       }
+      setTextControlValue(editableControl, "");
+      await sleepWithAutomationChecks(100);
+      setTextControlValue(editableControl, value);
+      await sleepWithAutomationChecks(150);
     }
-    return null;
+    let option = findMyGreenhouseLocationOption(value, true) ?? findMyGreenhouseLocationOption(value);
+    if (!option && editableControl) {
+      dispatchMyGreenhouseKeyboardEvent(editableControl, "keydown", "ArrowDown");
+      dispatchMyGreenhouseKeyboardEvent(editableControl, "keyup", "ArrowDown");
+      await sleepWithAutomationChecks(150);
+      option = findMyGreenhouseLocationOption(value, true) ?? findMyGreenhouseLocationOption(value);
+    }
+    if (option) {
+      performClickAction(option);
+      await sleepWithAutomationChecks(200);
+      return;
+    }
+    dispatchMyGreenhouseKeyboardEvent(
+      editableControl ?? control,
+      "keydown",
+      "Enter"
+    );
+    dispatchMyGreenhouseKeyboardEvent(
+      editableControl ?? control,
+      "keyup",
+      "Enter"
+    );
+    await sleepWithAutomationChecks(150);
+  }
+  function dispatchMyGreenhouseKeyboardEvent(target, type, key) {
+    try {
+      target.dispatchEvent(
+        new KeyboardEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          key,
+          code: key
+        })
+      );
+    } catch {
+    }
   }
   function setTextControlValue(input, value) {
     const prototype = Object.getPrototypeOf(input);

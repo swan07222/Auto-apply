@@ -5,7 +5,7 @@ import {
   matchesDescriptor,
   shouldAutofillField,
 } from "./autofill";
-import { isElementVisible, normalizeUrl } from "./dom";
+import { collectDeepMatches, isElementVisible, normalizeUrl } from "./dom";
 import {
   findApplyAction,
   findCompanySiteAction,
@@ -24,6 +24,8 @@ type ApplicationSurfaceCollectors = {
 
 const APPLICATION_FRAME_SELECTOR =
   "iframe[src*='apply'], iframe[src*='application'], iframe[id*='apply'], iframe[class*='apply'], iframe[src*='greenhouse'], iframe[src*='lever'], iframe[src*='workday'], iframe[data-src*='apply'], iframe[data-src*='application'], iframe[data-src*='greenhouse'], iframe[data-src*='lever'], iframe[data-src*='workday']";
+const MONSTER_APPLICATION_SHELL_SELECTOR =
+  "[role='dialog'], [aria-modal='true'], [class*='modal'], [class*='drawer'], [class*='overlay'], [class*='sheet'], [class*='popup'], [data-testid*='apply'], [data-testid*='application'], [data-testid*='candidate'], [data-testid*='resume'], [data-test*='apply'], [data-test*='application'], [data-test*='candidate'], [data-test*='resume'], [class*='application'], [class*='candidate'], [class*='resume'], [class*='upload'], [id*='application'], [id*='candidate'], [id*='resume']";
 
 export async function waitForLikelyApplicationSurface(
   site: SiteKey,
@@ -34,7 +36,10 @@ export async function waitForLikelyApplicationSurface(
       return true;
     }
 
-    if (attempt === 5 || attempt === 10 || attempt === 15 || attempt === 20) {
+    if (
+      site !== "monster" &&
+      (attempt === 5 || attempt === 10 || attempt === 15 || attempt === 20)
+    ) {
       window.scrollTo({
         top: document.body.scrollHeight / 2,
         behavior: "smooth",
@@ -180,6 +185,10 @@ export function hasLikelyApplicationSurface(
     return true;
   }
 
+  if (site === "monster" && hasMonsterInlineApplySurface(collectors)) {
+    return true;
+  }
+
   const onApplyLikeUrl = isAlreadyOnApplyPage(site, window.location.href);
   const hasPageContent = hasLikelyApplicationPageContent();
   const hasProgression = Boolean(findProgressionAction(site));
@@ -195,6 +204,118 @@ export function hasLikelyApplicationSurface(
       !stillLooksLikeJobPage) ||
     (onApplyLikeUrl && hasPageContent)
   );
+}
+
+function hasMonsterInlineApplySurface(
+  collectors: ApplicationSurfaceCollectors
+): boolean {
+  const relevantFields = collectors.collectAutofillFields().filter(
+    (field) => shouldAutofillField(field, true, true) && isLikelyApplicationField(field)
+  );
+  const relevantResumeInputs = collectors.collectResumeFileInputs().filter(
+    (input) => shouldAutofillField(input, true, true) && isLikelyApplicationField(input)
+  );
+  const progression = findProgressionAction("monster");
+  const progressionElement =
+    progression?.type === "click" ? progression.element : null;
+
+  for (const shell of collectDeepMatches<HTMLElement>(
+    MONSTER_APPLICATION_SHELL_SELECTOR
+  )) {
+    if (!isElementVisible(shell)) {
+      continue;
+    }
+
+    const text = cleanText(shell.innerText || shell.textContent || "")
+      .toLowerCase()
+      .slice(0, 2000);
+    if (!text) {
+      continue;
+    }
+
+    const metadata = cleanText(
+      [
+        shell.id,
+        typeof shell.className === "string" ? shell.className : "",
+        shell.getAttribute("data-testid"),
+        shell.getAttribute("data-test"),
+        shell.getAttribute("aria-label"),
+        shell.getAttribute("title"),
+        shell.getAttribute("role"),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    ).toLowerCase();
+    const signalCount = [
+      "apply",
+      "application",
+      "resume",
+      "upload",
+      "continue",
+      "next",
+      "start",
+      "candidate",
+      "email",
+      "phone",
+      "password",
+      "account",
+      "work authorization",
+      "cover letter",
+    ].filter((token) => text.includes(token) || metadata.includes(token)).length;
+    const modalLike =
+      shell.matches("[role='dialog'], [aria-modal='true']") ||
+      /\b(modal|drawer|overlay|sheet|popup)\b/.test(metadata);
+    const applyLike = /\b(apply|application|candidate|resume|upload)\b/.test(
+      metadata
+    );
+    const shellFieldCount = relevantFields.filter((field) =>
+      shell.contains(field)
+    ).length;
+    const hasResumeUpload = relevantResumeInputs.some((input) =>
+      shell.contains(input)
+    );
+    const hasAccountField = Boolean(
+      shell.querySelector(
+        "input[type='email'], input[type='tel'], input[type='password']"
+      )
+    );
+    const hasActionControl = Boolean(
+      shell.querySelector(
+        "button, a[href], [role='button'], input[type='submit'], input[type='button']"
+      )
+    );
+    const hasProgressionControl = Boolean(
+      progressionElement &&
+        progressionElement !== shell &&
+        shell.contains(progressionElement)
+    );
+
+    if (shellFieldCount >= 1 || hasResumeUpload) {
+      return true;
+    }
+
+    if (
+      hasProgressionControl &&
+      (modalLike || applyLike || signalCount >= 2)
+    ) {
+      return true;
+    }
+
+    if (
+      modalLike &&
+      hasActionControl &&
+      signalCount >= 2 &&
+      (hasAccountField || text.includes("resume") || text.includes("apply"))
+    ) {
+      return true;
+    }
+
+    if (applyLike && hasActionControl && hasAccountField && signalCount >= 3) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 export function isLikelyApplicationField(field: AutofillField): boolean {

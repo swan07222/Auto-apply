@@ -293,9 +293,10 @@ function buildGreenhouseSearchUrl(
   if (isMyGreenhousePortalUrl(currentUrl)) {
     try {
       const parsed = new URL(currentUrl);
-      const url = new URL(parsed.pathname || "/", `${parsed.protocol}//${parsed.host}`);
-      url.searchParams.set("keyword", query);
-      return url.toString();
+      return buildMyGreenhousePortalSearchUrl(
+        `${parsed.protocol}//${parsed.host}`,
+        buildMyGreenhousePortalQuery(query)
+      );
     } catch {
       return currentUrl;
     }
@@ -307,7 +308,18 @@ function buildGreenhouseSearchUrl(
   return url.toString();
 }
 
-function buildGreenhouseKeywordQuery(query: string): string {
+function buildMyGreenhousePortalQuery(query: string): string {
+  return query.trim();
+}
+
+function buildMyGreenhousePortalSearchUrl(
+  origin: string,
+  query: string
+): string {
+  return `${origin}/jobs?query=${encodeURIComponent(query)}&location=United%20States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type[]=remote`;
+}
+
+export function buildGreenhouseKeywordQuery(query: string): string {
   const trimmed = query.trim();
   if (!trimmed) {
     return "";
@@ -316,9 +328,69 @@ function buildGreenhouseKeywordQuery(query: string): string {
   return /\bremote\b/i.test(trimmed) ? trimmed : `${trimmed} remote`;
 }
 
-function normalizeGreenhouseSearchLocation(candidateCountry: string): string {
-  const normalizedCountry = candidateCountry.trim();
-  return normalizedCountry || "Remote";
+export function normalizeGreenhouseSearchLocation(candidateCountry: string): string {
+  return normalizeGreenhouseCountryLabel(candidateCountry) || "Remote";
+}
+
+export function normalizeGreenhouseCountryShortCode(candidateCountry: string): string {
+  const normalizedCountry = normalizeQuestionKey(
+    normalizeGreenhouseCountryLabel(candidateCountry)
+  );
+
+  if (!normalizedCountry) {
+    return "";
+  }
+
+  if (normalizedCountry === "united states") {
+    return "US";
+  }
+
+  if (normalizedCountry === "united kingdom") {
+    return "GB";
+  }
+
+  if (normalizedCountry === "canada") {
+    return "CA";
+  }
+
+  return "";
+}
+
+export function normalizeGreenhouseCountryLabel(candidateCountry: string): string {
+  const trimmedCountry = candidateCountry.trim();
+  const normalizedCountry = normalizeQuestionKey(trimmedCountry);
+
+  if (!normalizedCountry) {
+    return "";
+  }
+
+  if (
+    [
+      "us",
+      "usa",
+      "u s a",
+      "u s",
+      "america",
+      "united states",
+      "united states of america",
+    ].includes(normalizedCountry)
+  ) {
+    return "United States";
+  }
+
+  if (
+    [
+      "uk",
+      "u k",
+      "united kingdom",
+      "great britain",
+      "britain",
+    ].includes(normalizedCountry)
+  ) {
+    return "United Kingdom";
+  }
+
+  return trimmedCountry;
 }
 
 function sanitizeHttpUrl(value: unknown): string {

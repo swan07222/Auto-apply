@@ -9,6 +9,7 @@ export type ApplyAction =
       element: HTMLElement;
       description: string;
       fallbackElements?: HTMLElement[];
+      fallbackUrl?: string;
     };
 
 export type ProgressionAction = ApplyAction & { text: string };

@@ -41,7 +41,6 @@ import {
 } from "./background/sessionState";
 import {
   addActiveRunId,
-  AutomationRunState,
   createRunId,
   distributeJobSlots,
   getRunState,
@@ -51,7 +50,6 @@ import {
   listSessionsForRunId,
   removeActiveRunId,
   removeRunState,
-  removeRunStateIfUnused,
   removeSession,
   setRunState,
   setSession,

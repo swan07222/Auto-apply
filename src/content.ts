@@ -15,6 +15,7 @@ import {
   SpawnTabRequest,
   VERIFICATION_POLL_MS,
   VERIFICATION_TIMEOUT_MS,
+  normalizeGreenhouseCountryLabel,
   buildSearchTargets,
   createStatus,
   detectBrokenPageReason,
@@ -92,6 +93,17 @@ import {
   shouldScrollElementIntoViewBeforeClick,
 } from "./content/dom";
 import {
+  findMyGreenhouseKeywordInput,
+  findMyGreenhouseLocationControl,
+  findMyGreenhouseLocationOption,
+  findMyGreenhouseLocationOverlayInput,
+  findMyGreenhouseRemoteOption,
+  findMyGreenhouseSearchButton,
+  findMyGreenhouseWorkTypeButton,
+  getMyGreenhouseControlValue,
+  isMyGreenhouseRemoteOptionSelected,
+} from "./content/greenhouseSearch";
+import {
   collectJobDetailCandidates,
   collectMonsterEmbeddedCandidates,
   isAppliedJobText,
@@ -152,9 +164,12 @@ import {
   looksLikeCurrentFrameApplicationSurface,
   mergeAutofillResult,
   resolveGreenhouseSearchContextUrl,
+  shouldAvoidApplyClickFocus,
+  shouldAvoidApplyScroll,
   shouldKeepResultsPageOpenAfterZeroSpawn,
   shouldBlockApplicationTargetProbeFailure,
   shouldPreferMonsterClickContinuation,
+  shouldRetryAlternateApplyTargets,
   shouldTreatCurrentPageAsApplied,
   throwIfRateLimited,
 } from "./content/runtimeHelpers";
@@ -1744,32 +1759,34 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       return;
     }
 
-    if (attempt < SCROLL_POSITIONS.length) {
-      const pos = SCROLL_POSITIONS[attempt];
-      switch (pos) {
-        case SCROLL_HALF_PAGE:
-          window.scrollTo({
-            top: document.body.scrollHeight / 2,
-            behavior: "smooth",
-          });
-          break;
-        case SCROLL_RESET:
-          window.scrollTo({ top: 0, behavior: "smooth" });
-          break;
-        case SCROLL_BOTTOM:
-          window.scrollTo({
-            top: document.body.scrollHeight,
-            behavior: "smooth",
-          });
-          break;
-        default:
-          window.scrollTo({ top: pos, behavior: "smooth" });
+    if (!shouldAvoidApplyScroll(site)) {
+      if (attempt < SCROLL_POSITIONS.length) {
+        const pos = SCROLL_POSITIONS[attempt];
+        switch (pos) {
+          case SCROLL_HALF_PAGE:
+            window.scrollTo({
+              top: document.body.scrollHeight / 2,
+              behavior: "smooth",
+            });
+            break;
+          case SCROLL_RESET:
+            window.scrollTo({ top: 0, behavior: "smooth" });
+            break;
+          case SCROLL_BOTTOM:
+            window.scrollTo({
+              top: document.body.scrollHeight,
+              behavior: "smooth",
+            });
+            break;
+          default:
+            window.scrollTo({ top: pos, behavior: "smooth" });
+        }
+      } else if (attempt % 4 === 0) {
+        window.scrollTo({
+          top: document.body.scrollHeight * Math.random(),
+          behavior: "smooth",
+        });
       }
-    } else if (attempt % 4 === 0) {
-      window.scrollTo({
-        top: document.body.scrollHeight * Math.random(),
-        behavior: "smooth",
-      });
     }
 
     await sleepWithAutomationChecks(700);
@@ -1835,12 +1852,16 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     "autofill-form"
   );
 
-  if (shouldScrollElementIntoViewBeforeClick(action.element)) {
+  if (
+    !shouldAvoidApplyScroll(site) &&
+    shouldScrollElementIntoViewBeforeClick(action.element)
+  ) {
     action.element.scrollIntoView({ behavior: "smooth", block: "center" });
     await sleepWithAutomationChecks(600);
   }
 
   const urlBeforeClick = window.location.href;
+  const skipApplyClickFocus = shouldAvoidApplyClickFocus(site);
 
   const anchorElement =
     action.element.closest("a") ??
@@ -1941,7 +1962,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     }
   }
 
-  performClickAction(action.element);
+  performClickAction(action.element, { skipFocus: skipApplyClickFocus });
 
   for (let wait = 0; wait < 20; wait += 1) {
     await waitForAutomationResumeIfPaused();
@@ -2068,23 +2089,15 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
   let retryAction: ApplyAction | null = null;
   if (site === "monster") {
-    retryAction = findMonsterApplyAction();
-    if (
-      action.type === "click" &&
-      (!retryAction ||
-        retryAction.type !== "click" ||
-        retryAction.element === action.element)
-    ) {
-      const monsterFallbackElement = action.fallbackElements?.find(
-        (element) => element && element.isConnected && element !== action.element
-      );
-      if (monsterFallbackElement) {
-        retryAction = {
-          type: "click",
-          element: monsterFallbackElement,
-          description: action.description,
-        };
-      }
+    const monsterFallbackElement = action.fallbackElements?.find(
+      (element) => element && element.isConnected && element !== action.element
+    );
+    if (monsterFallbackElement) {
+      retryAction = {
+        type: "click",
+        element: monsterFallbackElement,
+        description: action.description,
+      };
     }
   } else if (site === "ziprecruiter") {
     retryAction = findZipRecruiterApplyAction();
@@ -2105,14 +2118,19 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       true,
       "autofill-form"
     );
-    if (shouldScrollElementIntoViewBeforeClick(retryAction.element)) {
+    if (
+      !shouldAvoidApplyScroll(site) &&
+      shouldScrollElementIntoViewBeforeClick(retryAction.element)
+    ) {
       retryAction.element.scrollIntoView({
         behavior: "smooth",
         block: "center",
       });
       await sleepWithAutomationChecks(400);
     }
-    performClickAction(retryAction.element);
+    performClickAction(retryAction.element, {
+      skipFocus: skipApplyClickFocus,
+    });
     await sleepWithAutomationChecks(3000);
 
     if (
@@ -2135,8 +2153,30 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     }
   }
 
+  const monsterFallbackUrl = resolveMonsterApplyFallbackUrl(
+    site,
+    action,
+    retryAction
+  );
+  if (monsterFallbackUrl) {
+    updateStatus(
+      "running",
+      `Quick Apply did not open inline. Navigating to ${action.description} target...`,
+      true,
+      "open-apply"
+    );
+    await navigateToApplicationTarget(
+      monsterFallbackUrl,
+      site,
+      action.description
+    );
+    return;
+  }
+
   const retryCompanyAction =
-    site === "ziprecruiter" ? null : findCompanySiteAction();
+    !shouldRetryAlternateApplyTargets(site) || site === "ziprecruiter"
+      ? null
+      : findCompanySiteAction();
   if (retryCompanyAction) {
     updateStatus(
       "running",
@@ -2152,14 +2192,19 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       );
       return;
     }
-    if (shouldScrollElementIntoViewBeforeClick(retryCompanyAction.element)) {
+    if (
+      !shouldAvoidApplyScroll(site) &&
+      shouldScrollElementIntoViewBeforeClick(retryCompanyAction.element)
+    ) {
       retryCompanyAction.element.scrollIntoView({
         behavior: "smooth",
         block: "center",
       });
       await sleepWithAutomationChecks(400);
     }
-    performClickAction(retryCompanyAction.element);
+    performClickAction(retryCompanyAction.element, {
+      skipFocus: skipApplyClickFocus,
+    });
     await sleepWithAutomationChecks(3000);
 
     if (window.location.href !== urlBeforeClick) {
@@ -2430,7 +2475,9 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
         block: "center",
       });
       await sleepWithAutomationChecks(400);
-      performClickAction(followUp.element);
+      performClickAction(followUp.element, {
+        skipFocus: shouldAvoidApplyClickFocus(site),
+      });
       await sleepWithAutomationChecks(2800);
 
       if (window.location.href !== previousUrl) {
@@ -2484,7 +2531,9 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
           block: "center",
         });
         await sleepWithAutomationChecks(400);
-        performClickAction(companySiteAction.element);
+        performClickAction(companySiteAction.element, {
+          skipFocus: shouldAvoidApplyClickFocus(site),
+        });
         await sleepWithAutomationChecks(2800);
 
         if (window.location.href !== previousUrl) {
@@ -3654,6 +3703,47 @@ function navigateCurrentTab(url: string): void {
   window.location.assign(n);
 }
 
+function resolveMonsterApplyFallbackUrl(
+  site: SiteKey,
+  initialAction: ApplyAction | null,
+  retryAction: ApplyAction | null
+): string | null {
+  if (site !== "monster") {
+    return null;
+  }
+
+  const candidates = [initialAction, retryAction];
+  for (const candidate of candidates) {
+    if (candidate?.type !== "click" || !candidate.fallbackUrl) {
+      continue;
+    }
+
+    const normalizedFallbackUrl = normalizeUrl(candidate.fallbackUrl);
+    const normalizedCurrentUrl = normalizeUrl(window.location.href);
+    if (
+      normalizedFallbackUrl &&
+      normalizedCurrentUrl &&
+      normalizedFallbackUrl !== normalizedCurrentUrl
+    ) {
+      return normalizedFallbackUrl;
+    }
+  }
+
+  return null;
+}
+
+function navigateCurrentTabPreservingInput(url: string): void {
+  const trimmedUrl = url.trim();
+  const normalizedUrl = normalizeUrl(trimmedUrl);
+  if (!normalizedUrl) throw new Error("Invalid URL.");
+
+  if (tryContinueEmbeddedApplication(normalizedUrl)) {
+    return;
+  }
+
+  window.location.assign(trimmedUrl);
+}
+
 // ─── STATUS / OVERLAY ────────────────────────────────────────────────────────
 
 async function searchMyGreenhousePortal(
@@ -3664,20 +3754,39 @@ async function searchMyGreenhousePortal(
     return false;
   }
 
+  const canonicalPortalTarget = buildSearchTargets(
+    "greenhouse",
+    window.location.href,
+    keyword,
+    candidateCountry
+  )[0]?.url;
+  const normalizedCurrentUrl = normalizeUrl(window.location.href);
+  const normalizedPortalTarget = normalizeUrl(canonicalPortalTarget || "");
+
+  if (
+    normalizedPortalTarget &&
+    normalizedCurrentUrl &&
+    normalizedPortalTarget !== normalizedCurrentUrl
+  ) {
+    navigateCurrentTabPreservingInput(canonicalPortalTarget);
+    return true;
+  }
+
   const titleInput = findMyGreenhouseKeywordInput();
-  const locationInput = findMyGreenhouseLocationInput();
+  const locationControl = findMyGreenhouseLocationControl();
   const searchButton = findMyGreenhouseSearchButton();
   const normalizedKeyword = cleanText(keyword);
 
-  if (!titleInput || !searchButton || !normalizedKeyword) {
+  if (!titleInput || !normalizedKeyword) {
     return false;
   }
 
   const shouldUpdateKeyword = cleanText(titleInput.value) !== normalizedKeyword;
-  const normalizedCountry = cleanText(candidateCountry) || "United States";
+  const normalizedCountry =
+    normalizeGreenhouseCountryLabel(candidateCountry) || "United States";
   const shouldUpdateLocation =
-    Boolean(locationInput) &&
-    cleanText(locationInput?.value ?? "") !== normalizedCountry;
+    Boolean(locationControl) &&
+    getMyGreenhouseControlValue(locationControl) !== normalizedCountry;
 
   if (!shouldUpdateKeyword && !shouldUpdateLocation && hasMyGreenhouseSearchResults()) {
     return false;
@@ -3686,8 +3795,8 @@ async function searchMyGreenhousePortal(
   if (shouldUpdateKeyword) {
     setTextControlValue(titleInput, normalizedKeyword);
   }
-  if (locationInput && shouldUpdateLocation) {
-    setTextControlValue(locationInput, normalizedCountry);
+  if (locationControl && shouldUpdateLocation) {
+    await setMyGreenhouseLocationControlValue(locationControl, normalizedCountry);
   }
 
   await ensureMyGreenhouseRemoteFilterEnabled();
@@ -3698,27 +3807,39 @@ async function searchMyGreenhousePortal(
     // Ignore focus failures.
   }
 
-  performClickAction(searchButton);
+  if (searchButton) {
+    performClickAction(searchButton);
+  } else {
+    dispatchMyGreenhouseKeyboardEvent(titleInput, "keydown", "Enter");
+    dispatchMyGreenhouseKeyboardEvent(titleInput, "keyup", "Enter");
+  }
   return true;
 }
 
 async function ensureMyGreenhouseRemoteFilterEnabled(): Promise<void> {
   const remoteOption = findMyGreenhouseRemoteOption();
-  if (remoteOption && !isMyGreenhouseRemoteOptionSelected(remoteOption)) {
-    performClickAction(remoteOption);
-    await sleepWithAutomationChecks(200);
+  if (
+    remoteOption &&
+    isMyGreenhouseRemoteOptionSelected(remoteOption)
+  ) {
     return;
   }
 
   const workTypeButton = findMyGreenhouseWorkTypeButton();
   if (!workTypeButton) {
+    if (remoteOption && !isMyGreenhouseRemoteOptionSelected(remoteOption)) {
+      performClickAction(remoteOption);
+      await sleepWithAutomationChecks(200);
+    }
     return;
   }
 
-  performClickAction(workTypeButton);
-  await sleepWithAutomationChecks(200);
+  if (workTypeButton) {
+    performClickAction(workTypeButton);
+    await sleepWithAutomationChecks(200);
+  }
 
-  const openedRemoteOption = findMyGreenhouseRemoteOption();
+  const openedRemoteOption = findMyGreenhouseRemoteOption(true);
   if (
     openedRemoteOption &&
     !isMyGreenhouseRemoteOptionSelected(openedRemoteOption)
@@ -3745,7 +3866,7 @@ function isMyGreenhousePortalPage(): boolean {
     return false;
   }
 
-  return Boolean(findMyGreenhouseKeywordInput() && findMyGreenhouseSearchButton());
+  return Boolean(findMyGreenhouseKeywordInput());
 }
 
 function isMyGreenhousePortalHost(): boolean {
@@ -3805,158 +3926,84 @@ function hasMyGreenhouseSearchResults(): boolean {
   return false;
 }
 
-function findMyGreenhouseKeywordInput(): HTMLInputElement | null {
-  return findFirstInteractiveElement<HTMLInputElement>([
-    "input[placeholder*='job title' i]",
-    "input[aria-label*='job title' i]",
-    "input[name*='job' i]",
-    "input[name*='title' i]",
-    "input[type='search']",
-  ]);
-}
+async function setMyGreenhouseLocationControlValue(
+  control: HTMLElement,
+  value: string
+): Promise<void> {
+  const input =
+    control instanceof HTMLInputElement
+      ? control
+      : null;
 
-function findMyGreenhouseLocationInput(): HTMLInputElement | null {
-  return findFirstInteractiveElement<HTMLInputElement>([
-    "input[placeholder*='location' i]",
-    "input[aria-label*='location' i]",
-    "input[name*='location' i]",
-    "input[id*='location' i]",
-  ]);
-}
-
-function findMyGreenhouseSearchButton(): HTMLElement | null {
-  for (const candidate of Array.from(
-    document.querySelectorAll<HTMLElement>(
-      "button, [role='button'], input[type='submit'], input[type='button']"
-    )
-  )) {
-    if (!isElementInteractive(candidate)) {
-      continue;
-    }
-
-    const text = cleanText(
-      [
-        candidate.innerText || candidate.textContent || "",
-        candidate.getAttribute("aria-label"),
-        candidate.getAttribute("title"),
-        candidate.getAttribute("value"),
-      ]
-        .filter(Boolean)
-        .join(" ")
-    ).toLowerCase();
-
-    if (text === "search" || text.startsWith("search ")) {
-      return candidate;
-    }
+  if (!input) {
+    performClickAction(control);
+    await sleepWithAutomationChecks(200);
   }
 
-  return null;
-}
-
-function findMyGreenhouseWorkTypeButton(): HTMLElement | null {
-  for (const candidate of Array.from(
-    document.querySelectorAll<HTMLElement>(
-      "button, [role='button'], input[type='submit'], input[type='button']"
-    )
-  )) {
-    if (!isElementInteractive(candidate)) {
-      continue;
-    }
-
-    const text = cleanText(
-      [
-        candidate.innerText || candidate.textContent || "",
-        candidate.getAttribute("aria-label"),
-        candidate.getAttribute("title"),
-        candidate.getAttribute("value"),
-      ]
-        .filter(Boolean)
-        .join(" ")
-    ).toLowerCase();
-
-    if (
-      text === "work type" ||
-      text.startsWith("work type ") ||
-      text === "workplace type" ||
-      text.startsWith("workplace type ") ||
-      text === "location type" ||
-      text.startsWith("location type ") ||
-      text === "work arrangement" ||
-      text.startsWith("work arrangement ")
-    ) {
-      return candidate;
-    }
-  }
-
-  return null;
-}
-
-function findMyGreenhouseRemoteOption(): HTMLElement | null {
-  for (const candidate of Array.from(
-    document.querySelectorAll<HTMLElement>(
-      "label, button, [role='button'], [role='checkbox'], [role='option'], [role='menuitemcheckbox']"
-    )
-  )) {
-    const text = cleanText(
-      [
-        candidate.innerText || candidate.textContent || "",
-        candidate.getAttribute("aria-label"),
-        candidate.getAttribute("title"),
-      ]
-        .filter(Boolean)
-        .join(" ")
-    ).toLowerCase();
-
-    if (text === "remote" || text.startsWith("remote ")) {
-      return candidate;
-    }
-  }
-
-  return null;
-}
-
-function isMyGreenhouseRemoteOptionSelected(element: HTMLElement): boolean {
-  const control =
-    element.matches("input[type='checkbox'], input[type='radio']")
-      ? (element as HTMLInputElement)
-      : element.querySelector<HTMLInputElement>("input[type='checkbox'], input[type='radio']");
-
-  if (control?.checked) {
-    return true;
-  }
-
-  return (
-    element.getAttribute("aria-checked") === "true" ||
-    element.getAttribute("aria-selected") === "true" ||
-    element.getAttribute("data-state") === "checked" ||
-    /\b(selected|checked|active)\b/i.test(
-      [
-        element.className,
-        element.getAttribute("data-testid"),
-        element.getAttribute("data-test"),
-      ]
-        .filter(Boolean)
-        .join(" ")
-    )
-  );
-}
-
-function findFirstInteractiveElement<T extends HTMLElement>(
-  selectors: string[]
-): T | null {
-  for (const selector of selectors) {
+  const editableControl = input ?? findMyGreenhouseLocationOverlayInput();
+  if (editableControl) {
     try {
-      for (const element of Array.from(document.querySelectorAll<T>(selector))) {
-        if (isElementInteractive(element)) {
-          return element;
-        }
-      }
+      editableControl.focus();
+      editableControl.select();
     } catch {
-      // Ignore invalid selectors.
+      // Ignore focus/select failures.
     }
+
+    setTextControlValue(editableControl, "");
+    await sleepWithAutomationChecks(100);
+    setTextControlValue(editableControl, value);
+    await sleepWithAutomationChecks(150);
   }
 
-  return null;
+  let option =
+    findMyGreenhouseLocationOption(value, true) ??
+    findMyGreenhouseLocationOption(value);
+  if (!option && editableControl) {
+    dispatchMyGreenhouseKeyboardEvent(editableControl, "keydown", "ArrowDown");
+    dispatchMyGreenhouseKeyboardEvent(editableControl, "keyup", "ArrowDown");
+    await sleepWithAutomationChecks(150);
+    option =
+      findMyGreenhouseLocationOption(value, true) ??
+      findMyGreenhouseLocationOption(value);
+  }
+
+  if (option) {
+    performClickAction(option);
+    await sleepWithAutomationChecks(200);
+    return;
+  }
+
+  dispatchMyGreenhouseKeyboardEvent(
+    editableControl ?? control,
+    "keydown",
+    "Enter"
+  );
+  dispatchMyGreenhouseKeyboardEvent(
+    editableControl ?? control,
+    "keyup",
+    "Enter"
+  );
+  await sleepWithAutomationChecks(150);
+}
+
+function dispatchMyGreenhouseKeyboardEvent(
+  target: HTMLElement,
+  type: "keydown" | "keyup",
+  key: string
+): void {
+  try {
+    target.dispatchEvent(
+      new KeyboardEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        key,
+        code: key,
+      })
+    );
+  } catch {
+    // Ignore synthetic keyboard failures.
+  }
 }
 
 function setTextControlValue(

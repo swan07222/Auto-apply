@@ -403,6 +403,18 @@ export function shouldPreferMonsterClickContinuation(
   }
 }
 
+export function shouldAvoidApplyScroll(site: SiteKey): boolean {
+  return site === "monster";
+}
+
+export function shouldAvoidApplyClickFocus(site: SiteKey): boolean {
+  return site === "monster";
+}
+
+export function shouldRetryAlternateApplyTargets(site: SiteKey): boolean {
+  return site !== "monster";
+}
+
 export function getRemainingJobSlotsAfterSpawn(
   requestedLimit: number,
   openedCount: number,

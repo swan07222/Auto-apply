@@ -1774,14 +1774,6 @@ function formatFileSize(size: number): string {
   return `${kilobytes} KB`;
 }
 
-function isBusy(phase: AutomationStatus["phase"]): boolean {
-  return (
-    phase === "running" ||
-    phase === "paused" ||
-    phase === "waiting_for_verification"
-  );
-}
-
 async function readFileAsResumeAsset(file: File): Promise<ResumeAsset> {
   const [dataUrl, textContent] = await Promise.all([
     readFileAsDataUrl(file),

@@ -674,7 +674,22 @@ export function findMonsterApplyAction(): ApplyAction | null {
     element: best.element,
     description: best.text || "Monster apply button",
     fallbackElements: best.fallbackElements ?? [],
+    fallbackUrl: resolveMonsterFallbackUrl(best.url),
   };
+}
+
+function resolveMonsterFallbackUrl(url: string | null): string | undefined {
+  if (!url || isKnownBrokenApplyUrl(url)) {
+    return undefined;
+  }
+
+  const normalizedUrl = normalizeUrl(url);
+  const normalizedCurrentUrl = normalizeUrl(window.location.href);
+  if (!normalizedUrl || normalizedUrl === normalizedCurrentUrl) {
+    return undefined;
+  }
+
+  return normalizedUrl;
 }
 
 function getMonsterActionTop(element: HTMLElement): number {
@@ -705,37 +720,59 @@ function choosePreferredMonsterPrimaryApplyCandidate(
       !isMonsterSecondaryApplyContext(candidate.element) &&
       isMonsterPrimaryApplyLabel(candidate.text, candidate.url)
   );
+  const detailBoundary = findMonsterPrimaryDetailBoundary();
+  const primaryTitleAnchor = findMonsterPrimaryTitleAnchor();
+  const titleAnchoredPrimaryCandidates = primaryTitleAnchor
+    ? primaryApplyCandidates.filter((candidate) =>
+        isMonsterCandidateInPrimaryTitleRegion(
+          candidate.element,
+          primaryTitleAnchor,
+          detailBoundary
+        )
+      )
+    : [];
+  const primaryCandidatesAboveDetailBoundary = detailBoundary
+    ? primaryApplyCandidates.filter((candidate) =>
+        isMonsterCandidateAboveDetailBoundary(candidate.element, detailBoundary)
+      )
+    : [];
+
+  if (titleAnchoredPrimaryCandidates.length >= 1) {
+    return sortMonsterApplyCandidates(titleAnchoredPrimaryCandidates)[0];
+  }
+
+  if (primaryCandidatesAboveDetailBoundary.length >= 1) {
+    return sortMonsterApplyCandidates(primaryCandidatesAboveDetailBoundary)[0];
+  }
 
   if (primaryApplyCandidates.length >= 1) {
-    return primaryApplyCandidates.sort((left, right) => {
-      if (left.top !== right.top) {
-        return left.top - right.top;
-      }
-
-      if (left.score !== right.score) {
-        return right.score - left.score;
-      }
-
-      const position = left.element.compareDocumentPosition(right.element);
-      if (position & Node.DOCUMENT_POSITION_FOLLOWING) {
-        return -1;
-      }
-      if (position & Node.DOCUMENT_POSITION_PRECEDING) {
-        return 1;
-      }
-      return 0;
-    })[0];
+    return sortMonsterApplyCandidates(primaryApplyCandidates)[0];
   }
 
   const nonSecondaryCandidates = candidates.filter(
     (candidate) => !isMonsterSecondaryApplyContext(candidate.element)
   );
+  const nonSecondaryCandidatesAboveDetailBoundary = detailBoundary
+    ? nonSecondaryCandidates.filter((candidate) =>
+        isMonsterCandidateAboveDetailBoundary(candidate.element, detailBoundary)
+      )
+    : [];
+
+  if (nonSecondaryCandidatesAboveDetailBoundary.length >= 1) {
+    return sortMonsterApplyCandidates(nonSecondaryCandidatesAboveDetailBoundary)[0];
+  }
 
   if (nonSecondaryCandidates.length < 2) {
     return nonSecondaryCandidates[0];
   }
 
-  return nonSecondaryCandidates.sort((left, right) => {
+  return sortMonsterApplyCandidates(nonSecondaryCandidates)[0];
+}
+
+function sortMonsterApplyCandidates<T extends { element: HTMLElement; score: number; top: number }>(
+  candidates: T[]
+): T[] {
+  return candidates.sort((left, right) => {
     if (left.top !== right.top) {
       return left.top - right.top;
     }
@@ -752,7 +789,135 @@ function choosePreferredMonsterPrimaryApplyCandidate(
       return 1;
     }
     return 0;
-  })[0];
+  });
+}
+
+function findMonsterPrimaryDetailBoundary(): HTMLElement | null {
+  const markers = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "h2, h3, h4, [role='heading'], [data-testid*='description' i], [data-testid*='profile' i], [class*='profileInsights'], [class*='profile-insights']"
+    )
+  );
+  let bestMarker: HTMLElement | null = null;
+  let bestTop = Number.POSITIVE_INFINITY;
+
+  for (const marker of markers) {
+    if (!isElementVisible(marker)) {
+      continue;
+    }
+
+    const text = cleanText(
+      [
+        marker.innerText || marker.textContent || "",
+        marker.getAttribute("aria-label"),
+        marker.getAttribute("title"),
+        marker.getAttribute("data-testid"),
+        marker.className,
+      ]
+        .filter(Boolean)
+        .join(" ")
+    ).toLowerCase();
+
+    if (
+      text !== "profile insights" &&
+      text !== "description" &&
+      text !== "job description"
+    ) {
+      continue;
+    }
+
+    const top = getMonsterActionTop(marker);
+    if (top < bestTop) {
+      bestTop = top;
+      bestMarker = marker;
+    }
+  }
+
+  return bestMarker;
+}
+
+function findMonsterPrimaryTitleAnchor(): HTMLElement | null {
+  const selectors = [
+    "h1",
+    "[data-testid*='job-title' i]",
+    "[data-testid*='jobTitle' i]",
+    "[class*='job-title']",
+    "[class*='jobTitle']",
+  ];
+  let bestTitle: HTMLElement | null = null;
+  let bestTop = Number.POSITIVE_INFINITY;
+
+  for (const selector of selectors) {
+    let matches: HTMLElement[];
+    try {
+      matches = Array.from(document.querySelectorAll<HTMLElement>(selector));
+    } catch {
+      continue;
+    }
+
+    for (const match of matches) {
+      if (!isElementVisible(match)) {
+        continue;
+      }
+
+      const text = cleanText(match.innerText || match.textContent || "");
+      if (text.length < 3) {
+        continue;
+      }
+
+      const top = getMonsterActionTop(match);
+      if (top < bestTop) {
+        bestTop = top;
+        bestTitle = match;
+      }
+    }
+  }
+
+  return bestTitle;
+}
+
+function isMonsterCandidateInPrimaryTitleRegion(
+  element: HTMLElement,
+  titleAnchor: HTMLElement,
+  detailBoundary?: HTMLElement | null
+): boolean {
+  if (detailBoundary && !isMonsterCandidateAboveDetailBoundary(element, detailBoundary)) {
+    return false;
+  }
+
+  const titleRect = titleAnchor.getBoundingClientRect();
+  const elementRect = element.getBoundingClientRect();
+  if (
+    !Number.isFinite(titleRect.top) ||
+    !Number.isFinite(titleRect.bottom) ||
+    !Number.isFinite(elementRect.top) ||
+    !Number.isFinite(elementRect.bottom)
+  ) {
+    return false;
+  }
+
+  const verticalGapBelow = elementRect.top - titleRect.bottom;
+  const verticalGapAbove = titleRect.top - elementRect.bottom;
+
+  return verticalGapBelow <= 220 && verticalGapAbove <= 80;
+}
+
+function isMonsterCandidateAboveDetailBoundary(
+  element: HTMLElement,
+  detailBoundary: HTMLElement
+): boolean {
+  if (detailBoundary.contains(element)) {
+    return false;
+  }
+
+  const boundaryTop = getMonsterActionTop(detailBoundary);
+  const elementTop = getMonsterActionTop(element);
+  if (elementTop < boundaryTop - 8) {
+    return true;
+  }
+
+  const position = element.compareDocumentPosition(detailBoundary);
+  return Boolean(position & Node.DOCUMENT_POSITION_FOLLOWING);
 }
 
 function collectMonsterClickFallbackElements(
@@ -841,6 +1006,22 @@ function isMonsterFallbackClickElement(element: HTMLElement): boolean {
   if (
     tagName.includes("-") &&
     attrs.includes("apply")
+  ) {
+    return true;
+  }
+
+  const text = cleanText(
+    getActionText(element) ||
+      element.getAttribute("aria-label") ||
+      element.getAttribute("title") ||
+      ""
+  );
+  const url = getNavigationUrl(element);
+
+  if (
+    (element.matches("a[href], button, input[type='submit'], input[type='button'], [role='button']") ||
+      element.hasAttribute("onclick")) &&
+    isMonsterPrimaryApplyLabel(text, url)
   ) {
     return true;
   }
@@ -2023,6 +2204,7 @@ export function findProgressionAction(
         ""
     );
     const metadata = getElementActionMetadata(element);
+    const displayText = text || metadata;
     const lower = metadata.toLowerCase();
     const lowerText = text.toLowerCase();
     if (!lower) {
@@ -2208,7 +2390,7 @@ export function findProgressionAction(
         element,
         score,
         url: getMeaningfulProgressionUrl(element),
-        text,
+        text: displayText,
       };
     }
   }
@@ -2329,6 +2511,41 @@ function getProgressionCandidateSelectors(
         "[class*='continue']",
         "[class*='next']",
         "[class*='review']",
+        "[class*='apply']",
+        ...generic,
+      ];
+    case "monster":
+      return [
+        "button[data-testid*='continue' i]",
+        "button[data-testid*='next' i]",
+        "button[data-testid*='start' i]",
+        "button[data-testid*='review' i]",
+        "button[data-testid*='apply' i]",
+        "button[data-testid*='resume' i]",
+        "[data-testid*='continue' i]",
+        "[data-testid*='next' i]",
+        "[data-testid*='start' i]",
+        "[data-testid*='review' i]",
+        "[data-testid*='apply' i]",
+        "[data-testid*='resume' i]",
+        "[data-test*='continue' i]",
+        "[data-test*='next' i]",
+        "[data-test*='start' i]",
+        "[data-test*='review' i]",
+        "[data-test*='apply' i]",
+        "[data-test*='resume' i]",
+        "[aria-label*='continue' i]",
+        "[aria-label*='next' i]",
+        "[aria-label*='start' i]",
+        "[aria-label*='review' i]",
+        "[aria-label*='apply' i]",
+        "[aria-label*='resume' i]",
+        "[class*='continue']",
+        "[class*='next']",
+        "[class*='start']",
+        "[class*='review']",
+        "[class*='resume']",
+        "[class*='candidate']",
         "[class*='apply']",
         ...generic,
       ];
@@ -2914,24 +3131,6 @@ function getApplyUrlMarkupSources(): string[] {
   }
 
   return [markup.slice(0, MAX_APPLY_URL_MARKUP_LENGTH)];
-}
-
-function limitApplyUrlSources(sources: string[]): string[] {
-  const limited: string[] = [];
-
-  for (const source of sources) {
-    const normalized = limitApplyUrlSource(source);
-    if (!normalized) {
-      continue;
-    }
-
-    limited.push(normalized);
-    if (limited.length >= MAX_APPLY_URL_SOURCE_COUNT) {
-      break;
-    }
-  }
-
-  return limited;
 }
 
 function limitApplyUrlSource(source: string | null | undefined): string | null {

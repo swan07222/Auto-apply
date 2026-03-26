@@ -34,7 +34,6 @@ import {
   scoreJobTitleForResume,
   shouldAllowBroadTechnicalKeywordFallback,
   shouldFilterBoardResultsByKeyword,
-  shouldFinishJobResultScan,
   sortCandidatesByRecency,
 } from "./jobSearchHeuristics";
 export {
@@ -723,10 +722,38 @@ function isGreenhouseRemoteScopedResultsPage(currentUrl: string): boolean {
       return false;
     }
 
-    const location = normalizeChoiceText(parsedUrl.searchParams.get("location") || "");
-    const keyword = normalizeChoiceText(parsedUrl.searchParams.get("keyword") || "");
+    const location = normalizeChoiceText(
+      parsedUrl.searchParams.get("location") ||
+      parsedUrl.searchParams.get("locations") ||
+      ""
+    );
+    const keyword = normalizeChoiceText(
+      parsedUrl.searchParams.get("keyword") ||
+      parsedUrl.searchParams.get("query") ||
+      ""
+    );
+    const workTypes = parsedUrl.searchParams
+      .getAll("work_type[]")
+      .concat(parsedUrl.searchParams.getAll("work_type"))
+      .map((value) => normalizeChoiceText(value));
 
-    return location === "remote" || keyword.includes("remote");
+    return (
+      location === "remote" ||
+      keyword.includes("remote") ||
+      workTypes.some((value) => value === "remote" || value.includes("remote"))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isMyGreenhousePortalResultsPage(currentUrl: string): boolean {
+  try {
+    const parsedUrl = new URL(currentUrl);
+    return (
+      parsedUrl.hostname.toLowerCase().replace(/^www\./, "") ===
+      "my.greenhouse.io"
+    );
   } catch {
     return false;
   }
@@ -801,8 +828,16 @@ function filterCandidatesForRemotePreference(
       // so keep neutral rows but drop explicit hybrid/onsite candidates.
       .filter((entry) => entry.remoteScore >= 0)
       .map((entry) => entry.candidate);
+    const explicitRemoteCandidates = remoteScopedCandidates.filter(
+      (candidate) => scoreRemotePreference(candidate) > 0
+    );
+    const preferredRemotePool =
+      isMyGreenhousePortalResultsPage(currentUrl) &&
+      explicitRemoteCandidates.length > 0
+        ? explicitRemoteCandidates
+        : remoteScopedCandidates;
 
-    return remoteScopedCandidates.filter((candidate) =>
+    return preferredRemotePool.filter((candidate) =>
       matchesGreenhouseCandidateCountryPreference(candidate, candidateCountry)
     );
   }

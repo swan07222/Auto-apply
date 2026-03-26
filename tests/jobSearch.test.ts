@@ -1842,6 +1842,95 @@ describe("job search candidate filtering", () => {
     ).toEqual(["https://my.greenhouse.io/view_job?job_id=5431123004"]);
   });
 
+  it("drops non-US MyGreenhouse results during a United States remote run", () => {
+    document.body.innerHTML = `
+      <section class="results-grid">
+        <article class="job-card">
+          <h3>Full Stack Engineer</h3>
+          <p>Remote</p>
+          <p>United States</p>
+          <a href="https://my.greenhouse.io/view_job?job_id=5431123004">View job</a>
+        </article>
+        <article class="job-card">
+          <h3>Fullstack Engineer</h3>
+          <p>Tel Aviv-Yafo, TA</p>
+          <a href="https://my.greenhouse.io/view_job?job_id=999888777">View job</a>
+        </article>
+      </section>
+    `;
+
+    expect(
+      pickRelevantJobUrls(
+        collectJobDetailCandidates("greenhouse"),
+        "greenhouse",
+        undefined,
+        "any",
+        ["full stack"],
+        "https://my.greenhouse.io/jobs?query=full%20stack&location=United%20States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type[]=remote",
+        "United States"
+      )
+    ).toEqual(["https://my.greenhouse.io/view_job?job_id=5431123004"]);
+  });
+
+  it("prefers explicit remote MyGreenhouse cards when a remote search page also shows neutral local cards", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://my.greenhouse.io/view_job?job_id=5431123004",
+        title: "Full Stack Engineer",
+        contextText: "Remote - United States",
+      },
+      {
+        url: "https://my.greenhouse.io/view_job?job_id=888777666",
+        title: "Full Stack Engineer",
+        contextText: "United States",
+      },
+      {
+        url: "https://my.greenhouse.io/view_job?job_id=999888777",
+        title: "Full Stack Engineer",
+        contextText: "Tel Aviv-Yafo, TA",
+      },
+    ];
+
+    expect(
+      pickRelevantJobUrls(
+        candidates,
+        "greenhouse",
+        undefined,
+        "any",
+        ["full stack"],
+        "https://my.greenhouse.io/jobs?query=full%20stack&location=United%20States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type[]=remote",
+        "United States"
+      )
+    ).toEqual(["https://my.greenhouse.io/view_job?job_id=5431123004"]);
+  });
+
+  it("keeps neutral US MyGreenhouse cards on work-type remote pages when hybrid cards are also present", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://my.greenhouse.io/view_job?job_id=5431123004",
+        title: "Full Stack Engineer",
+        contextText: "United States",
+      },
+      {
+        url: "https://my.greenhouse.io/view_job?job_id=888777666",
+        title: "Full Stack Engineer",
+        contextText: "Hybrid - Austin, Texas",
+      },
+    ];
+
+    expect(
+      pickRelevantJobUrls(
+        candidates,
+        "greenhouse",
+        undefined,
+        "any",
+        ["full stack"],
+        "https://my.greenhouse.io/jobs?query=full%20stack&location=United%20States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type[]=remote",
+        "United States"
+      )
+    ).toEqual(["https://my.greenhouse.io/view_job?job_id=5431123004"]);
+  });
+
   it("collects MyGreenhouse cards when the action label changes but the Greenhouse job URL is still present", () => {
     document.body.innerHTML = `
       <section class="results-grid">

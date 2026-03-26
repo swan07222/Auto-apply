@@ -2,6 +2,7 @@
 
 import {
   DEFAULT_SETTINGS,
+  buildGreenhouseKeywordQuery,
   buildOtherJobSiteTargets,
   buildSearchTargets,
   buildStartupSearchTargets,
@@ -15,6 +16,8 @@ import {
   inferStartupRegionFromCountry,
   isStartupCompaniesCacheFresh,
   isProbablyHumanVerificationPage,
+  normalizeGreenhouseCountryLabel,
+  normalizeGreenhouseCountryShortCode,
   normalizeQuestionKey,
   resolveStartupRegion,
   resolveStartupTargetRegions,
@@ -132,19 +135,105 @@ describe("shared automation target logic", () => {
     expect(firstUrl.searchParams.get("location")).toBe("United States");
   });
 
+  it("normalizes US-style candidate country aliases for Greenhouse search targets", () => {
+    const targets = buildSearchTargets(
+      "greenhouse",
+      "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
+      "site engineer",
+      "USA"
+    );
+
+    expect(targets).toHaveLength(1);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(firstUrl.searchParams.get("location")).toBe("United States");
+  });
+
+  it("builds Greenhouse keywords with an explicit remote hint only once", () => {
+    expect(buildGreenhouseKeywordQuery("site engineer")).toBe("site engineer remote");
+    expect(buildGreenhouseKeywordQuery("site engineer remote")).toBe("site engineer remote");
+  });
+
+  it("normalizes Greenhouse country labels for common aliases", () => {
+    expect(normalizeGreenhouseCountryLabel("US")).toBe("United States");
+    expect(normalizeGreenhouseCountryLabel("America")).toBe("United States");
+    expect(normalizeGreenhouseCountryLabel("UK")).toBe("United Kingdom");
+    expect(normalizeGreenhouseCountryLabel("Canada")).toBe("Canada");
+    expect(normalizeGreenhouseCountryShortCode("US")).toBe("US");
+    expect(normalizeGreenhouseCountryShortCode("United Kingdom")).toBe("GB");
+  });
+
   it("keeps MyGreenhouse search targets on the portal page so the in-page search UI can run", () => {
     const targets = buildSearchTargets(
       "greenhouse",
       "https://my.greenhouse.io/",
-      "site engineer"
+      "site engineer",
+      "US"
     );
 
     expect(targets).toHaveLength(1);
     const firstUrl = new URL(targets[0].url);
 
     expect(firstUrl.origin).toBe("https://my.greenhouse.io");
-    expect(firstUrl.pathname).toBe("/");
-    expect(firstUrl.searchParams.get("keyword")).toBe("site engineer");
+    expect(firstUrl.pathname).toBe("/jobs");
+    expect(targets[0].url).toBe(
+      "https://my.greenhouse.io/jobs?query=site%20engineer&location=United%20States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type[]=remote"
+    );
+    expect(firstUrl.searchParams.get("query")).toBe("site engineer");
+    expect(firstUrl.searchParams.get("keyword")).toBeNull();
+    expect(firstUrl.searchParams.get("location")).toBe("United States");
+    expect(firstUrl.searchParams.get("lat")).toBe("39.71614");
+    expect(firstUrl.searchParams.get("lon")).toBe("-96.999246");
+    expect(firstUrl.searchParams.get("location_type")).toBe("country");
+    expect(firstUrl.searchParams.get("country_short_name")).toBe("US");
+    expect(firstUrl.searchParams.getAll("work_type[]")).toEqual(["remote"]);
+  });
+
+  it("keeps MyGreenhouse search targets on the fixed remote United States template", () => {
+    const targets = buildSearchTargets(
+      "greenhouse",
+      "https://my.greenhouse.io/jobs",
+      "site engineer"
+    );
+
+    expect(targets).toHaveLength(1);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(targets[0].url).toBe(
+      "https://my.greenhouse.io/jobs?query=site%20engineer&location=United%20States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type[]=remote"
+    );
+    expect(firstUrl.pathname).toBe("/jobs");
+    expect(firstUrl.searchParams.get("query")).toBe("site engineer");
+    expect(firstUrl.searchParams.get("location")).toBe("United States");
+    expect(firstUrl.searchParams.get("lat")).toBe("39.71614");
+    expect(firstUrl.searchParams.get("lon")).toBe("-96.999246");
+    expect(firstUrl.searchParams.get("location_type")).toBe("country");
+    expect(firstUrl.searchParams.get("country_short_name")).toBe("US");
+    expect(firstUrl.searchParams.getAll("work_type[]")).toEqual(["remote"]);
+  });
+
+  it("upgrades partial MyGreenhouse results URLs to the canonical country-scoped remote search", () => {
+    const targets = buildSearchTargets(
+      "greenhouse",
+      "https://my.greenhouse.io/jobs?query=full%20stack%20remote",
+      "full stack",
+      "US"
+    );
+
+    expect(targets).toHaveLength(1);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(targets[0].url).toBe(
+      "https://my.greenhouse.io/jobs?query=full%20stack&location=United%20States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type[]=remote"
+    );
+    expect(firstUrl.pathname).toBe("/jobs");
+    expect(firstUrl.searchParams.get("query")).toBe("full stack");
+    expect(firstUrl.searchParams.get("location")).toBe("United States");
+    expect(firstUrl.searchParams.get("lat")).toBe("39.71614");
+    expect(firstUrl.searchParams.get("lon")).toBe("-96.999246");
+    expect(firstUrl.searchParams.get("location_type")).toBe("country");
+    expect(firstUrl.searchParams.get("country_short_name")).toBe("US");
+    expect(firstUrl.searchParams.getAll("work_type[]")).toEqual(["remote"]);
   });
 
   it("builds Built In search targets with the current remote jobs route", () => {

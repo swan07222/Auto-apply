@@ -1316,6 +1316,10 @@ function isTrailingPaginationAdvanceControl(
     return false;
   }
 
+  if (extractPaginationPageNumber(element) !== null) {
+    return false;
+  }
+
   const previousControls = controls.slice(0, elementIndex);
   const hasCurrentBefore = previousControls.some((candidate) =>
     isCurrentPageIndicator(candidate)

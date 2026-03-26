@@ -3,7 +3,6 @@
 import { vi } from "vitest";
 
 import {
-  findFirstVisibleElement,
   getClickableApplyElement,
   getNavigationUrl,
   isElementInteractive,
@@ -96,20 +95,13 @@ describe("dom helpers", () => {
     expect(isExternalUrl("https://company.example.org/careers/apply")).toBe(true);
   });
 
-  it("finds visible elements while skipping invalid selectors and hidden nodes", () => {
+  it("detects visibility while skipping hidden nodes", () => {
     document.body.innerHTML = `
       <button id="hidden" style="display:none">Hidden</button>
       <button id="transparent" style="opacity:0.0">Transparent</button>
       <button id="visible">Visible</button>
     `;
 
-    const found = findFirstVisibleElement<HTMLButtonElement>([
-      "button[",
-      "#hidden",
-      "#visible",
-    ]);
-
-    expect(found?.id).toBe("visible");
     expect(isElementVisible(document.querySelector("#hidden") as HTMLButtonElement)).toBe(false);
     expect(
       isElementVisible(document.querySelector("#transparent") as HTMLButtonElement)
@@ -176,6 +168,20 @@ describe("dom helpers", () => {
 
     performClickAction(button);
 
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("can skip focus before dispatching a click", () => {
+    document.body.innerHTML = `<button id="apply">Apply</button>`;
+
+    const button = document.querySelector("#apply") as HTMLButtonElement;
+    const focusSpy = vi.spyOn(button, "focus");
+    const clickSpy = vi.fn();
+    button.addEventListener("click", clickSpy);
+
+    performClickAction(button, { skipFocus: true });
+
+    expect(focusSpy).not.toHaveBeenCalled();
     expect(clickSpy).toHaveBeenCalledTimes(1);
   });
 

@@ -760,10 +760,11 @@ function derivePopupIdlePreview(options) {
   };
 }
 function shouldDisableStartButtonForSession(searchMode, activeSite2, session) {
+  const sessionIsActive = session?.phase === "running" || session?.phase === "paused" || session?.phase === "waiting_for_verification";
   if (searchMode === "job_board") {
-    return !isJobBoardSite2(activeSite2) || Boolean(session && session.phase !== "idle");
+    return !isJobBoardSite2(activeSite2) || sessionIsActive;
   }
-  return Boolean(session && session.phase !== "idle");
+  return sessionIsActive;
 }
 function isJobBoardSite2(site) {
   return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor" || site === "greenhouse" || site === "builtin";

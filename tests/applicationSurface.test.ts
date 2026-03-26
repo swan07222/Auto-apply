@@ -7,6 +7,7 @@ import {
   hasLikelyApplicationForm,
   hasLikelyApplicationFrame,
   hasLikelyApplicationPageContent,
+  hasLikelyApplicationSurface,
   isLikelyApplicationField,
   waitForLikelyApplicationSurface,
 } from "../src/content/applicationSurface";
@@ -149,6 +150,27 @@ describe("application surface helpers", () => {
     expect(hasLikelyApplicationForm(collectors)).toBe(true);
   });
 
+  it("recognizes Monster inline apply drawers even when the job page remains visible", () => {
+    document.body.innerHTML = `
+      <main class="job-detail-panel">
+        <section class="job-description">
+          <button type="button">Quick Apply</button>
+        </section>
+        <section
+          role="dialog"
+          aria-modal="true"
+          class="monster-apply-drawer"
+          data-testid="candidate-apply-drawer"
+        >
+          <p>Continue your application by uploading your resume.</p>
+          <button data-testid="continue-application">Continue</button>
+        </section>
+      </main>
+    `;
+
+    expect(hasLikelyApplicationSurface("monster", collectors)).toBe(true);
+  });
+
   it("waits for a likely application surface to appear after delayed rendering", async () => {
     vi.useFakeTimers();
     document.body.innerHTML = `<main><h1>Job details</h1></main>`;
@@ -173,5 +195,27 @@ describe("application surface helpers", () => {
     await vi.advanceTimersByTimeAsync(2_100);
 
     await expect(promise).resolves.toBe(true);
+  });
+
+  it("does not scroll the page while waiting for Monster apply surfaces", async () => {
+    vi.useFakeTimers();
+    document.body.innerHTML = `<main><h1>Job details</h1></main>`;
+
+    const scrollSpy = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    const promise = waitForLikelyApplicationSurface("monster", collectors);
+
+    window.setTimeout(() => {
+      document.body.innerHTML = `
+        <section role="dialog" aria-modal="true" class="monster-apply-drawer">
+          <p>Continue your application.</p>
+          <button data-testid="continue-application">Continue</button>
+        </section>
+      `;
+    }, 4_300);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    await expect(promise).resolves.toBe(true);
+    expect(scrollSpy).not.toHaveBeenCalled();
   });
 });

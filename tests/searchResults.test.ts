@@ -464,6 +464,23 @@ describe("search result collection", () => {
     expect(action?.text).toBe("2");
   });
 
+  it("prefers the immediate next numbered Indeed page instead of jumping to the last visible page", () => {
+    document.body.innerHTML = `
+      <nav aria-label="pagination">
+        <a href="/jobs?q=software+engineer&start=0">1</a>
+        <a href="/jobs?q=software+engineer&start=10" aria-current="page">2</a>
+        <a href="/jobs?q=software+engineer&start=20">3</a>
+        <a href="/jobs?q=software+engineer&start=30">4</a>
+        <a href="/jobs?q=software+engineer&start=40">5</a>
+      </nav>
+    `;
+
+    const action = findNextResultsPageAction("indeed");
+
+    expect(action?.text).toBe("3");
+    expect(action?.navUrl).toContain("start=20");
+  });
+
   it("ignores inactive Greenhouse next buttons on the last results page", () => {
     document.body.innerHTML = `
       <section class="pagination">

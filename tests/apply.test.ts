@@ -484,6 +484,30 @@ describe("application progression actions", () => {
     expect(action?.description).toBe("Quick Apply");
   });
 
+  it("keeps a clickable Monster wrapper as a retry fallback when the visible button is nested inside it", () => {
+    document.body.innerHTML = `
+      <main class="job-detail-panel">
+        <section class="job-description">
+          <div id="monster-apply-wrapper" class="monster-apply-button" onclick="void 0">
+            <button id="monster-apply-button" type="button">Apply</button>
+          </div>
+        </section>
+      </main>
+    `;
+
+    const wrapper = document.querySelector("#monster-apply-wrapper") as HTMLDivElement;
+    const button = document.querySelector("#monster-apply-button") as HTMLButtonElement;
+
+    const action = findMonsterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    if (action?.type === "click") {
+      expect(action.element).toBe(button);
+      expect(action.fallbackElements).toContain(wrapper);
+    }
+  });
+
   it("prefers the top-most Monster quick-apply button on apply-button style pages", () => {
     document.body.innerHTML = `
       <main class="job-detail-panel">
@@ -765,6 +789,205 @@ describe("application progression actions", () => {
     }
   });
 
+  it("prefers the Monster apply button above the description area over fake apply buttons below it", () => {
+    document.body.innerHTML = `
+      <main class="job-detail-panel">
+        <section class="job-hero">
+          <h1>Senior DevOps Engineer</h1>
+          <button id="hero-quick-apply" type="button">Quick Apply</button>
+        </section>
+        <section class="profile-insights">
+          <h2>Profile Insights</h2>
+        </section>
+        <section class="job-body">
+          <h2>Description</h2>
+          <p>Real job description content.</p>
+          <article class="related-card">
+            <button id="fake-quick-apply-one" type="button">Quick Apply</button>
+          </article>
+          <article class="related-card">
+            <button id="fake-quick-apply-two" type="button">Quick Apply</button>
+          </article>
+        </section>
+      </main>
+    `;
+
+    const heroButton = document.querySelector("#hero-quick-apply") as HTMLButtonElement;
+    const fakeButtonOne = document.querySelector(
+      "#fake-quick-apply-one"
+    ) as HTMLButtonElement;
+    const fakeButtonTwo = document.querySelector(
+      "#fake-quick-apply-two"
+    ) as HTMLButtonElement;
+    const profileInsightsHeading = Array.from(
+      document.querySelectorAll<HTMLElement>("h2")
+    ).find((element) => element.textContent === "Profile Insights") as HTMLElement;
+    const descriptionHeading = Array.from(
+      document.querySelectorAll<HTMLElement>("h2")
+    ).find((element) => element.textContent === "Description") as HTMLElement;
+
+    Object.defineProperty(heroButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 120,
+          left: 0,
+          width: 180,
+          height: 44,
+          right: 180,
+          bottom: 164,
+          x: 0,
+          y: 120,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(profileInsightsHeading, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 220,
+          left: 0,
+          width: 200,
+          height: 32,
+          right: 200,
+          bottom: 252,
+          x: 0,
+          y: 220,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(descriptionHeading, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 320,
+          left: 0,
+          width: 160,
+          height: 32,
+          right: 160,
+          bottom: 352,
+          x: 0,
+          y: 320,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(fakeButtonOne, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 460,
+          left: 0,
+          width: 180,
+          height: 44,
+          right: 180,
+          bottom: 504,
+          x: 0,
+          y: 460,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(fakeButtonTwo, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 620,
+          left: 0,
+          width: 180,
+          height: 44,
+          right: 180,
+          bottom: 664,
+          x: 0,
+          y: 620,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+
+    const action = findMonsterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    if (action?.type === "click") {
+      expect(action.element).toBe(heroButton);
+    }
+  });
+
+  it("prefers the Monster apply button aligned with the job title even when boundary headings are absent", () => {
+    document.body.innerHTML = `
+      <main class="job-detail-panel">
+        <section class="job-hero">
+          <h1>Senior Backend Engineer</h1>
+          <button id="hero-apply" type="button">Quick Apply</button>
+        </section>
+        <section class="job-body">
+          <p>Job details content.</p>
+          <article class="related-card">
+            <button id="lower-fake-apply" type="button">Quick Apply</button>
+          </article>
+        </section>
+      </main>
+    `;
+
+    const title = document.querySelector("h1") as HTMLElement;
+    const heroButton = document.querySelector("#hero-apply") as HTMLButtonElement;
+    const lowerFakeButton = document.querySelector(
+      "#lower-fake-apply"
+    ) as HTMLButtonElement;
+
+    Object.defineProperty(title, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 120,
+          left: 0,
+          width: 420,
+          height: 72,
+          right: 420,
+          bottom: 192,
+          x: 0,
+          y: 120,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(heroButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 140,
+          left: 460,
+          width: 180,
+          height: 44,
+          right: 640,
+          bottom: 184,
+          x: 460,
+          y: 140,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(lowerFakeButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 420,
+          left: 0,
+          width: 180,
+          height: 44,
+          right: 180,
+          bottom: 464,
+          x: 0,
+          y: 420,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+
+    const action = findMonsterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    if (action?.type === "click") {
+      expect(action.element).toBe(heroButton);
+    }
+  });
+
   it("keeps same-site Monster apply targets click-based so site scripts can continue the flow", () => {
     document.body.innerHTML = `
       <main class="job-detail-panel">
@@ -782,6 +1005,11 @@ describe("application progression actions", () => {
     expect(action).not.toBeNull();
     expect(action?.type).toBe("click");
     expect(action?.description).toBe("Apply now");
+    if (action?.type === "click") {
+      expect(action.fallbackUrl).toBe(
+        "https://www.monster.com/job-openings/frontend-engineer-remote--alpha123/apply"
+      );
+    }
   });
 
   it("keeps external Monster apply targets click-based so Monster can own the handoff", () => {
@@ -801,6 +1029,11 @@ describe("application progression actions", () => {
     expect(action).not.toBeNull();
     expect(action?.type).toBe("click");
     expect(action?.description).toBe("Apply now");
+    if (action?.type === "click") {
+      expect(action.fallbackUrl).toBe(
+        "https://company.example.com/careers/apply/123"
+      );
+    }
   });
 
   it("falls back to clicking a Monster component when only a broken apply URL is exposed", () => {
@@ -816,6 +1049,9 @@ describe("application progression actions", () => {
     expect(action).not.toBeNull();
     expect(action?.type).toBe("click");
     expect(action?.description).toBe("Apply now");
+    if (action?.type === "click") {
+      expect(action.fallbackUrl).toBeUndefined();
+    }
   });
 
   it("finds ZipRecruiter apply links that navigate directly to zipapply", () => {
@@ -1144,6 +1380,26 @@ describe("application progression actions", () => {
 
     expect(action).not.toBeNull();
     expect(action?.type).toBe("click");
+  });
+
+  it("detects Monster inline-apply progression controls from metadata-only buttons", () => {
+    document.body.innerHTML = `
+      <section
+        role="dialog"
+        aria-modal="true"
+        class="monster-apply-drawer"
+        data-testid="candidate-apply-drawer"
+      >
+        <div>Continue your application by uploading your resume.</div>
+        <button data-testid="continue-application"></button>
+      </section>
+    `;
+
+    const action = findProgressionAction("monster");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.text).toContain("continue");
   });
 
   it("detects ZipRecruiter apply modals rendered inside shadow DOM", () => {

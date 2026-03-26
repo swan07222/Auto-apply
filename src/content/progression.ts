@@ -57,12 +57,16 @@ export async function handleProgressionAction({
     return false;
   }
 
-  progression.element.scrollIntoView({
-    behavior: "smooth",
-    block: "center",
+  if (site !== "monster") {
+    progression.element.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+    await sleep(400);
+  }
+  performClickAction(progression.element, {
+    skipFocus: site === "monster",
   });
-  await sleep(400);
-  performClickAction(progression.element);
   await sleep(site === "indeed" || site === "ziprecruiter" ? 3_400 : 2_800);
 
   if (window.location.href !== previousUrl) {

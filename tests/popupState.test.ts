@@ -47,6 +47,14 @@ describe("popup state helpers", () => {
       })
     ).toBe(true);
     expect(
+      shouldDisableStartButtonForSession("job_board", "greenhouse", {
+        site: "greenhouse",
+        phase: "completed",
+        message: "Finished",
+        updatedAt: 1,
+      })
+    ).toBe(false);
+    expect(
       shouldDisableStartButtonForSession("other_job_sites", null, {
         site: "other_sites",
         phase: "idle",

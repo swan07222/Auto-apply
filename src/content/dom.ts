@@ -82,27 +82,6 @@ export function collectShadowHosts(root: ParentNode): HTMLElement[] {
   return hosts;
 }
 
-export function findFirstVisibleElement<T extends HTMLElement>(
-  selectors: string[]
-): T | null {
-  for (const selector of selectors) {
-    let matches: T[];
-    try {
-      matches = Array.from(document.querySelectorAll<T>(selector));
-    } catch {
-      continue;
-    }
-
-    for (const element of matches) {
-      if (isElementVisible(element)) {
-        return element;
-      }
-    }
-  }
-
-  return null;
-}
-
 export function getClickableApplyElement(el: HTMLElement): HTMLElement {
   // Many boards render the real click target inside shadow DOM.
   if (el.shadowRoot) {
@@ -432,7 +411,10 @@ export function shouldScrollElementIntoViewBeforeClick(
   );
 }
 
-export function performClickAction(element: HTMLElement): void {
+export function performClickAction(
+  element: HTMLElement,
+  options?: { skipFocus?: boolean }
+): void {
   const isNativeSubmitControl =
     (element instanceof HTMLButtonElement &&
       element.type.toLowerCase() === "submit") ||
@@ -451,10 +433,12 @@ export function performClickAction(element: HTMLElement): void {
       element.getAttribute("tabindex") !== null);
 
   // Focus first so sites that rely on active-element state respond consistently.
-  try {
-    element.focus();
-  } catch {
-    // Some elements cannot be focused
+  if (!options?.skipFocus) {
+    try {
+      element.focus();
+    } catch {
+      // Some elements cannot be focused
+    }
   }
 
   if (isNativeSubmitControl) {
