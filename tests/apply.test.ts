@@ -988,7 +988,7 @@ describe("application progression actions", () => {
     }
   });
 
-  it("keeps same-site Monster apply targets click-based so site scripts can continue the flow", () => {
+  it("navigates directly to explicit same-site Monster apply targets", () => {
     document.body.innerHTML = `
       <main class="job-detail-panel">
         <section class="job-description">
@@ -1003,12 +1003,32 @@ describe("application progression actions", () => {
     const action = findMonsterApplyAction();
 
     expect(action).not.toBeNull();
-    expect(action?.type).toBe("click");
-    expect(action?.description).toBe("Apply now");
-    if (action?.type === "click") {
-      expect(action.fallbackUrl).toBe(
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe(
         "https://www.monster.com/job-openings/frontend-engineer-remote--alpha123/apply"
       );
+    }
+  });
+
+  it("ignores same-site Monster fallback URLs that are not actual apply targets", () => {
+    document.body.innerHTML = `
+      <main class="job-detail-panel">
+        <section class="job-description">
+          <apply-button-wc
+            data-apply-url="https://www.monster.com/jobs/full-stack-software-engineer-jobs"
+            aria-label="Quick Apply"
+          ></apply-button-wc>
+        </section>
+      </main>
+    `;
+
+    const action = findMonsterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    if (action?.type === "click") {
+      expect(action.fallbackUrl).toBeUndefined();
     }
   });
 
@@ -1621,6 +1641,25 @@ describe("application progression actions", () => {
 
     expect(hasIndeedApplyIframe()).toBe(true);
     expect(hasZipRecruiterApplyModal()).toBe(true);
+  });
+
+  it("does not mistake generic apply-titled iframes for Indeed SmartApply", () => {
+    document.body.innerHTML = `
+      <iframe title="Apply now"></iframe>
+    `;
+
+    expect(hasIndeedApplyIframe()).toBe(false);
+  });
+
+  it("detects Indeed SmartApply embeds rendered inside shadow roots", () => {
+    const host = document.createElement("div");
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = `
+      <iframe src="https://smartapply.indeed.com/apply/start"></iframe>
+    `;
+    document.body.appendChild(host);
+
+    expect(hasIndeedApplyIframe()).toBe(true);
   });
 
   it("recognizes direct application URLs and navigation preference", () => {

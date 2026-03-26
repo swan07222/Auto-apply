@@ -119,6 +119,25 @@ describe("job search candidate filtering", () => {
     ]);
   });
 
+  it("filters candidates when career-site cards expose absolute calendar dates", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://example.com/jobs/frontend-engineer-1",
+        title: "Frontend Engineer",
+        contextText: "Remote role. Posted Mar 26, 2026.",
+      },
+      {
+        url: "https://example.com/jobs/platform-engineer-2",
+        title: "Platform Engineer",
+        contextText: "Remote role. Posted Mar 10, 2026.",
+      },
+    ];
+
+    expect(
+      pickRelevantJobUrls(candidates, "other_sites", undefined, "24h")
+    ).toEqual(["https://example.com/jobs/frontend-engineer-1"]);
+  });
+
   it("keeps fallback generic jobs after preferred matches so boards can fill the requested limit", () => {
     const candidates: JobCandidate[] = [
       {
@@ -682,6 +701,14 @@ describe("job search candidate filtering", () => {
         "Front End Developer jobs"
       )
     ).toBe(false);
+
+    expect(
+      isLikelyJobDetailUrl(
+        "monster",
+        "https://www.monster.com/jobs/full-stack-software-engineer-jobs",
+        "Monster Jobs - Job Search, Career Advice & Hiring Resources | Monster.com"
+      )
+    ).toBe(false);
   });
 
   it("collects Monster job cards while skipping search-style links", () => {
@@ -751,6 +778,21 @@ describe("job search candidate filtering", () => {
     expect(urls).toEqual([
       "https://www.monster.com/job-openings/frontend-engineer-remote--alpha123",
     ]);
+  });
+
+  it("drops Monster embedded records that point back to generic Monster search pages", () => {
+    const urls = pickRelevantJobUrls(
+      collectMonsterEmbeddedCandidates([
+        {
+          title: "Monster Jobs - Job Search, Career Advice & Hiring Resources | Monster.com",
+          url: "https://www.monster.com/jobs/full-stack-software-engineer-jobs",
+          description: "Search Monster jobs.",
+        },
+      ]),
+      "monster"
+    );
+
+    expect(urls).toEqual([]);
   });
 
   it("accepts Glassdoor detail URLs and rejects search listings", () => {
@@ -2290,6 +2332,30 @@ describe("job search candidate filtering", () => {
     `;
 
     expect(isCurrentPageAppliedJob("indeed")).toBe(true);
+  });
+
+  it("does not treat other Indeed result cards' applied badges as the active job state", () => {
+    window.history.replaceState({}, "", "/jobs?q=platform+engineer");
+
+    document.body.innerHTML = `
+      <main>
+        <ul class="jobsearch-ResultsList">
+          <li class="job_seen_beacon">
+            <a href="/viewjob?jk=already123">Other role</a>
+            <span>Already applied</span>
+          </li>
+        </ul>
+        <section id="jobsearch-ViewjobPaneWrapper">
+          <div id="jobDescriptionText">
+            Platform Engineer
+            Build internal developer tooling for distributed systems.
+            Work closely with product and infrastructure teams on automation.
+          </div>
+        </section>
+      </main>
+    `;
+
+    expect(isCurrentPageAppliedJob("indeed")).toBe(false);
   });
 
   it("waits for enough job results until slower boards exhaust their later recovery passes", () => {

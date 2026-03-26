@@ -669,6 +669,21 @@ export function findMonsterApplyAction(): ApplyAction | null {
     return null;
   }
 
+  const directMonsterApplyUrl = resolveMonsterFallbackUrl(best.url);
+  if (
+    directMonsterApplyUrl &&
+    isMonsterHostedUrl(directMonsterApplyUrl)
+  ) {
+    return {
+      type: "navigate",
+      url: directMonsterApplyUrl,
+      description: describeApplyTarget(
+        directMonsterApplyUrl,
+        best.text || "Monster apply button"
+      ),
+    };
+  }
+
   return {
     type: "click",
     element: best.element,
@@ -689,7 +704,36 @@ function resolveMonsterFallbackUrl(url: string | null): string | undefined {
     return undefined;
   }
 
+  try {
+    const parsed = new URL(normalizedUrl, window.location.href);
+    const monsterHosted = parsed.hostname.toLowerCase().includes("monster");
+    const pathAndQuery = `${parsed.pathname.toLowerCase()}${parsed.search.toLowerCase()}`;
+
+    if (
+      monsterHosted &&
+      !/\/apply\b|application|candidate|jobapply|start-apply|applytojob/i.test(
+        pathAndQuery
+      )
+    ) {
+      return undefined;
+    }
+  } catch {
+    return undefined;
+  }
+
+  if (!shouldPreferApplyNavigation(normalizedUrl, "Apply", "monster")) {
+    return undefined;
+  }
+
   return normalizedUrl;
+}
+
+function isMonsterHostedUrl(url: string): boolean {
+  try {
+    return new URL(url, window.location.href).hostname.toLowerCase().includes("monster");
+  } catch {
+    return false;
+  }
 }
 
 function getMonsterActionTop(element: HTMLElement): number {
@@ -2134,16 +2178,19 @@ function extractDiceInlineApplyUrl(): string | null {
 }
 
 export function hasIndeedApplyIframe(): boolean {
-  return Boolean(
-    document.querySelector(
-      "iframe[src*='smartapply.indeed.com']," +
-        "iframe[src*='indeedapply']," +
-        "iframe[id*='indeedapply']," +
-        "iframe[title*='apply']," +
-        "[class*='ia-IndeedApplyWidget']," +
-        "[id*='indeedApplyWidget']"
-    )
+  const candidates = collectDeepMatches<HTMLElement>(
+    [
+      "iframe[src*='smartapply.indeed.com' i]",
+      "iframe[src*='indeedapply' i]",
+      "iframe[id*='indeedapply' i]",
+      "iframe[name*='indeedapply' i]",
+      "iframe[title*='indeed apply' i]",
+      "[class*='ia-IndeedApplyWidget']",
+      "[id*='indeedApplyWidget']",
+    ].join(", ")
   );
+
+  return candidates.some((candidate) => isElementVisible(candidate));
 }
 
 export function hasZipRecruiterApplyModal(): boolean {

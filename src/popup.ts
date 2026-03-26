@@ -166,6 +166,10 @@ const popupDialog = createPopupDialogController({
 
 void initialize();
 
+function hasActiveTabId(value: number | null): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
 function setStartButtonDisabled(disabled: boolean): void {
   startButton.disabled = disabled;
 }
@@ -488,7 +492,7 @@ async function startAutomation(): Promise<void> {
   }
 
   // Job board mode — requires a supported site
-  if (!activeTabId) {
+  if (!hasActiveTabId(activeTabId)) {
     applyStatus(
       createStatus("unsupported", "error", "No active tab was found.")
     );
@@ -634,7 +638,7 @@ async function performRefreshStatus(): Promise<void> {
   }
 
   if (searchMode === "startup_careers") {
-    if (!activeTabId) {
+    if (!hasActiveTabId(activeTabId)) {
       applyStatus(
         createStatus(
           "startup",
@@ -697,7 +701,7 @@ async function performRefreshStatus(): Promise<void> {
   }
 
   if (searchMode === "other_job_sites") {
-    if (!activeTabId) {
+    if (!hasActiveTabId(activeTabId)) {
       applyStatus(
         createStatus(
           "other_sites",
@@ -759,7 +763,7 @@ async function performRefreshStatus(): Promise<void> {
   }
 
   // Job board mode below
-  if (!activeTabId) {
+  if (!hasActiveTabId(activeTabId)) {
     applyStatus(
       createStatus("unsupported", "error", "No active tab was found.")
     );
@@ -2189,6 +2193,9 @@ async function findBestActiveTab(): Promise<ActiveContextTab | null> {
     chrome.tabs.query({
       active: true,
       lastFocusedWindow: true,
+    }),
+    chrome.tabs.query({
+      active: true,
     }),
   ]);
 

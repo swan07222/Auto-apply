@@ -70,6 +70,24 @@ describe("shared automation target logic", () => {
     ).toBe(true);
   });
 
+  it("adds the selected Indeed date window to the initial search URL", () => {
+    const targets = buildSearchTargets(
+      "indeed",
+      "https://www.indeed.com",
+      "software engineer",
+      "",
+      "3d"
+    );
+
+    expect(targets).toHaveLength(1);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(firstUrl.pathname).toBe("/jobs");
+    expect(firstUrl.searchParams.get("q")).toBe("software engineer");
+    expect(firstUrl.searchParams.get("l")).toBe("Remote");
+    expect(firstUrl.searchParams.get("fromage")).toBe("3");
+  });
+
   it("builds remote Glassdoor search targets using the jobs route", () => {
     const targets = buildSearchTargets(
       "glassdoor",
@@ -108,6 +126,22 @@ describe("shared automation target logic", () => {
     const targets = buildSearchTargets(
       "greenhouse",
       "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
+      "site engineer"
+    );
+
+    expect(targets).toHaveLength(1);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(firstUrl.origin).toBe("https://job-boards.greenhouse.io");
+    expect(firstUrl.pathname).toBe("/vercel");
+    expect(firstUrl.searchParams.get("keyword")).toBe("site engineer remote");
+    expect(firstUrl.searchParams.get("location")).toBe("Remote");
+  });
+
+  it("normalizes Greenhouse board index URLs before building search targets", () => {
+    const targets = buildSearchTargets(
+      "greenhouse",
+      "https://job-boards.greenhouse.io/vercel/jobs?department=engineering",
       "site engineer"
     );
 

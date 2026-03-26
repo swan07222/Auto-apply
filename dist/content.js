@@ -456,12 +456,18 @@
     }
     return Array.from(deduped.values());
   }
-  function buildSearchTargets(site, currentUrl, searchKeywords, candidateCountry = "") {
+  function buildSearchTargets(site, currentUrl, searchKeywords, candidateCountry = "", datePostedWindow = "any") {
     return dedupeSearchTargets(
       parseSearchKeywords(searchKeywords).map((keyword) => ({
         label: keyword,
         keyword,
-        url: buildSingleSearchUrl(site, keyword, currentUrl, candidateCountry)
+        url: buildSingleSearchUrl(
+          site,
+          keyword,
+          currentUrl,
+          candidateCountry,
+          datePostedWindow
+        )
       }))
     );
   }
@@ -482,13 +488,14 @@
     }
     return Array.from(deduped.values());
   }
-  function buildSingleSearchUrl(site, query, currentUrl, candidateCountry = "") {
+  function buildSingleSearchUrl(site, query, currentUrl, candidateCountry = "", datePostedWindow = "any") {
     const baseOrigin = CANONICAL_JOB_BOARD_ORIGINS[site];
     switch (site) {
       case "indeed": {
         const url = new URL("/jobs", baseOrigin);
         url.searchParams.set("q", query);
         url.searchParams.set("l", "Remote");
+        applyBoardDatePostedWindow(url, site, datePostedWindow);
         return url.toString();
       }
       case "ziprecruiter": {
@@ -516,6 +523,29 @@
         );
       case "builtin":
         return buildBuiltInSearchUrl(query, baseOrigin);
+    }
+  }
+  function applyBoardDatePostedWindow(url, site, datePostedWindow) {
+    if (site !== "indeed") {
+      return;
+    }
+    const fromAge = getIndeedFromAgeValue(datePostedWindow);
+    if (!fromAge) {
+      url.searchParams.delete("fromage");
+      return;
+    }
+    url.searchParams.set("fromage", fromAge);
+  }
+  function getIndeedFromAgeValue(datePostedWindow) {
+    switch (datePostedWindow) {
+      case "24h":
+        return "1";
+      case "3d":
+        return "3";
+      case "1w":
+        return "7";
+      case "any":
+        return "";
     }
   }
   function buildMonsterSearchUrl(query, baseOrigin) {
@@ -549,8 +579,9 @@
     try {
       const parsed = new URL(currentUrl);
       const normalizedPath = parsed.pathname.replace(/\/+$/, "");
-      const jobsIndex = normalizedPath.toLowerCase().indexOf("/jobs/");
-      const boardPath = jobsIndex >= 0 ? normalizedPath.slice(0, jobsIndex) : normalizedPath || "/";
+      const lowerPath = normalizedPath.toLowerCase();
+      const jobsIndex = lowerPath.indexOf("/jobs/");
+      const boardPath = jobsIndex >= 0 ? normalizedPath.slice(0, jobsIndex) : lowerPath.endsWith("/jobs") ? normalizedPath.slice(0, -"/jobs".length) : normalizedPath || "/";
       return new URL(boardPath || "/", `${parsed.protocol}//${parsed.host}`).toString();
     } catch {
       return fallbackOrigin;
@@ -2347,6 +2378,170 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return tokens.join(" ");
   }
 
+  // src/content/pendingAnswers.ts
+  var PENDING_ANSWER_FALLBACK_STORAGE_KEY = "remote-job-search-pending-answers-fallback";
+  var DEFAULT_PENDING_ANSWER_PROFILE_KEY = "__default__";
+  function mergeSavedAnswerRecords(base, incoming) {
+    const merged = {};
+    for (const [key, answer] of Object.entries(base)) {
+      upsertSavedAnswer(merged, key, answer);
+    }
+    for (const [key, answer] of Object.entries(incoming)) {
+      upsertSavedAnswer(merged, key, answer);
+    }
+    return merged;
+  }
+  function readPendingAnswerBucketsFromFallback(raw) {
+    if (!raw) {
+      return {};
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return readLegacyPendingAnswerEntries(parsed);
+      }
+      if (!isRecord2(parsed)) {
+        return {};
+      }
+      const buckets = {};
+      for (const [rawProfileKey, rawAnswers] of Object.entries(parsed)) {
+        if (!isRecord2(rawAnswers)) {
+          continue;
+        }
+        const profileKey = toPendingAnswerProfileKey(rawProfileKey);
+        buckets[profileKey] = mergeSavedAnswerRecords(
+          buckets[profileKey] ?? {},
+          rawAnswers
+        );
+      }
+      return buckets;
+    } catch {
+      return {};
+    }
+  }
+  function readLegacyPendingAnswerEntries(entries) {
+    const buckets = {};
+    for (const entry of entries) {
+      if (!Array.isArray(entry) || entry.length < 2) {
+        continue;
+      }
+      const [key, answer] = entry;
+      if (typeof key !== "string" || !isSavedAnswerLike(answer)) {
+        continue;
+      }
+      addPendingAnswer(
+        buckets,
+        void 0,
+        key,
+        answer
+      );
+    }
+    return buckets;
+  }
+  function serializePendingAnswerBuckets(buckets) {
+    const serialized = {};
+    for (const [profileKey, answers] of Object.entries(buckets)) {
+      const normalizedAnswers = mergeSavedAnswerRecords({}, answers);
+      if (Object.keys(normalizedAnswers).length === 0) {
+        continue;
+      }
+      serialized[toPendingAnswerProfileKey(profileKey)] = normalizedAnswers;
+    }
+    return Object.keys(serialized).length > 0 ? JSON.stringify(serialized) : null;
+  }
+  function addPendingAnswer(buckets, profileId, key, answer) {
+    const profileKey = toPendingAnswerProfileKey(profileId);
+    buckets[profileKey] = mergeSavedAnswerRecords(buckets[profileKey] ?? {}, {
+      [key]: answer
+    });
+  }
+  function getPendingAnswersForProfile(buckets, profileId) {
+    return mergeSavedAnswerRecords(
+      {},
+      buckets[toPendingAnswerProfileKey(profileId)] ?? {}
+    );
+  }
+  function removePendingAnswers(buckets, profileId, keys) {
+    const profileKey = toPendingAnswerProfileKey(profileId);
+    const existing = buckets[profileKey];
+    if (!existing) {
+      return;
+    }
+    if (!keys) {
+      delete buckets[profileKey];
+      return;
+    }
+    for (const key of keys) {
+      const normalizedKey = normalizeQuestionKey(key);
+      if (!normalizedKey) {
+        continue;
+      }
+      delete existing[normalizedKey];
+    }
+    if (Object.keys(existing).length === 0) {
+      delete buckets[profileKey];
+    }
+  }
+  function listPendingAnswerBatches(buckets) {
+    return Object.entries(buckets).map(([profileKey, answers]) => ({
+      profileId: profileKey === DEFAULT_PENDING_ANSWER_PROFILE_KEY ? void 0 : profileKey,
+      answers: mergeSavedAnswerRecords({}, answers)
+    })).filter((batch) => Object.keys(batch.answers).length > 0);
+  }
+  function hasPendingAnswerBatches(buckets) {
+    return Object.keys(buckets).some(
+      (profileKey) => Object.keys(buckets[profileKey] ?? {}).length > 0
+    );
+  }
+  function resolvePendingAnswerTargetProfileId(profiles, activeProfileId, profileId) {
+    const normalizedProfileId = typeof profileId === "string" ? profileId.trim() : "";
+    if (normalizedProfileId) {
+      return profiles[normalizedProfileId] ? normalizedProfileId : null;
+    }
+    const normalizedActiveProfileId = typeof activeProfileId === "string" ? activeProfileId.trim() : "";
+    if (normalizedActiveProfileId && profiles[normalizedActiveProfileId]) {
+      return normalizedActiveProfileId;
+    }
+    return Object.keys(profiles).find((candidate) => candidate.trim().length > 0) ?? null;
+  }
+  function upsertSavedAnswer(target, key, answer) {
+    const normalized = normalizeSavedAnswer(key, answer);
+    if (!normalized) {
+      return;
+    }
+    const [normalizedKey, nextAnswer] = normalized;
+    const existing = target[normalizedKey];
+    if (!existing || nextAnswer.updatedAt >= existing.updatedAt) {
+      target[normalizedKey] = nextAnswer;
+    }
+  }
+  function normalizeSavedAnswer(key, answer) {
+    const question = cleanText(answer.question || key);
+    const value = cleanText(answer.value);
+    const normalizedKey = normalizeQuestionKey(key || question);
+    if (!question || !value || !normalizedKey) {
+      return null;
+    }
+    return [
+      normalizedKey,
+      {
+        question,
+        value,
+        updatedAt: Number.isFinite(answer.updatedAt) ? Number(answer.updatedAt) : Date.now()
+      }
+    ];
+  }
+  function toPendingAnswerProfileKey(profileId) {
+    const cleaned = typeof profileId === "string" ? profileId.trim() : "";
+    return cleaned || DEFAULT_PENDING_ANSWER_PROFILE_KEY;
+  }
+  function isSavedAnswerLike(value) {
+    return typeof value === "object" && value !== null && "question" in value && "value" in value && "updatedAt" in value;
+  }
+  function isRecord2(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
   // src/content/answerCapture.ts
   var REMEMBERABLE_CHOICE_SELECTOR = "button, [role='radio'], [role='checkbox'], [role='option'], [aria-checked], [aria-selected], [aria-pressed]";
   var BLOCKED_CHOICE_TOKENS = [
@@ -3613,7 +3808,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "[class*='ia-IndeedApplyButton']",
       ...GENERIC_APPLY_CANDIDATE_SELECTORS
     ],
-    currentJobSurfaceSelectors: [...GENERIC_CURRENT_JOB_SURFACE_SELECTORS],
+    currentJobSurfaceSelectors: [
+      "#jobsearch-ViewjobPaneWrapper",
+      "#vjs-container",
+      "#jobsearch-JobComponent",
+      "#jobDescriptionText",
+      "[data-testid='jobsearch-JobComponent']",
+      "[data-testid='searchSerpJobDetailsContainer']",
+      ...GENERIC_CURRENT_JOB_SURFACE_SELECTORS
+    ],
     resultCollectionMinimum: 25,
     resultCollectionMultiplier: 4,
     resultSurfaceSettleMs: 1400
@@ -3836,6 +4039,33 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     "us",
     "usa"
   ]);
+  var MONTH_NAME_TO_INDEX = {
+    jan: 0,
+    january: 0,
+    feb: 1,
+    february: 1,
+    mar: 2,
+    march: 2,
+    apr: 3,
+    april: 3,
+    may: 4,
+    jun: 5,
+    june: 5,
+    jul: 6,
+    july: 6,
+    aug: 7,
+    august: 7,
+    sep: 8,
+    sept: 8,
+    september: 8,
+    oct: 9,
+    october: 9,
+    nov: 10,
+    november: 10,
+    dec: 11,
+    december: 11
+  };
+  var POSTED_DATE_CUE_PATTERN = /\b(posted|reposted|updated|listed|active|date posted|new)\b/i;
   function shouldFilterBoardResultsByKeyword(site, eligibleCount, matchedCount) {
     if (matchedCount <= 0 || eligibleCount <= 0) {
       return false;
@@ -4085,12 +4315,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return left - right;
   }
   function extractPostedAgeHours(text) {
-    const raw = cleanText(text).toLowerCase();
-    const normalized = normalizeChoiceText(text).replace(/\s+/g, " ");
+    const cleaned = cleanText(text);
+    const raw = cleaned.toLowerCase();
+    const normalized = normalizeChoiceText(cleaned).replace(/\s+/g, " ");
     if (!normalized) {
       return null;
     }
-    if (/\bjust posted\b/.test(normalized)) {
+    if (/\b(just posted|just now|moments? ago|few moments ago|seconds? ago)\b/.test(
+      normalized
+    )) {
       return 0;
     }
     if (/\b(?:posted|active|updated|listed|reposted)\s+today\b/.test(normalized) || /\bnew today\b/.test(normalized)) {
@@ -4100,22 +4333,26 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return 24;
     }
     const compactPlusMatch = raw.match(
-      /\b(\d+)\s*(hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\+(?=\s|$)/
+      /\b(\d+)\s*(minutes?|mins?|min|m|hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\+(?=\s|$)/
     );
     if (compactPlusMatch) {
       return convertAgeValueToHours(compactPlusMatch[1], compactPlusMatch[2]);
     }
     const explicitAgoMatch = normalized.match(
-      /\b(?:(?:posted|active|updated|listed|reposted)\s+)?(\d+)\+?\s*(hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\s+ago\b/
+      /\b(?:(?:posted|active|updated|listed|reposted)\s+)?(\d+)\+?\s*(minutes?|mins?|min|m|hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\s+ago\b/
     );
     if (explicitAgoMatch) {
       return convertAgeValueToHours(explicitAgoMatch[1], explicitAgoMatch[2]);
     }
     const postedWithinMatch = normalized.match(
-      /\b(?:posted|active|updated|listed|reposted)\s+(\d+)\+?\s*(hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\b/
+      /\b(?:posted|active|updated|listed|reposted)\s+(\d+)\+?\s*(minutes?|mins?|min|m|hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\b/
     );
     if (postedWithinMatch) {
       return convertAgeValueToHours(postedWithinMatch[1], postedWithinMatch[2]);
+    }
+    const absoluteAge = extractAbsolutePostedAgeHours(cleaned);
+    if (absoluteAge !== null) {
+      return absoluteAge;
     }
     if (/\btoday\b/.test(normalized)) {
       return 12;
@@ -4182,6 +4419,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return null;
     }
     const unit = rawUnit.toLowerCase();
+    if (unit === "m" || unit === "min" || unit === "mins" || unit === "minute" || unit === "minutes") {
+      return 0;
+    }
     if (unit === "h" || unit === "hr" || unit === "hrs" || unit === "hour" || unit === "hours") {
       return value;
     }
@@ -4195,6 +4435,118 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return value * 24 * 30;
     }
     return null;
+  }
+  function extractAbsolutePostedAgeHours(source) {
+    if (!source) {
+      return null;
+    }
+    const monthDayMatch = source.match(
+      /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(\d{1,2})(?:,\s*(\d{4}))?\b/i
+    );
+    if (monthDayMatch) {
+      return convertCalendarDateMatchToAgeHours(
+        monthDayMatch[1],
+        monthDayMatch[2],
+        monthDayMatch[3]
+      );
+    }
+    const dayMonthMatch = source.match(
+      /\b(\d{1,2})\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?(?:,\s*|\s+)?(\d{4})?\b/i
+    );
+    if (dayMonthMatch) {
+      return convertCalendarDateMatchToAgeHours(
+        dayMonthMatch[2],
+        dayMonthMatch[1],
+        dayMonthMatch[3]
+      );
+    }
+    const isoDateMatch = source.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+    if (isoDateMatch) {
+      return convertExplicitDateToAgeHours(
+        Number.parseInt(isoDateMatch[1], 10),
+        Number.parseInt(isoDateMatch[2], 10) - 1,
+        Number.parseInt(isoDateMatch[3], 10)
+      );
+    }
+    if (!POSTED_DATE_CUE_PATTERN.test(source)) {
+      return null;
+    }
+    const numericDateMatch = source.match(/\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b/);
+    if (!numericDateMatch) {
+      return null;
+    }
+    const first = Number.parseInt(numericDateMatch[1], 10);
+    const second = Number.parseInt(numericDateMatch[2], 10);
+    const rawYear = numericDateMatch[3];
+    if (!Number.isFinite(first) || !Number.isFinite(second)) {
+      return null;
+    }
+    const hasExplicitYear = Boolean(rawYear);
+    const year = hasExplicitYear ? normalizeCalendarYear(rawYear) : (/* @__PURE__ */ new Date()).getFullYear();
+    if (year === null) {
+      return null;
+    }
+    const [monthIndex, day] = first > 12 && second <= 12 ? [second - 1, first] : [first - 1, second];
+    return convertExplicitDateToAgeHours(
+      hasExplicitYear ? year : (/* @__PURE__ */ new Date()).getFullYear(),
+      monthIndex,
+      day,
+      !hasExplicitYear
+    );
+  }
+  function convertCalendarDateMatchToAgeHours(rawMonth, rawDay, rawYear) {
+    const monthIndex = MONTH_NAME_TO_INDEX[rawMonth.toLowerCase().replace(/\.$/, "")];
+    const day = Number.parseInt(rawDay, 10);
+    if (monthIndex === void 0 || !Number.isFinite(day)) {
+      return null;
+    }
+    const explicitYear = rawYear ? normalizeCalendarYear(rawYear) : null;
+    if (rawYear && explicitYear === null) {
+      return null;
+    }
+    return convertExplicitDateToAgeHours(
+      explicitYear ?? (/* @__PURE__ */ new Date()).getFullYear(),
+      monthIndex,
+      day,
+      !rawYear
+    );
+  }
+  function normalizeCalendarYear(rawYear) {
+    const parsed = Number.parseInt(rawYear, 10);
+    if (!Number.isFinite(parsed)) {
+      return null;
+    }
+    if (rawYear.length === 2) {
+      return parsed >= 70 ? 1900 + parsed : 2e3 + parsed;
+    }
+    return parsed;
+  }
+  function convertExplicitDateToAgeHours(year, monthIndex, day, inferPreviousYear = false) {
+    if (!Number.isFinite(year) || !Number.isFinite(monthIndex) || !Number.isFinite(day) || monthIndex < 0 || monthIndex > 11 || day < 1 || day > 31) {
+      return null;
+    }
+    const now = /* @__PURE__ */ new Date();
+    let postedAt = new Date(year, monthIndex, day);
+    if (postedAt.getFullYear() !== year || postedAt.getMonth() !== monthIndex || postedAt.getDate() !== day) {
+      return null;
+    }
+    if (inferPreviousYear && postedAt.getTime() > now.getTime() + 36 * 60 * 60 * 1e3) {
+      postedAt = new Date(year - 1, monthIndex, day);
+    }
+    if (postedAt.getTime() > now.getTime() + 36 * 60 * 60 * 1e3) {
+      return null;
+    }
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const postedStart = new Date(
+      postedAt.getFullYear(),
+      postedAt.getMonth(),
+      postedAt.getDate()
+    ).getTime();
+    const diffDays = Math.round((todayStart - postedStart) / (24 * 60 * 60 * 1e3));
+    if (!Number.isFinite(diffDays) || diffDays < 0) {
+      return null;
+    }
+    return diffDays === 0 ? 12 : diffDays * 24;
   }
   function getAppliedStatusPatterns(includeLooseAppliedPattern) {
     const patterns = [
@@ -5037,10 +5389,24 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         return false;
       }
       case "monster": {
+        let parsedMonsterUrl = null;
+        const hasExplicitMonsterJobSignal = lowerUrl.includes("/job-openings/") || lowerUrl.includes("/job-opening/") || lowerUrl.includes("/job-detail/") || lowerUrl.includes("job-openings.monster.com/") || lowerUrl.includes("jobview.monster.com") || lowerUrl.includes("m=portal&a=details") || /[?&]jobid=/i.test(lowerUrl) || /[?&]job_id=/i.test(lowerUrl);
+        const hasMonsterGenericPageText = isMonsterGenericPageText(text) || isMonsterGenericPageText(contextText);
         if (/\/jobs\/?$/i.test(lowerUrl) || lowerUrl.includes("/jobs/search") || lowerUrl.includes("/jobs/browse") || lowerUrl.includes("/salary/") || lowerUrl.includes("/career-advice/") || lowerUrl.includes("/company/") || lowerUrl.includes("/profile/") || lowerUrl.includes("/account/")) {
           return false;
         }
-        if (lowerUrl.includes("/job-openings/") || lowerUrl.includes("/job-opening/") || lowerUrl.includes("/job-detail/") || lowerUrl.includes("job-openings.monster.com/") || lowerUrl.includes("jobview.monster.com") || lowerUrl.includes("m=portal&a=details") || /[?&]jobid=/i.test(lowerUrl) || /[?&]job_id=/i.test(lowerUrl)) {
+        try {
+          parsedMonsterUrl = new URL(url, window.location.href);
+        } catch {
+          parsedMonsterUrl = null;
+        }
+        if (parsedMonsterUrl && isMonsterListingPath(parsedMonsterUrl)) {
+          return false;
+        }
+        if (hasMonsterGenericPageText && !hasExplicitMonsterJobSignal) {
+          return false;
+        }
+        if (hasExplicitMonsterJobSignal) {
           return true;
         }
         if (/monster\.[a-z.]+\/job\/[^/?#]+/i.test(lowerUrl)) {
@@ -5051,7 +5417,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             return false;
           }
           try {
-            const parsed = new URL(lowerUrl);
+            const parsed = parsedMonsterUrl ?? new URL(url, window.location.href);
+            if (isMonsterListingPath(parsed)) {
+              return false;
+            }
             const pathParts = parsed.pathname.split("/").filter(Boolean);
             if (pathParts.length >= 2 && pathParts[1].length > 3) {
               return true;
@@ -6631,6 +7000,42 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     return isGenericListingSegment(lastSegment) && !/\d/.test(lastSegment);
   }
+  function isMonsterListingPath(parsed) {
+    const host = parsed.hostname.toLowerCase();
+    if (!host.includes("monster")) {
+      return false;
+    }
+    const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+    const segments = path.split("/").filter(Boolean);
+    if (segments[0] !== "jobs") {
+      return false;
+    }
+    const secondSegment = segments[1] ?? "";
+    const lastSegment = segments[segments.length - 1] ?? "";
+    if (segments.length <= 1 || secondSegment === "search" || secondSegment === "browse" || secondSegment.startsWith("q-") || secondSegment.startsWith("l-")) {
+      return true;
+    }
+    return lastSegment === "all-jobs" || lastSegment.endsWith("-jobs") || lastSegment.includes("-jobs-in-");
+  }
+  function isMonsterGenericPageText(text) {
+    const normalized = normalizeChoiceText(text);
+    if (!normalized) {
+      return false;
+    }
+    if (normalized === "monster" || normalized === "monster com" || normalized === "monster jobs") {
+      return true;
+    }
+    return [
+      "job search",
+      "career advice",
+      "hiring resources",
+      "salary tools",
+      "find jobs",
+      "post a job",
+      "saved jobs",
+      "dashboard"
+    ].some((token) => normalized.includes(token));
+  }
   function isGenericRoleCtaText(text) {
     const normalized = normalizeChoiceText(text);
     if (!normalized) {
@@ -7118,6 +7523,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
       return null;
     }
+    const directMonsterApplyUrl = resolveMonsterFallbackUrl(best.url);
+    if (directMonsterApplyUrl && isMonsterHostedUrl(directMonsterApplyUrl)) {
+      return {
+        type: "navigate",
+        url: directMonsterApplyUrl,
+        description: describeApplyTarget(
+          directMonsterApplyUrl,
+          best.text || "Monster apply button"
+        )
+      };
+    }
     return {
       type: "click",
       element: best.element,
@@ -7135,7 +7551,29 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (!normalizedUrl || normalizedUrl === normalizedCurrentUrl) {
       return void 0;
     }
+    try {
+      const parsed = new URL(normalizedUrl, window.location.href);
+      const monsterHosted = parsed.hostname.toLowerCase().includes("monster");
+      const pathAndQuery = `${parsed.pathname.toLowerCase()}${parsed.search.toLowerCase()}`;
+      if (monsterHosted && !/\/apply\b|application|candidate|jobapply|start-apply|applytojob/i.test(
+        pathAndQuery
+      )) {
+        return void 0;
+      }
+    } catch {
+      return void 0;
+    }
+    if (!shouldPreferApplyNavigation(normalizedUrl, "Apply", "monster")) {
+      return void 0;
+    }
     return normalizedUrl;
+  }
+  function isMonsterHostedUrl(url) {
+    try {
+      return new URL(url, window.location.href).hostname.toLowerCase().includes("monster");
+    } catch {
+      return false;
+    }
   }
   function getMonsterActionTop(element) {
     const rect = element.getBoundingClientRect();
@@ -8124,11 +8562,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return null;
   }
   function hasIndeedApplyIframe() {
-    return Boolean(
-      document.querySelector(
-        "iframe[src*='smartapply.indeed.com'],iframe[src*='indeedapply'],iframe[id*='indeedapply'],iframe[title*='apply'],[class*='ia-IndeedApplyWidget'],[id*='indeedApplyWidget']"
-      )
+    const candidates = collectDeepMatches(
+      [
+        "iframe[src*='smartapply.indeed.com' i]",
+        "iframe[src*='indeedapply' i]",
+        "iframe[id*='indeedapply' i]",
+        "iframe[name*='indeedapply' i]",
+        "iframe[title*='indeed apply' i]",
+        "[class*='ia-IndeedApplyWidget']",
+        "[id*='indeedApplyWidget']"
+      ].join(", ")
     );
+    return candidates.some((candidate) => isElementVisible(candidate));
   }
   function hasZipRecruiterApplyModal() {
     const modals = collectDeepMatches(
@@ -11103,7 +11548,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   var automationPauseResolve = null;
   var overlayPositionLoadPromise = null;
   var overlayControlPending = false;
-  var pendingAnswers = /* @__PURE__ */ new Map();
+  var pendingAnswerBuckets = readPersistedPendingAnswerBuckets();
   var recentResumeUploadAttempts = /* @__PURE__ */ new WeakMap();
   var extensionManagedResumeUploads = /* @__PURE__ */ new WeakMap();
   var overlay = {
@@ -11137,6 +11582,26 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return status.site;
     }
     return null;
+  }
+  function readPersistedPendingAnswerBuckets() {
+    try {
+      return readPendingAnswerBucketsFromFallback(
+        localStorage.getItem(PENDING_ANSWER_FALLBACK_STORAGE_KEY)
+      );
+    } catch {
+      return {};
+    }
+  }
+  function persistPendingAnswerBuckets() {
+    try {
+      const serialized = serializePendingAnswerBuckets(pendingAnswerBuckets);
+      if (serialized) {
+        localStorage.setItem(PENDING_ANSWER_FALLBACK_STORAGE_KEY, serialized);
+      } else {
+        localStorage.removeItem(PENDING_ANSWER_FALLBACK_STORAGE_KEY);
+      }
+    } catch {
+    }
   }
   function hasUsableApplicationSignalsForSite(site) {
     if (site && hasLikelyApplicationSurface2(site)) {
@@ -11591,6 +12056,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     document.addEventListener("visibilitychange", flushPendingAnswersOnPageHide, true);
   }
   initializeEventListeners();
+  void flushPendingAnswers().catch(() => {
+  });
   void resumeAutomationIfNeeded().catch(() => {
   });
   renderOverlay();
@@ -11737,7 +12204,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       site,
       searchContextUrl,
       settings.searchKeywords,
-      settings.candidate.country
+      settings.candidate.country,
+      settings.datePostedWindow
     );
     if (targets.length === 0) {
       throw new Error(
@@ -13393,13 +13861,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       ...settings.answers,
       ...settings.preferenceAnswers
     };
-    if (pendingAnswers.size === 0) {
+    const pendingAnswers = getPendingAnswersForProfile(
+      pendingAnswerBuckets,
+      currentProfileId
+    );
+    if (Object.keys(pendingAnswers).length === 0) {
       return mergedAnswers;
     }
-    for (const [key, value] of pendingAnswers.entries()) {
-      mergedAnswers[key] = value;
-    }
-    return mergedAnswers;
+    return mergeSavedAnswerRecords(mergedAnswers, pendingAnswers);
   }
   function findBestSavedAnswerMatch2(question, descriptor, answers) {
     return findBestSavedAnswerMatch(
@@ -14205,61 +14674,101 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   var MAX_ANSWER_FLUSH_RETRIES = 3;
   var ANSWER_FLUSH_RETRY_DELAY_MS = 500;
+  function buildPendingAnswerProfileUpdate(current, profileId, answers) {
+    const targetProfileId = resolvePendingAnswerTargetProfileId(
+      current.profiles,
+      current.activeProfileId,
+      profileId
+    );
+    if (!targetProfileId) {
+      return null;
+    }
+    const targetProfile = current.profiles[targetProfileId];
+    if (!targetProfile) {
+      return null;
+    }
+    return {
+      profiles: {
+        ...current.profiles,
+        [targetProfileId]: {
+          ...targetProfile,
+          answers: mergeSavedAnswerRecords(targetProfile.answers, answers),
+          updatedAt: Date.now()
+        }
+      }
+    };
+  }
   async function flushPendingAnswers() {
     answerFlushPromise = answerFlushPromise.then(async () => {
-      while (pendingAnswers.size > 0) {
-        const batch = new Map(pendingAnswers);
-        pendingAnswers.clear();
-        let retryCount = 0;
-        let success = false;
-        while (!success && retryCount < MAX_ANSWER_FLUSH_RETRIES) {
-          try {
-            await writeAutomationSettings((current) => ({
-              activeProfileId: currentProfileId ?? current.activeProfileId,
-              answers: {
-                ...resolveAutomationSettingsForProfile(
-                  current,
-                  currentProfileId
-                ).answers,
-                ...Object.fromEntries(batch)
-              }
-            }));
-            success = true;
-          } catch (error) {
-            retryCount += 1;
-            if (retryCount >= MAX_ANSWER_FLUSH_RETRIES) {
-              for (const [key, value] of batch.entries()) {
-                if (!pendingAnswers.has(key)) {
-                  pendingAnswers.set(key, value);
-                }
-              }
-              try {
-                const fallbackKey = "remote-job-search-pending-answers-fallback";
-                const existingRaw = localStorage.getItem(fallbackKey);
-                const existing = existingRaw ? JSON.parse(existingRaw) : [];
-                existing.push(...Array.from(batch.entries()));
-                localStorage.setItem(fallbackKey, JSON.stringify(existing));
-              } catch {
-              }
-              break;
-            }
-            await sleepWithAutomationChecks(
-              ANSWER_FLUSH_RETRY_DELAY_MS * retryCount
-            );
+      while (hasPendingAnswerBatches(pendingAnswerBuckets)) {
+        const batches = listPendingAnswerBatches(pendingAnswerBuckets);
+        let flushedAnyBatch = false;
+        for (const batch of batches) {
+          if (Object.keys(
+            getPendingAnswersForProfile(
+              pendingAnswerBuckets,
+              batch.profileId
+            )
+          ).length === 0) {
+            continue;
           }
+          let retryCount = 0;
+          let success = false;
+          while (!success && retryCount < MAX_ANSWER_FLUSH_RETRIES) {
+            try {
+              let skippedMissingProfile = false;
+              await writeAutomationSettings((current) => {
+                const profileUpdate = buildPendingAnswerProfileUpdate(
+                  current,
+                  batch.profileId,
+                  batch.answers
+                );
+                if (!profileUpdate) {
+                  skippedMissingProfile = true;
+                  return current;
+                }
+                return profileUpdate;
+              });
+              if (skippedMissingProfile) {
+                persistPendingAnswerBuckets();
+                break;
+              }
+              removePendingAnswers(
+                pendingAnswerBuckets,
+                batch.profileId,
+                Object.keys(batch.answers)
+              );
+              persistPendingAnswerBuckets();
+              success = true;
+              flushedAnyBatch = true;
+            } catch (error) {
+              retryCount += 1;
+              if (retryCount >= MAX_ANSWER_FLUSH_RETRIES) {
+                persistPendingAnswerBuckets();
+                break;
+              }
+              await sleepWithAutomationChecks(
+                ANSWER_FLUSH_RETRY_DELAY_MS * retryCount
+              );
+            }
+          }
+        }
+        if (!flushedAnyBatch) {
+          break;
         }
       }
     });
     await answerFlushPromise;
   }
   function flushPendingAnswersOnPageHide(event) {
-    if (pendingAnswers.size === 0) {
+    if (!hasPendingAnswerBatches(pendingAnswerBuckets)) {
       return;
     }
     const visibilityState = document.visibilityState;
     if (event?.type !== "pagehide" && visibilityState && visibilityState !== "hidden" && visibilityState !== "prerender") {
       return;
     }
+    persistPendingAnswerBuckets();
     void flushPendingAnswers();
   }
   function rememberAnswer(question, value) {
@@ -14267,7 +14776,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (!remembered) {
       return false;
     }
-    pendingAnswers.set(remembered.key, remembered.answer);
+    addPendingAnswer(
+      pendingAnswerBuckets,
+      currentProfileId,
+      remembered.key,
+      remembered.answer
+    );
+    persistPendingAnswerBuckets();
     return true;
   }
   function buildAutofillSummary(result) {

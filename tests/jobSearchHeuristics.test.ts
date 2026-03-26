@@ -1,3 +1,5 @@
+import { vi } from "vitest";
+
 import {
   comparePostedAgeHours,
   extractPostedAgeHours,
@@ -12,6 +14,15 @@ import {
 import type { JobCandidate } from "../src/content/types";
 
 describe("job search heuristic helpers", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 2, 26, 12, 0, 0));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("scores keywords only when the match is strong enough", () => {
     const candidate: JobCandidate = {
       url: "https://example.com/jobs/frontend-engineer",
@@ -52,6 +63,9 @@ describe("job search heuristic helpers", () => {
   it("parses reposted and compact plus-style date chips from job boards", () => {
     expect(extractPostedAgeHours("Reposted 2 days ago")).toBe(48);
     expect(extractPostedAgeHours("Platform Engineer Remote 30d+")).toBe(720);
+    expect(extractPostedAgeHours("Updated 15 minutes ago")).toBe(0);
+    expect(extractPostedAgeHours("Posted Mar 25, 2026")).toBe(24);
+    expect(extractPostedAgeHours("Listed 2026-03-19")).toBe(168);
   });
 
   it("keeps technical-title and applied-state heuristics explicit", () => {

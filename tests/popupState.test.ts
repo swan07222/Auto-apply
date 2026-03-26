@@ -30,6 +30,21 @@ describe("popup state helpers", () => {
     expect(preview.startDisabled).toBe(true);
   });
 
+  it("treats tab id 0 as a valid active tab in job-board mode", () => {
+    const preview = derivePopupIdlePreview({
+      searchMode: "job_board",
+      activeSite: "indeed",
+      activeTabId: 0,
+      hasKeywords: true,
+      regionLabel: "US",
+      supportedJobBoardPrompt: "Open a supported site.",
+    });
+
+    expect(preview.status.site).toBe("indeed");
+    expect(preview.status.message).toBe("Ready on Indeed.");
+    expect(preview.startDisabled).toBe(false);
+  });
+
   it("parses select values defensively and returns button labels", () => {
     expect(getSelectedSearchMode("startup_careers")).toBe("startup_careers");
     expect(getSelectedSearchMode("other_job_sites")).toBe("other_job_sites");

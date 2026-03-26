@@ -738,7 +738,7 @@ function derivePopupIdlePreview(options) {
       startDisabled: false
     };
   }
-  if (!activeTabId2) {
+  if (activeTabId2 === null) {
     return {
       status: createStatus("unsupported", "error", "No active tab was found."),
       startDisabled: true
@@ -890,6 +890,9 @@ var popupDialog = createPopupDialogController({
   submitButton: dialogSubmitButton
 });
 void initialize();
+function hasActiveTabId(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
 function setStartButtonDisabled(disabled) {
   startButton.disabled = disabled;
 }
@@ -1144,7 +1147,7 @@ async function startAutomation() {
     setStartButtonDisabled(false);
     return;
   }
-  if (!activeTabId) {
+  if (!hasActiveTabId(activeTabId)) {
     applyStatus(
       createStatus("unsupported", "error", "No active tab was found.")
     );
@@ -1256,7 +1259,7 @@ async function performRefreshStatus() {
     return;
   }
   if (searchMode === "startup_careers") {
-    if (!activeTabId) {
+    if (!hasActiveTabId(activeTabId)) {
       applyStatus(
         createStatus(
           "startup",
@@ -1305,7 +1308,7 @@ async function performRefreshStatus() {
     return;
   }
   if (searchMode === "other_job_sites") {
-    if (!activeTabId) {
+    if (!hasActiveTabId(activeTabId)) {
       applyStatus(
         createStatus(
           "other_sites",
@@ -1353,7 +1356,7 @@ async function performRefreshStatus() {
     setStartButtonDisabled(false);
     return;
   }
-  if (!activeTabId) {
+  if (!hasActiveTabId(activeTabId)) {
     applyStatus(
       createStatus("unsupported", "error", "No active tab was found.")
     );
@@ -2414,6 +2417,9 @@ async function findBestActiveTab() {
     chrome.tabs.query({
       active: true,
       lastFocusedWindow: true
+    }),
+    chrome.tabs.query({
+      active: true
     })
   ]);
   const candidates = [];

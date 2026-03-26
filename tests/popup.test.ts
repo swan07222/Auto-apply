@@ -26,6 +26,7 @@ type PopupHarnessOptions = {
   settings?: AutomationSettings;
   activeTabs?: MockTab[];
   runtimeSendMessage?: (message: Record<string, unknown>) => unknown;
+  tabsQuery?: (queryInfo: Record<string, unknown>) => unknown;
   tabsSendMessage?: (tabId: number, message: Record<string, unknown>) => unknown;
 };
 
@@ -78,12 +79,16 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
   > = [];
   const tabRemovedListeners: Array<(tabId: number) => void> = [];
 
-  const tabsQuery = vi.fn(async () =>
-    activeTabs.map((tab) => ({
+  const tabsQuery = vi.fn(async (queryInfo: Record<string, unknown> = {}) => {
+    if (options.tabsQuery) {
+      return options.tabsQuery(queryInfo);
+    }
+
+    return activeTabs.map((tab) => ({
       active: true,
       ...tab,
-    }))
-  );
+    }));
+  });
   const tabsSendMessage = vi.fn(
     async (tabId: number, message: Record<string, unknown>) => {
       if (options.tabsSendMessage) {
@@ -570,6 +575,75 @@ describe("popup workflow", () => {
     expect(popup.runtimeSendMessage).toHaveBeenCalledWith({
       type: "get-tab-session",
       tabId: 91,
+    });
+  });
+
+  it("accepts tab id 0 as a valid active job-board tab and starts automation on it", async () => {
+    const popup = await createPopupHarness({
+      activeTabs: [
+        {
+          id: 0,
+          url: "https://www.indeed.com/viewjob?jk=abc123",
+        },
+      ],
+    });
+
+    expect(popup.siteName.textContent).toBe("Indeed");
+    expect(popup.statusText.textContent).toBe("Ready on Indeed.");
+    expect(popup.startButton.disabled).toBe(false);
+    expect(popup.runtimeSendMessage).toHaveBeenCalledWith({
+      type: "get-tab-session",
+      tabId: 0,
+    });
+
+    popup.startButton.click();
+    await flushAsyncWork(16);
+
+    expect(popup.runtimeSendMessage).toHaveBeenCalledWith({
+      type: "start-automation",
+      tabId: 0,
+    });
+  });
+
+  it("falls back to any active tab when window-scoped tab queries return nothing", async () => {
+    const popup = await createPopupHarness({
+      activeTabs: [],
+      tabsQuery: (queryInfo) => {
+        if (queryInfo.currentWindow || queryInfo.lastFocusedWindow) {
+          return [];
+        }
+
+        return [
+          {
+            active: true,
+            id: 15,
+            url: "https://job-boards.greenhouse.io/vercel",
+          },
+        ];
+      },
+      runtimeSendMessage: async (message) => {
+        if (message.type === "get-tab-session") {
+          return {
+            ok: true,
+            session: {
+              site: "greenhouse",
+              phase: "idle",
+              message: "Ready on Greenhouse.",
+              updatedAt: Date.now(),
+            },
+          };
+        }
+
+        return { ok: true };
+      },
+    });
+
+    expect(popup.siteName.textContent).toBe("Greenhouse");
+    expect(popup.statusText.textContent).toBe("Ready on Greenhouse.");
+    expect(popup.startButton.disabled).toBe(false);
+    expect(popup.runtimeSendMessage).toHaveBeenCalledWith({
+      type: "get-tab-session",
+      tabId: 15,
     });
   });
 

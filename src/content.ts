@@ -58,6 +58,19 @@ import {
   findBestSavedAnswerMatch as findBestRememberedAnswerMatch,
 } from "./content/answerMemory";
 import {
+  PENDING_ANSWER_FALLBACK_STORAGE_KEY,
+  addPendingAnswer,
+  getPendingAnswersForProfile,
+  hasPendingAnswerBatches,
+  listPendingAnswerBatches,
+  mergeSavedAnswerRecords,
+  readPendingAnswerBucketsFromFallback,
+  removePendingAnswers,
+  resolvePendingAnswerTargetProfileId,
+  serializePendingAnswerBuckets,
+  type PendingAnswerBuckets,
+} from "./content/pendingAnswers";
+import {
   findRememberableChoiceTarget,
   readChoiceAnswerForMemory,
 } from "./content/answerCapture";
@@ -235,7 +248,8 @@ let automationPausePromise: Promise<void> | null = null;
 let automationPauseResolve: (() => void) | null = null;
 let overlayPositionLoadPromise: Promise<void> | null = null;
 let overlayControlPending = false;
-const pendingAnswers = new Map<string, SavedAnswer>();
+const pendingAnswerBuckets: PendingAnswerBuckets =
+  readPersistedPendingAnswerBuckets();
 const recentResumeUploadAttempts = new WeakMap<
   HTMLInputElement,
   number
@@ -289,6 +303,29 @@ function resolveCurrentSiteKey(): SiteKey | null {
   }
 
   return null;
+}
+
+function readPersistedPendingAnswerBuckets(): PendingAnswerBuckets {
+  try {
+    return readPendingAnswerBucketsFromFallback(
+      localStorage.getItem(PENDING_ANSWER_FALLBACK_STORAGE_KEY)
+    );
+  } catch {
+    return {};
+  }
+}
+
+function persistPendingAnswerBuckets(): void {
+  try {
+    const serialized = serializePendingAnswerBuckets(pendingAnswerBuckets);
+    if (serialized) {
+      localStorage.setItem(PENDING_ANSWER_FALLBACK_STORAGE_KEY, serialized);
+    } else {
+      localStorage.removeItem(PENDING_ANSWER_FALLBACK_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore local persistence failures.
+  }
 }
 
 function hasUsableApplicationSignalsForSite(site: SiteKey | null): boolean {
@@ -927,6 +964,7 @@ function initializeEventListeners(): void {
 }
 
 initializeEventListeners();
+void flushPendingAnswers().catch(() => {});
 void resumeAutomationIfNeeded().catch(() => {});
 renderOverlay();
 
@@ -1115,7 +1153,8 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
     site,
     searchContextUrl,
     settings.searchKeywords,
-    settings.candidate.country
+    settings.candidate.country,
+    settings.datePostedWindow
   );
   if (targets.length === 0) {
     throw new Error(
@@ -3185,14 +3224,15 @@ function getAvailableAnswers(
     ...settings.preferenceAnswers,
   };
 
-  if (pendingAnswers.size === 0) {
+  const pendingAnswers = getPendingAnswersForProfile(
+    pendingAnswerBuckets,
+    currentProfileId
+  );
+  if (Object.keys(pendingAnswers).length === 0) {
     return mergedAnswers;
   }
 
-  for (const [key, value] of pendingAnswers.entries()) {
-    mergedAnswers[key] = value;
-  }
-  return mergedAnswers;
+  return mergeSavedAnswerRecords(mergedAnswers, pendingAnswers);
 }
 
 function findBestSavedAnswerMatch(
@@ -4365,50 +4405,100 @@ function handlePotentialManualReviewPause(event: Event): void {
 const MAX_ANSWER_FLUSH_RETRIES = 3;
 const ANSWER_FLUSH_RETRY_DELAY_MS = 500;
 
+function buildPendingAnswerProfileUpdate(
+  current: AutomationSettings,
+  profileId: string | undefined,
+  answers: Record<string, SavedAnswer>
+) : Partial<AutomationSettings> | null {
+  const targetProfileId = resolvePendingAnswerTargetProfileId(
+    current.profiles,
+    current.activeProfileId,
+    profileId
+  );
+  if (!targetProfileId) {
+    return null;
+  }
+
+  const targetProfile = current.profiles[targetProfileId];
+  if (!targetProfile) {
+    return null;
+  }
+
+  return {
+    profiles: {
+      ...current.profiles,
+      [targetProfileId]: {
+        ...targetProfile,
+        answers: mergeSavedAnswerRecords(targetProfile.answers, answers),
+        updatedAt: Date.now(),
+      },
+    },
+  };
+}
+
 async function flushPendingAnswers(): Promise<void> {
   answerFlushPromise = answerFlushPromise.then(async () => {
-    while (pendingAnswers.size > 0) {
-      const batch = new Map(pendingAnswers);
-      pendingAnswers.clear();
+    while (hasPendingAnswerBatches(pendingAnswerBuckets)) {
+      const batches = listPendingAnswerBatches(pendingAnswerBuckets);
+      let flushedAnyBatch = false;
 
-      let retryCount = 0;
-      let success = false;
-
-      while (!success && retryCount < MAX_ANSWER_FLUSH_RETRIES) {
-        try {
-          await writeAutomationSettings((current) => ({
-            activeProfileId: currentProfileId ?? current.activeProfileId,
-            answers: {
-              ...resolveAutomationSettingsForProfile(
-                current,
-                currentProfileId
-              ).answers,
-              ...Object.fromEntries(batch),
-            },
-          }));
-          success = true;
-        } catch (error) {
-          retryCount += 1;
-          if (retryCount >= MAX_ANSWER_FLUSH_RETRIES) {
-            for (const [key, value] of batch.entries()) {
-              if (!pendingAnswers.has(key)) {
-                pendingAnswers.set(key, value);
-              }
-            }
-            try {
-              const fallbackKey = "remote-job-search-pending-answers-fallback";
-              const existingRaw = localStorage.getItem(fallbackKey);
-              const existing = existingRaw ? JSON.parse(existingRaw) : [];
-              existing.push(...Array.from(batch.entries()));
-              localStorage.setItem(fallbackKey, JSON.stringify(existing));
-            } catch {
-            }
-            break;
-          }
-          await sleepWithAutomationChecks(
-            ANSWER_FLUSH_RETRY_DELAY_MS * retryCount
-          );
+      for (const batch of batches) {
+        if (
+          Object.keys(
+            getPendingAnswersForProfile(
+              pendingAnswerBuckets,
+              batch.profileId
+            )
+          ).length === 0
+        ) {
+          continue;
         }
+
+        let retryCount = 0;
+        let success = false;
+
+        while (!success && retryCount < MAX_ANSWER_FLUSH_RETRIES) {
+          try {
+            let skippedMissingProfile = false;
+            await writeAutomationSettings((current) => {
+              const profileUpdate = buildPendingAnswerProfileUpdate(
+                current,
+                batch.profileId,
+                batch.answers
+              );
+              if (!profileUpdate) {
+                skippedMissingProfile = true;
+                return current;
+              }
+              return profileUpdate;
+            });
+            if (skippedMissingProfile) {
+              persistPendingAnswerBuckets();
+              break;
+            }
+            removePendingAnswers(
+              pendingAnswerBuckets,
+              batch.profileId,
+              Object.keys(batch.answers)
+            );
+            persistPendingAnswerBuckets();
+            success = true;
+            flushedAnyBatch = true;
+          } catch (error) {
+            retryCount += 1;
+            if (retryCount >= MAX_ANSWER_FLUSH_RETRIES) {
+              persistPendingAnswerBuckets();
+              break;
+            }
+            await sleepWithAutomationChecks(
+              ANSWER_FLUSH_RETRY_DELAY_MS * retryCount
+            );
+          }
+        }
+      }
+
+      if (!flushedAnyBatch) {
+        break;
       }
     }
   });
@@ -4417,7 +4507,7 @@ async function flushPendingAnswers(): Promise<void> {
 }
 
 function flushPendingAnswersOnPageHide(event?: Event): void {
-  if (pendingAnswers.size === 0) {
+  if (!hasPendingAnswerBatches(pendingAnswerBuckets)) {
     return;
   }
 
@@ -4431,6 +4521,7 @@ function flushPendingAnswersOnPageHide(event?: Event): void {
     return;
   }
 
+  persistPendingAnswerBuckets();
   void flushPendingAnswers();
 }
 
@@ -4443,7 +4534,13 @@ function rememberAnswer(
     return false;
   }
 
-  pendingAnswers.set(remembered.key, remembered.answer);
+  addPendingAnswer(
+    pendingAnswerBuckets,
+    currentProfileId,
+    remembered.key,
+    remembered.answer
+  );
+  persistPendingAnswerBuckets();
   return true;
 }
 

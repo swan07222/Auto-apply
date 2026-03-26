@@ -1163,6 +1163,19 @@ export function isLikelyJobDetailUrl(
     }
 
     case "monster": {
+      let parsedMonsterUrl: URL | null = null;
+      const hasExplicitMonsterJobSignal =
+        lowerUrl.includes("/job-openings/") ||
+        lowerUrl.includes("/job-opening/") ||
+        lowerUrl.includes("/job-detail/") ||
+        lowerUrl.includes("job-openings.monster.com/") ||
+        lowerUrl.includes("jobview.monster.com") ||
+        lowerUrl.includes("m=portal&a=details") ||
+        /[?&]jobid=/i.test(lowerUrl) ||
+        /[?&]job_id=/i.test(lowerUrl);
+      const hasMonsterGenericPageText =
+        isMonsterGenericPageText(text) || isMonsterGenericPageText(contextText);
+
       if (
         /\/jobs\/?$/i.test(lowerUrl) ||
         lowerUrl.includes("/jobs/search") ||
@@ -1176,16 +1189,21 @@ export function isLikelyJobDetailUrl(
         return false;
       }
 
-      if (
-        lowerUrl.includes("/job-openings/") ||
-        lowerUrl.includes("/job-opening/") ||
-        lowerUrl.includes("/job-detail/") ||
-        lowerUrl.includes("job-openings.monster.com/") ||
-        lowerUrl.includes("jobview.monster.com") ||
-        lowerUrl.includes("m=portal&a=details") ||
-        /[?&]jobid=/i.test(lowerUrl) ||
-        /[?&]job_id=/i.test(lowerUrl)
-      ) {
+      try {
+        parsedMonsterUrl = new URL(url, window.location.href);
+      } catch {
+        parsedMonsterUrl = null;
+      }
+
+      if (parsedMonsterUrl && isMonsterListingPath(parsedMonsterUrl)) {
+        return false;
+      }
+
+      if (hasMonsterGenericPageText && !hasExplicitMonsterJobSignal) {
+        return false;
+      }
+
+      if (hasExplicitMonsterJobSignal) {
         return true;
       }
 
@@ -1204,7 +1222,11 @@ export function isLikelyJobDetailUrl(
         }
 
         try {
-          const parsed = new URL(lowerUrl);
+          const parsed = parsedMonsterUrl ?? new URL(url, window.location.href);
+          if (isMonsterListingPath(parsed)) {
+            return false;
+          }
+
           const pathParts = parsed.pathname.split("/").filter(Boolean);
           if (pathParts.length >= 2 && pathParts[1].length > 3) {
             return true;
@@ -3438,6 +3460,64 @@ function isKnownAtsListingUrl(parsed: URL): boolean {
   }
 
   return isGenericListingSegment(lastSegment) && !/\d/.test(lastSegment);
+}
+
+function isMonsterListingPath(parsed: URL): boolean {
+  const host = parsed.hostname.toLowerCase();
+  if (!host.includes("monster")) {
+    return false;
+  }
+
+  const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+  const segments = path.split("/").filter(Boolean);
+  if (segments[0] !== "jobs") {
+    return false;
+  }
+
+  const secondSegment = segments[1] ?? "";
+  const lastSegment = segments[segments.length - 1] ?? "";
+
+  if (
+    segments.length <= 1 ||
+    secondSegment === "search" ||
+    secondSegment === "browse" ||
+    secondSegment.startsWith("q-") ||
+    secondSegment.startsWith("l-")
+  ) {
+    return true;
+  }
+
+  return (
+    lastSegment === "all-jobs" ||
+    lastSegment.endsWith("-jobs") ||
+    lastSegment.includes("-jobs-in-")
+  );
+}
+
+function isMonsterGenericPageText(text: string): boolean {
+  const normalized = normalizeChoiceText(text);
+  if (!normalized) {
+    return false;
+  }
+
+  if (
+    normalized === "monster" ||
+    normalized === "monster com" ||
+    normalized === "monster jobs"
+  ) {
+    return true;
+  }
+
+  return [
+    "job search",
+    "career advice",
+    "hiring resources",
+    "salary tools",
+    "find jobs",
+    "post a job",
+    "saved jobs",
+    "dashboard",
+  ].some((token) => normalized.includes(token));
 }
 
 function isGenericRoleCtaText(text: string): boolean {

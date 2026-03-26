@@ -85,7 +85,7 @@ export function derivePopupIdlePreview(
     };
   }
 
-  if (!activeTabId) {
+  if (activeTabId === null) {
     return {
       status: createStatus("unsupported", "error", "No active tab was found."),
       startDisabled: true,

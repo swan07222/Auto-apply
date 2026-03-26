@@ -7,6 +7,7 @@ import {
 } from "./catalog";
 import type {
   AutomationSettings,
+  DatePostedWindow,
   JobBoardSite,
   SearchTarget,
   StartupCompany,
@@ -43,13 +44,20 @@ export function buildSearchTargets(
   site: JobBoardSite,
   currentUrl: string,
   searchKeywords: string,
-  candidateCountry = ""
+  candidateCountry = "",
+  datePostedWindow: DatePostedWindow = "any"
 ): SearchTarget[] {
   return dedupeSearchTargets(
     parseSearchKeywords(searchKeywords).map((keyword) => ({
       label: keyword,
       keyword,
-      url: buildSingleSearchUrl(site, keyword, currentUrl, candidateCountry),
+      url: buildSingleSearchUrl(
+        site,
+        keyword,
+        currentUrl,
+        candidateCountry,
+        datePostedWindow
+      ),
     }))
   );
 }
@@ -199,7 +207,8 @@ function buildSingleSearchUrl(
   site: JobBoardSite,
   query: string,
   currentUrl: string,
-  candidateCountry = ""
+  candidateCountry = "",
+  datePostedWindow: DatePostedWindow = "any"
 ): string {
   const baseOrigin = CANONICAL_JOB_BOARD_ORIGINS[site];
 
@@ -208,6 +217,7 @@ function buildSingleSearchUrl(
       const url = new URL("/jobs", baseOrigin);
       url.searchParams.set("q", query);
       url.searchParams.set("l", "Remote");
+      applyBoardDatePostedWindow(url, site, datePostedWindow);
       return url.toString();
     }
     case "ziprecruiter": {
@@ -235,6 +245,37 @@ function buildSingleSearchUrl(
       );
     case "builtin":
       return buildBuiltInSearchUrl(query, baseOrigin);
+  }
+}
+
+function applyBoardDatePostedWindow(
+  url: URL,
+  site: JobBoardSite,
+  datePostedWindow: DatePostedWindow
+): void {
+  if (site !== "indeed") {
+    return;
+  }
+
+  const fromAge = getIndeedFromAgeValue(datePostedWindow);
+  if (!fromAge) {
+    url.searchParams.delete("fromage");
+    return;
+  }
+
+  url.searchParams.set("fromage", fromAge);
+}
+
+function getIndeedFromAgeValue(datePostedWindow: DatePostedWindow): string {
+  switch (datePostedWindow) {
+    case "24h":
+      return "1";
+    case "3d":
+      return "3";
+    case "1w":
+      return "7";
+    case "any":
+      return "";
   }
 }
 
@@ -273,10 +314,13 @@ function resolveGreenhouseBoardBaseUrl(currentUrl: string, fallbackOrigin: strin
   try {
     const parsed = new URL(currentUrl);
     const normalizedPath = parsed.pathname.replace(/\/+$/, "");
-    const jobsIndex = normalizedPath.toLowerCase().indexOf("/jobs/");
+    const lowerPath = normalizedPath.toLowerCase();
+    const jobsIndex = lowerPath.indexOf("/jobs/");
     const boardPath =
       jobsIndex >= 0
         ? normalizedPath.slice(0, jobsIndex)
+        : lowerPath.endsWith("/jobs")
+          ? normalizedPath.slice(0, -"/jobs".length)
         : normalizedPath || "/";
     return new URL(boardPath || "/", `${parsed.protocol}//${parsed.host}`).toString();
   } catch {
