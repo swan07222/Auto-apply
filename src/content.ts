@@ -166,6 +166,8 @@ import {
 } from "./content/stageFlow";
 import { hasPendingResumeUploadSurface } from "./content/resumeStep";
 import {
+  findVisibleManualSubmitAction,
+  resolveManualSubmitActionElement,
   hasPendingRequiredAutofillFields,
   isManualSubmitActionTarget,
   hasVisibleManualSubmitAction,
@@ -188,6 +190,7 @@ import {
   shouldKeepTopFrameSessionSyncAlive,
   shouldMirrorControllerBoundSessionInTopFrame,
   shouldPreferMonsterClickContinuation,
+  shouldRenderAutomationFeedbackInCurrentFrame,
   shouldRetryAlternateApplyTargets,
   shouldTreatCurrentPageAsApplied,
   throwIfRateLimited,
@@ -249,6 +252,7 @@ let currentRunId: string | undefined;
 let currentClaimedJobKey: string | undefined;
 let currentJobSlots: number | undefined;
 let currentRunSummary: AutomationRunSummary | undefined;
+let currentControllerFrameId: number | undefined;
 let activeRun: Promise<void> | null = null;
 let answerFlushPromise: Promise<void> = Promise.resolve();
 let overlayHideTimerId: number | null = null;
@@ -617,12 +621,15 @@ async function markCurrentJobReviewedIfManaged(): Promise<void> {
   }
 }
 
-function hasConfirmedManualSubmitSuccess(site: SiteKey): boolean {
-  if (hasLikelyApplicationSuccessSignals(document)) {
-    return true;
-  }
+function shouldBlockManualSubmitSuccessDetection(): boolean {
+  return (
+    isProbablyHumanVerificationPage(document) ||
+    isProbablyAuthGatePage(document)
+  );
+}
 
-  if (!manualSubmitRequested) {
+function shouldTreatCurrentPageAsAppliedSafely(site: SiteKey): boolean {
+  if (shouldBlockManualSubmitSuccessDetection()) {
     return false;
   }
 
@@ -632,6 +639,73 @@ function hasConfirmedManualSubmitSuccess(site: SiteKey): boolean {
     findDiceApplyAction,
     isCurrentPageAppliedJob,
   });
+}
+
+function getReadyVisibleManualSubmitAction(
+  fields: AutofillField[],
+  root: ParentNode = document
+): HTMLElement | null {
+  const action = findVisibleManualSubmitAction(root);
+  if (!action) {
+    return null;
+  }
+
+  return shouldTreatManualSubmitActionAsReady(action, fields)
+    ? action
+    : null;
+}
+
+function resolveReadyManualSubmitActionFromEvent(
+  event: Event,
+  fields: AutofillField[]
+): HTMLElement | null {
+  if (event.type === "submit" && event.target instanceof HTMLFormElement) {
+    const submitter =
+      event instanceof SubmitEvent && event.submitter instanceof HTMLElement
+        ? event.submitter
+        : null;
+
+    const submitCandidate =
+      submitter && resolveManualSubmitActionElement(submitter)
+        ? submitter
+        : getReadyVisibleManualSubmitAction(fields, event.target);
+    if (!submitCandidate) {
+      return null;
+    }
+
+    return shouldTreatManualSubmitActionAsReady(submitCandidate, fields)
+      ? submitCandidate
+      : null;
+  }
+
+  const actionElement = resolveManualSubmitActionElement(event.target);
+  if (!actionElement) {
+    return null;
+  }
+
+  return shouldTreatManualSubmitActionAsReady(actionElement, fields)
+    ? actionElement
+    : null;
+}
+
+function hasConfirmedManualSubmitSuccess(site: SiteKey): boolean {
+  if (shouldBlockManualSubmitSuccessDetection()) {
+    return false;
+  }
+
+  if (hasLikelyApplicationSuccessSignals(document)) {
+    return true;
+  }
+
+  if (!manualSubmitRequested) {
+    return false;
+  }
+
+  if (hasVisibleManualSubmitAction()) {
+    return false;
+  }
+
+  return shouldTreatCurrentPageAsAppliedSafely(site);
 }
 
 async function waitForManualSubmitOutcome(
@@ -644,6 +718,11 @@ async function waitForManualSubmitOutcome(
 
   while (true) {
     throwIfAutomationStopped();
+
+    if (shouldBlockManualSubmitSuccessDetection()) {
+      await waitForHumanVerificationToClear();
+      continue;
+    }
 
     if (hasConfirmedManualSubmitSuccess(site)) {
       await finalizeSuccessfulApplication("Application submitted successfully.");
@@ -1003,6 +1082,11 @@ function applyOverlaySessionSnapshot(session: unknown): void {
   ) {
     currentStage = candidate.stage;
   }
+  currentControllerFrameId =
+    candidate.stage === "autofill-form" &&
+    typeof candidate.controllerFrameId === "number"
+      ? candidate.controllerFrameId
+      : undefined;
 
   if ("label" in candidate) {
     currentLabel =
@@ -1324,6 +1408,11 @@ chrome.runtime.onMessage.addListener(
         currentRunId = message.session.runId;
         currentClaimedJobKey = message.session.claimedJobKey;
         currentJobSlots = message.session.jobSlots;
+        currentControllerFrameId =
+          message.session.stage === "autofill-form" &&
+          typeof message.session.controllerFrameId === "number"
+            ? message.session.controllerFrameId
+            : undefined;
         currentRunSummary = isAutomationRunSummary(message.session.runSummary)
           ? message.session.runSummary
           : undefined;
@@ -1344,6 +1433,7 @@ chrome.runtime.onMessage.addListener(
         currentRunId = undefined;
         currentClaimedJobKey = undefined;
         currentJobSlots = undefined;
+        currentControllerFrameId = undefined;
         currentRunSummary = undefined;
         manualSubmitRequested = false;
         clearAutomationStop();
@@ -1500,6 +1590,11 @@ async function resumeAutomationIfNeeded(): Promise<void> {
       currentRunId = s.runId;
       currentClaimedJobKey = s.claimedJobKey;
       currentJobSlots = s.jobSlots;
+      currentControllerFrameId =
+        s.stage === "autofill-form" &&
+        typeof s.controllerFrameId === "number"
+          ? s.controllerFrameId
+          : undefined;
       currentRunSummary = isAutomationRunSummary(s.runSummary)
         ? s.runSummary
         : undefined;
@@ -1984,12 +2079,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   const urlAtStart = window.location.href;
 
   if (
-    shouldTreatCurrentPageAsApplied(site, {
-      hasLikelyApplicationSurface,
-      findApplyAction,
-      findDiceApplyAction,
-      isCurrentPageAppliedJob,
-    })
+    shouldTreatCurrentPageAsAppliedSafely(site)
   ) {
     if (manualSubmitRequested) {
       await finalizeSuccessfulApplication("Application submitted successfully.");
@@ -2716,12 +2806,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
   }
 
   if (
-    shouldTreatCurrentPageAsApplied(site, {
-      hasLikelyApplicationSurface,
-      findApplyAction,
-      findDiceApplyAction,
-      isCurrentPageAppliedJob,
-    })
+    shouldTreatCurrentPageAsAppliedSafely(site)
   ) {
     if (manualSubmitRequested) {
       await finalizeSuccessfulApplication("Application submitted successfully.");
@@ -2864,6 +2949,17 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
         "Required questions need manual input on this step. Fill them, then press Resume."
       );
       continue;
+    }
+
+    if (getReadyVisibleManualSubmitAction(currentFields)) {
+      noProgressCount = 0;
+      await waitForManualSubmitOutcome(
+        site,
+        isLikelyManualSubmitReviewPage(document)
+          ? "Final review page ready. Waiting for you to press Submit."
+          : "Application ready. Review it, then press Submit."
+      );
+      return;
     }
 
     if (result.filledFields > 0 || result.uploadedResume) {
@@ -4543,7 +4639,7 @@ function createInitialStatus(): AutomationStatus {
 }
 
 function ensureOverlay(): void {
-  if (!IS_TOP_FRAME) return;
+  if (!shouldRenderAutomationFeedbackHere()) return;
   if (overlay.host || !document.documentElement) return;
   const host = document.createElement("div");
   host.id = "remote-job-search-overlay-host";
@@ -4739,14 +4835,27 @@ function syncOverlayPanelPosition(): void {
   overlay.panel.style.right = "auto";
 }
 
-function renderOverlay(): void {
-  if (!IS_TOP_FRAME) {
-    return;
-  }
+function shouldRenderAutomationFeedbackHere(): boolean {
+  return shouldRenderAutomationFeedbackInCurrentFrame(
+    {
+      stage: currentStage,
+      phase: status.phase,
+      controllerFrameId: currentControllerFrameId,
+    },
+    IS_TOP_FRAME
+  );
+}
 
+function renderOverlay(): void {
   if (overlayHideTimerId !== null) {
     window.clearTimeout(overlayHideTimerId);
     overlayHideTimerId = null;
+  }
+  if (!shouldRenderAutomationFeedbackHere()) {
+    if (overlay.host) {
+      overlay.host.style.display = "none";
+    }
+    return;
   }
   if (
     status.site === "unsupported" &&
@@ -4873,7 +4982,7 @@ function captureVisibleRememberableAnswers(): void {
 }
 
 async function showSuccessFireworks(): Promise<void> {
-  if (!IS_TOP_FRAME || !document.body) {
+  if (!shouldRenderAutomationFeedbackHere() || !document.body) {
     return;
   }
 
@@ -4883,25 +4992,79 @@ async function showSuccessFireworks(): Promise<void> {
     "position:fixed;inset:0;pointer-events:none;z-index:2147483646;overflow:hidden"
   );
 
-  for (let burstIndex = 0; burstIndex < 28; burstIndex += 1) {
-    const particle = document.createElement("span");
-    const hue = 20 + Math.floor(Math.random() * 45);
-    const left = 15 + Math.random() * 70;
-    const top = 20 + Math.random() * 35;
-    const size = 6 + Math.random() * 8;
-    const x = -140 + Math.random() * 280;
-    const y = -40 - Math.random() * 220;
-    particle.setAttribute(
+  const style = document.createElement("style");
+  style.textContent = `
+    @keyframes rjs-firework-burst {
+      0% { opacity: 0; transform: translate(-50%, -50%) rotate(var(--rotation, 0deg)) translate(0, 0) scale(.2); }
+      12% { opacity: 1; }
+      100% { opacity: 0; transform: translate(-50%, -50%) rotate(var(--rotation, 0deg)) translate(var(--x, 0px), var(--y, 0px)) scale(1); }
+    }
+    @keyframes rjs-firework-halo {
+      0% { opacity: 0; transform: translate(-50%, -50%) scale(.2); }
+      15% { opacity: .55; }
+      100% { opacity: 0; transform: translate(-50%, -50%) scale(1.75); }
+    }
+    @keyframes rjs-firework-sparkle {
+      0% { opacity: 0; transform: translate(-50%, -50%) scale(.3); }
+      20% { opacity: .95; }
+      100% { opacity: 0; transform: translate(calc(-50% + var(--x, 0px)), calc(-50% + var(--y, 0px))) scale(1.25); }
+    }
+  `;
+  container.append(style);
+
+  const palette = [12, 24, 40, 54, 188, 204, 332];
+  const burstOrigins = [
+    { left: 18, top: 30, delay: 0 },
+    { left: 34, top: 18, delay: 90 },
+    { left: 50, top: 28, delay: 170 },
+    { left: 66, top: 20, delay: 250 },
+    { left: 78, top: 34, delay: 340 },
+    { left: 48, top: 14, delay: 430 },
+  ];
+
+  for (const [burstIndex, burst] of burstOrigins.entries()) {
+    const halo = document.createElement("span");
+    const haloHue = palette[burstIndex % palette.length];
+    halo.setAttribute(
       "style",
-      `position:absolute;left:${left}%;top:${top}%;width:${size}px;height:${size}px;border-radius:999px;background:hsl(${hue} 92% 62%);box-shadow:0 0 14px hsla(${hue} 92% 62% /.65);transform:translate(-50%,-50%);animation:rjs-firework-${burstIndex} 1300ms ease-out forwards`
+      `position:absolute;left:${burst.left}%;top:${burst.top}%;width:26px;height:26px;border-radius:999px;background:radial-gradient(circle, hsla(${haloHue} 100% 84% /.95) 0%, hsla(${haloHue} 100% 64% /.28) 48%, transparent 72%);animation:rjs-firework-halo 1050ms ease-out ${burst.delay}ms forwards`
     );
-    const style = document.createElement("style");
-    style.textContent = `@keyframes rjs-firework-${burstIndex}{0%{opacity:0;transform:translate(-50%,-50%) scale(.2)}15%{opacity:1}100%{opacity:0;transform:translate(calc(-50% + ${x}px),calc(-50% + ${y}px)) scale(.95)}}`;
-    container.append(style, particle);
+    container.append(halo);
+
+    for (let particleIndex = 0; particleIndex < 18; particleIndex += 1) {
+      const angle = (Math.PI * 2 * particleIndex) / 18 + Math.random() * 0.18;
+      const distance = 82 + Math.random() * 120;
+      const x = Math.cos(angle) * distance;
+      const y = Math.sin(angle) * distance;
+      const width = 4 + Math.random() * 4;
+      const height = 12 + Math.random() * 16;
+      const hue =
+        palette[(burstIndex * 3 + particleIndex) % palette.length];
+      const rotation = Math.round(Math.random() * 360);
+      const particle = document.createElement("span");
+      particle.setAttribute(
+        "style",
+        `--x:${x.toFixed(1)}px;--y:${y.toFixed(1)}px;--rotation:${rotation}deg;position:absolute;left:${burst.left}%;top:${burst.top}%;width:${width.toFixed(1)}px;height:${height.toFixed(1)}px;border-radius:999px;background:linear-gradient(180deg, hsla(${hue} 100% 88% / .98), hsla(${hue} 92% 58% / .92));box-shadow:0 0 18px hsla(${hue} 95% 62% / .45);animation:rjs-firework-burst ${1150 + Math.round(Math.random() * 260)}ms cubic-bezier(.18,.84,.18,1) ${burst.delay}ms forwards`
+      );
+      container.append(particle);
+    }
+
+    for (let sparkleIndex = 0; sparkleIndex < 10; sparkleIndex += 1) {
+      const sparkle = document.createElement("span");
+      const sparkleAngle = Math.random() * Math.PI * 2;
+      const sparkleDistance = 30 + Math.random() * 55;
+      const sparkleHue =
+        palette[(burstIndex + sparkleIndex + 2) % palette.length];
+      sparkle.setAttribute(
+        "style",
+        `--x:${(Math.cos(sparkleAngle) * sparkleDistance).toFixed(1)}px;--y:${(Math.sin(sparkleAngle) * sparkleDistance).toFixed(1)}px;position:absolute;left:${burst.left}%;top:${burst.top}%;width:6px;height:6px;border-radius:999px;background:hsl(${sparkleHue} 100% 92%);box-shadow:0 0 16px hsla(${sparkleHue} 100% 80% / .78);animation:rjs-firework-sparkle 760ms ease-out ${burst.delay + 80}ms forwards`
+      );
+      container.append(sparkle);
+    }
   }
 
   document.body.append(container);
-  await sleep(1400);
+  await sleep(2100);
   container.remove();
 }
 
@@ -4990,11 +5153,15 @@ function handlePotentialManualSubmit(event: Event): void {
     return;
   }
 
-  if (
-    !isSubmitEvent &&
-    !shouldTreatManualSubmitActionAsReady(event.target, collectAutofillFields())
-  ) {
-    manualSubmitRequested = false;
+  const currentFields = collectAutofillFields();
+  const readySubmitAction = resolveReadyManualSubmitActionFromEvent(
+    event,
+    currentFields
+  );
+  if (!readySubmitAction) {
+    if (!isSubmitEvent) {
+      manualSubmitRequested = false;
+    }
     return;
   }
 

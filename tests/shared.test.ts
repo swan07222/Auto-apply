@@ -1146,6 +1146,24 @@ describe("shared automation target logic", () => {
     expect(isProbablyAuthGatePage(document)).toBe(false);
   });
 
+  it("detects interactive captcha gates on Indeed final submit pages as verification", () => {
+    window.history.replaceState({}, "", "/beta/indeedapply/form/review-module");
+    document.title = "Indeed Apply";
+    document.body.innerHTML = `
+      <main>
+        <h1>Please review your application</h1>
+        <p>By pressing apply you agree to your application being submitted.</p>
+        <div class="g-recaptcha">
+          <iframe src="https://www.google.com/recaptcha/api2/anchor"></iframe>
+        </div>
+        <p>I'm not a robot</p>
+        <button type="submit" disabled>Submit your application</button>
+      </main>
+    `;
+
+    expect(isProbablyHumanVerificationPage(document)).toBe(true);
+  });
+
   it("detects ZipRecruiter-style confirmation pages as real application success", () => {
     window.history.replaceState(
       {},
@@ -1174,6 +1192,37 @@ describe("shared automation target logic", () => {
     document.body.innerHTML = `
       <main>
         <h1>Application submitted</h1>
+      </main>
+    `;
+
+    expect(hasLikelyApplicationSuccessSignals(document)).toBe(true);
+  });
+
+  it("detects Dice wizard success pages from their celebratory confirmation copy", () => {
+    window.history.replaceState({}, "", "/jobs/example-role/wizard/success");
+    document.title = "Application sent";
+    document.body.innerHTML = `
+      <main>
+        <h1>Huzzah! Your application is on its way!</h1>
+        <a href="/my-jobs">My Jobs</a>
+        <a href="/jobs">Job Search</a>
+      </main>
+    `;
+
+    expect(hasLikelyApplicationSuccessSignals(document)).toBe(true);
+  });
+
+  it("detects Greenhouse confirmation pages from their application-confirmation URL", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/example/jobs/1234567/application_confirmation"
+    );
+    document.title = "Thanks";
+    document.body.innerHTML = `
+      <main>
+        <h1>Thank you for applying</h1>
+        <p>We have received your application.</p>
       </main>
     `;
 

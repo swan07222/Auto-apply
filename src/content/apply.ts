@@ -2631,11 +2631,18 @@ export function findProgressionAction(
 
     if (/^next$/i.test(lowerText)) {
       score = 100;
+    } else if (
+      lowerText === "autofill with resume" ||
+      lowerText === "auto fill with resume" ||
+      lowerText === "auto-fill with resume"
+    ) {
+      score = 98;
     } else if (/^continue$/i.test(lowerText)) {
       score = 95;
     } else if (
       lowerText === "start my application" ||
-      lowerText === "start application"
+      lowerText === "start application" ||
+      lowerText === "start your application"
     ) {
       score = 94;
     } else if (
@@ -2666,7 +2673,9 @@ export function findProgressionAction(
       score = 78;
     } else if (
       lowerText.includes("review application") ||
-      lowerText.includes("review my application")
+      lowerText.includes("review my application") ||
+      lowerText.includes("review details") ||
+      lowerText.includes("review your details")
     ) {
       score = 75;
     } else if (

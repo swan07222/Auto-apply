@@ -189,6 +189,13 @@ export function hasLikelyApplicationSurface(
     return true;
   }
 
+  if (
+    (site === "builtin" || site === "other_sites" || site === "startup") &&
+    hasLikelyAtsLaunchModalSurface()
+  ) {
+    return true;
+  }
+
   const onApplyLikeUrl = isAlreadyOnApplyPage(site, window.location.href);
   const hasPageContent = hasLikelyApplicationPageContent();
   const hasProgression = Boolean(findProgressionAction(site));
@@ -311,6 +318,47 @@ function hasMonsterInlineApplySurface(
     }
 
     if (applyLike && hasActionControl && hasAccountField && signalCount >= 3) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasLikelyAtsLaunchModalSurface(): boolean {
+  for (const shell of collectDeepMatches<HTMLElement>(
+    "[role='dialog'], [aria-modal='true'], [class*='modal'], [class*='drawer'], [class*='overlay'], [class*='sheet'], [class*='popup']"
+  )) {
+    if (!isElementVisible(shell)) {
+      continue;
+    }
+
+    const text = cleanText(shell.innerText || shell.textContent || "")
+      .toLowerCase()
+      .slice(0, 2000);
+    if (!text) {
+      continue;
+    }
+
+    const actionCount = shell.querySelectorAll(
+      "button, a[href], [role='button'], input[type='submit'], input[type='button']"
+    ).length;
+    if (actionCount < 2) {
+      continue;
+    }
+
+    const signalCount = [
+      "start your application",
+      "start application",
+      "start my application",
+      "autofill with resume",
+      "apply manually",
+      "use my last application",
+      "resume",
+      "application",
+    ].filter((signal) => text.includes(signal)).length;
+
+    if (signalCount >= 3) {
       return true;
     }
   }

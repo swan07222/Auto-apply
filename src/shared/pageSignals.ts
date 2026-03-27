@@ -155,6 +155,25 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
     .join(" ")
     .slice(0, 4000);
   const combinedText = `${title} ${bodyText} ${iframeMetadata}`;
+  const hasInteractiveCaptchaPrompt =
+    Boolean(
+      doc.querySelector(
+        [
+          "iframe[src*='recaptcha' i]",
+          "iframe[title*='recaptcha' i]",
+          "iframe[title*='not a robot' i]",
+          "iframe[aria-label*='recaptcha' i]",
+          ".g-recaptcha iframe",
+          ".grecaptcha-badge",
+          ".recaptcha-checkbox-border",
+          ".recaptcha-checkbox",
+          "[aria-label*='i am human' i]",
+        ].join(",")
+      )
+    ) &&
+    /\b(i am human|i'm not a robot|verify you are human|complete the security check|human verification)\b/.test(
+      combinedText
+    );
 
   const strongPhrases = [
     "verify you are human",
@@ -171,6 +190,10 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
     "performance and security by cloudflare",
     "security service to protect against malicious bots",
   ];
+
+  if (hasInteractiveCaptchaPrompt) {
+    return !hasLikelyApplicationSuccessSignals(doc);
+  }
 
   if (strongPhrases.some((phrase) => combinedText.includes(phrase))) {
     if (hasLikelyApplicationSignals) {
@@ -581,9 +604,12 @@ export function hasLikelyApplicationSuccessSignals(doc: Document): boolean {
     "application was submitted",
     "application submitted",
     "application successfully submitted",
+    "your application is on its way",
+    "application is on its way",
     "application complete",
     "application received",
     "application sent",
+    "we have received your application",
     "successfully applied",
     "you've successfully applied",
     "you have successfully applied",
@@ -602,12 +628,31 @@ export function hasLikelyApplicationSuccessSignals(doc: Document): boolean {
     pageUrl.includes("indeedapply/form/") ||
     pageUrl.includes("/apply/") ||
     pageUrl.includes("/application/") ||
+    pageUrl.includes("application_confirmation") ||
     pageUrl.includes("/job-applications/") ||
+    pageUrl.includes("/wizard/success") ||
+    pageUrl.includes("/post-apply") ||
     pageUrl.includes("candidateexperience") ||
     pageUrl.includes("jobapply") ||
     pageUrl.includes("/confirmation");
 
-  return successSignalCount >= 2 || (onKnownApplyFlowUrl && successSignalCount >= 1);
+  const greenhouseConfirmation =
+    pageUrl.includes("application_confirmation") &&
+    /\b(thank you for applying|application submitted|application received|we have received your application|we'll be in touch)\b/.test(
+      combinedText
+    );
+  const diceWizardSuccess =
+    pageUrl.includes("/wizard/success") &&
+    /\b(application is on its way|application submitted|thanks for applying|my jobs|job search)\b/.test(
+      combinedText
+    );
+
+  return (
+    greenhouseConfirmation ||
+    diceWizardSuccess ||
+    successSignalCount >= 2 ||
+    (onKnownApplyFlowUrl && successSignalCount >= 1)
+  );
 }
 
 function isLikelyVisibleFormField(

@@ -1495,7 +1495,7 @@ function isActiveIndeedApplyStep(): boolean {
   }
 
   if (
-    /\b(please review your application|review your application|add a resume for the employer|save and close|step\s+\d+\s+of\s+\d+)\b/.test(
+    /\b(please review your application|review your application|review details|highlight details from your resume|we'll pull key details from your resume|you can review and update details so they are accurate|add a resume for the employer|save and close|step\s+\d+\s+of\s+\d+)\b/.test(
       bodyText
     )
   ) {
@@ -1522,6 +1522,7 @@ function isActiveIndeedApplyStep(): boolean {
         "submit",
         "submit application",
         "continue",
+        "review details",
         "back",
         "save and close",
         "edit",

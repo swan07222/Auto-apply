@@ -595,6 +595,14 @@ describe("popup workflow", () => {
     expect(builtInOptions["5d"]).toBe(true);
     expect(builtInOptions["10d"]).toBe(true);
     expect(builtInOptions["14d"]).toBe(true);
+    expect(
+      Array.from(builtInPopup.datePostedWindowInput.options).find(
+        (option) => option.value === "14d"
+      )?.textContent
+    ).toContain("Unavailable here");
+    expect(builtInPopup.datePostedWindowInput.title).toContain(
+      "Unsupported date windows"
+    );
 
     const greenhousePopup = await createPopupHarness({
       activeTabs: [

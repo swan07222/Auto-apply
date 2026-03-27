@@ -1316,9 +1316,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "application was submitted",
       "application submitted",
       "application successfully submitted",
+      "your application is on its way",
+      "application is on its way",
       "application complete",
       "application received",
       "application sent",
+      "we have received your application",
       "successfully applied",
       "you've successfully applied",
       "you have successfully applied",
@@ -1333,8 +1336,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const successSignalCount = successPhrases.filter(
       (phrase) => combinedText.includes(phrase)
     ).length;
-    const onKnownApplyFlowUrl = pageUrl.includes("indeedapply/form/") || pageUrl.includes("/apply/") || pageUrl.includes("/application/") || pageUrl.includes("/job-applications/") || pageUrl.includes("candidateexperience") || pageUrl.includes("jobapply") || pageUrl.includes("/confirmation");
-    return successSignalCount >= 2 || onKnownApplyFlowUrl && successSignalCount >= 1;
+    const onKnownApplyFlowUrl = pageUrl.includes("indeedapply/form/") || pageUrl.includes("/apply/") || pageUrl.includes("/application/") || pageUrl.includes("application_confirmation") || pageUrl.includes("/job-applications/") || pageUrl.includes("/wizard/success") || pageUrl.includes("/post-apply") || pageUrl.includes("candidateexperience") || pageUrl.includes("jobapply") || pageUrl.includes("/confirmation");
+    const greenhouseConfirmation = pageUrl.includes("application_confirmation") && /\b(thank you for applying|application submitted|application received|we have received your application|we'll be in touch)\b/.test(
+      combinedText
+    );
+    const diceWizardSuccess = pageUrl.includes("/wizard/success") && /\b(application is on its way|application submitted|thanks for applying|my jobs|job search)\b/.test(
+      combinedText
+    );
+    return greenhouseConfirmation || diceWizardSuccess || successSignalCount >= 2 || onKnownApplyFlowUrl && successSignalCount >= 1;
   }
   function isLikelyVisibleFormField(field) {
     if (field.disabled) {
@@ -2786,7 +2795,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (normalizedActiveProfileId && profiles[normalizedActiveProfileId]) {
       return normalizedActiveProfileId;
     }
-    return Object.keys(profiles).find((candidate) => candidate.trim().length > 0) ?? null;
+    return null;
   }
   function upsertSavedAnswer(target, key, answer) {
     const normalized = normalizeSavedAnswer(key, answer);
@@ -6011,7 +6020,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     )) {
       return true;
     }
-    if (/\b(please review your application|review your application|add a resume for the employer|save and close|step\s+\d+\s+of\s+\d+)\b/.test(
+    if (/\b(please review your application|review your application|review details|highlight details from your resume|we'll pull key details from your resume|you can review and update details so they are accurate|add a resume for the employer|save and close|step\s+\d+\s+of\s+\d+)\b/.test(
       bodyText
     )) {
       return true;
@@ -6031,6 +6040,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         "submit",
         "submit application",
         "continue",
+        "review details",
         "back",
         "save and close",
         "edit"
@@ -7659,6 +7669,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   var MAX_APPLY_URL_SOURCE_COUNT = 40;
   var MAX_APPLY_URL_SOURCE_LENGTH = 6e4;
   var MAX_APPLY_URL_MARKUP_LENGTH = 18e4;
+  var MAX_APPLY_URL_MARKUP_SNIPPET_COUNT = 6;
+  var APPLY_URL_MARKUP_SNIPPET_LENGTH = Math.floor(
+    MAX_APPLY_URL_MARKUP_LENGTH / MAX_APPLY_URL_MARKUP_SNIPPET_COUNT
+  );
   var APPLY_URL_DISCOVERY_TOKENS = [
     "apply",
     "application",
@@ -7670,6 +7684,29 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     "workday",
     "job"
   ];
+  var MONSTER_DETAIL_BOUNDARY_PATTERNS = [
+    /^profile insights$/,
+    /^description$/,
+    /^job description$/,
+    /^job details$/,
+    /^job details and requirements$/,
+    /^about (?:the )?(?:job|role|position)$/,
+    /^about this (?:job|role|position)$/,
+    /^role overview$/,
+    /^responsibilities$/,
+    /^qualifications$/,
+    /^what (?:you'll|you will) do$/
+  ];
+  var MIN_MONSTER_TITLE_REGION_GAP_BELOW = 220;
+  var MAX_MONSTER_TITLE_REGION_GAP_BELOW = 360;
+  var MIN_MONSTER_TITLE_REGION_GAP_ABOVE = 80;
+  var MAX_MONSTER_TITLE_REGION_GAP_ABOVE = 140;
+  var MONSTER_TITLE_REGION_BELOW_MULTIPLIER = 4;
+  var MONSTER_TITLE_REGION_ABOVE_MULTIPLIER = 1.5;
+  var MONSTER_TITLE_REGION_HORIZONTAL_ALLOWANCE = 520;
+  function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
   function isLegalOrPolicyText(text) {
     const lower = text.toLowerCase();
     if (!lower) {
@@ -8107,6 +8144,45 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const rect = element.getBoundingClientRect();
     return Number.isFinite(rect.top) ? rect.top : 0;
   }
+  function getMonsterTitleRegionBelowThreshold(titleRect) {
+    return Math.max(
+      MIN_MONSTER_TITLE_REGION_GAP_BELOW,
+      Math.min(
+        MAX_MONSTER_TITLE_REGION_GAP_BELOW,
+        Math.round(titleRect.height * MONSTER_TITLE_REGION_BELOW_MULTIPLIER)
+      )
+    );
+  }
+  function getMonsterTitleRegionAboveThreshold(titleRect) {
+    return Math.max(
+      MIN_MONSTER_TITLE_REGION_GAP_ABOVE,
+      Math.min(
+        MAX_MONSTER_TITLE_REGION_GAP_ABOVE,
+        Math.round(titleRect.height * MONSTER_TITLE_REGION_ABOVE_MULTIPLIER)
+      )
+    );
+  }
+  function getMonsterSelectionScore(candidate, titleAnchor, detailBoundary) {
+    let selectionScore = candidate.score;
+    if (isMonsterPrimaryApplyLabel(candidate.text, candidate.url)) {
+      selectionScore += 40;
+    }
+    if (titleAnchor && isMonsterCandidateInPrimaryTitleRegion(
+      candidate.element,
+      titleAnchor,
+      detailBoundary
+    )) {
+      selectionScore += 32;
+    }
+    if (detailBoundary && isMonsterCandidateAboveDetailBoundary(candidate.element, detailBoundary)) {
+      selectionScore += 20;
+    }
+    const normalizedText = cleanText(candidate.text).toLowerCase();
+    if (normalizedText === "apply now" || normalizedText === "quick apply" || normalizedText === "easy apply") {
+      selectionScore += 8;
+    }
+    return selectionScore;
+  }
   function choosePreferredMonsterPrimaryApplyCandidate(candidates) {
     const primaryApplyCandidates = candidates.filter(
       (candidate) => !isMonsterSecondaryApplyContext(candidate.element) && isMonsterPrimaryApplyLabel(candidate.text, candidate.url)
@@ -8124,13 +8200,25 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       (candidate) => isMonsterCandidateAboveDetailBoundary(candidate.element, detailBoundary)
     ) : [];
     if (titleAnchoredPrimaryCandidates.length >= 1) {
-      return sortMonsterApplyCandidates(titleAnchoredPrimaryCandidates)[0];
+      return sortMonsterApplyCandidates(
+        titleAnchoredPrimaryCandidates,
+        primaryTitleAnchor,
+        detailBoundary
+      )[0];
     }
     if (primaryCandidatesAboveDetailBoundary.length >= 1) {
-      return sortMonsterApplyCandidates(primaryCandidatesAboveDetailBoundary)[0];
+      return sortMonsterApplyCandidates(
+        primaryCandidatesAboveDetailBoundary,
+        primaryTitleAnchor,
+        detailBoundary
+      )[0];
     }
     if (primaryApplyCandidates.length >= 1) {
-      return sortMonsterApplyCandidates(primaryApplyCandidates)[0];
+      return sortMonsterApplyCandidates(
+        primaryApplyCandidates,
+        primaryTitleAnchor,
+        detailBoundary
+      )[0];
     }
     const nonSecondaryCandidates = candidates.filter(
       (candidate) => !isMonsterSecondaryApplyContext(candidate.element)
@@ -8139,17 +8227,41 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       (candidate) => isMonsterCandidateAboveDetailBoundary(candidate.element, detailBoundary)
     ) : [];
     if (nonSecondaryCandidatesAboveDetailBoundary.length >= 1) {
-      return sortMonsterApplyCandidates(nonSecondaryCandidatesAboveDetailBoundary)[0];
+      return sortMonsterApplyCandidates(
+        nonSecondaryCandidatesAboveDetailBoundary,
+        primaryTitleAnchor,
+        detailBoundary
+      )[0];
     }
     if (nonSecondaryCandidates.length < 2) {
       return nonSecondaryCandidates[0];
     }
-    return sortMonsterApplyCandidates(nonSecondaryCandidates)[0];
+    return sortMonsterApplyCandidates(
+      nonSecondaryCandidates,
+      primaryTitleAnchor,
+      detailBoundary
+    )[0];
   }
-  function sortMonsterApplyCandidates(candidates) {
+  function sortMonsterApplyCandidates(candidates, titleAnchor, detailBoundary) {
     return candidates.sort((left, right) => {
+      const leftSelectionScore = getMonsterSelectionScore(
+        left,
+        titleAnchor,
+        detailBoundary
+      );
+      const rightSelectionScore = getMonsterSelectionScore(
+        right,
+        titleAnchor,
+        detailBoundary
+      );
+      if (Math.abs(leftSelectionScore - rightSelectionScore) > 30) {
+        return rightSelectionScore - leftSelectionScore;
+      }
       if (left.top !== right.top) {
         return left.top - right.top;
+      }
+      if (leftSelectionScore !== rightSelectionScore) {
+        return rightSelectionScore - leftSelectionScore;
       }
       if (left.score !== right.score) {
         return right.score - left.score;
@@ -8185,7 +8297,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           marker.className
         ].filter(Boolean).join(" ")
       ).toLowerCase();
-      if (text !== "profile insights" && text !== "description" && text !== "job description") {
+      if (!MONSTER_DETAIL_BOUNDARY_PATTERNS.some((pattern) => pattern.test(text))) {
         continue;
       }
       const top = getMonsterActionTop(marker);
@@ -8241,7 +8353,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     const verticalGapBelow = elementRect.top - titleRect.bottom;
     const verticalGapAbove = titleRect.top - elementRect.bottom;
-    return verticalGapBelow <= 220 && verticalGapAbove <= 80;
+    const horizontalGap = elementRect.left > titleRect.right ? elementRect.left - titleRect.right : titleRect.left > elementRect.right ? titleRect.left - elementRect.right : 0;
+    const minimumTitleOverlap = Math.min(
+      32,
+      Math.max(16, Math.round(titleRect.height * 0.5))
+    );
+    return elementRect.bottom >= titleRect.top + minimumTitleOverlap && verticalGapBelow <= getMonsterTitleRegionBelowThreshold(titleRect) && verticalGapAbove <= getMonsterTitleRegionAboveThreshold(titleRect) && horizontalGap <= MONSTER_TITLE_REGION_HORIZONTAL_ALLOWANCE;
   }
   function isMonsterCandidateAboveDetailBoundary(element, detailBoundary) {
     if (detailBoundary.contains(element)) {
@@ -9290,7 +9407,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         score = 80;
       } else if (lowerText.includes("proceed")) {
         score = 78;
-      } else if (lowerText.includes("review application") || lowerText.includes("review my application")) {
+      } else if (lowerText.includes("review application") || lowerText.includes("review my application") || lowerText.includes("review details") || lowerText.includes("review your details")) {
         score = 75;
       } else if (lowerText === "review" || lowerText === "review and continue") {
         score = 74;
@@ -9792,21 +9909,22 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   function findBestExternalApplyUrlFromSources(sources) {
     let best;
     for (const source of sources) {
-      for (const match of source.matchAll(/https?:\/\/[^"'\\<>\s]+/gi)) {
+      const normalizedSource = source.replace(/\\u002f/gi, "/").replace(/\\u003a/gi, ":").replace(/\\u0026/gi, "&").replace(/&#x2f;|&#47;/gi, "/").replace(/&#x3a;|&#58;/gi, ":").replace(/&amp;/gi, "&").replace(/\\\//g, "/");
+      for (const match of normalizedSource.matchAll(/https?:\/\/[^"'\\<>\s]+/gi)) {
         const rawUrl = match[0];
         const url = normalizeUrl(rawUrl);
         if (!url || isKnownBrokenApplyUrl(url) || !isExternalUrl(url)) {
           continue;
         }
-        const matchIndex = typeof match.index === "number" ? match.index : source.indexOf(rawUrl);
+        const matchIndex = typeof match.index === "number" ? match.index : normalizedSource.indexOf(rawUrl);
         const contextStart = Math.max(0, matchIndex - 120);
         const contextEnd = Math.min(
-          source.length,
+          normalizedSource.length,
           matchIndex + rawUrl.length + 120
         );
         const score = scoreExternalApplyUrl(
           url,
-          source.slice(contextStart, contextEnd)
+          normalizedSource.slice(contextStart, contextEnd)
         );
         if (score <= 0) {
           continue;
@@ -9864,16 +9982,53 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (!root) {
       return [];
     }
-    if (root.childElementCount > 2500) {
-      return [];
-    }
     const markup = root.innerHTML || "";
     if (!markup) {
       return [];
     }
-    return [markup.slice(0, MAX_APPLY_URL_MARKUP_LENGTH)];
+    if (markup.length <= MAX_APPLY_URL_MARKUP_LENGTH) {
+      const limited = limitApplyUrlSource(markup, MAX_APPLY_URL_MARKUP_LENGTH);
+      return limited ? [limited] : [];
+    }
+    const tokenPattern = new RegExp(
+      APPLY_URL_DISCOVERY_TOKENS.map(escapeRegExp).join("|"),
+      "gi"
+    );
+    const snippets = [];
+    const seenStarts = [];
+    const duplicateDistance = Math.floor(APPLY_URL_MARKUP_SNIPPET_LENGTH / 3);
+    for (const match of markup.matchAll(tokenPattern)) {
+      const matchIndex = typeof match.index === "number" ? match.index : markup.indexOf(match[0]);
+      const start = Math.max(
+        0,
+        matchIndex - Math.floor(APPLY_URL_MARKUP_SNIPPET_LENGTH / 2)
+      );
+      if (seenStarts.some((existingStart) => Math.abs(existingStart - start) < duplicateDistance)) {
+        continue;
+      }
+      seenStarts.push(start);
+      const limited = limitApplyUrlSource(
+        markup.slice(start, start + APPLY_URL_MARKUP_SNIPPET_LENGTH),
+        APPLY_URL_MARKUP_SNIPPET_LENGTH
+      );
+      if (!limited) {
+        continue;
+      }
+      snippets.push(limited);
+      if (snippets.length >= MAX_APPLY_URL_MARKUP_SNIPPET_COUNT) {
+        break;
+      }
+    }
+    if (snippets.length > 0) {
+      return snippets;
+    }
+    const fallback = limitApplyUrlSource(
+      markup.slice(0, MAX_APPLY_URL_MARKUP_LENGTH),
+      MAX_APPLY_URL_MARKUP_LENGTH
+    );
+    return fallback ? [fallback] : [];
   }
-  function limitApplyUrlSource(source) {
+  function limitApplyUrlSource(source, maxLength = MAX_APPLY_URL_SOURCE_LENGTH) {
     if (!source) {
       return null;
     }
@@ -9885,7 +10040,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (!APPLY_URL_DISCOVERY_TOKENS.some((token) => lower.includes(token))) {
       return null;
     }
-    return trimmed.slice(0, MAX_APPLY_URL_SOURCE_LENGTH);
+    return trimmed.slice(0, maxLength);
   }
   function hasApplyLikeExternalUrlCue(url) {
     const lower = url.toLowerCase();
@@ -9929,13 +10084,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     ].some((token) => lower.includes(token))) {
       return -1;
     }
-    if (lower.includes("indeed.com")) {
-      return -1;
-    }
     let score = 0;
     const hasApplyCue = hasApplyLikeExternalUrlCue(url);
+    const indeedHosted = lower.includes("indeed.com");
+    if (indeedHosted && !isLikelyApplyUrl(url, "indeed")) {
+      return -1;
+    }
     if (includesAnyToken(lower, KNOWN_ATS_HOST_TOKENS)) {
       score += hasApplyCue ? 120 : 20;
+    }
+    if (indeedHosted) {
+      score += hasApplyCue ? 120 : 30;
     }
     if (includesAnyToken(lower, ATS_SCORING_URL_TOKENS)) {
       score += 55;
@@ -11980,6 +12139,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   var MANUAL_SUBMIT_REVIEW_PATTERNS = [
     "please review your application",
     "review your application",
+    "review details",
+    "review your details",
     "you will not be able to make changes after you submit",
     "before you submit your application",
     "review before submitting"
@@ -12089,24 +12250,30 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     return false;
   }
-  function hasVisibleManualSubmitAction(root = document) {
+  function findVisibleManualSubmitAction(root = document) {
     const candidates = Array.from(
       root.querySelectorAll(
         "button, input[type='submit'], input[type='button'], a[href], [role='button']"
       )
     );
-    return candidates.some((candidate) => {
+    for (const candidate of candidates) {
       if (!isElementVisible(candidate)) {
-        return false;
+        continue;
       }
       const text = cleanText(
         getActionText(candidate) || candidate.getAttribute("aria-label") || candidate.getAttribute("title") || ""
       ).toLowerCase();
       if (!text) {
-        return false;
+        continue;
       }
-      return MANUAL_SUBMIT_ACTION_PATTERNS.some((pattern) => pattern.test(text));
-    });
+      if (MANUAL_SUBMIT_ACTION_PATTERNS.some((pattern) => pattern.test(text))) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+  function hasVisibleManualSubmitAction(root = document) {
+    return Boolean(findVisibleManualSubmitAction(root));
   }
   function isManualSubmitActionTarget(target) {
     return resolveManualSubmitActionElement(target) !== null;
@@ -12517,6 +12684,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     return session.phase === "running" || session.phase === "paused" || session.phase === "waiting_for_verification";
   }
+  function shouldRenderAutomationFeedbackInCurrentFrame(session, isTopFrame) {
+    if (session.stage === "autofill-form" && typeof session.controllerFrameId === "number" && session.controllerFrameId !== 0) {
+      return !isTopFrame;
+    }
+    return isTopFrame || session.phase !== "idle";
+  }
 
   // src/content.ts
   var AutomationStoppedError = class extends Error {
@@ -12547,6 +12720,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   var currentClaimedJobKey;
   var currentJobSlots;
   var currentRunSummary;
+  var currentControllerFrameId;
   var activeRun = null;
   var answerFlushPromise = Promise.resolve();
   var overlayHideTimerId = null;
@@ -12812,11 +12986,11 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     } catch {
     }
   }
-  function hasConfirmedManualSubmitSuccess(site) {
-    if (hasLikelyApplicationSuccessSignals(document)) {
-      return true;
-    }
-    if (!manualSubmitRequested) {
+  function shouldBlockManualSubmitSuccessDetection() {
+    return isProbablyHumanVerificationPage(document) || isProbablyAuthGatePage(document);
+  }
+  function shouldTreatCurrentPageAsAppliedSafely(site) {
+    if (shouldBlockManualSubmitSuccessDetection()) {
       return false;
     }
     return shouldTreatCurrentPageAsApplied(site, {
@@ -12826,11 +13000,52 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       isCurrentPageAppliedJob
     });
   }
+  function getReadyVisibleManualSubmitAction(fields, root = document) {
+    const action = findVisibleManualSubmitAction(root);
+    if (!action) {
+      return null;
+    }
+    return shouldTreatManualSubmitActionAsReady(action, fields) ? action : null;
+  }
+  function resolveReadyManualSubmitActionFromEvent(event, fields) {
+    if (event.type === "submit" && event.target instanceof HTMLFormElement) {
+      const submitter = event instanceof SubmitEvent && event.submitter instanceof HTMLElement ? event.submitter : null;
+      const submitCandidate = submitter && resolveManualSubmitActionElement(submitter) ? submitter : getReadyVisibleManualSubmitAction(fields, event.target);
+      if (!submitCandidate) {
+        return null;
+      }
+      return shouldTreatManualSubmitActionAsReady(submitCandidate, fields) ? submitCandidate : null;
+    }
+    const actionElement = resolveManualSubmitActionElement(event.target);
+    if (!actionElement) {
+      return null;
+    }
+    return shouldTreatManualSubmitActionAsReady(actionElement, fields) ? actionElement : null;
+  }
+  function hasConfirmedManualSubmitSuccess(site) {
+    if (shouldBlockManualSubmitSuccessDetection()) {
+      return false;
+    }
+    if (hasLikelyApplicationSuccessSignals(document)) {
+      return true;
+    }
+    if (!manualSubmitRequested) {
+      return false;
+    }
+    if (hasVisibleManualSubmitAction()) {
+      return false;
+    }
+    return shouldTreatCurrentPageAsAppliedSafely(site);
+  }
   async function waitForManualSubmitOutcome(site, waitingForSubmitMessage, waitingForConfirmationMessage = "Submit detected. Waiting for confirmation page...") {
     throwIfAutomationStopped();
     await markCurrentJobReviewedIfManaged();
     while (true) {
       throwIfAutomationStopped();
+      if (manualSubmitRequested && shouldBlockManualSubmitSuccessDetection()) {
+        await waitForHumanVerificationToClear();
+        continue;
+      }
       if (hasConfirmedManualSubmitSuccess(site)) {
         await finalizeSuccessfulApplication("Application submitted successfully.");
         return;
@@ -13055,6 +13270,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (candidate.stage === "bootstrap" || candidate.stage === "collect-results" || candidate.stage === "open-apply" || candidate.stage === "autofill-form") {
       currentStage = candidate.stage;
     }
+    currentControllerFrameId = candidate.stage === "autofill-form" && typeof candidate.controllerFrameId === "number" ? candidate.controllerFrameId : void 0;
     if ("label" in candidate) {
       currentLabel = typeof candidate.label === "string" ? candidate.label : void 0;
     }
@@ -13291,6 +13507,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           currentRunId = message.session.runId;
           currentClaimedJobKey = message.session.claimedJobKey;
           currentJobSlots = message.session.jobSlots;
+          currentControllerFrameId = message.session.stage === "autofill-form" && typeof message.session.controllerFrameId === "number" ? message.session.controllerFrameId : void 0;
           currentRunSummary = isAutomationRunSummary(message.session.runSummary) ? message.session.runSummary : void 0;
           manualSubmitRequested = Boolean(message.session.manualSubmitPending);
           clearAutomationStop();
@@ -13309,6 +13526,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           currentRunId = void 0;
           currentClaimedJobKey = void 0;
           currentJobSlots = void 0;
+          currentControllerFrameId = void 0;
           currentRunSummary = void 0;
           manualSubmitRequested = false;
           clearAutomationStop();
@@ -13422,6 +13640,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         currentRunId = s.runId;
         currentClaimedJobKey = s.claimedJobKey;
         currentJobSlots = s.jobSlots;
+        currentControllerFrameId = s.stage === "autofill-form" && typeof s.controllerFrameId === "number" ? s.controllerFrameId : void 0;
         currentRunSummary = isAutomationRunSummary(s.runSummary) ? s.runSummary : void 0;
         manualSubmitRequested = Boolean(s.manualSubmitPending);
         clearAutomationStop();
@@ -13782,12 +14001,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     await waitForAutomationResumeIfPaused();
     const urlAtStart = window.location.href;
-    if (shouldTreatCurrentPageAsApplied(site, {
-      hasLikelyApplicationSurface: hasLikelyApplicationSurface2,
-      findApplyAction,
-      findDiceApplyAction,
-      isCurrentPageAppliedJob
-    })) {
+    if (shouldTreatCurrentPageAsAppliedSafely(site)) {
       if (manualSubmitRequested) {
         await finalizeSuccessfulApplication("Application submitted successfully.");
         return;
@@ -14399,12 +14613,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       );
       return;
     }
-    if (shouldTreatCurrentPageAsApplied(site, {
-      hasLikelyApplicationSurface: hasLikelyApplicationSurface2,
-      findApplyAction,
-      findDiceApplyAction,
-      isCurrentPageAppliedJob
-    })) {
+    if (shouldTreatCurrentPageAsAppliedSafely(site)) {
       if (manualSubmitRequested) {
         await finalizeSuccessfulApplication("Application submitted successfully.");
       } else {
@@ -14521,6 +14730,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           "Required questions need manual input on this step. Fill them, then press Resume."
         );
         continue;
+      }
+      if (getReadyVisibleManualSubmitAction(currentFields)) {
+        noProgressCount = 0;
+        await waitForManualSubmitOutcome(
+          site,
+          isLikelyManualSubmitReviewPage(document) ? "Final review page ready. Waiting for you to press Submit." : "Application ready. Review it, then press Submit."
+        );
+        return;
       }
       if (result.filledFields > 0 || result.uploadedResume) {
         noProgressCount = 0;
@@ -15721,7 +15938,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     );
   }
   function ensureOverlay() {
-    if (!IS_TOP_FRAME) return;
+    if (!shouldRenderAutomationFeedbackHere()) return;
     if (overlay.host || !document.documentElement) return;
     const host = document.createElement("div");
     host.id = "remote-job-search-overlay-host";
@@ -15873,13 +16090,26 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     overlay.panel.style.left = `${clamped.left}px`;
     overlay.panel.style.right = "auto";
   }
+  function shouldRenderAutomationFeedbackHere() {
+    return shouldRenderAutomationFeedbackInCurrentFrame(
+      {
+        stage: currentStage,
+        phase: status.phase,
+        controllerFrameId: currentControllerFrameId
+      },
+      IS_TOP_FRAME
+    );
+  }
   function renderOverlay() {
-    if (!IS_TOP_FRAME) {
-      return;
-    }
     if (overlayHideTimerId !== null) {
       window.clearTimeout(overlayHideTimerId);
       overlayHideTimerId = null;
+    }
+    if (!shouldRenderAutomationFeedbackHere()) {
+      if (overlay.host) {
+        overlay.host.style.display = "none";
+      }
+      return;
     }
     if (status.site === "unsupported" && status.phase === "idle") {
       if (overlay.host)
@@ -15955,7 +16185,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
   }
   async function showSuccessFireworks() {
-    if (!IS_TOP_FRAME || !document.body) {
+    if (!shouldRenderAutomationFeedbackHere() || !document.body) {
       return;
     }
     const container = document.createElement("div");
@@ -15963,24 +16193,72 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "style",
       "position:fixed;inset:0;pointer-events:none;z-index:2147483646;overflow:hidden"
     );
-    for (let burstIndex = 0; burstIndex < 28; burstIndex += 1) {
-      const particle = document.createElement("span");
-      const hue = 20 + Math.floor(Math.random() * 45);
-      const left = 15 + Math.random() * 70;
-      const top = 20 + Math.random() * 35;
-      const size = 6 + Math.random() * 8;
-      const x = -140 + Math.random() * 280;
-      const y = -40 - Math.random() * 220;
-      particle.setAttribute(
+    const style = document.createElement("style");
+    style.textContent = `
+    @keyframes rjs-firework-burst {
+      0% { opacity: 0; transform: translate(-50%, -50%) rotate(var(--rotation, 0deg)) translate(0, 0) scale(.2); }
+      12% { opacity: 1; }
+      100% { opacity: 0; transform: translate(-50%, -50%) rotate(var(--rotation, 0deg)) translate(var(--x, 0px), var(--y, 0px)) scale(1); }
+    }
+    @keyframes rjs-firework-halo {
+      0% { opacity: 0; transform: translate(-50%, -50%) scale(.2); }
+      15% { opacity: .55; }
+      100% { opacity: 0; transform: translate(-50%, -50%) scale(1.75); }
+    }
+    @keyframes rjs-firework-sparkle {
+      0% { opacity: 0; transform: translate(-50%, -50%) scale(.3); }
+      20% { opacity: .95; }
+      100% { opacity: 0; transform: translate(calc(-50% + var(--x, 0px)), calc(-50% + var(--y, 0px))) scale(1.25); }
+    }
+  `;
+    container.append(style);
+    const palette = [12, 24, 40, 54, 188, 204, 332];
+    const burstOrigins = [
+      { left: 18, top: 30, delay: 0 },
+      { left: 34, top: 18, delay: 90 },
+      { left: 50, top: 28, delay: 170 },
+      { left: 66, top: 20, delay: 250 },
+      { left: 78, top: 34, delay: 340 },
+      { left: 48, top: 14, delay: 430 }
+    ];
+    for (const [burstIndex, burst] of burstOrigins.entries()) {
+      const halo = document.createElement("span");
+      const haloHue = palette[burstIndex % palette.length];
+      halo.setAttribute(
         "style",
-        `position:absolute;left:${left}%;top:${top}%;width:${size}px;height:${size}px;border-radius:999px;background:hsl(${hue} 92% 62%);box-shadow:0 0 14px hsla(${hue} 92% 62% /.65);transform:translate(-50%,-50%);animation:rjs-firework-${burstIndex} 1300ms ease-out forwards`
+        `position:absolute;left:${burst.left}%;top:${burst.top}%;width:26px;height:26px;border-radius:999px;background:radial-gradient(circle, hsla(${haloHue} 100% 84% /.95) 0%, hsla(${haloHue} 100% 64% /.28) 48%, transparent 72%);animation:rjs-firework-halo 1050ms ease-out ${burst.delay}ms forwards`
       );
-      const style = document.createElement("style");
-      style.textContent = `@keyframes rjs-firework-${burstIndex}{0%{opacity:0;transform:translate(-50%,-50%) scale(.2)}15%{opacity:1}100%{opacity:0;transform:translate(calc(-50% + ${x}px),calc(-50% + ${y}px)) scale(.95)}}`;
-      container.append(style, particle);
+      container.append(halo);
+      for (let particleIndex = 0; particleIndex < 18; particleIndex += 1) {
+        const angle = Math.PI * 2 * particleIndex / 18 + Math.random() * 0.18;
+        const distance = 82 + Math.random() * 120;
+        const x = Math.cos(angle) * distance;
+        const y = Math.sin(angle) * distance;
+        const width = 4 + Math.random() * 4;
+        const height = 12 + Math.random() * 16;
+        const hue = palette[(burstIndex * 3 + particleIndex) % palette.length];
+        const rotation = Math.round(Math.random() * 360);
+        const particle = document.createElement("span");
+        particle.setAttribute(
+          "style",
+          `--x:${x.toFixed(1)}px;--y:${y.toFixed(1)}px;--rotation:${rotation}deg;position:absolute;left:${burst.left}%;top:${burst.top}%;width:${width.toFixed(1)}px;height:${height.toFixed(1)}px;border-radius:999px;background:linear-gradient(180deg, hsla(${hue} 100% 88% / .98), hsla(${hue} 92% 58% / .92));box-shadow:0 0 18px hsla(${hue} 95% 62% / .45);animation:rjs-firework-burst ${1150 + Math.round(Math.random() * 260)}ms cubic-bezier(.18,.84,.18,1) ${burst.delay}ms forwards`
+        );
+        container.append(particle);
+      }
+      for (let sparkleIndex = 0; sparkleIndex < 10; sparkleIndex += 1) {
+        const sparkle = document.createElement("span");
+        const sparkleAngle = Math.random() * Math.PI * 2;
+        const sparkleDistance = 30 + Math.random() * 55;
+        const sparkleHue = palette[(burstIndex + sparkleIndex + 2) % palette.length];
+        sparkle.setAttribute(
+          "style",
+          `--x:${(Math.cos(sparkleAngle) * sparkleDistance).toFixed(1)}px;--y:${(Math.sin(sparkleAngle) * sparkleDistance).toFixed(1)}px;position:absolute;left:${burst.left}%;top:${burst.top}%;width:6px;height:6px;border-radius:999px;background:hsl(${sparkleHue} 100% 92%);box-shadow:0 0 16px hsla(${sparkleHue} 100% 80% / .78);animation:rjs-firework-sparkle 760ms ease-out ${burst.delay + 80}ms forwards`
+        );
+        container.append(sparkle);
+      }
     }
     document.body.append(container);
-    await sleep(1400);
+    await sleep(2100);
     container.remove();
   }
   async function pushFinalSessionStatus(message, completionKind) {
@@ -16041,8 +16319,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (!isSubmitEvent && !isManualSubmitActionTarget(event.target)) {
       return;
     }
-    if (!isSubmitEvent && !shouldTreatManualSubmitActionAsReady(event.target, collectAutofillFields())) {
-      manualSubmitRequested = false;
+    const currentFields = collectAutofillFields();
+    const readySubmitAction = resolveReadyManualSubmitActionFromEvent(
+      event,
+      currentFields
+    );
+    if (!readySubmitAction) {
+      if (!isSubmitEvent) {
+        manualSubmitRequested = false;
+      }
       return;
     }
     manualSubmitRequested = true;

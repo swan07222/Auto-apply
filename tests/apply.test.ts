@@ -47,6 +47,28 @@ describe("application progression actions", () => {
     expect(action?.text).toBe("Next");
   });
 
+  it("treats Indeed review-details steps as progression instead of a terminal review state", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/beta/indeedapply/form/resume-module/structured-data-intro"
+    );
+    document.body.innerHTML = `
+      <main>
+        <h1>Highlight details from your resume to help screening tools</h1>
+        <p>We'll pull key details from your resume.</p>
+        <p>You can review and update details so they are accurate.</p>
+        <button type="button">Review details</button>
+      </main>
+    `;
+
+    const action = findProgressionAction("indeed");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.text).toBe("Review details");
+  });
+
   it("treats internal Indeed continuation form-actions as click progression", () => {
     window.history.replaceState(
       {},
@@ -2106,5 +2128,25 @@ describe("application progression actions", () => {
     if (action?.type === "navigate") {
       expect(action.url).toBe("https://jobs.ashbyhq.com/example/current-role");
     }
+  });
+
+  it("treats Built In ATS launch modals as progression by preferring Autofill with Resume", () => {
+    document.body.innerHTML = `
+      <main class="job-post">
+        <button>Apply</button>
+      </main>
+      <section role="dialog" aria-modal="true">
+        <h2>Start Your Application</h2>
+        <button>Autofill with Resume</button>
+        <button>Apply Manually</button>
+        <button>Use My Last Application</button>
+      </section>
+    `;
+
+    const action = findProgressionAction("builtin");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.text).toBe("Autofill with Resume");
   });
 });

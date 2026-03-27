@@ -1,6 +1,7 @@
 // Note: describe, expect, it are provided globally by vitest (globals: true)
 
 import {
+  findVisibleManualSubmitAction,
   hasEditableAutofillFields,
   hasPendingRequiredAutofillFields,
   hasVisibleManualSubmitAction,
@@ -125,6 +126,17 @@ describe("manual review helpers", () => {
 
     expect(hasVisibleManualSubmitAction()).toBe(true);
     expect(isLikelyManualSubmitReviewPage()).toBe(true);
+  });
+
+  it("returns the visible manual submit control when one is present", () => {
+    document.body.innerHTML = `
+      <main>
+        <button type="button">Continue</button>
+        <button id="submit" type="submit">Submit application</button>
+      </main>
+    `;
+
+    expect(findVisibleManualSubmitAction()?.id).toBe("submit");
   });
 
   it("does not treat submit clicks as ready when required fields are still empty", () => {

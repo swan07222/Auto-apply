@@ -138,6 +138,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     await removeSession(tabId);
     if (session?.runId) {
       await maybeOpenNextQueuedJobForRunId(session.runId);
+      await maybeFinalizeExhaustedRun(session.runId);
     }
   })();
 });
@@ -961,6 +962,7 @@ async function handleMessage(
 
       if (session?.runId) {
         await maybeOpenNextQueuedJobForRunId(session.runId);
+        await maybeFinalizeExhaustedRun(session.runId);
       }
 
       return { ok: true };
@@ -1075,6 +1077,8 @@ async function updateSessionFromMessage(
     }
 
     await resumePendingJobSessionsForRunId(nextSession.runId);
+    await maybeOpenNextQueuedJobForRunId(nextSession.runId, sender.tab ?? null);
+    await maybeFinalizeExhaustedRun(nextSession.runId);
   }
 
   return { ok: true };
@@ -2700,6 +2704,89 @@ async function resumePendingJobSessionsForRunId(runId: string): Promise<void> {
       });
     } catch {
       // The content script may still be loading; content-ready will pick this up.
+    }
+  }
+
+  if (sessionsToResume.length === 0) {
+    await maybeFinalizeExhaustedRun(runId);
+  }
+}
+
+async function maybeFinalizeExhaustedRun(runId: string): Promise<void> {
+  const finishedMessage = "Automation finished. No more queued jobs were left.";
+  const sessionsToNotify = await withRunLock(runId, async () => {
+    const runState = await getRunState(runId);
+    if (!runState || runState.stopRequested) {
+      return [] as AutomationSession[];
+    }
+
+    if (
+      runState.queuedJobItems.length > 0 ||
+      (Number.isFinite(runState.rateLimitedUntil) &&
+        Date.now() < Number(runState.rateLimitedUntil))
+    ) {
+      return [] as AutomationSession[];
+    }
+
+    const runSessions = await listSessionsForRunId(runId);
+    const hasBlockingManagedSession = runSessions.some(
+      (session) =>
+        isManagedJobSession(session) &&
+        session.phase !== "completed" &&
+        session.phase !== "error" &&
+        session.phase !== "queued"
+    );
+    if (hasBlockingManagedSession) {
+      return [] as AutomationSession[];
+    }
+
+    const hasRunningCollectors = runSessions.some(
+      (session) =>
+        session.stage === "collect-results" &&
+        (session.phase === "running" ||
+          session.phase === "paused" ||
+          session.phase === "waiting_for_verification")
+    );
+    if (hasRunningCollectors) {
+      return [] as AutomationSession[];
+    }
+
+    await setRunState({
+      ...runState,
+      stopRequested: true,
+      updatedAt: Date.now(),
+    });
+
+    const completedSessions = runSessions
+      .filter(
+        (session) =>
+          session.phase !== "completed" &&
+          session.phase !== "error"
+      )
+      .map((session, index) => ({
+        ...session,
+        phase: "completed" as const,
+        message: finishedMessage,
+        updatedAt: Date.now() + index,
+        shouldResume: false,
+        manualSubmitPending: false,
+      }));
+
+    for (const session of completedSessions) {
+      await setSession(session);
+    }
+
+    return completedSessions;
+  });
+
+  for (const session of sessionsToNotify) {
+    try {
+      await chrome.tabs.sendMessage(session.tabId, {
+        type: "stop-automation",
+        message: finishedMessage,
+      });
+    } catch {
+      // Some finished tabs may already be closed.
     }
   }
 }

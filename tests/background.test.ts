@@ -1841,6 +1841,114 @@ describe("background spawn quota handling", () => {
     );
   });
 
+  it("opens the next queued job immediately after a successful finalize-session even if the current tab stays open", async () => {
+    const runId = "run-success-open-next";
+    const currentUrl = "https://smartapply.indeed.com/beta/indeedapply/form/post-apply";
+    const nextUrl = "https://www.indeed.com/viewjob?jk=beta456";
+    const nextKey = getJobDedupKey(nextUrl);
+    const runStateKey = `remote-job-search-run:${runId}`;
+    const createTabMock = vi.fn(async (createProperties: chrome.tabs.CreateProperties) => ({
+      id: 202,
+      url: createProperties.url,
+      active: createProperties.active,
+      index: createProperties.index,
+      windowId: createProperties.windowId,
+      openerTabId: createProperties.openerTabId,
+    }));
+
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 2,
+          openedJobPages: 2,
+          openedJobKeys: [
+            getJobDedupKey(currentUrl),
+            nextKey,
+          ],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          queuedJobItems: [
+            {
+              url: nextUrl,
+              site: "indeed",
+              stage: "open-apply",
+              runId,
+              claimedJobKey: nextKey,
+              enqueuedAt: 1,
+            },
+          ],
+          stopRequested: false,
+          updatedAt: 1,
+        },
+        "remote-job-search-session:101": {
+          tabId: 101,
+          site: "indeed",
+          phase: "running",
+          message: "Waiting for confirmation...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "autofill-form",
+          runId,
+          claimedJobKey: getJobDedupKey("https://www.indeed.com/viewjob?jk=alpha123"),
+        },
+      },
+      createTabMock
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "finalize-session",
+        status: {
+          site: "indeed",
+          phase: "completed",
+          message: "Application submitted successfully.",
+          updatedAt: 10,
+        },
+        stage: "autofill-form",
+        completionKind: "successful",
+      },
+      {
+        tab: {
+          id: 101,
+          url: currentUrl,
+          index: 2,
+          windowId: 7,
+        },
+      }
+    );
+
+    expect(response).toEqual({ ok: true });
+    await flushAsyncWork();
+
+    expect(createTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: nextUrl,
+        openerTabId: 101,
+        index: 3,
+      })
+    );
+    expect(chromeMock.local.state[runStateKey]).toEqual(
+      expect.objectContaining({
+        successfulJobPages: 1,
+        queuedJobItems: [],
+      })
+    );
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      202,
+      expect.objectContaining({
+        type: "start-automation",
+        session: expect.objectContaining({
+          tabId: 202,
+          claimedJobKey: nextKey,
+        }),
+      })
+    );
+  });
+
   it("counts current no-fields autofill summaries as successful completions", async () => {
     const runId = "run-no-fields-success";
     const firstUrl = "https://www.indeed.com/viewjob?jk=alpha123";
@@ -1902,6 +2010,93 @@ describe("background spawn quota handling", () => {
         successfulJobKeys: [getJobDedupKey(firstUrl)],
       })
     );
+  });
+
+  it("finishes the run automatically when the queue and active job sessions are exhausted", async () => {
+    const runId = "run-auto-finish";
+    const jobUrl = "https://www.dice.com/jobs/detail/example-role/abc123";
+    const runStateKey = `remote-job-search-run:${runId}`;
+
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 1,
+          openedJobPages: 1,
+          openedJobKeys: [getJobDedupKey(jobUrl)],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          queuedJobItems: [],
+          stopRequested: false,
+          updatedAt: 1,
+        },
+        "remote-job-search-session:101": {
+          tabId: 101,
+          site: "dice",
+          phase: "running",
+          message: "Autofilling...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "autofill-form",
+          runId,
+          claimedJobKey: getJobDedupKey(jobUrl),
+        },
+        "remote-job-search-session:201": {
+          tabId: 201,
+          site: "dice",
+          phase: "queued",
+          message: "Queued 1 Dice job page. No more results pages were available. Waiting for queued jobs or Stop.",
+          updatedAt: 2,
+          shouldResume: false,
+          stage: "collect-results",
+          runId,
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "finalize-session",
+        status: {
+          site: "dice",
+          phase: "completed",
+          message: "Application submitted successfully.",
+          updatedAt: 10,
+        },
+        stage: "autofill-form",
+        completionKind: "successful",
+      },
+      {
+        tab: {
+          id: 101,
+          url: "https://www.dice.com/jobs/example-role/wizard/success",
+        },
+      }
+    );
+
+    expect(response).toEqual({ ok: true });
+    expect(chromeMock.local.state[runStateKey]).toEqual(
+      expect.objectContaining({
+        successfulJobPages: 1,
+        successfulJobKeys: [getJobDedupKey(jobUrl)],
+        stopRequested: true,
+      })
+    );
+    expect(chromeMock.local.state["remote-job-search-session:201"]).toEqual(
+      expect.objectContaining({
+        phase: "completed",
+        message: "Automation finished. No more queued jobs were left.",
+        shouldResume: false,
+      })
+    );
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(201, {
+      type: "stop-automation",
+      message: "Automation finished. No more queued jobs were left.",
+    });
   });
 
   it("reports applied-today counts after a successful managed completion", async () => {

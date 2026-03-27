@@ -34,6 +34,8 @@ const MANUAL_SUBMIT_ACTION_PATTERNS = [
 const MANUAL_SUBMIT_REVIEW_PATTERNS = [
   "please review your application",
   "review your application",
+  "review details",
+  "review your details",
   "you will not be able to make changes after you submit",
   "before you submit your application",
   "review before submitting",
@@ -184,18 +186,18 @@ export function hasPendingRequiredAutofillFields(
   return false;
 }
 
-export function hasVisibleManualSubmitAction(
+export function findVisibleManualSubmitAction(
   root: ParentNode = document
-): boolean {
+): HTMLElement | null {
   const candidates = Array.from(
     root.querySelectorAll<HTMLElement>(
       "button, input[type='submit'], input[type='button'], a[href], [role='button']"
     )
   );
 
-  return candidates.some((candidate) => {
+  for (const candidate of candidates) {
     if (!isElementVisible(candidate)) {
-      return false;
+      continue;
     }
 
     const text = cleanText(
@@ -206,11 +208,21 @@ export function hasVisibleManualSubmitAction(
     ).toLowerCase();
 
     if (!text) {
-      return false;
+      continue;
     }
 
-    return MANUAL_SUBMIT_ACTION_PATTERNS.some((pattern) => pattern.test(text));
-  });
+    if (MANUAL_SUBMIT_ACTION_PATTERNS.some((pattern) => pattern.test(text))) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+export function hasVisibleManualSubmitAction(
+  root: ParentNode = document
+): boolean {
+  return Boolean(findVisibleManualSubmitAction(root));
 }
 
 export function isManualSubmitActionTarget(

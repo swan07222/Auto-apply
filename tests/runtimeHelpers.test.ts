@@ -7,6 +7,7 @@ import {
   mergeAutofillResult,
   shouldKeepTopFrameSessionSyncAlive,
   shouldMirrorControllerBoundSessionInTopFrame,
+  shouldRenderAutomationFeedbackInCurrentFrame,
   shouldAvoidApplyClickFocus,
   resolveGreenhouseSearchContextUrl,
   shouldAvoidApplyScroll,
@@ -214,6 +215,31 @@ describe("content runtime helpers", () => {
         true
       )
     ).toBe(false);
+  });
+
+  it("renders overlay feedback in the controlling frame for embedded autofill sessions", () => {
+    const embeddedSession = {
+      stage: "autofill-form" as const,
+      phase: "running" as const,
+      controllerFrameId: 7,
+    };
+
+    expect(
+      shouldRenderAutomationFeedbackInCurrentFrame(embeddedSession, true)
+    ).toBe(false);
+    expect(
+      shouldRenderAutomationFeedbackInCurrentFrame(embeddedSession, false)
+    ).toBe(true);
+    expect(
+      shouldRenderAutomationFeedbackInCurrentFrame(
+        {
+          stage: "collect-results",
+          phase: "running",
+          controllerFrameId: undefined,
+        },
+        true
+      )
+    ).toBe(true);
   });
 
   it("prefers Monster click continuation only for Monster-hosted targets", () => {

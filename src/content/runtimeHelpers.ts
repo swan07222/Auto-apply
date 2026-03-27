@@ -450,3 +450,18 @@ export function shouldKeepTopFrameSessionSyncAlive(
     session.phase === "waiting_for_verification"
   );
 }
+
+export function shouldRenderAutomationFeedbackInCurrentFrame(
+  session: Pick<AutomationSession, "stage" | "phase" | "controllerFrameId">,
+  isTopFrame: boolean
+): boolean {
+  if (
+    session.stage === "autofill-form" &&
+    typeof session.controllerFrameId === "number" &&
+    session.controllerFrameId !== 0
+  ) {
+    return !isTopFrame;
+  }
+
+  return isTopFrame || session.phase !== "idle";
+}

@@ -2445,6 +2445,37 @@ describe("job search candidate filtering", () => {
     expect(isCurrentPageAppliedJob("dice")).toBe(true);
   });
 
+  it("treats Dice wizard success pages as already applied", () => {
+    window.history.replaceState({}, "", "/jobs/example-role/wizard/success");
+
+    document.body.innerHTML = `
+      <main>
+        <h1>Huzzah! Your application is on its way!</h1>
+        <a href="/my-jobs">My Jobs</a>
+        <a href="/jobs">Job Search</a>
+      </main>
+    `;
+
+    expect(isCurrentPageAppliedJob("dice")).toBe(true);
+  });
+
+  it("treats Greenhouse confirmation pages as already applied", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/example/jobs/1234567/application_confirmation"
+    );
+
+    document.body.innerHTML = `
+      <main>
+        <h1>Thank you for applying</h1>
+        <p>We have received your application.</p>
+      </main>
+    `;
+
+    expect(isCurrentPageAppliedJob("greenhouse")).toBe(true);
+  });
+
   it("does not treat active Indeed SmartApply review steps as already applied", () => {
     window.history.replaceState({}, "", "/beta/indeedapply/form/review-module");
 
@@ -2472,6 +2503,25 @@ describe("job search candidate filtering", () => {
     `;
 
     expect(isCurrentPageAppliedJob("indeed")).toBe(true);
+  });
+
+  it("does not treat Indeed review-details intro steps as already applied", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/beta/indeedapply/form/resume-module/structured-data-intro"
+    );
+
+    document.body.innerHTML = `
+      <main>
+        <h1>Highlight details from your resume to help screening tools</h1>
+        <p>We'll pull key details from your resume.</p>
+        <p>You can review and update details so they are accurate.</p>
+        <button type="button">Review details</button>
+      </main>
+    `;
+
+    expect(isCurrentPageAppliedJob("indeed")).toBe(false);
   });
 
   it("does not treat other Indeed result cards' applied badges as the active job state", () => {

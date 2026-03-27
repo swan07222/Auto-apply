@@ -71,6 +71,12 @@ const deleteProfileButton = requireElement<HTMLButtonElement>(
 const searchModeInput = requireElement<HTMLSelectElement>("#search-mode");
 const datePostedWindowInput =
   requireElement<HTMLSelectElement>("#date-posted-window");
+const datePostedWindowBaseLabels = new Map(
+  Array.from(datePostedWindowInput.options).map((option) => [
+    option.value,
+    option.textContent || option.label || option.value,
+  ])
+);
 const searchKeywordsInput =
   requireElement<HTMLInputElement>("#search-keywords");
 const fullNameInput = requireElement<HTMLInputElement>("#full-name");
@@ -2239,13 +2245,21 @@ function updateDatePostedWindowInputState(): void {
     const optionValue = option.value;
     if (!isDatePostedWindow(optionValue)) {
       option.disabled = false;
+      option.textContent =
+        datePostedWindowBaseLabels.get(optionValue) ?? option.textContent;
       continue;
     }
 
-    option.disabled = !supportedWindows.includes(optionValue);
+    const supported = supportedWindows.includes(optionValue);
+    option.disabled = !supported;
+    option.textContent = supported
+      ? datePostedWindowBaseLabels.get(optionValue) ?? option.textContent
+      : `${datePostedWindowBaseLabels.get(optionValue) ?? optionValue} (Unavailable here)`;
   }
 
   datePostedWindowInput.value = nextValue;
+  datePostedWindowInput.title =
+    "Unsupported date windows are marked as unavailable for the active site.";
 }
 
 async function findBestActiveTab(): Promise<ActiveContextTab | null> {

@@ -171,6 +171,22 @@ describe("application surface helpers", () => {
     expect(hasLikelyApplicationSurface("monster", collectors)).toBe(true);
   });
 
+  it("recognizes Built In ATS launch modals before the external application opens", () => {
+    document.body.innerHTML = `
+      <main class="job-post">
+        <button>Apply</button>
+      </main>
+      <section role="dialog" aria-modal="true">
+        <h2>Start Your Application</h2>
+        <button>Autofill with Resume</button>
+        <button>Apply Manually</button>
+        <button>Use My Last Application</button>
+      </section>
+    `;
+
+    expect(hasLikelyApplicationSurface("builtin", collectors)).toBe(true);
+  });
+
   it("waits for a likely application surface to appear after delayed rendering", async () => {
     vi.useFakeTimers();
     document.body.innerHTML = `<main><h1>Job details</h1></main>`;
