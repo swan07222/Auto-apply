@@ -92,6 +92,38 @@ type DomSnapshot = {
   bodyText: string;
 };
 
+function mergeUniqueUrls(...groups: string[][]): string[] {
+  return Array.from(new Set(groups.flat().filter(Boolean)));
+}
+
+function extractMonsterCandidateUrlsFromSource(
+  source: unknown,
+  currentUrl: string
+): string[] {
+  return withDomGlobals("<!doctype html><html><body></body></html>", currentUrl, () => {
+    const candidates = collectMonsterEmbeddedCandidates(source);
+    const preferred = pickRelevantJobUrls(candidates, "monster");
+    if (preferred.length > 0) {
+      return preferred;
+    }
+
+    return Array.from(
+      new Set(
+        candidates
+          .filter((candidate) =>
+            isLikelyJobDetailUrl(
+              "monster",
+              candidate.url,
+              candidate.title,
+              candidate.contextText
+            )
+          )
+          .map((candidate) => candidate.url)
+      )
+    );
+  });
+}
+
 test.skip(
   !LIVE_TESTS_ENABLED,
   "Live smoke tests are opt-in and should run only when you explicitly target real sites."
@@ -157,8 +189,11 @@ function withDomGlobals<T>(html: string, url: string, run: () => T): T {
     "HTMLButtonElement",
     "HTMLInputElement",
     "HTMLSelectElement",
+    "HTMLTextAreaElement",
     "Node",
+    "NodeFilter",
     "Document",
+    "ShadowRoot",
   ] as const;
   const saved = new Map<string, PropertyDescriptor | undefined>();
 
@@ -175,8 +210,11 @@ function withDomGlobals<T>(html: string, url: string, run: () => T): T {
     HTMLButtonElement: dom.window.HTMLButtonElement,
     HTMLInputElement: dom.window.HTMLInputElement,
     HTMLSelectElement: dom.window.HTMLSelectElement,
+    HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
     Node: dom.window.Node,
+    NodeFilter: dom.window.NodeFilter,
     Document: dom.window.Document,
+    ShadowRoot: dom.window.ShadowRoot,
   };
 
   for (const key of keys) {
@@ -207,10 +245,50 @@ function extractCandidateUrlsFromHtml(
   url: string,
   site: SiteKey
 ): string[] {
-  return withDomGlobals(html, url, () => {
+  const extracted = withDomGlobals(html, url, () => {
     const candidates = collectJobDetailCandidates(site);
     return pickRelevantJobUrls(candidates, site);
   });
+
+  if (site !== "glassdoor" || extracted.length > 0) {
+    return extracted;
+  }
+
+  return mergeUniqueUrls(extracted, extractGlassdoorCandidateUrlsFromHtml(html, url));
+}
+
+const GLASSDOOR_JOB_LISTING_URL_PATTERN =
+  /(?:https:\/\/www\.glassdoor\.com\/job-listing\/[^"'`\s>]+|\/job-listing\/[^"'`\s>]+)/gi;
+
+function extractGlassdoorCandidateUrlsFromHtml(
+  html: string,
+  baseUrl: string
+): string[] {
+  return Array.from(
+    new Set(
+      (html.match(GLASSDOOR_JOB_LISTING_URL_PATTERN) ?? [])
+        .map((match) => normalizeCapturedHtmlUrl(match, baseUrl))
+        .filter((candidateUrl) =>
+          Boolean(
+            candidateUrl &&
+              isLikelyJobDetailUrl("glassdoor", candidateUrl, "Glassdoor job")
+          )
+        )
+    )
+  );
+}
+
+function normalizeCapturedHtmlUrl(value: string, baseUrl: string): string {
+  const decodedValue = value
+    .replace(/&amp;/gi, "&")
+    .replace(/&#x2F;/gi, "/")
+    .replace(/&#47;/gi, "/");
+
+  try {
+    return new URL(decodedValue, baseUrl).toString();
+  } catch {
+    return "";
+  }
 }
 
 async function extractMonsterPageCandidateUrls(page: Page): Promise<string[]> {
@@ -225,9 +303,62 @@ async function extractMonsterPageCandidateUrls(page: Page): Promise<string[]> {
     return Array.isArray(searchResults?.jobResults) ? searchResults.jobResults : [];
   });
 
-  return withDomGlobals("<!doctype html><html><body></body></html>", currentUrl, () =>
-    pickRelevantJobUrls(collectMonsterEmbeddedCandidates(jobResults), "monster")
-  );
+  return extractMonsterCandidateUrlsFromSource(jobResults, currentUrl);
+}
+
+function isMonsterSearchApiUrl(url: string): boolean {
+  return /jobs-svx-service\/v2\/monster\/search-jobs/i.test(url);
+}
+
+async function collectMonsterSearchApiCandidateUrls(page: Page): Promise<{
+  getUrls: () => string[];
+  dispose: () => void;
+  settle: () => Promise<void>;
+}> {
+  const urls = new Set<string>();
+  const pending = new Set<Promise<void>>();
+
+  const handleResponse = (response: {
+    url(): string;
+    headers(): Record<string, string>;
+    json(): Promise<unknown>;
+  }): void => {
+    if (!isMonsterSearchApiUrl(response.url())) {
+      return;
+    }
+
+    const contentType =
+      response.headers()["content-type"] || response.headers()["Content-Type"] || "";
+    if (!/json/i.test(contentType)) {
+      return;
+    }
+
+    const task = response
+      .json()
+      .then((payload) => {
+        for (const url of extractMonsterCandidateUrlsFromSource(payload, page.url())) {
+          urls.add(url);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        pending.delete(task);
+      });
+
+    pending.add(task);
+  };
+
+  page.on("response", handleResponse);
+
+  return {
+    getUrls: () => Array.from(urls),
+    dispose: () => {
+      page.off("response", handleResponse);
+    },
+    settle: async () => {
+      await Promise.allSettled(Array.from(pending));
+    },
+  };
 }
 
 function detectVerificationFromHtml(html: string, url: string): boolean {
@@ -524,12 +655,16 @@ async function navigateAndCollect(
   target: SearchTarget,
   allowCareerSurfaceDiscovery = false
 ): Promise<ProbeResult> {
+  const monsterApiProbe =
+    site === "monster" ? await collectMonsterSearchApiCandidateUrls(page) : null;
+
   try {
     await page.goto(target.url, {
       waitUntil: "domcontentloaded",
       timeout: 45_000,
     });
   } catch (error) {
+    monsterApiProbe?.dispose();
     return {
       title: "",
       finalUrl: target.url,
@@ -547,6 +682,7 @@ async function navigateAndCollect(
   const maxAttempts = allowCareerSurfaceDiscovery ? 3 : 1;
   try {
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      await monsterApiProbe?.settle();
       const snapshot = await snapshotCurrentPage(page);
       const candidateUrls = extractCandidateUrlsFromHtml(
         snapshot.html,
@@ -555,7 +691,10 @@ async function navigateAndCollect(
       );
       const fallbackCandidateUrls =
         site === "monster" && candidateUrls.length === 0
-          ? await extractMonsterPageCandidateUrls(page)
+          ? mergeUniqueUrls(
+              await extractMonsterPageCandidateUrls(page),
+              monsterApiProbe?.getUrls() ?? []
+            )
           : candidateUrls;
       const verificationDetected = detectVerificationFromHtml(
         snapshot.html,
@@ -603,7 +742,14 @@ async function navigateAndCollect(
       title: snapshot.title,
       finalUrl: snapshot.url,
       bodySnippet: snapshot.bodyText,
-      candidateUrls: extractCandidateUrlsFromHtml(snapshot.html, snapshot.url, site),
+      candidateUrls:
+        site === "monster"
+          ? mergeUniqueUrls(
+              extractCandidateUrlsFromHtml(snapshot.html, snapshot.url, site),
+              await extractMonsterPageCandidateUrls(page),
+              monsterApiProbe?.getUrls() ?? []
+            )
+          : extractCandidateUrlsFromHtml(snapshot.html, snapshot.url, site),
       verificationDetected: detectVerificationFromHtml(snapshot.html, snapshot.url),
       followedCareerSurface,
     };
@@ -619,6 +765,8 @@ async function navigateAndCollect(
       followedCareerSurface,
       navigationError: error instanceof Error ? error.message : String(error),
     };
+  } finally {
+    monsterApiProbe?.dispose();
   }
 }
 
@@ -633,6 +781,41 @@ function describeProbeFailure(target: SearchTarget, probe: ProbeResult): string 
     `navigationError=${probe.navigationError || "(none)"}`,
     `body=${probe.bodySnippet.slice(0, 400) || "(empty)"}`,
   ].join("\n");
+}
+
+function isLikelyNoOpeningsPage(probe: ProbeResult): boolean {
+  const text = `${probe.title} ${probe.bodySnippet}`
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return [
+    /\b0 jobs found\b/,
+    /\bno jobs found\b/,
+    /\bno open positions\b/,
+    /\bno open roles\b/,
+    /\bno current openings\b/,
+    /\bno current opportunities\b/,
+    /\bno vacancies\b/,
+    /\bsorry, no results at the moment\b/,
+    /\bthere are currently no jobs available\b/,
+    /\bthere are currently no open positions\b/,
+    /\bcheck back again soon\b/,
+  ].some((pattern) => pattern.test(text));
+}
+
+function isLikelyJavascriptShellPage(probe: ProbeResult): boolean {
+  const text = `${probe.title} ${probe.bodySnippet}`
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return [
+    /\byou need to enable javascript to run this app\b/,
+    /\benable javascript to continue\b/,
+    /\bjavascript is required\b/,
+    /\bplease enable javascript\b/,
+  ].some((pattern) => pattern.test(text));
 }
 
 for (const target of buildSearchTargets("indeed", "https://www.indeed.com", "software engineer")) {
@@ -784,6 +967,14 @@ for (const target of STARTUP_TARGETS) {
       probe.verificationDetected,
       `Startup target hit a challenge page.\n${describeProbeFailure(target, probe)}`
     );
+    test.skip(
+      probe.candidateUrls.length === 0 && isLikelyNoOpeningsPage(probe),
+      `Startup target currently shows no open jobs.\n${describeProbeFailure(target, probe)}`
+    );
+    test.skip(
+      probe.candidateUrls.length === 0 && isLikelyJavascriptShellPage(probe),
+      `Startup target currently exposes only a JavaScript-required shell.\n${describeProbeFailure(target, probe)}`
+    );
     expect(
       probe.candidateUrls.length,
       `Startup target exposed no discoverable job-detail candidates.\n${describeProbeFailure(target, probe)}`
@@ -802,6 +993,14 @@ for (const target of OTHER_SITE_TARGETS) {
     test.skip(
       probe.verificationDetected,
       `Other-site target hit a challenge page.\n${describeProbeFailure(target, probe)}`
+    );
+    test.skip(
+      probe.candidateUrls.length === 0 && isLikelyNoOpeningsPage(probe),
+      `Other-site target currently shows no open jobs.\n${describeProbeFailure(target, probe)}`
+    );
+    test.skip(
+      probe.candidateUrls.length === 0 && isLikelyJavascriptShellPage(probe),
+      `Other-site target currently exposes only a JavaScript-required shell.\n${describeProbeFailure(target, probe)}`
     );
     expect(
       probe.candidateUrls.length,

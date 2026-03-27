@@ -3,7 +3,6 @@
 import {
   createRememberedAnswer,
   findBestSavedAnswerMatch,
-  getRelevantSavedAnswers,
 } from "../src/content/answerMemory";
 import { normalizeQuestionKey } from "../src/shared";
 
@@ -23,6 +22,12 @@ describe("answer memory helpers", () => {
         updatedAt: 123,
       },
     });
+  });
+
+  it("rejects generic or system-generated remembered answers", () => {
+    expect(createRememberedAnswer("__RequestVerificationToken", "abc123token", 123)).toBeNull();
+    expect(createRememberedAnswer("On", "No", 123)).toBeNull();
+    expect(createRememberedAnswer("search", "full stack", 123)).toBeNull();
   });
 
   it("matches remembered answers across phrasing variations", () => {
@@ -54,34 +59,6 @@ describe("answer memory helpers", () => {
         answers
       )?.value
     ).toBe("Yes");
-  });
-
-  it("returns only relevant saved answers for prompt context", () => {
-    const answers = {
-      a: {
-        question: "Why do you want this role?",
-        value: "Mission fit.",
-        updatedAt: 10,
-      },
-      b: {
-        question: "How many years of React experience do you have?",
-        value: "5",
-        updatedAt: 20,
-      },
-      c: {
-        question: "What is your favorite editor?",
-        value: "VS Code",
-        updatedAt: 30,
-      },
-    };
-
-    const relevant = getRelevantSavedAnswers(
-      "Tell us why you're interested in this role.",
-      answers
-    );
-
-    expect(relevant.map((entry) => entry.value)).toContain("Mission fit.");
-    expect(relevant.map((entry) => entry.value)).not.toContain("VS Code");
   });
 
   it("does not confuse sponsorship and work-authorization answers", () => {
@@ -206,14 +183,6 @@ describe("answer memory helpers", () => {
         answers
       )?.value
     ).toBe("3");
-
-    const relevant = getRelevantSavedAnswers(
-      "How many years of React experience do you have?",
-      answers
-    );
-
-    expect(relevant.map((entry) => entry.value)).toContain("5");
-    expect(relevant.map((entry) => entry.value)).not.toContain("3");
   });
 
   it("keeps notice period and start-date answers separated", () => {

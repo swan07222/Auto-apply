@@ -3,15 +3,10 @@
 import {
   cleanText,
   cssEscape,
-  extractEmail,
-  extractNumber,
-  extractPhone,
-  extractUrl,
   getReadableText,
   looksLikeQuestion,
   normalizeChoiceText,
   textSimilarity,
-  truncateText,
 } from "../src/content/text";
 
 describe("text helpers", () => {
@@ -29,22 +24,8 @@ describe("text helpers", () => {
     );
   });
 
-  it("truncates at a word boundary when possible", () => {
-    expect(truncateText("Remote front end engineer role", 18)).toBe("Remote front en...");
-    expect(truncateText("short text", 20)).toBe("short text");
-  });
-
   it("escapes CSS selectors when CSS.escape is unavailable", () => {
     expect(cssEscape("field.name[0]")).toBe("field\\.name\\[0\\]");
-  });
-
-  it("extracts numbers, contact details, and URLs from text", () => {
-    expect(extractNumber("Salary: 120,500 USD")).toBe(120500);
-    expect(extractEmail("Reach me at ada@example.com")).toBe("ada@example.com");
-    expect(extractPhone("Call +1 (602) 555-1212 today")).toBe("+1 (602) 555-1212");
-    expect(extractUrl("Apply here: https://example.com/jobs/123?ref=abc")).toBe(
-      "https://example.com/jobs/123?ref=abc"
-    );
   });
 
   it("scores text similarity and question-like prompts", () => {

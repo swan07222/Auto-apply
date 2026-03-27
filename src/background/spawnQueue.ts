@@ -1,32 +1,4 @@
-import { type SpawnTabRequest, getJobDedupKey, getSpawnDedupKey } from "../shared";
-
-export function pickUniqueCandidateUrls(
-  candidates: { url: string; key: string }[],
-  limit: number,
-  reviewedJobKeys: Set<string> = new Set()
-): string[] {
-  const approvedUrls: string[] = [];
-  const seenKeys = new Set<string>();
-  const safeLimit = Math.max(0, Math.floor(limit));
-
-  for (const candidate of candidates) {
-    if (approvedUrls.length >= safeLimit) {
-      break;
-    }
-
-    const url = candidate.url.trim();
-    const key = getJobDedupKey(url);
-
-    if (!url || !key || seenKeys.has(key) || reviewedJobKeys.has(key)) {
-      continue;
-    }
-
-    seenKeys.add(key);
-    approvedUrls.push(url);
-  }
-
-  return approvedUrls;
-}
+import { type SpawnTabRequest, getSpawnDedupKey } from "../shared";
 
 export function deduplicateSpawnItems(
   items: SpawnTabRequest[],

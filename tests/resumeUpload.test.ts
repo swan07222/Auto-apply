@@ -3,7 +3,6 @@
 import {
   hasAcceptedResumeUpload,
   findDiceUploadPanel,
-  findDiceResumeMenuButton,
   findDiceResumePanel,
   findScopedResumeUploadContainer,
   getResumeAssetUploadKey,
@@ -445,36 +444,5 @@ describe("resume upload helpers", () => {
     expect(findDiceUploadPanel("cover_letter")).toBe(
       document.querySelector(".cover-card")
     );
-  });
-
-  it("finds the three-dot Dice resume actions button", () => {
-    document.body.innerHTML = `
-      <div class="resume-card">
-        <div>Resume</div>
-        <div>Gary Cole Resume.pdf</div>
-        <div>Uploaded to application on 3/21/2026</div>
-        <button aria-label="More resume actions">...</button>
-        <button aria-label="Download resume">Download</button>
-      </div>
-    `;
-
-    const panel = document.querySelector(".resume-card") as HTMLElement;
-    for (const element of Array.from(panel.querySelectorAll<HTMLElement>("button")).concat(panel)) {
-      Object.defineProperty(element, "getBoundingClientRect", {
-        configurable: true,
-        value: () => ({
-          width: 120,
-          height: 32,
-          top: 0,
-          left: 0,
-          right: 120,
-          bottom: 32,
-        }),
-      });
-    }
-
-    const menuButton = findDiceResumeMenuButton(panel);
-
-    expect(menuButton).toBe(panel.querySelector("button[aria-label='More resume actions']"));
   });
 });

@@ -1,6 +1,6 @@
 import {
+  type AutomationSession,
   type AutomationSettings,
-  type DatePostedWindow,
   type BrokenPageReason,
   type SiteKey,
   detectSiteFromUrl,
@@ -9,10 +9,6 @@ import {
   parseSearchKeywords,
 } from "../shared";
 import { type AutofillResult } from "./types";
-import {
-  extractPostedAgeHours,
-  isPostedAgeWithinDateWindow,
-} from "./jobSearchHeuristics";
 
 export function createEmptyAutofillResult(): AutofillResult {
   return {
@@ -361,6 +357,7 @@ export function looksLikeCurrentFrameApplicationSurface(
     hasLikelyApplicationForm: () => boolean;
     hasLikelyApplicationFrame: () => boolean;
     hasLikelyApplicationPageContent: () => boolean;
+    hasLikelyApplyContinuationAction?: () => boolean;
     isLikelyApplyUrl: (url: string, site: SiteKey) => boolean;
     isTopFrame: boolean;
     resumeFileInputCount: number;
@@ -381,10 +378,17 @@ export function looksLikeCurrentFrameApplicationSurface(
     return true;
   }
 
+  const hasContinuationAction =
+    dependencies.isTopFrame &&
+    Boolean(site) &&
+    site !== "unsupported" &&
+    Boolean(dependencies.hasLikelyApplyContinuationAction?.());
+
   if (dependencies.isTopFrame) {
     return (
-      dependencies.hasLikelyApplicationPageContent() &&
-      !dependencies.hasLikelyApplicationFrame()
+      hasContinuationAction ||
+      (dependencies.hasLikelyApplicationPageContent() &&
+        !dependencies.hasLikelyApplicationFrame())
     );
   }
 
@@ -420,56 +424,29 @@ export function shouldRetryAlternateApplyTargets(site: SiteKey): boolean {
   return site !== "monster";
 }
 
-export function shouldSkipCurrentPageByPostedDateWindow(
-  pageText: string,
-  datePostedWindow: DatePostedWindow
+export function shouldMirrorControllerBoundSessionInTopFrame(
+  session: Pick<AutomationSession, "stage" | "controllerFrameId">,
+  isTopFrame: boolean
 ): boolean {
-  if (datePostedWindow === "any") {
-    return false;
-  }
-
-  const postedAgeHours = extractPostedAgeHours(pageText);
-  return !isPostedAgeWithinDateWindow(postedAgeHours, datePostedWindow);
-}
-
-export function getRemainingJobSlotsAfterSpawn(
-  requestedLimit: number,
-  openedCount: number,
-  claimedRemaining?: number,
-  approvedCount?: number
-): number {
-  const safeRequestedLimit = Math.max(0, Math.floor(requestedLimit));
-  const safeOpenedCount = Math.max(0, Math.floor(openedCount));
-  const remainingFromOpened = Math.max(0, safeRequestedLimit - safeOpenedCount);
-
-  if (typeof claimedRemaining !== "number" || !Number.isFinite(claimedRemaining)) {
-    return remainingFromOpened;
-  }
-
-  const safeApprovedCount =
-    typeof approvedCount === "number" && Number.isFinite(approvedCount)
-      ? Math.max(0, Math.floor(approvedCount))
-      : safeOpenedCount;
-  const reopenedClaimedSlots = Math.max(0, safeApprovedCount - safeOpenedCount);
-
-  return Math.min(
-    remainingFromOpened,
-    Math.max(0, Math.floor(claimedRemaining)) + reopenedClaimedSlots
+  return (
+    isTopFrame &&
+    session.stage === "autofill-form" &&
+    typeof session.controllerFrameId === "number" &&
+    session.controllerFrameId !== 0
   );
 }
 
-export function shouldKeepResultsPageOpenAfterZeroSpawn(
-  openedCount: number,
-  approvedCount: number,
-  remainingSlots: number
+export function shouldKeepTopFrameSessionSyncAlive(
+  session: Pick<AutomationSession, "stage" | "phase" | "controllerFrameId">,
+  isTopFrame: boolean
 ): boolean {
-  const safeOpenedCount = Math.max(0, Math.floor(openedCount));
-  const safeApprovedCount = Math.max(0, Math.floor(approvedCount));
-  const safeRemainingSlots = Math.max(0, Math.floor(remainingSlots));
+  if (!shouldMirrorControllerBoundSessionInTopFrame(session, isTopFrame)) {
+    return false;
+  }
 
   return (
-    safeApprovedCount > 0 &&
-    safeOpenedCount <= 0 &&
-    safeRemainingSlots <= 0
+    session.phase === "running" ||
+    session.phase === "paused" ||
+    session.phase === "waiting_for_verification"
   );
 }

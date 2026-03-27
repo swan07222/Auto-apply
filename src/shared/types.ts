@@ -33,10 +33,18 @@ export type AutomationStage =
 export type AutomationPhase =
   | "idle"
   | "running"
+  | "queued"
   | "paused"
   | "waiting_for_verification"
   | "completed"
   | "error";
+
+export interface AutomationRunSummary {
+  queuedJobCount: number;
+  successfulJobPages: number;
+  appliedTodayCount: number;
+  stopRequested: boolean;
+}
 
 export interface AutomationStatus {
   phase: AutomationPhase;
@@ -49,6 +57,7 @@ export interface AutomationSession extends AutomationStatus {
   tabId: number;
   shouldResume: boolean;
   stage: AutomationStage;
+  manualSubmitPending?: boolean;
   runId?: string;
   jobSlots?: number;
   label?: string;
@@ -58,6 +67,7 @@ export interface AutomationSession extends AutomationStatus {
   controllerFrameId?: number;
   claimedJobKey?: string;
   openedUrlKey?: string;
+  runSummary?: AutomationRunSummary;
 }
 
 export interface SearchTarget {

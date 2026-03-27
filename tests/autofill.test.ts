@@ -272,6 +272,36 @@ describe("autofill helpers", () => {
     expect(shouldRememberField(essay)).toBe(true);
   });
 
+  it("skips search, radius, and token fields when remembering answers", () => {
+    document.body.innerHTML = `
+      <form>
+        <label for="search-keywords">Search</label>
+        <input id="search-keywords" name="search" type="search" value="full stack" />
+
+        <label for="radius">Radius</label>
+        <input id="radius" name="radius" type="number" value="25" />
+
+        <input id="verification-token" name="__RequestVerificationToken" type="hidden" value="abc123" />
+
+        <label for="motivation">Why do you want this role?</label>
+        <textarea id="motivation">Strong mission fit.</textarea>
+      </form>
+    `;
+
+    expect(shouldRememberField(document.querySelector("#search-keywords") as HTMLInputElement)).toBe(
+      false
+    );
+    expect(shouldRememberField(document.querySelector("#radius") as HTMLInputElement)).toBe(
+      false
+    );
+    expect(
+      shouldRememberField(document.querySelector("#verification-token") as HTMLInputElement)
+    ).toBe(false);
+    expect(shouldRememberField(document.querySelector("#motivation") as HTMLTextAreaElement)).toBe(
+      true
+    );
+  });
+
   it("detects required fields from attributes and greenhouse-style markers", () => {
     document.body.innerHTML = `
       <form>

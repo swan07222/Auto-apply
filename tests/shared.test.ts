@@ -10,6 +10,7 @@ import {
   detectSiteFromUrl,
   formatStartupRegionList,
   getJobDedupKey,
+  hasLikelyApplicationSuccessSignals,
   inferResumeKindFromTitle,
   isProbablyAuthGatePage,
   isProbablyRateLimitPage,
@@ -1101,6 +1102,82 @@ describe("shared automation target logic", () => {
     `;
 
     expect(isProbablyHumanVerificationPage(document)).toBe(false);
+  });
+
+  it("does not treat Indeed resume review-intro pages with reCAPTCHA footer copy as verification", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/beta/indeedapply/form/resume-module/structured-data-intro"
+    );
+    document.title = "Indeed Apply";
+    document.body.innerHTML = `
+      <main>
+        <button type="button">Save and close</button>
+        <h1>Highlight details from your resume to help screening tools</h1>
+        <p>We'll pull key details from your resume.</p>
+        <p>You can review and update details so they are accurate.</p>
+        <button type="button">Review details</button>
+        <p>This site is protected by reCAPTCHA and the Google Privacy Policy and Terms of Service apply.</p>
+        <div data-sitekey="test-key"></div>
+      </main>
+    `;
+
+    expect(isProbablyHumanVerificationPage(document)).toBe(false);
+    expect(isProbablyAuthGatePage(document)).toBe(false);
+  });
+
+  it("does not treat Indeed submitted pages with reCAPTCHA footer copy as verification", () => {
+    window.history.replaceState({}, "", "/beta/indeedapply/form/post-apply");
+    document.title = "Your application has been submitted";
+    document.body.innerHTML = `
+      <main>
+        <h1>Your application has been submitted!</h1>
+        <p>You will get an email confirmation.</p>
+        <button type="button">Take survey</button>
+        <button type="button">Return to job search</button>
+        <p>Keep track of your applications.</p>
+        <p>This site is protected by reCAPTCHA and the Google Privacy Policy and Terms of Service apply.</p>
+        <div data-sitekey="test-key"></div>
+      </main>
+    `;
+
+    expect(isProbablyHumanVerificationPage(document)).toBe(false);
+    expect(isProbablyAuthGatePage(document)).toBe(false);
+  });
+
+  it("detects ZipRecruiter-style confirmation pages as real application success", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/candidateexperience/apply/abc123/confirmation"
+    );
+    document.title = "You've successfully applied";
+    document.body.innerHTML = `
+      <main>
+        <h1>You've successfully applied</h1>
+        <p>Application received.</p>
+      </main>
+    `;
+
+    expect(hasLikelyApplicationSuccessSignals(document)).toBe(true);
+    expect(isProbablyHumanVerificationPage(document)).toBe(false);
+  });
+
+  it("detects Dice confirmation pages from their application URL and submitted copy", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/job-applications/d32a5e6b-4beb-4314-9830-a5b0c943d59c/application-confirmation"
+    );
+    document.title = "Application submitted";
+    document.body.innerHTML = `
+      <main>
+        <h1>Application submitted</h1>
+      </main>
+    `;
+
+    expect(hasLikelyApplicationSuccessSignals(document)).toBe(true);
   });
 
   it("sanitizes automation settings and stored answers", () => {

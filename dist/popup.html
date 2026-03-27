@@ -24,6 +24,10 @@
               <span class="status-chip-label">Flow</span>
               <span id="mode-preview" class="status-chip-value">Job boards</span>
             </span>
+            <span class="status-chip">
+              <span class="status-chip-label">Applied Today</span>
+              <span id="jobs-applied-today" class="status-chip-value">0</span>
+            </span>
           </div>
 
           <p id="status-text" class="status-text">Choose a search mode to begin.</p>
@@ -69,7 +73,7 @@
             <div class="group-heading">
               <p class="group-kicker">Automation</p>
               <h2>Automation Setup</h2>
-              <p>Choose where to search and how broadly to open roles.</p>
+              <p>Choose where to search and keep applications moving one job at a time.</p>
             </div>
           </summary>
 
@@ -81,11 +85,6 @@
                 <option value="startup_careers">Startup careers</option>
                 <option value="other_job_sites">Other job sites</option>
               </select>
-            </label>
-
-            <label class="field">
-              <span>Total job pages to open</span>
-              <input id="job-limit" type="number" min="1" max="25" />
             </label>
 
             <label class="field">

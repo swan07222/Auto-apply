@@ -4,6 +4,7 @@ import {
   AutomationSession,
   AutomationStage,
   AutomationStatus,
+  AutomationRunSummary,
   BrokenPageReason,
   SEARCH_OPEN_DELAY_MS,
   SearchTarget,
@@ -25,7 +26,7 @@ import {
   resolveStartupTargetRegions,
   shouldKeepManagedJobPageOpen,
 } from "./shared";
-import { deduplicateSpawnItems, pickUniqueCandidateUrls } from "./background/spawnQueue";
+import { deduplicateSpawnItems } from "./background/spawnQueue";
 import {
   buildQueuedJobSessionMessage,
   isManagedJobSession,
@@ -40,9 +41,9 @@ import {
   shouldReleaseManagedJobOpening,
 } from "./background/sessionState";
 import {
+  AutomationQueuedJobItem,
   addActiveRunId,
   createRunId,
-  distributeJobSlots,
   getRunState,
   getSession,
   isRunRateLimited,
@@ -61,14 +62,13 @@ type BackgroundRequest =
   | { type: "start-other-sites-automation"; tabId?: number }
   | { type: "pause-automation-session"; tabId?: number; message?: string }
   | { type: "resume-automation-session"; tabId?: number }
+  | { type: "manual-submit-detected"; tabId?: number }
+  | { type: "mark-job-reviewed"; tabId?: number; fallbackUrl?: string }
+  | { type: "stop-automation-run"; tabId?: number; message?: string }
   | { type: "extract-monster-search-results" }
-  | { type: "reserve-job-openings"; requested: number }
-  | {
-      type: "claim-job-openings";
-      requested: number;
-      candidates: { url: string; key: string }[];
-    }
+  | { type: "queue-job-tabs"; items: SpawnTabRequest[] }
   | { type: "get-tab-session"; tabId: number }
+  | { type: "get-run-summary"; tabId?: number }
   | { type: "content-ready"; looksLikeApplicationSurface?: boolean }
   | {
       type: "status-update";
@@ -101,15 +101,20 @@ const ZIPRECRUITER_SPAWN_DELAY_MS = 4_000;
 const MONSTER_SPAWN_DELAY_MS = 9_000;
 const RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1_000;
 
-const REVIEWED_JOB_KEYS_STORAGE_KEY = "remote-job-search-reviewed-job-keys";
-const MAX_REVIEWED_JOB_KEYS = 5_000;
+const APPLIED_JOB_HISTORY_STORAGE_KEY = "remote-job-search-applied-job-history";
+const REVIEWED_JOB_HISTORY_STORAGE_KEY = "remote-job-search-reviewed-job-history";
+const MAX_APPLIED_JOB_HISTORY = 5_000;
+const MAX_REVIEWED_JOB_HISTORY = 10_000;
 
 const runLocks = new Map<string, Promise<void>>();
 const pendingExtensionTabSpawns = new Map<number, number>();
 let pendingSpawnPersistTimerId: number | null = null;
-let reviewedJobKeysCache: Set<string> | null = null;
-let reviewedJobKeysLoadPromise: Promise<Set<string>> | null = null;
-let reviewedJobKeysWritePromise: Promise<void> = Promise.resolve();
+let appliedJobHistoryCache: Map<string, number> | null = null;
+let appliedJobHistoryLoadPromise: Promise<Map<string, number>> | null = null;
+let appliedJobHistoryWritePromise: Promise<void> = Promise.resolve();
+let reviewedJobHistoryCache: Map<string, number> | null = null;
+let reviewedJobHistoryLoadPromise: Promise<Map<string, number>> | null = null;
+let reviewedJobHistoryWritePromise: Promise<void> = Promise.resolve();
 
 chrome.runtime.onMessage.addListener(
   (message: BackgroundRequest, sender, sendResponse) => {
@@ -128,7 +133,13 @@ chrome.runtime.onMessage.addListener(
 );
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  void removeSession(tabId);
+  void (async () => {
+    const session = await getSession(tabId);
+    await removeSession(tabId);
+    if (session?.runId) {
+      await maybeOpenNextQueuedJobForRunId(session.runId);
+    }
+  })();
 });
 
 chrome.tabs.onCreated.addListener((tab) => {
@@ -692,6 +703,21 @@ async function handleMessage(
     case "resume-automation-session":
       return resumeAutomationSession(resolveRequestedTabId(message.tabId, sender));
 
+    case "manual-submit-detected":
+      return markManualSubmitDetected(resolveRequestedTabId(message.tabId, sender));
+
+    case "mark-job-reviewed":
+      return markJobReviewed(
+        resolveRequestedTabId(message.tabId, sender),
+        message.fallbackUrl ?? sender.tab?.url
+      );
+
+    case "stop-automation-run":
+      return stopAutomationRun(
+        resolveRequestedTabId(message.tabId, sender),
+        message.message
+      );
+
     case "extract-monster-search-results": {
       const tabId = sender.tab?.id;
       if (tabId === undefined) {
@@ -704,20 +730,21 @@ async function handleMessage(
       return extractMonsterSearchResults(tabId);
     }
 
-    case "reserve-job-openings":
-      return reserveJobOpeningsForSender(sender, message.requested);
-
-    case "claim-job-openings":
-      return claimJobOpeningsForSender(
-        sender,
-        message.candidates,
-        message.requested
-      );
+    case "queue-job-tabs":
+      return queueJobTabsForSender(sender, message.items);
 
     case "get-tab-session":
       return {
         ok: true,
-        session: await getSession(message.tabId),
+        session: await getDecoratedSession(message.tabId),
+      };
+
+    case "get-run-summary":
+      return {
+        ok: true,
+        summary: await getRunSummaryForTab(
+          resolveRequestedTabId(message.tabId, sender)
+        ),
       };
 
     case "content-ready": {
@@ -746,7 +773,7 @@ async function handleMessage(
       return {
         ok: true,
         shouldResume: resolved.shouldResume,
-        session: resolved.session,
+        session: (await getDecoratedSession(tabId)) ?? resolved.session,
       };
     }
 
@@ -784,25 +811,18 @@ async function handleMessage(
       // Preserve search-specific query params when deduplicating spawn targets.
       itemsToOpen = deduplicateSpawnItems(itemsToOpen, message.maxJobPages);
       const {
-        items: unreviewedItemsToOpen,
-        skippedItems: skippedReviewedItems,
-      } = await filterReviewedManagedSpawnItems(itemsToOpen);
-      const shouldFallbackToReviewedItems =
-        unreviewedItemsToOpen.length === 0 &&
-        skippedReviewedItems.length > 0 &&
-        itemsToOpen.length > 0 &&
-        itemsToOpen.every((item) => isManagedJobStage(item.stage));
-      itemsToOpen = shouldFallbackToReviewedItems
-        ? itemsToOpen
-        : unreviewedItemsToOpen;
+        items: historyFilteredItems,
+        skippedItems: skippedHistoryItems,
+      } = await filterManagedSpawnItemsByStoredHistory(itemsToOpen);
+      itemsToOpen = historyFilteredItems;
       const {
         items: filteredItemsToOpen,
         skippedItems: skippedAlreadyOpenItems,
       } = await filterAlreadyOpenManagedSpawnItems(itemsToOpen);
       itemsToOpen = filteredItemsToOpen;
 
-      if (!shouldFallbackToReviewedItems && skippedReviewedItems.length > 0) {
-        await releaseJobOpeningsForItems(skippedReviewedItems);
+      if (skippedHistoryItems.length > 0) {
+        await releaseJobOpeningsForItems(skippedHistoryItems);
       }
 
       if (skippedAlreadyOpenItems.length > 0) {
@@ -880,17 +900,22 @@ async function handleMessage(
           session.openedUrlKey = getSpawnDedupKey(item.url) || undefined;
 
           await setSession(session);
+          scheduleSessionRestartOnTabComplete(createdTab.id);
+
+          if (!shouldQueue) {
+            try {
+              await sendSessionControlMessage(session, {
+                type: "start-automation",
+                session,
+              });
+            } catch {
+              // The content script may still be loading; content-ready or the
+              // ready-state kick will restart it.
+            }
+          }
 
           if (shouldQueue && item.runId) {
             queuedRunIds.add(item.runId);
-          }
-        }
-
-        if (isManagedJobStage(item.stage)) {
-          const reviewedKey =
-            item.claimedJobKey?.trim() || getJobDedupKey(item.url);
-          if (reviewedKey) {
-            await rememberReviewedJobKey(reviewedKey);
           }
         }
 
@@ -925,12 +950,17 @@ async function handleMessage(
         return { ok: false };
       }
 
+      const session = await getSession(tabId);
       await removeSession(tabId);
 
       try {
         await chrome.tabs.remove(tabId);
       } catch {
         // Tab may already be closed.
+      }
+
+      if (session?.runId) {
+        await maybeOpenNextQueuedJobForRunId(session.runId);
       }
 
       return { ok: true };
@@ -990,6 +1020,9 @@ async function updateSessionFromMessage(
     updatedAt: message.status.updatedAt,
     shouldResume,
     stage: nextStage,
+    manualSubmitPending: isFinal
+      ? false
+      : existingSession?.manualSubmitPending ?? false,
     runId: existingSession?.runId,
     jobSlots:
       typeof message.jobSlots === "number" && Number.isFinite(message.jobSlots)
@@ -1031,18 +1064,69 @@ async function updateSessionFromMessage(
         nextSession.tabId,
         sender.tab?.url
       );
+      await closeManagedOpenerJobTabForCompletedChild(nextSession, sender.tab);
     } else if (shouldReleaseManagedJobOpening(nextSession, completionKind)) {
       await releaseManagedJobOpening(
         nextSession.runId,
         nextSession.tabId,
         sender.tab?.url
       );
+      await closeManagedOpenerJobTabForCompletedChild(nextSession, sender.tab);
     }
 
     await resumePendingJobSessionsForRunId(nextSession.runId);
   }
 
   return { ok: true };
+}
+
+async function getDecoratedSession(
+  tabId: number
+): Promise<AutomationSession | null> {
+  const session = await getSession(tabId);
+  if (!session) {
+    return null;
+  }
+
+  const runSummary = await getRunSummaryForSession(session);
+  return runSummary
+    ? {
+        ...session,
+        runSummary,
+      }
+    : session;
+}
+
+async function getRunSummaryForTab(
+  tabId: number
+): Promise<AutomationRunSummary | null> {
+  const session = await getSession(tabId);
+  if (!session) {
+    return null;
+  }
+
+  return getRunSummaryForSession(session);
+}
+
+async function getRunSummaryForSession(
+  session: AutomationSession | null
+): Promise<AutomationRunSummary | null> {
+  const runId = session?.runId?.trim();
+  if (!runId) {
+    return null;
+  }
+
+  const runState = await getRunState(runId);
+  if (!runState) {
+    return null;
+  }
+
+  return {
+    queuedJobCount: runState.queuedJobItems.length,
+    successfulJobPages: runState.successfulJobPages,
+    appliedTodayCount: await countAppliedJobsForToday(),
+    stopRequested: runState.stopRequested,
+  };
 }
 
 function resolveRequestedTabId(
@@ -1066,14 +1150,90 @@ async function sendSessionControlMessage(
     | { type: "pause-automation"; message?: string }
     | { type: "start-automation"; session: AutomationSession }
 ): Promise<void> {
+  const payload =
+    message.type === "start-automation"
+      ? {
+          ...message,
+          session: (await getDecoratedSession(session.tabId)) ?? message.session,
+        }
+      : message;
+
   if (typeof session.controllerFrameId === "number") {
-    await chrome.tabs.sendMessage(session.tabId, message, {
+    await chrome.tabs.sendMessage(session.tabId, payload, {
       frameId: session.controllerFrameId,
     });
     return;
   }
 
-  await chrome.tabs.sendMessage(session.tabId, message);
+  await chrome.tabs.sendMessage(session.tabId, payload);
+}
+
+function scheduleSessionRestartOnTabComplete(
+  tabId: number,
+  timeoutMs = 20_000
+): void {
+  let settled = false;
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  const cleanup = () => {
+    if (settled) {
+      return;
+    }
+
+    settled = true;
+    chrome.tabs.onUpdated.removeListener(handleUpdated);
+    chrome.tabs.onRemoved.removeListener(handleRemoved);
+    if (timeoutId !== null) {
+      globalThis.clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+  };
+
+  const handleRemoved = (removedTabId: number) => {
+    if (removedTabId !== tabId) {
+      return;
+    }
+
+    cleanup();
+  };
+
+  const handleUpdated = (
+    updatedTabId: number,
+    changeInfo: { status?: string }
+  ) => {
+    if (updatedTabId !== tabId || changeInfo.status !== "complete") {
+      return;
+    }
+
+    cleanup();
+    void (async () => {
+      const latestSession = await getSession(tabId);
+      if (
+        !latestSession ||
+        latestSession.site === "unsupported" ||
+        !latestSession.shouldResume ||
+        (latestSession.phase !== "running" &&
+          latestSession.phase !== "waiting_for_verification")
+      ) {
+        return;
+      }
+
+      try {
+        await sendSessionControlMessage(latestSession, {
+          type: "start-automation",
+          session: latestSession,
+        });
+      } catch {
+        // The content script may still not be ready; content-ready can still recover.
+      }
+    })();
+  };
+
+  chrome.tabs.onUpdated.addListener(handleUpdated);
+  chrome.tabs.onRemoved.addListener(handleRemoved);
+  timeoutId = globalThis.setTimeout(() => {
+    cleanup();
+  }, timeoutMs);
 }
 
 async function pauseAutomationSession(
@@ -1176,7 +1336,167 @@ async function resumeAutomationSession(
 
   return {
     ok: true,
-    session: nextSession,
+    session: (await getDecoratedSession(tabId)) ?? nextSession,
+  };
+}
+
+async function markManualSubmitDetected(
+  tabId: number
+): Promise<{
+  ok: boolean;
+  error?: string;
+  session?: AutomationSession;
+}> {
+  const session = await getSession(tabId);
+
+  if (!session || session.site === "unsupported") {
+    return {
+      ok: false,
+      error: "No active automation session was found on this tab.",
+    };
+  }
+
+  const nextSession: AutomationSession = {
+    ...session,
+    manualSubmitPending: true,
+  };
+
+  await setSession(nextSession);
+
+  return {
+    ok: true,
+    session: (await getDecoratedSession(tabId)) ?? nextSession,
+  };
+}
+
+async function markJobReviewed(
+  tabId: number,
+  fallbackUrl?: string
+): Promise<{
+  ok: boolean;
+  error?: string;
+  session?: AutomationSession;
+}> {
+  const session = await getSession(tabId);
+
+  if (!session || session.site === "unsupported") {
+    return {
+      ok: false,
+      error: "No active automation session was found on this tab.",
+    };
+  }
+
+  const completionKey = await resolveManagedJobCompletionKey(
+    session,
+    tabId,
+    fallbackUrl
+  );
+  if (completionKey) {
+    await rememberReviewedJobKey(completionKey);
+  }
+
+  return {
+    ok: true,
+    session: (await getDecoratedSession(tabId)) ?? session,
+  };
+}
+
+async function stopAutomationRun(
+  tabId: number,
+  message?: string
+): Promise<{
+  ok: boolean;
+  error?: string;
+  session?: AutomationSession;
+}> {
+  const session = await getSession(tabId);
+
+  if (!session || session.site === "unsupported") {
+    return {
+      ok: false,
+      error: "No active automation session was found on this tab.",
+    };
+  }
+
+  const stopMessage =
+    message?.trim() || "Automation stopped. Press Start to begin again.";
+
+  if (!session.runId) {
+    const nextSession: AutomationSession = {
+      ...session,
+      phase: "completed",
+      message: stopMessage,
+      updatedAt: Date.now(),
+      shouldResume: false,
+    };
+
+    await setSession(nextSession);
+
+    try {
+      await chrome.tabs.sendMessage(tabId, {
+        type: "stop-automation",
+        message: stopMessage,
+      });
+    } catch {
+      // The stored stopped session is enough if content is not ready.
+    }
+
+  return {
+    ok: true,
+    session: (await getDecoratedSession(tabId)) ?? nextSession,
+  };
+}
+
+  const runId = session.runId;
+  const runSessions = await listSessionsForRunId(runId);
+
+  await withRunLock(runId, async () => {
+    const runState = await getRunState(runId);
+    if (runState) {
+      await setRunState({
+        ...runState,
+        queuedJobItems: [],
+        stopRequested: true,
+        updatedAt: Date.now(),
+      });
+    }
+  });
+
+  for (const runSession of runSessions) {
+    const nextSession: AutomationSession = {
+      ...runSession,
+      phase: "completed",
+      message: stopMessage,
+      updatedAt: Date.now(),
+      shouldResume: false,
+      manualSubmitPending: false,
+    };
+    await setSession(nextSession);
+
+    try {
+      await chrome.tabs.sendMessage(runSession.tabId, {
+        type: "stop-automation",
+        message: stopMessage,
+      });
+    } catch {
+      // Ignore tabs whose content script is not currently reachable.
+    }
+  }
+
+  const stoppedSession = await getDecoratedSession(tabId);
+
+  return {
+    ok: true,
+    session:
+      stoppedSession ??
+      ({
+        ...session,
+        phase: "completed",
+        message: stopMessage,
+        updatedAt: Date.now(),
+        shouldResume: false,
+        manualSubmitPending: false,
+      } as AutomationSession),
   };
 }
 
@@ -1242,6 +1562,17 @@ async function attachSessionToSiteOpenedChildTab(
     openerSession.openedUrlKey;
 
   await setSession(childSession);
+  scheduleSessionRestartOnTabComplete(childTabId);
+
+  try {
+    await sendSessionControlMessage(childSession, {
+      type: "start-automation",
+      session: childSession,
+    });
+  } catch {
+    // The child tab may still be loading; content-ready or the tab-complete
+    // restart hook can still recover.
+  }
 
   try {
     await chrome.tabs.sendMessage(openerTabId, {
@@ -1280,6 +1611,42 @@ async function hasLiveManagedChildSessionForClaimedJob(
       session.claimedJobKey?.trim() === claimedJobKey &&
       isManagedJobSession(session)
   );
+}
+
+async function closeManagedOpenerJobTabForCompletedChild(
+  session: AutomationSession,
+  senderTab?: chrome.tabs.Tab
+): Promise<void> {
+  const openerTabId = senderTab?.openerTabId;
+
+  if (
+    typeof openerTabId !== "number" ||
+    openerTabId === session.tabId
+  ) {
+    return;
+  }
+
+  const openerSession = await getSession(openerTabId);
+  const completedClaimedKey = session.claimedJobKey?.trim();
+  const openerClaimedKey = openerSession?.claimedJobKey?.trim();
+
+  if (
+    !openerSession ||
+    !shouldKeepManagedJobPageOpen(openerSession.site) ||
+    !completedClaimedKey ||
+    !openerClaimedKey ||
+    completedClaimedKey !== openerClaimedKey
+  ) {
+    return;
+  }
+
+  await removeSession(openerTabId);
+
+  try {
+    await chrome.tabs.remove(openerTabId);
+  } catch {
+    // The opener tab may already be closing.
+  }
 }
 
 async function startAutomationForTab(
@@ -1330,6 +1697,8 @@ async function startAutomationForTab(
     openedJobKeys: [],
     successfulJobPages: 0,
     successfulJobKeys: [],
+    queuedJobItems: [],
+    stopRequested: false,
     updatedAt: Date.now(),
   });
 
@@ -1405,33 +1774,27 @@ async function startStartupAutomation(
     };
   }
 
-  const jobSlots = distributeJobSlots(settings.jobPageLimit, targets.length);
-
   const items: SpawnTabRequest[] = targets
     .map((target, index) => ({
       url: target.url,
       site: "startup" as const,
       stage: "collect-results" as const,
       runId,
-      jobSlots: jobSlots[index],
       active: index === 0,
       message: `Collecting ${target.label} roles...`,
       label: target.label,
       resumeKind: target.resumeKind,
       profileId: settings.activeProfileId,
       keyword: target.keyword,
-    }))
-    .filter((item) => (item.jobSlots ?? 0) > 0);
-
-  if (items.length === 0) {
-    return {
-      ok: false,
-      error: "No startup career pages have available job slots.",
-    };
-  }
+    }));
 
   // Preserve search-specific query params when deduplicating startup targets.
-  const dedupedItems = deduplicateSpawnItems(items);
+  const dedupedItems = deduplicateSpawnItems(items)
+    .slice(0, 1)
+    .map((item, index) => ({
+      ...item,
+      active: index === 0,
+    }));
 
   await setRunState({
     id: runId,
@@ -1440,6 +1803,8 @@ async function startStartupAutomation(
     openedJobKeys: [],
     successfulJobPages: 0,
     successfulJobKeys: [],
+    queuedJobItems: [],
+    stopRequested: false,
     updatedAt: Date.now(),
   });
 
@@ -1548,33 +1913,27 @@ async function startOtherSitesAutomation(
     };
   }
 
-  const jobSlots = distributeJobSlots(settings.jobPageLimit, targets.length);
-
   const items: SpawnTabRequest[] = targets
     .map((target, index) => ({
       url: target.url,
       site: "other_sites" as const,
       stage: "collect-results" as const,
       runId,
-      jobSlots: jobSlots[index],
       active: index === 0,
       message: `Collecting ${target.label} roles...`,
       label: target.label,
       resumeKind: target.resumeKind,
       profileId: settings.activeProfileId,
       keyword: target.keyword,
-    }))
-    .filter((item) => (item.jobSlots ?? 0) > 0);
-
-  if (items.length === 0) {
-    return {
-      ok: false,
-      error: "No other job site searches have available job slots.",
-    };
-  }
+    }));
 
   // Preserve search-specific query params when deduplicating other-site targets.
-  const dedupedItems = deduplicateSpawnItems(items);
+  const dedupedItems = deduplicateSpawnItems(items)
+    .slice(0, 1)
+    .map((item, index) => ({
+      ...item,
+      active: index === 0,
+    }));
 
   await setRunState({
     id: runId,
@@ -1583,6 +1942,8 @@ async function startOtherSitesAutomation(
     openedJobKeys: [],
     successfulJobPages: 0,
     successfulJobKeys: [],
+    queuedJobItems: [],
+    stopRequested: false,
     updatedAt: Date.now(),
   });
 
@@ -1832,218 +2193,248 @@ function isHardSearchTargetProbeError(error: unknown): boolean {
   ].some((token) => message.includes(token));
 }
 
-async function reserveJobOpeningsForSender(
+async function queueJobTabsForSender(
   sender: chrome.runtime.MessageSender,
-  requested: number
+  items: SpawnTabRequest[]
 ): Promise<{
   ok: boolean;
-  approved: number;
-  remaining: number;
-  limit: number;
-}> {
-  const tabId = sender.tab?.id;
-
-  if (tabId === undefined) {
-    return { ok: false, approved: 0, remaining: 0, limit: 0 };
-  }
-
-  const session = await getSession(tabId);
-  const runId = session?.runId;
-
-  if (!runId) {
-    const settings = await readAutomationSettings();
-    const approved = Math.min(Math.max(0, requested), settings.jobPageLimit);
-    return {
-      ok: true,
-      approved,
-      remaining: 0,
-      limit: settings.jobPageLimit,
-    };
-  }
-
-  const reservation = await reserveJobOpeningsForRunId(runId, requested);
-
-  return {
-    ok: true,
-    ...reservation,
-  };
-}
-
-async function claimJobOpeningsForSender(
-  sender: chrome.runtime.MessageSender,
-  candidates: { url: string; key: string }[],
-  requested: number
-): Promise<{
-  ok: boolean;
-  approved: number;
-  approvedUrls: string[];
-  remaining: number;
-  limit: number;
+  error?: string;
+  queued: number;
+  opened: number;
+  summary?: AutomationRunSummary | null;
 }> {
   const tabId = sender.tab?.id;
 
   if (tabId === undefined) {
     return {
       ok: false,
-      approved: 0,
-      approvedUrls: [],
-      remaining: 0,
-      limit: 0,
+      error: "Missing source tab.",
+      queued: 0,
+      opened: 0,
     };
   }
 
   const session = await getSession(tabId);
-  const runId = session?.runId;
-  const reviewedJobKeys = await getReviewedJobKeySet();
-
+  const runId = session?.runId?.trim();
   if (!runId) {
-    const settings = await readAutomationSettings();
-    const safeLimit = Math.min(Math.max(0, requested), settings.jobPageLimit);
-    let approvedUrls = pickUniqueCandidateUrls(
-      candidates,
-      safeLimit,
-      reviewedJobKeys
-    );
-    if (approvedUrls.length === 0 && safeLimit > 0 && candidates.length > 0) {
-      approvedUrls = pickUniqueCandidateUrls(candidates, safeLimit);
-    }
     return {
-      ok: true,
-      approved: approvedUrls.length,
-      approvedUrls,
-      remaining: Math.max(0, settings.jobPageLimit - approvedUrls.length),
-      limit: settings.jobPageLimit,
+      ok: false,
+      error: "No active automation run was found for this tab.",
+      queued: 0,
+      opened: 0,
     };
   }
 
-  const reservation = await claimJobOpeningsForRunId(
-    runId,
-    candidates,
-    requested
-  );
+  const sourceTab = await getTabSafely(tabId);
+  const queued = await enqueueJobTabsForRunId(runId, items, sourceTab);
+  const opened = await maybeOpenNextQueuedJobForRunId(runId, sourceTab);
 
   return {
     ok: true,
-    ...reservation,
+    queued,
+    opened,
+    summary: await getRunSummaryForSession(session),
   };
 }
 
-async function reserveJobOpeningsForRunId(
+async function enqueueJobTabsForRunId(
   runId: string,
-  requested: number
-): Promise<{ approved: number; remaining: number; limit: number }> {
+  items: SpawnTabRequest[],
+  sourceTab: BackgroundSourceTab | null
+): Promise<number> {
   return withRunLock(runId, async () => {
     const runState = await getRunState(runId);
-
-    if (!runState) {
-      return { approved: 0, remaining: 0, limit: 0 };
+    if (!runState || runState.stopRequested) {
+      return 0;
     }
 
-    const safeRequested = Math.max(0, Math.floor(requested));
-    const remainingBefore = Math.max(
-      0,
-      runState.jobPageLimit - runState.openedJobPages
-    );
-    const approved = Math.min(safeRequested, remainingBefore);
+    const blockedJobKeys = await loadBlockedJobKeySet();
+    const seenKeys = new Set([
+      ...(runState.openedJobKeys ?? []),
+      ...(runState.successfulJobKeys ?? []),
+      ...runState.queuedJobItems
+        .map((item) => item.claimedJobKey?.trim() || getJobDedupKey(item.url))
+        .filter((key): key is string => Boolean(key)),
+    ]);
+    const queuedJobItems = [...runState.queuedJobItems];
+    let queuedCount = 0;
 
-    return {
-      approved,
-      remaining: Math.max(0, remainingBefore - approved),
-      limit: runState.jobPageLimit,
-    };
+    for (const item of items) {
+      if (!isManagedJobStage(item.stage) || !item.url.trim()) {
+        continue;
+      }
+
+      const claimedJobKey = item.claimedJobKey?.trim() || getJobDedupKey(item.url);
+      if (!claimedJobKey) {
+        continue;
+      }
+
+      if (
+        seenKeys.has(claimedJobKey) ||
+        blockedJobKeys.has(claimedJobKey)
+      ) {
+        continue;
+      }
+
+      seenKeys.add(claimedJobKey);
+      queuedJobItems.push({
+        ...item,
+        claimedJobKey,
+        active: item.active ?? true,
+        sourceTabId: sourceTab?.id,
+        sourceWindowId: sourceTab?.windowId,
+        sourceTabIndex: sourceTab?.index,
+        enqueuedAt: Date.now() + queuedCount,
+      });
+      queuedCount += 1;
+    }
+
+    if (queuedCount <= 0) {
+      return 0;
+    }
+
+    await setRunState({
+      ...runState,
+      openedJobPages: runState.openedJobPages + queuedCount,
+      openedJobKeys: Array.from(seenKeys),
+      queuedJobItems,
+      updatedAt: Date.now(),
+    });
+
+    return queuedCount;
   });
 }
 
-async function claimJobOpeningsForRunId(
+async function maybeOpenNextQueuedJobForRunId(
   runId: string,
-  candidates: { url: string; key: string }[],
-  requested: number
-): Promise<{
-  approved: number;
-  approvedUrls: string[];
-  remaining: number;
-  limit: number;
-}> {
-  return withRunLock(runId, async () => {
+  preferredSourceTab?: BackgroundSourceTab | null
+): Promise<number> {
+  const nextItem = await withRunLock(runId, async () => {
     const runState = await getRunState(runId);
-
-    if (!runState) {
-      return {
-        approved: 0,
-        approvedUrls: [],
-        remaining: 0,
-        limit: 0,
-      };
+    if (
+      !runState ||
+      runState.stopRequested ||
+      runState.queuedJobItems.length === 0 ||
+      (Number.isFinite(runState.rateLimitedUntil) &&
+        Date.now() < Number(runState.rateLimitedUntil))
+    ) {
+      return null;
     }
 
-    const safeRequested = Math.max(0, Math.floor(requested));
-    const remainingBefore = Math.max(
-      0,
-      runState.jobPageLimit - runState.openedJobPages
+    const runSessions = await listSessionsForRunId(runId);
+    const hasBlockingManagedSession = runSessions.some(
+      (session) =>
+        isManagedJobSession(session) &&
+        session.phase !== "completed" &&
+        session.phase !== "error" &&
+        session.phase !== "queued"
     );
-    const targetCount = Math.min(safeRequested, remainingBefore);
-    const seenKeys = new Set(runState.openedJobKeys ?? []);
-    const reviewedJobKeys = await getReviewedJobKeySet();
-    const approvedUrls: string[] = [];
-    const fallbackReviewedCandidates: Array<{ url: string; key: string }> = [];
 
-    for (const candidate of candidates) {
-      if (approvedUrls.length >= targetCount) {
-        break;
-      }
-
-      const url = candidate.url.trim();
-      // Use the candidate's provided key if available and non-empty, otherwise recompute from URL
-      const key = candidate.key?.trim() || getJobDedupKey(url);
-
-      if (!url || !key || seenKeys.has(key)) {
-        continue;
-      }
-
-      if (reviewedJobKeys.has(key)) {
-        fallbackReviewedCandidates.push({ url, key });
-        continue;
-      }
-
-      seenKeys.add(key);
-      approvedUrls.push(url);
+    if (hasBlockingManagedSession) {
+      return null;
     }
 
-    if (approvedUrls.length === 0 && targetCount > 0) {
-      for (const candidate of fallbackReviewedCandidates) {
-        if (approvedUrls.length >= targetCount) {
-          break;
-        }
+    const [item, ...remainingQueue] = runState.queuedJobItems;
+    await setRunState({
+      ...runState,
+      queuedJobItems: remainingQueue,
+      updatedAt: Date.now(),
+    });
 
-        if (seenKeys.has(candidate.key)) {
-          continue;
-        }
-
-        seenKeys.add(candidate.key);
-        approvedUrls.push(candidate.url);
-      }
-    }
-
-    if (approvedUrls.length > 0) {
-      await setRunState({
-        ...runState,
-        openedJobPages: runState.openedJobPages + approvedUrls.length,
-        openedJobKeys: Array.from(seenKeys),
-        updatedAt: Date.now(),
-      });
-    }
-
-    return {
-      approved: approvedUrls.length,
-      approvedUrls,
-      remaining: Math.max(
-        0,
-        runState.jobPageLimit -
-          (runState.openedJobPages + approvedUrls.length)
-      ),
-      limit: runState.jobPageLimit,
-    };
+    return item ?? null;
   });
+
+  if (!nextItem) {
+    return 0;
+  }
+
+  try {
+    await openQueuedJobItem(nextItem, preferredSourceTab);
+    return 1;
+  } catch (error) {
+    const claimedJobKey =
+      nextItem.claimedJobKey?.trim() || getJobDedupKey(nextItem.url);
+    if (claimedJobKey) {
+      await releaseJobOpeningsForRunId(runId, [claimedJobKey]);
+    }
+    return maybeOpenNextQueuedJobForRunId(runId, preferredSourceTab);
+  }
+}
+
+async function openQueuedJobItem(
+  item: AutomationQueuedJobItem,
+  preferredSourceTab?: BackgroundSourceTab | null
+): Promise<void> {
+  const liveSourceTab =
+    (typeof item.sourceTabId === "number"
+      ? await getTabSafely(item.sourceTabId)
+      : null) ??
+    preferredSourceTab ??
+    null;
+  const indexBase =
+    liveSourceTab?.index ??
+    item.sourceTabIndex ??
+    0;
+  const createdTab = await createExtensionSpawnTab(
+    {
+      url: item.url,
+      site: item.site,
+      active: item.active ?? true,
+      stage: item.stage,
+      runId: item.runId,
+      claimedJobKey: item.claimedJobKey,
+      message: item.message,
+      label: item.label,
+      resumeKind: item.resumeKind,
+      profileId: item.profileId,
+      keyword: item.keyword,
+    },
+    {
+      sourceTabId: liveSourceTab?.id,
+      windowId: liveSourceTab?.windowId ?? item.sourceWindowId,
+      index: indexBase + 1,
+    }
+  );
+
+  if (!item.stage || createdTab.id === undefined) {
+    return;
+  }
+
+  const session = createSession(
+    createdTab.id,
+    item.site,
+    "running",
+    item.message ?? `Starting ${getReadableStageName(item.stage)}...`,
+    true,
+    item.stage,
+    item.runId,
+    item.label,
+    item.keyword,
+    item.resumeKind,
+    item.profileId
+  );
+
+  session.claimedJobKey = item.claimedJobKey;
+  session.openedUrlKey = getSpawnDedupKey(item.url) || undefined;
+
+  await setSession(session);
+  scheduleSessionRestartOnTabComplete(createdTab.id);
+  const openDelayMs = getSpawnOpenDelayMs(item);
+  const eagerStartDelayMs = Math.min(openDelayMs, 600);
+  if (eagerStartDelayMs > 0) {
+    await delay(eagerStartDelayMs);
+  }
+  try {
+    await sendSessionControlMessage(session, {
+      type: "start-automation",
+      session,
+    });
+  } catch {
+    // The content script may still be loading; content-ready will restart it.
+  }
+  if (openDelayMs > eagerStartDelayMs) {
+    await delay(openDelayMs - eagerStartDelayMs);
+  }
 }
 
 async function releaseJobOpeningsForItems(
@@ -2185,6 +2576,9 @@ async function recordSuccessfulJobCompletion(
       successfulJobKeys: Array.from(successfulKeys),
       updatedAt: Date.now(),
     });
+
+    await rememberReviewedJobKey(completionKey);
+    await rememberAppliedJobKey(completionKey);
   });
 }
 
@@ -2203,6 +2597,7 @@ async function releaseManagedJobOpening(
     return;
   }
 
+  await rememberReviewedJobKey(completionKey);
   await releaseJobOpeningsForRunId(runId, [completionKey]);
 }
 
@@ -2258,6 +2653,10 @@ async function resumePendingJobSessionsForRunId(runId: string): Promise<void> {
       return [] as AutomationSession[];
     }
 
+    if (runState.stopRequested) {
+      return [] as AutomationSession[];
+    }
+
     if (
       Number.isFinite(runState.rateLimitedUntil) &&
       Date.now() < Number(runState.rateLimitedUntil)
@@ -2270,14 +2669,7 @@ async function resumePendingJobSessionsForRunId(runId: string): Promise<void> {
     const pendingJobSessions = runSessions
       .filter(isManagedJobSessionPending)
       .sort((left, right) => left.updatedAt - right.updatedAt || left.tabId - right.tabId);
-    const remainingSuccessCapacity = Math.max(
-      0,
-      runState.jobPageLimit - runState.successfulJobPages
-    );
-    const availableSlots = Math.max(
-      0,
-      remainingSuccessCapacity - activeJobSessions.length
-    );
+    const availableSlots = activeJobSessions.length > 0 ? 0 : 1;
 
     if (availableSlots <= 0) {
       return [] as AutomationSession[];
@@ -2302,20 +2694,10 @@ async function resumePendingJobSessionsForRunId(runId: string): Promise<void> {
 
   for (const session of sessionsToResume) {
     try {
-      const message = {
+      await sendSessionControlMessage(session, {
         type: "start-automation" as const,
         session,
-      };
-
-      if (typeof session.controllerFrameId === "number") {
-        await chrome.tabs.sendMessage(
-          session.tabId,
-          message,
-          { frameId: session.controllerFrameId }
-        );
-      } else {
-        await chrome.tabs.sendMessage(session.tabId, message);
-      }
+      });
     } catch {
       // The content script may still be loading; content-ready will pick this up.
     }
@@ -2449,6 +2831,41 @@ function canOpenSeparateApplyTabForClaimedJob(
   return isLikelyManagedApplyTarget(item.url, item.site);
 }
 
+async function filterManagedSpawnItemsByStoredHistory(
+  items: SpawnTabRequest[]
+): Promise<{ items: SpawnTabRequest[]; skippedItems: SpawnTabRequest[] }> {
+  const blockedJobKeys = await loadBlockedJobKeySet();
+  if (blockedJobKeys.size === 0) {
+    return {
+      items,
+      skippedItems: [],
+    };
+  }
+
+  const filtered: SpawnTabRequest[] = [];
+  const skippedItems: SpawnTabRequest[] = [];
+
+  for (const item of items) {
+    if (!isManagedJobStage(item.stage)) {
+      filtered.push(item);
+      continue;
+    }
+
+    const claimedJobKey = item.claimedJobKey?.trim() || getJobDedupKey(item.url);
+    if (!claimedJobKey || !blockedJobKeys.has(claimedJobKey)) {
+      filtered.push(item);
+      continue;
+    }
+
+    skippedItems.push(item);
+  }
+
+  return {
+    items: filtered,
+    skippedItems,
+  };
+}
+
 async function filterAlreadyOpenManagedSpawnItems(
   items: SpawnTabRequest[]
 ): Promise<{ items: SpawnTabRequest[]; skippedItems: SpawnTabRequest[] }> {
@@ -2555,123 +2972,217 @@ async function filterAlreadyOpenManagedSpawnItems(
   };
 }
 
-async function filterReviewedManagedSpawnItems(
-  items: SpawnTabRequest[]
-): Promise<{ items: SpawnTabRequest[]; skippedItems: SpawnTabRequest[] }> {
-  const reviewedJobKeys = await getReviewedJobKeySet();
+function parseJobHistoryEntries(raw: unknown): Map<string, number> {
+  const history = new Map<string, number>();
 
-  if (reviewedJobKeys.size === 0) {
-    return {
-      items,
-      skippedItems: [],
-    };
+  if (!Array.isArray(raw)) {
+    return history;
   }
 
-  const filtered: SpawnTabRequest[] = [];
-  const skippedItems: SpawnTabRequest[] = [];
-
-  for (const item of items) {
-    if (!isManagedJobStage(item.stage)) {
-      filtered.push(item);
+  for (const entry of raw) {
+    if (!Array.isArray(entry) || entry.length < 2) {
       continue;
     }
 
-    const key = item.claimedJobKey?.trim() || getJobDedupKey(item.url);
-    if (key && reviewedJobKeys.has(key)) {
-      skippedItems.push(item);
-      continue;
+    const [rawKey, rawAt] = entry;
+    if (
+      typeof rawKey === "string" &&
+      rawKey.trim() &&
+      Number.isFinite(Number(rawAt))
+    ) {
+      history.set(rawKey.trim(), Number(rawAt));
     }
-
-    filtered.push(item);
   }
 
-  return {
-    items: filtered,
-    skippedItems,
-  };
+  return history;
 }
 
-async function getReviewedJobKeySet(): Promise<Set<string>> {
-  const reviewed = await loadReviewedJobKeys();
-  return new Set(reviewed);
+function trimJobHistory(
+  history: Map<string, number>,
+  maxEntries: number
+): Array<[string, number]> {
+  return Array.from(history.entries())
+    .sort((left, right) => left[1] - right[1])
+    .slice(-maxEntries);
 }
 
-async function loadReviewedJobKeys(): Promise<Set<string>> {
-  if (reviewedJobKeysCache) {
-    return reviewedJobKeysCache;
+async function loadAppliedJobHistory(): Promise<Map<string, number>> {
+  if (appliedJobHistoryCache) {
+    return appliedJobHistoryCache;
   }
 
-  if (reviewedJobKeysLoadPromise) {
-    return reviewedJobKeysLoadPromise;
+  if (appliedJobHistoryLoadPromise) {
+    return appliedJobHistoryLoadPromise;
   }
 
-  reviewedJobKeysLoadPromise = (async () => {
+  appliedJobHistoryLoadPromise = (async () => {
     try {
-      const stored = await chrome.storage.local.get(REVIEWED_JOB_KEYS_STORAGE_KEY);
-      const raw = stored[REVIEWED_JOB_KEYS_STORAGE_KEY];
-      if (!Array.isArray(raw)) {
-        reviewedJobKeysCache = new Set();
-        return reviewedJobKeysCache;
-      }
-
-      reviewedJobKeysCache = new Set(
-        raw
-          .map((value) => (typeof value === "string" ? value.trim() : ""))
-          .filter(Boolean)
+      const stored = await chrome.storage.local.get(APPLIED_JOB_HISTORY_STORAGE_KEY);
+      appliedJobHistoryCache = parseJobHistoryEntries(
+        stored[APPLIED_JOB_HISTORY_STORAGE_KEY]
       );
-      return reviewedJobKeysCache;
+      return appliedJobHistoryCache;
     } catch {
-      reviewedJobKeysCache = new Set();
-      return reviewedJobKeysCache;
+      appliedJobHistoryCache = new Map();
+      return appliedJobHistoryCache;
     } finally {
-      reviewedJobKeysLoadPromise = null;
+      appliedJobHistoryLoadPromise = null;
     }
   })();
 
-  return reviewedJobKeysLoadPromise;
+  return appliedJobHistoryLoadPromise;
 }
 
-async function persistReviewedJobKeys(reviewed: Set<string>): Promise<void> {
-  reviewedJobKeysWritePromise = reviewedJobKeysWritePromise
+async function loadReviewedJobHistory(): Promise<Map<string, number>> {
+  if (reviewedJobHistoryCache) {
+    return reviewedJobHistoryCache;
+  }
+
+  if (reviewedJobHistoryLoadPromise) {
+    return reviewedJobHistoryLoadPromise;
+  }
+
+  reviewedJobHistoryLoadPromise = (async () => {
+    try {
+      const stored = await chrome.storage.local.get(REVIEWED_JOB_HISTORY_STORAGE_KEY);
+      reviewedJobHistoryCache = parseJobHistoryEntries(
+        stored[REVIEWED_JOB_HISTORY_STORAGE_KEY]
+      );
+      return reviewedJobHistoryCache;
+    } catch {
+      reviewedJobHistoryCache = new Map();
+      return reviewedJobHistoryCache;
+    } finally {
+      reviewedJobHistoryLoadPromise = null;
+    }
+  })();
+
+  return reviewedJobHistoryLoadPromise;
+}
+
+async function persistAppliedJobHistory(
+  appliedHistory: Map<string, number>
+): Promise<void> {
+  const trimmedEntries = trimJobHistory(
+    appliedHistory,
+    MAX_APPLIED_JOB_HISTORY
+  );
+
+  appliedJobHistoryWritePromise = appliedJobHistoryWritePromise
     .catch(() => {})
     .then(async () => {
       try {
         await chrome.storage.local.set({
-          [REVIEWED_JOB_KEYS_STORAGE_KEY]: Array.from(reviewed).slice(
-            -MAX_REVIEWED_JOB_KEYS
-          ),
+          [APPLIED_JOB_HISTORY_STORAGE_KEY]: trimmedEntries,
         });
-        // Update cache after successful write to ensure consistency
-        reviewedJobKeysCache = new Set(reviewed);
+        appliedJobHistoryCache = new Map(trimmedEntries);
       } catch {
-        // Ignore persistence errors, but don't update cache on failure
+        // Ignore persistence errors and keep the current in-memory map.
       }
     });
 
-  await reviewedJobKeysWritePromise;
+  await appliedJobHistoryWritePromise;
 }
 
-async function rememberReviewedJobKey(key: string): Promise<void> {
+async function persistReviewedJobHistory(
+  reviewedHistory: Map<string, number>
+): Promise<void> {
+  const trimmedEntries = trimJobHistory(
+    reviewedHistory,
+    MAX_REVIEWED_JOB_HISTORY
+  );
+
+  reviewedJobHistoryWritePromise = reviewedJobHistoryWritePromise
+    .catch(() => {})
+    .then(async () => {
+      try {
+        await chrome.storage.local.set({
+          [REVIEWED_JOB_HISTORY_STORAGE_KEY]: trimmedEntries,
+        });
+        reviewedJobHistoryCache = new Map(trimmedEntries);
+      } catch {
+        // Ignore persistence errors and keep the current in-memory map.
+      }
+    });
+
+  await reviewedJobHistoryWritePromise;
+}
+
+async function rememberAppliedJobKey(
+  key: string,
+  appliedAt = Date.now()
+): Promise<void> {
   const normalizedKey = key.trim();
   if (!normalizedKey) {
     return;
   }
 
-  const reviewed = await loadReviewedJobKeys();
-  if (reviewed.has(normalizedKey)) {
-    return;
-  }
+  const appliedHistory = await loadAppliedJobHistory();
+  appliedHistory.set(normalizedKey, appliedAt);
 
-  reviewed.add(normalizedKey);
-  while (reviewed.size > MAX_REVIEWED_JOB_KEYS) {
-    const oldest = reviewed.values().next().value;
+  while (appliedHistory.size > MAX_APPLIED_JOB_HISTORY) {
+    const oldest = Array.from(appliedHistory.entries()).sort(
+      (left, right) => left[1] - right[1]
+    )[0];
     if (!oldest) {
       break;
     }
-    reviewed.delete(oldest);
+    appliedHistory.delete(oldest[0]);
   }
 
-  await persistReviewedJobKeys(reviewed);
+  await persistAppliedJobHistory(appliedHistory);
+}
+
+async function rememberReviewedJobKey(
+  key: string,
+  reviewedAt = Date.now()
+): Promise<void> {
+  const normalizedKey = key.trim();
+  if (!normalizedKey) {
+    return;
+  }
+
+  const reviewedHistory = await loadReviewedJobHistory();
+  reviewedHistory.set(normalizedKey, reviewedAt);
+
+  while (reviewedHistory.size > MAX_REVIEWED_JOB_HISTORY) {
+    const oldest = Array.from(reviewedHistory.entries()).sort(
+      (left, right) => left[1] - right[1]
+    )[0];
+    if (!oldest) {
+      break;
+    }
+    reviewedHistory.delete(oldest[0]);
+  }
+
+  await persistReviewedJobHistory(reviewedHistory);
+}
+
+async function loadBlockedJobKeySet(): Promise<Set<string>> {
+  const [appliedHistory, reviewedHistory] = await Promise.all([
+    loadAppliedJobHistory(),
+    loadReviewedJobHistory(),
+  ]);
+
+  return new Set([...appliedHistory.keys(), ...reviewedHistory.keys()]);
+}
+
+async function countAppliedJobsForToday(now = Date.now()): Promise<number> {
+  const appliedHistory = await loadAppliedJobHistory();
+  const startOfDay = new Date(now);
+  startOfDay.setHours(0, 0, 0, 0);
+  const startAt = startOfDay.getTime();
+  const endAt = startAt + 24 * 60 * 60 * 1000;
+
+  let count = 0;
+
+  for (const appliedAt of appliedHistory.values()) {
+    if (appliedAt >= startAt && appliedAt < endAt) {
+      count += 1;
+    }
+  }
+
+  return count;
 }
 
 type BackgroundSourceTab = chrome.tabs.Tab & { pendingUrl?: string };
@@ -2698,35 +3209,65 @@ async function createExtensionSpawnTab(
     index: number;
   }
 ): Promise<chrome.tabs.Tab> {
-  const primaryCreateProperties: chrome.tabs.CreateProperties = {
+  const attempts: chrome.tabs.CreateProperties[] = [];
+  const seenAttemptKeys = new Set<string>();
+  const addAttempt = (properties: chrome.tabs.CreateProperties) => {
+    const key = JSON.stringify({
+      active: properties.active ?? false,
+      url: properties.url ?? "",
+      openerTabId:
+        typeof properties.openerTabId === "number" ? properties.openerTabId : null,
+      windowId: typeof properties.windowId === "number" ? properties.windowId : null,
+      index: typeof properties.index === "number" ? properties.index : null,
+    });
+
+    if (seenAttemptKeys.has(key)) {
+      return;
+    }
+
+    seenAttemptKeys.add(key);
+    attempts.push(properties);
+  };
+
+  const baseProperties: chrome.tabs.CreateProperties = {
     url: item.url,
     active: item.active ?? false,
-    index: options.index,
   };
 
   if (options.sourceTabId !== undefined) {
-    primaryCreateProperties.openerTabId = options.sourceTabId;
+    addAttempt({
+      ...baseProperties,
+      openerTabId: options.sourceTabId,
+      index: options.index,
+    });
   }
 
-  try {
-    return await createTabWithTransientRetry(primaryCreateProperties);
-  } catch (error) {
-    if (!shouldRetryTabCreateWithoutOpener(error, options.sourceTabId)) {
-      throw error;
+  if (options.windowId !== undefined) {
+    addAttempt({
+      ...baseProperties,
+      windowId: options.windowId,
+      index: options.index,
+    });
+    addAttempt({
+      ...baseProperties,
+      windowId: options.windowId,
+    });
+  }
+
+  addAttempt(baseProperties);
+
+  let lastError: unknown;
+  for (const properties of attempts) {
+    try {
+      return await createTabWithTransientRetry(properties);
+    } catch (error) {
+      lastError = error;
     }
   }
 
-  const fallbackCreateProperties: chrome.tabs.CreateProperties = {
-    url: item.url,
-    active: item.active ?? false,
-    index: options.index,
-  };
-
-  if (options.windowId !== undefined) {
-    fallbackCreateProperties.windowId = options.windowId;
-  }
-
-  return await createTabWithTransientRetry(fallbackCreateProperties);
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Tab creation failed.");
 }
 
 async function createTabWithTransientRetry(
@@ -2737,7 +3278,11 @@ async function createTabWithTransientRetry(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      return await chrome.tabs.create(properties);
+      const createdTab = await chrome.tabs.create(properties);
+      if (!createdTab || typeof createdTab !== "object") {
+        throw new Error("Tab creation returned no tab.");
+      }
+      return createdTab;
     } catch (error) {
       lastError = error;
       if (
@@ -2768,27 +3313,6 @@ function isRetryableTabCreateError(error: unknown): boolean {
   return (
     message.includes("tabs cannot be edited right now") ||
     message.includes("user may be dragging a tab")
-  );
-}
-
-function shouldRetryTabCreateWithoutOpener(
-  error: unknown,
-  sourceTabId?: number
-): boolean {
-  if (sourceTabId === undefined) {
-    return false;
-  }
-
-  const message =
-    error instanceof Error ? error.message : String(error ?? "").trim();
-  if (!message) {
-    return false;
-  }
-
-  return (
-    message.includes(`No tab with id: ${sourceTabId}`) ||
-    message.includes("Tab not found") ||
-    message.includes("Invalid openerTabId")
   );
 }
 

@@ -5,6 +5,7 @@ import {
   hasPendingRequiredAutofillFields,
   hasVisibleManualSubmitAction,
   isLikelyManualSubmitReviewPage,
+  shouldTreatManualSubmitActionAsReady,
   shouldPauseAutomationForManualReview,
   shouldStartManualReviewPause,
 } from "../src/content/manualReview";
@@ -124,5 +125,62 @@ describe("manual review helpers", () => {
 
     expect(hasVisibleManualSubmitAction()).toBe(true);
     expect(isLikelyManualSubmitReviewPage()).toBe(true);
+  });
+
+  it("does not treat submit clicks as ready when required fields are still empty", () => {
+    document.body.innerHTML = `
+      <form>
+        <label for="full-name">Full name *</label>
+        <input id="full-name" type="text" required />
+        <button id="submit" type="submit">Submit application</button>
+      </form>
+    `;
+
+    const fullName = document.querySelector("#full-name") as HTMLInputElement;
+    const submit = document.querySelector("#submit") as HTMLButtonElement;
+
+    expect(
+      shouldTreatManualSubmitActionAsReady(submit, [fullName])
+    ).toBe(false);
+  });
+
+  it("does not treat submit clicks as ready when visible invalid flags are present", () => {
+    document.body.innerHTML = `
+      <form>
+        <label for="email">Email *</label>
+        <input
+          id="email"
+          type="email"
+          required
+          value="not-an-email"
+          aria-invalid="true"
+        />
+        <button id="submit" type="submit">Submit application</button>
+      </form>
+    `;
+
+    const email = document.querySelector("#email") as HTMLInputElement;
+    const submit = document.querySelector("#submit") as HTMLButtonElement;
+
+    expect(
+      shouldTreatManualSubmitActionAsReady(submit, [email])
+    ).toBe(false);
+  });
+
+  it("allows submit clicks when the visible step looks valid", () => {
+    document.body.innerHTML = `
+      <form>
+        <label for="full-name">Full name *</label>
+        <input id="full-name" type="text" required value="Ada Lovelace" />
+        <button id="submit" type="submit">Submit application</button>
+      </form>
+    `;
+
+    const fullName = document.querySelector("#full-name") as HTMLInputElement;
+    const submit = document.querySelector("#submit") as HTMLButtonElement;
+
+    expect(
+      shouldTreatManualSubmitActionAsReady(submit, [fullName])
+    ).toBe(true);
   });
 });

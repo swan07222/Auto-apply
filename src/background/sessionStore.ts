@@ -1,5 +1,23 @@
-import type { AutomationSession } from "../shared";
+import type { AutomationSession, SiteKey, SpawnTabRequest } from "../shared";
 import { getSessionStorageKey } from "../shared";
+
+export type AutomationQueuedJobItem = {
+  url: string;
+  site: SiteKey;
+  stage?: SpawnTabRequest["stage"];
+  runId?: SpawnTabRequest["runId"];
+  claimedJobKey?: string;
+  message?: string;
+  label?: string;
+  resumeKind?: SpawnTabRequest["resumeKind"];
+  profileId?: string;
+  keyword?: string;
+  active?: boolean;
+  sourceTabId?: number;
+  sourceWindowId?: number;
+  sourceTabIndex?: number;
+  enqueuedAt: number;
+};
 
 export type AutomationRunState = {
   id: string;
@@ -8,6 +26,8 @@ export type AutomationRunState = {
   openedJobKeys: string[];
   successfulJobPages: number;
   successfulJobKeys: string[];
+  queuedJobItems: AutomationQueuedJobItem[];
+  stopRequested: boolean;
   rateLimitedUntil?: number;
   updatedAt: number;
 };
@@ -52,6 +72,63 @@ export async function getRunState(
 
   const raw = value as Partial<AutomationRunState>;
 
+  const queuedJobItems = Array.isArray(raw.queuedJobItems)
+    ? raw.queuedJobItems
+        .filter(
+          (item): item is AutomationQueuedJobItem =>
+            Boolean(item) &&
+            typeof item === "object" &&
+            !Array.isArray(item) &&
+            typeof (item as AutomationQueuedJobItem).url === "string" &&
+            typeof (item as AutomationQueuedJobItem).site === "string"
+        )
+        .map((item) => ({
+          ...item,
+          url: item.url.trim(),
+          site: item.site,
+          stage:
+            item.stage === "bootstrap" ||
+            item.stage === "collect-results" ||
+            item.stage === "open-apply" ||
+            item.stage === "autofill-form"
+              ? item.stage
+              : undefined,
+          runId:
+            typeof item.runId === "string" && item.runId.trim()
+              ? item.runId
+              : undefined,
+          claimedJobKey:
+            typeof item.claimedJobKey === "string" && item.claimedJobKey.trim()
+              ? item.claimedJobKey
+              : undefined,
+          message: typeof item.message === "string" ? item.message : undefined,
+          label: typeof item.label === "string" ? item.label : undefined,
+          resumeKind:
+            item.resumeKind === "front_end" ||
+            item.resumeKind === "back_end" ||
+            item.resumeKind === "full_stack"
+              ? item.resumeKind
+              : undefined,
+          profileId:
+            typeof item.profileId === "string" ? item.profileId : undefined,
+          keyword: typeof item.keyword === "string" ? item.keyword : undefined,
+          active: Boolean(item.active),
+          sourceTabId: Number.isFinite(Number(item.sourceTabId))
+            ? Number(item.sourceTabId)
+            : undefined,
+          sourceWindowId: Number.isFinite(Number(item.sourceWindowId))
+            ? Number(item.sourceWindowId)
+            : undefined,
+          sourceTabIndex: Number.isFinite(Number(item.sourceTabIndex))
+            ? Number(item.sourceTabIndex)
+            : undefined,
+          enqueuedAt: Number.isFinite(Number(item.enqueuedAt))
+            ? Number(item.enqueuedAt)
+            : Date.now(),
+        }))
+        .filter((item) => item.url.length > 0)
+    : [];
+
   return {
     id: typeof raw.id === "string" && raw.id.trim() ? raw.id : runId,
     jobPageLimit: Number.isFinite(Number(raw.jobPageLimit))
@@ -73,6 +150,8 @@ export async function getRunState(
           (key): key is string => typeof key === "string" && Boolean(key.trim())
         )
       : [],
+    queuedJobItems,
+    stopRequested: raw.stopRequested === true,
     rateLimitedUntil: Number.isFinite(Number(raw.rateLimitedUntil))
       ? Number(raw.rateLimitedUntil)
       : undefined,
@@ -183,22 +262,4 @@ export function createRunId(): string {
   return typeof crypto.randomUUID === "function"
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-export function distributeJobSlots(
-  totalSlots: number,
-  targetCount: number
-): number[] {
-  const safeTargetCount = Math.max(0, Math.floor(targetCount));
-  const safeTotalSlots = Math.max(0, Math.floor(totalSlots));
-  const slots = new Array<number>(safeTargetCount).fill(0);
-
-  for (let index = 0; index < safeTotalSlots; index += 1) {
-    if (safeTargetCount === 0) {
-      break;
-    }
-    slots[index % safeTargetCount] += 1;
-  }
-
-  return slots;
 }

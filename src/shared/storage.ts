@@ -27,12 +27,78 @@ import type {
 
 let automationSettingsWriteQueue: Promise<void> = Promise.resolve();
 
+const BLOCKED_SAVED_ANSWER_QUESTION_KEYS = new Set([
+  "on",
+  "off",
+  "yes",
+  "no",
+  "true",
+  "false",
+  "search",
+  "keyword",
+  "keywords",
+  "query",
+  "q",
+  "what",
+  "where",
+  "radius",
+  "distance",
+  "filter",
+]);
+
+const BLOCKED_SAVED_ANSWER_QUESTION_PATTERNS = [
+  /^_{1,2}[a-z0-9_:-]+$/i,
+  /(?:^|[\s_-])(?:csrf|captcha|recaptcha|hcaptcha|g\s*recaptcha|requestverificationtoken|verificationtoken|authenticitytoken|viewstate|eventvalidation|xsrf|nonce)(?:$|[\s_-])/i,
+  /(?:^|[\s_-])(?:distance|radius|keyword|keywords|search|query)(?:$|[\s_-])/i,
+];
+
 export function normalizeQuestionKey(question: string): string {
   return question
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+export function isUsefulSavedAnswerQuestion(question: string): boolean {
+  const cleanedQuestion =
+    typeof question === "string" ? question.replace(/\s+/g, " ").trim() : "";
+  const normalizedQuestion = normalizeQuestionKey(cleanedQuestion);
+
+  if (!cleanedQuestion || !normalizedQuestion) {
+    return false;
+  }
+
+  if (BLOCKED_SAVED_ANSWER_QUESTION_KEYS.has(normalizedQuestion)) {
+    return false;
+  }
+
+  if (
+    BLOCKED_SAVED_ANSWER_QUESTION_PATTERNS.some((pattern) =>
+      pattern.test(cleanedQuestion)
+    )
+  ) {
+    return false;
+  }
+
+  const compactQuestion = cleanedQuestion.replace(/[^a-z0-9]/gi, "");
+  if (
+    compactQuestion.length >= 24 &&
+    !/\s/.test(cleanedQuestion) &&
+    /[A-Z]/.test(cleanedQuestion) &&
+    /[a-z]/.test(cleanedQuestion)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+export function isUsefulSavedAnswer(
+  question: string,
+  value: string
+): boolean {
+  return isUsefulSavedAnswerQuestion(question) && readString(value).length > 0;
 }
 
 export async function readAutomationSettings(): Promise<AutomationSettings> {
@@ -238,7 +304,7 @@ function sanitizeSavedAnswerRecord(raw: unknown): Record<string, SavedAnswer> {
     if (!isRecord(value)) continue;
     const question = readString(value.question);
     const savedValue = readString(value.value);
-    if (!question || !savedValue) continue;
+    if (!isUsefulSavedAnswer(question, savedValue)) continue;
     const normalizedKey = normalizeQuestionKey(key || question);
     if (!normalizedKey) continue;
     answers[normalizedKey] = {

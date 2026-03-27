@@ -501,6 +501,18 @@ function isZipRecruiterExplicitCompanyApplyControl(
       ));
 }
 
+function isTapApplyActionText(text: string): boolean {
+  const lower = text.toLowerCase().trim();
+  if (!lower) {
+    return false;
+  }
+
+  return (
+    /(?:^|\b)(?:1|one)[\s-]?tap apply\b/.test(lower) ||
+    /\btap to apply\b/.test(lower)
+  );
+}
+
 function isDirectApplyActionCandidate(text: string, url: string | null): boolean {
   const lower = text.toLowerCase().trim();
   if (!lower || isCompanySiteActionText(lower)) {
@@ -515,6 +527,7 @@ function isDirectApplyActionCandidate(text: string, url: string | null): boolean
     lower === "indeed apply" ||
     lower === "1-click apply" ||
     lower === "1 click apply" ||
+    isTapApplyActionText(lower) ||
     lower.includes("start application") ||
     lower.includes("begin application") ||
     lower.includes("apply for this") ||
@@ -1442,6 +1455,7 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
     if (hasExplicitCompanyApplySignal) score += 58;
     if (lower === "apply now" || lower === "apply") score += 118;
     if (lower.includes("1-click apply") || lower.includes("1 click apply")) score += 116;
+    if (isTapApplyActionText(lower)) score += 116;
     if (lower.includes("quick apply") || lower.includes("easy apply")) score += 112;
     if (lower.includes("apply on company") || lower.includes("apply on employer")) score += 88;
     if (lower.includes("continue to company") || lower.includes("company site")) score += 80;
@@ -1562,6 +1576,7 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
       if (hasDirectApplySignal) score += 85;
       if (hasExplicitCompanyApplySignal) score += 68;
       if (/\bapply\b/.test(lower)) score += 20;
+      if (isTapApplyActionText(lower)) score += 24;
       if (url && shouldPreferApplyNavigation(url, text, "ziprecruiter")) score += 35;
       if (url && /zipapply|jobapply|\/apply\/|candidateexperience/i.test(url)) score += 30;
 
@@ -1619,7 +1634,19 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
 }
 
 function collectZipRecruiterApplyCandidates(selectors: string[]): HTMLElement[] {
-  const surfaces = collectCurrentJobSurfaceMatches("ziprecruiter");
+  const modalRoots = collectVisibleZipRecruiterApplyModals();
+  const roots =
+    modalRoots.length > 0
+      ? modalRoots
+      : collectCurrentJobSurfaceMatches("ziprecruiter");
+
+  return collectActionCandidatesFromRoots(roots, selectors);
+}
+
+function collectActionCandidatesFromRoots(
+  roots: HTMLElement[],
+  selectors: string[]
+): HTMLElement[] {
   const genericActionSelectors = [
     "a[href]",
     "button",
@@ -1630,11 +1657,11 @@ function collectZipRecruiterApplyCandidates(selectors: string[]): HTMLElement[] 
   const matches: HTMLElement[] = [];
   const seen = new Set<HTMLElement>();
 
-  for (const surface of surfaces) {
+  for (const root of roots) {
     for (const selector of [...selectors, ...genericActionSelectors]) {
       let scopedMatches: HTMLElement[];
       try {
-        scopedMatches = Array.from(surface.querySelectorAll<HTMLElement>(selector));
+        scopedMatches = Array.from(root.querySelectorAll<HTMLElement>(selector));
       } catch {
         continue;
       }
@@ -1649,7 +1676,7 @@ function collectZipRecruiterApplyCandidates(selectors: string[]): HTMLElement[] 
       }
     }
 
-    for (const host of collectShadowHosts(surface)) {
+    for (const host of collectShadowHosts(root)) {
       for (const selector of [...selectors, ...genericActionSelectors]) {
         let shadowMatches: HTMLElement[];
         try {
@@ -1688,7 +1715,7 @@ function choosePreferredZipRecruiterPrimaryApplyCandidate(
     url: string | null;
     top: number;
   }>
-):
+): 
   | {
       element: HTMLElement;
       score: number;
@@ -1698,7 +1725,7 @@ function choosePreferredZipRecruiterPrimaryApplyCandidate(
     }
   | undefined {
   const primaryCandidates = candidates.filter((candidate) =>
-    /^(1[\s-]?click apply|quick apply|apply|apply now|easy apply)$/i.test(
+    /^(1[\s-]?click apply|(?:1|one)[\s-]?tap apply|tap to apply|quick apply|apply|apply now|easy apply)$/i.test(
       candidate.text.trim()
     )
   );
@@ -1842,6 +1869,143 @@ export function findGlassdoorApplyAction(): ApplyAction | null {
     type: "click",
     element: best.element,
     description: best.text || "Glassdoor apply",
+  };
+}
+
+export function findGreenhouseApplyAction(): ApplyAction | null {
+  const selectors = [
+    "button[aria-label='Apply']",
+    "button[aria-label*='apply' i]",
+    "button[title*='apply' i]",
+    ".job__header button",
+    ".job__header [role='button']",
+    ".job__header a[href]",
+    "main.job-post button",
+    "main.job-post [role='button']",
+    "main.job-post a[href]",
+    ...getSiteApplyCandidateSelectors("greenhouse"),
+  ];
+  const scopedElements = collectGreenhouseApplyCandidates(selectors);
+  const candidateElements =
+    scopedElements.length > 0
+      ? scopedElements
+      : collectDeepMatchesFromSelectors(selectors);
+
+  let best:
+    | {
+        element: HTMLElement;
+        score: number;
+        text: string;
+        url: string | null;
+      }
+    | undefined;
+  let bestDirect: ScoredApplyCandidate | undefined;
+
+  for (const element of candidateElements) {
+    const actionElement = getClickableApplyElement(element);
+    if (!isElementVisible(actionElement)) {
+      continue;
+    }
+
+    const text = cleanText(
+      getActionText(actionElement) ||
+        getActionText(element) ||
+        actionElement.getAttribute("aria-label") ||
+        actionElement.getAttribute("title") ||
+        element.getAttribute("aria-label") ||
+        element.getAttribute("title") ||
+        ""
+    );
+    const lower = text.toLowerCase();
+    if (
+      !lower ||
+      lower.includes("back to jobs") ||
+      lower.includes("save") ||
+      lower.includes("share") ||
+      lower.includes("alert") ||
+      lower.includes("sign in") ||
+      lower.includes("learn more")
+    ) {
+      continue;
+    }
+
+    const url = getNavigationUrl(actionElement) ?? getNavigationUrl(element);
+    let score = scoreApplyElement(text, url, actionElement, "job-page");
+
+    if (score < 0) {
+      continue;
+    }
+
+    if (lower === "apply") score += 72;
+    if (lower === "apply now") score += 64;
+    if (lower.includes("apply for this")) score += 40;
+    if (actionElement.tagName === "BUTTON") score += 18;
+    if (actionElement.closest(".job__header, [class*='job__header']")) score += 56;
+    if (
+      actionElement.closest(
+        "main.job-post, main[class*='job-post'], [class*='job-post'], [class*='opening']"
+      )
+    ) {
+      score += 22;
+    }
+
+    const attrs = [
+      actionElement.getAttribute("aria-label"),
+      actionElement.getAttribute("title"),
+      actionElement.className,
+      actionElement.id,
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.className,
+      element.id,
+    ]
+      .join(" ")
+      .toLowerCase();
+    if (attrs.includes("btn--pill")) score += 14;
+    if (url && /greenhouse|job_app|\/apply\b/i.test(url)) score += 22;
+
+    if (
+      actionElement.closest("header, nav, footer, aside") &&
+      !actionElement.closest(
+        ".job__header, [class*='job__header'], main.job-post, main[class*='job-post']"
+      )
+    ) {
+      score -= 30;
+    }
+
+    if (score < 55) {
+      continue;
+    }
+
+    if (!best || score > best.score) {
+      best = { element: actionElement, score, text, url };
+    }
+    if (
+      isDirectApplyActionCandidate(text, url) &&
+      (!bestDirect || score > bestDirect.score)
+    ) {
+      bestDirect = { element: actionElement, score, text, url };
+    }
+  }
+
+  best = choosePreferredJobPageAction(best, bestDirect);
+
+  if (!best) {
+    return null;
+  }
+
+  if (best.url && shouldPreferApplyNavigation(best.url, best.text, "greenhouse")) {
+    return {
+      type: "navigate",
+      url: best.url,
+      description: describeApplyTarget(best.url, best.text || "Greenhouse apply"),
+    };
+  }
+
+  return {
+    type: "click",
+    element: best.element,
+    description: best.text || "Greenhouse apply",
   };
 }
 
@@ -2014,6 +2178,24 @@ export function findDiceApplyAction(): ApplyAction | null {
   }
 
   return null;
+}
+
+function collectGreenhouseApplyCandidates(selectors: string[]): HTMLElement[] {
+  const roots = collectDeepMatchesFromSelectors([
+    ".job__header",
+    "[class*='job__header']",
+    "main.job-post",
+    "main[class*='job-post']",
+    "[class*='job-post']",
+    "[class*='opening']",
+    "[role='main']",
+    "main",
+    "article",
+  ]).filter((root) => !root.closest("nav, footer, aside"));
+
+  return roots.length > 0
+    ? collectActionCandidatesFromRoots(roots, selectors)
+    : [];
 }
 
 function collectDiceApplyComponents(): HTMLElement[] {
@@ -2194,6 +2376,11 @@ export function hasIndeedApplyIframe(): boolean {
 }
 
 export function hasZipRecruiterApplyModal(): boolean {
+  return collectVisibleZipRecruiterApplyModals().length > 0;
+}
+
+function collectVisibleZipRecruiterApplyModals(): HTMLElement[] {
+  const matches: HTMLElement[] = [];
   const modals = collectDeepMatches<HTMLElement>(
     "[role='dialog'], [aria-modal='true'], [class*='modal'], [class*='overlay'], [class*='popup'], [data-testid*='modal'], [data-testid*='apply']"
   );
@@ -2214,11 +2401,11 @@ export function hasZipRecruiterApplyModal(): boolean {
       ) &&
       modal.querySelector("input, textarea, select, button")
     ) {
-      return true;
+      matches.push(modal);
     }
   }
 
-  return false;
+  return matches;
 }
 
 export function findProgressionAction(
@@ -2465,6 +2652,14 @@ function collectProgressionCandidates(
   site?: SiteKey | null
 ): HTMLElement[] {
   const selectors = getProgressionCandidateSelectors(site);
+
+  if (site === "ziprecruiter") {
+    const modalRoots = collectVisibleZipRecruiterApplyModals();
+    if (modalRoots.length > 0) {
+      return collectActionCandidatesFromRoots(modalRoots, selectors);
+    }
+  }
+
   return collectDeepMatchesFromSelectors(selectors);
 }
 
@@ -2743,6 +2938,10 @@ export function findApplyAction(
   context: "job-page" | "follow-up"
 ): ApplyAction | null {
   const selectors = getApplyCandidateSelectors(site);
+  const scopedZipRecruiterElements =
+    site === "ziprecruiter"
+      ? collectZipRecruiterApplyCandidates(selectors)
+      : [];
   const scopedBuiltInElements =
     site === "builtin" && context === "job-page"
       ? collectBuiltInCurrentJobApplyCandidates()
@@ -2750,6 +2949,8 @@ export function findApplyAction(
   const elements =
     scopedBuiltInElements.length > 0
       ? scopedBuiltInElements
+      : scopedZipRecruiterElements.length > 0
+        ? scopedZipRecruiterElements
       : collectDeepMatchesFromSelectors(selectors);
 
   let best:

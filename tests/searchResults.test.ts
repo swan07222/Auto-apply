@@ -618,6 +618,52 @@ describe("search result collection", () => {
     expect(document.body.textContent).toContain("Platform Engineer");
   });
 
+  it("keeps reviewing results when pagination updates the URL before the new jobs render", async () => {
+    document.body.innerHTML = `
+      <main>
+        <section class="results-pagination">
+          <button type="button" aria-current="page">1</button>
+          <button type="button">2</button>
+          <button type="button" id="next-page-url" class="pager-chevron">
+            <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M6 3l5 5-5 5"></path></svg>
+          </button>
+        </section>
+        <article class="job-result">
+          <a href="https://www.indeed.com/viewjob?jk=alpha123">Software Engineer</a>
+        </article>
+      </main>
+    `;
+
+    document.getElementById("next-page-url")?.addEventListener("click", () => {
+      setTimeout(() => {
+        window.history.pushState({}, "", "/jobs?q=software+engineer&start=10");
+      }, 150);
+
+      setTimeout(() => {
+        document.body.innerHTML = `
+          <main>
+            <section class="results-pagination">
+              <button type="button">1</button>
+              <button type="button" aria-current="page">2</button>
+              <button type="button">3</button>
+            </section>
+            <article class="job-result">
+              <a href="https://www.indeed.com/viewjob?jk=beta456">Platform Engineer</a>
+            </article>
+          </main>
+        `;
+      }, 900);
+    });
+
+    const promise = advanceToNextResultsPage("indeed");
+
+    await vi.runAllTimersAsync();
+
+    await expect(promise).resolves.toBe("advanced");
+    expect(window.location.href).toContain("start=10");
+    expect(document.body.textContent).toContain("Platform Engineer");
+  });
+
   it("respects the selected date window when collecting career-site job URLs", async () => {
     document.body.innerHTML = `
       <main>

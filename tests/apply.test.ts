@@ -4,6 +4,7 @@ import {
   findApplyAction,
   findCompanySiteAction,
   findDiceApplyAction,
+  findGreenhouseApplyAction,
   findGlassdoorApplyAction,
   findMonsterApplyAction,
   findProgressionAction,
@@ -1160,6 +1161,24 @@ describe("application progression actions", () => {
     expect(action?.description).toBe("Apply");
   });
 
+  it("finds ZipRecruiter direct-apply buttons when the live CTA uses 1-Tap Apply wording", () => {
+    document.body.innerHTML = `
+      <main class="jobDetails">
+        <section class="jobDescription">
+          <header>
+            <button type="button">1-Tap Apply</button>
+          </header>
+        </section>
+      </main>
+    `;
+
+    const action = findZipRecruiterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("1-Tap Apply");
+  });
+
   it("prefers the top-most ZipRecruiter apply button when lower apply buttons exist", () => {
     document.body.innerHTML = `
       <main class="jobDetails">
@@ -1436,6 +1455,49 @@ describe("application progression actions", () => {
     expect(hasZipRecruiterApplyModal()).toBe(true);
   });
 
+  it("scopes ZipRecruiter follow-up apply detection to the live apply modal", () => {
+    document.body.innerHTML = `
+      <main data-testid="job-details">
+        <button data-testid="apply-button">Apply Now</button>
+      </main>
+      <section role="dialog" aria-modal="true">
+        <div>Continue your application</div>
+        <button id="zip-modal-apply">Apply</button>
+        <button id="zip-modal-close">Close</button>
+      </section>
+    `;
+
+    const action = findApplyAction("ziprecruiter", "follow-up");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply");
+    if (action?.type === "click") {
+      expect(action.element.id).toBe("zip-modal-apply");
+    }
+  });
+
+  it("prefers ZipRecruiter progression controls inside the live apply modal", () => {
+    document.body.innerHTML = `
+      <main data-testid="job-details">
+        <button id="page-next">Continue</button>
+      </main>
+      <section role="dialog" aria-modal="true">
+        <div>Upload your resume and continue your application</div>
+        <button id="modal-next">Continue</button>
+      </section>
+    `;
+
+    const action = findProgressionAction("ziprecruiter");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.text).toBe("Continue");
+    if (action?.type === "click") {
+      expect(action.element.id).toBe("modal-next");
+    }
+  });
+
   it("finds Dice apply buttons exposed through data-testid selectors", () => {
     document.body.innerHTML = `
       <button data-testid="apply-button">Apply Now</button>
@@ -1624,6 +1686,30 @@ describe("application progression actions", () => {
     expect(action).not.toBeNull();
     expect(action?.type).toBe("click");
     expect(action?.description).toBe("Apply for this job");
+  });
+
+  it("prefers the primary public-board Greenhouse apply button over nearby navigation links", () => {
+    document.body.innerHTML = `
+      <main class="main font-secondary job-post">
+        <div class="job__header">
+          <a href="/jobs">Back to jobs</a>
+          <button type="button" class="btn btn--pill" aria-label="Apply">Apply</button>
+        </div>
+        <section>
+          <p>Full Stack Software Engineer</p>
+        </section>
+      </main>
+    `;
+
+    const greenhouseAction = findGreenhouseApplyAction();
+    const genericAction = findApplyAction("greenhouse", "job-page");
+
+    expect(greenhouseAction).not.toBeNull();
+    expect(greenhouseAction?.type).toBe("click");
+    expect(greenhouseAction?.description).toBe("Apply");
+    expect(genericAction).not.toBeNull();
+    expect(genericAction?.type).toBe("click");
+    expect(genericAction?.description).toBe("Apply");
   });
 
   it("detects embedded Indeed and ZipRecruiter application surfaces", () => {

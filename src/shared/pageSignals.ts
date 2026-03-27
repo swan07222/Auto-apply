@@ -92,7 +92,9 @@ export function detectBrokenPageReason(doc: Document): BrokenPageReason | null {
       "requested page could not be found",
     ].some((phrase) => text.includes(phrase));
   const hasLikelyApplicationSignals =
-    hasLikelyApplicationFormSignals(doc) || hasLikelyApplicationStepSignals(doc);
+    hasLikelyApplicationFormSignals(doc) ||
+    hasLikelyApplicationStepSignals(doc) ||
+    hasLikelyApplicationSuccessSignals(doc);
   const hasLikelyApplyContinuationSignals =
     hasLikelyApplyContinuationSignal(doc);
   const hasLikelyJobOrApplyContentSignal =
@@ -131,7 +133,10 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
   }
 
   const hasLikelyApplicationSignals =
-    hasLikelyApplicationFormSignals(doc) || hasLikelyApplicationStepSignals(doc);
+    hasLikelyApplicationFormSignals(doc) ||
+    hasLikelyApplicationStepSignals(doc) ||
+    hasLikelyApplyContinuationSignal(doc) ||
+    hasLikelyApplicationSuccessSignals(doc);
   const title = doc.title.toLowerCase();
   const bodyText = (doc.body?.innerText ?? "").toLowerCase().slice(0, 6000);
   const bodyLength = (doc.body?.innerText ?? "").trim().length;
@@ -185,6 +190,9 @@ export function isProbablyHumanVerificationPage(doc: Document): boolean {
       "cloudflare",
     ];
     if (weakPhrases.some((phrase) => combinedText.includes(phrase))) {
+      if (hasLikelyApplicationSignals) {
+        return false;
+      }
       return true;
     }
   }
@@ -219,7 +227,9 @@ export function isProbablyAuthGatePage(doc: Document): boolean {
 
   if (
     hasLikelyApplicationFormSignals(doc) ||
-    hasLikelyApplicationStepSignals(doc)
+    hasLikelyApplicationStepSignals(doc) ||
+    hasLikelyApplyContinuationSignal(doc) ||
+    hasLikelyApplicationSuccessSignals(doc)
   ) {
     return false;
   }
@@ -529,6 +539,11 @@ function hasLikelyApplicationStepSignals(doc: Document): boolean {
     "save and close",
     "application questions",
     "review your application",
+    "highlight details from your resume",
+    "help screening tools",
+    "we'll pull key details from your resume",
+    "you can review and update details so they are accurate",
+    "preparing review",
   ];
   const stepSignalCount = strongStepSignals.filter((signal) =>
     applicationText.includes(signal)
@@ -551,6 +566,48 @@ function hasLikelyApplicationStepSignals(doc: Document): boolean {
   }
 
   return onKnownApplyFlowUrl && (stepSignalCount >= 1 || hasProgressionControl);
+}
+
+export function hasLikelyApplicationSuccessSignals(doc: Document): boolean {
+  const pageUrl = doc.location?.href.toLowerCase() ?? "";
+  const applicationText = (doc.body?.innerText ?? "").toLowerCase();
+  const title = (doc.title ?? "").toLowerCase();
+  const combinedText = `${title} ${applicationText}`.replace(/\s+/g, " ").trim();
+
+  const successPhrases = [
+    "your application has been submitted",
+    "application has been submitted",
+    "your application was submitted",
+    "application was submitted",
+    "application submitted",
+    "application successfully submitted",
+    "application complete",
+    "application received",
+    "application sent",
+    "successfully applied",
+    "you've successfully applied",
+    "you have successfully applied",
+    "you've applied",
+    "you have applied",
+    "thanks for applying",
+    "thank you for applying",
+    "email confirmation",
+    "return to job search",
+    "keep track of your applications",
+  ];
+  const successSignalCount = successPhrases.filter((phrase) =>
+    combinedText.includes(phrase)
+  ).length;
+  const onKnownApplyFlowUrl =
+    pageUrl.includes("indeedapply/form/") ||
+    pageUrl.includes("/apply/") ||
+    pageUrl.includes("/application/") ||
+    pageUrl.includes("/job-applications/") ||
+    pageUrl.includes("candidateexperience") ||
+    pageUrl.includes("jobapply") ||
+    pageUrl.includes("/confirmation");
+
+  return successSignalCount >= 2 || (onKnownApplyFlowUrl && successSignalCount >= 1);
 }
 
 function isLikelyVisibleFormField(

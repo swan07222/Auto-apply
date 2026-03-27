@@ -2372,6 +2372,23 @@ describe("job search candidate filtering", () => {
     expect(isCurrentPageAppliedJob("ziprecruiter")).toBe(true);
   });
 
+  it("treats ZipRecruiter confirmation pages as applied even when the page uses success wording instead of an Applied button", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/candidateexperience/apply/alpha123/confirmation"
+    );
+    document.title = "You've successfully applied";
+    document.body.innerHTML = `
+      <main>
+        <h1>You've successfully applied</h1>
+        <p>Application received.</p>
+      </main>
+    `;
+
+    expect(isCurrentPageAppliedJob("ziprecruiter")).toBe(true);
+  });
+
   it("does not treat nested Dice result-card applied badges as the current job being applied", () => {
     document.body.innerHTML = `
       <main class="job-details-pane">
@@ -2408,6 +2425,24 @@ describe("job search candidate filtering", () => {
     `;
 
     expect(isCurrentPageAppliedJob("dice")).toBe(false);
+  });
+
+  it("treats Dice application confirmation pages as already applied", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/job-applications/d32a5e6b-4beb-4314-9830-a5b0c943d59c/application-confirmation"
+    );
+
+    document.body.innerHTML = `
+      <main>
+        <h1>Application submitted</h1>
+        <p>Thanks for applying.</p>
+        <p>Keep track of your applications from your dashboard.</p>
+      </main>
+    `;
+
+    expect(isCurrentPageAppliedJob("dice")).toBe(true);
   });
 
   it("does not treat active Indeed SmartApply review steps as already applied", () => {

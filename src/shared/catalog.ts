@@ -1,6 +1,7 @@
 import type {
   AutomationSettings,
   DatePostedWindow,
+  JobBoardSite,
   ResumeKind,
   SearchMode,
   SiteKey,
@@ -54,6 +55,18 @@ export const DATE_POSTED_WINDOW_LABELS: Record<DatePostedWindow, string> = {
   "14d": "Past 14 days",
   "30d": "Past 30 days",
 };
+
+export const DATE_POSTED_WINDOW_OPTIONS: readonly DatePostedWindow[] = [
+  "any",
+  "24h",
+  "2d",
+  "3d",
+  "5d",
+  "1w",
+  "10d",
+  "14d",
+  "30d",
+];
 
 const DATE_POSTED_WINDOW_DAY_COUNTS: Record<
   Exclude<DatePostedWindow, "any">,
@@ -206,8 +219,148 @@ const STARTUP_TARGET_REGIONS: Array<Exclude<StartupRegion, "auto">> = [
   "eu",
 ];
 
+const INDEED_DATE_POSTED_WINDOWS: readonly DatePostedWindow[] =
+  DATE_POSTED_WINDOW_OPTIONS;
+const ZIPRECRUITER_DATE_POSTED_WINDOWS: readonly DatePostedWindow[] = [
+  "any",
+  "24h",
+  "5d",
+  "10d",
+  "30d",
+];
+const DICE_DATE_POSTED_WINDOWS: readonly DatePostedWindow[] = [
+  "any",
+  "24h",
+  "3d",
+  "1w",
+];
+const MONSTER_DATE_POSTED_WINDOWS: readonly DatePostedWindow[] = [
+  "any",
+  "24h",
+  "2d",
+  "1w",
+  "14d",
+  "30d",
+];
+const GLASSDOOR_DATE_POSTED_WINDOWS: readonly DatePostedWindow[] = ["any"];
+const GREENHOUSE_BOARD_DATE_POSTED_WINDOWS: readonly DatePostedWindow[] = ["any"];
+const MY_GREENHOUSE_DATE_POSTED_WINDOWS: readonly DatePostedWindow[] = [
+  "any",
+  "24h",
+  "5d",
+  "10d",
+  "30d",
+];
+const BUILTIN_DATE_POSTED_WINDOWS: readonly DatePostedWindow[] = [
+  "any",
+  "24h",
+  "3d",
+  "1w",
+  "30d",
+];
+const STARTUP_DATE_POSTED_WINDOWS: readonly DatePostedWindow[] = ["any"];
+const OTHER_JOB_SITES_DATE_POSTED_WINDOWS: readonly DatePostedWindow[] = [
+  "any",
+  "24h",
+  "3d",
+  "1w",
+  "30d",
+];
+
 export function getStartupTargetRegions(): Array<Exclude<StartupRegion, "auto">> {
   return [...STARTUP_TARGET_REGIONS];
+}
+
+export function isMyGreenhousePortalUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.toLowerCase().replace(/^www\./, "") === "my.greenhouse.io";
+  } catch {
+    return false;
+  }
+}
+
+export function getSupportedDatePostedWindowsForJobBoardSite(
+  site: JobBoardSite,
+  currentUrl = ""
+): readonly DatePostedWindow[] {
+  switch (site) {
+    case "indeed":
+      return INDEED_DATE_POSTED_WINDOWS;
+    case "ziprecruiter":
+      return ZIPRECRUITER_DATE_POSTED_WINDOWS;
+    case "dice":
+      return DICE_DATE_POSTED_WINDOWS;
+    case "monster":
+      return MONSTER_DATE_POSTED_WINDOWS;
+    case "glassdoor":
+      return GLASSDOOR_DATE_POSTED_WINDOWS;
+    case "greenhouse":
+      return isMyGreenhousePortalUrl(currentUrl)
+        ? MY_GREENHOUSE_DATE_POSTED_WINDOWS
+        : GREENHOUSE_BOARD_DATE_POSTED_WINDOWS;
+    case "builtin":
+      return BUILTIN_DATE_POSTED_WINDOWS;
+  }
+}
+
+export function getSupportedDatePostedWindowsForSearchMode(
+  searchMode: SearchMode,
+  site: JobBoardSite | null,
+  currentUrl = ""
+): readonly DatePostedWindow[] {
+  if (searchMode === "startup_careers") {
+    return STARTUP_DATE_POSTED_WINDOWS;
+  }
+
+  if (searchMode === "other_job_sites") {
+    return OTHER_JOB_SITES_DATE_POSTED_WINDOWS;
+  }
+
+  if (!site) {
+    return DATE_POSTED_WINDOW_OPTIONS;
+  }
+
+  return getSupportedDatePostedWindowsForJobBoardSite(site, currentUrl);
+}
+
+export function coerceDatePostedWindowToSupported(
+  datePostedWindow: DatePostedWindow,
+  supportedWindows: readonly DatePostedWindow[]
+): DatePostedWindow {
+  if (supportedWindows.length === 0) {
+    return "any";
+  }
+
+  if (supportedWindows.includes(datePostedWindow)) {
+    return datePostedWindow;
+  }
+
+  if (datePostedWindow === "any") {
+    return supportedWindows[0] ?? "any";
+  }
+
+  const supportedDays = supportedWindows
+    .map((window) => getDatePostedWindowDays(window))
+    .filter((days): days is number => typeof days === "number");
+  const matchedDays = getNearestSupportedDatePostedDays(
+    datePostedWindow,
+    supportedDays,
+    { fallbackToMax: true }
+  );
+
+  if (typeof matchedDays === "number") {
+    const matchedWindow = supportedWindows.find(
+      (window) => getDatePostedWindowDays(window) === matchedDays
+    );
+    if (matchedWindow) {
+      return matchedWindow;
+    }
+  }
+
+  return supportedWindows.includes("any")
+    ? "any"
+    : (supportedWindows[0] ?? "any");
 }
 
 function encodeSearchQueryForPath(query: string): string {

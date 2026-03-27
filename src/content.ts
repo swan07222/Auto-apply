@@ -6,6 +6,7 @@ import {
   AutomationSettings,
   AutomationStage,
   AutomationStatus,
+  AutomationRunSummary,
   BrokenPageReason,
   JobBoardSite,
   ResumeAsset,
@@ -14,7 +15,6 @@ import {
   SiteKey,
   SpawnTabRequest,
   VERIFICATION_POLL_MS,
-  VERIFICATION_TIMEOUT_MS,
   normalizeGreenhouseCountryLabel,
   buildSearchTargets,
   createStatus,
@@ -22,6 +22,7 @@ import {
   getResumeKindLabel,
   getJobDedupKey,
   getSiteLabel,
+  hasLikelyApplicationSuccessSignals,
   isProbablyAuthGatePage,
   isProbablyRateLimitPage,
   isProbablyHumanVerificationPage,
@@ -127,6 +128,7 @@ import {
   findApplyAction,
   findCompanySiteAction,
   findDiceApplyAction,
+  findGreenhouseApplyAction,
   findGlassdoorApplyAction,
   findMonsterApplyAction,
   findProgressionAction,
@@ -165,8 +167,10 @@ import {
 import { hasPendingResumeUploadSurface } from "./content/resumeStep";
 import {
   hasPendingRequiredAutofillFields,
+  isManualSubmitActionTarget,
   hasVisibleManualSubmitAction,
   isLikelyManualSubmitReviewPage,
+  shouldTreatManualSubmitActionAsReady,
   shouldPauseAutomationForManualReview,
   shouldStartManualReviewPause,
 } from "./content/manualReview";
@@ -174,15 +178,15 @@ import {
   createEmptyAutofillResult,
   detectSupportedSiteFromPage,
   getGreenhousePortalSearchKeyword,
-  getRemainingJobSlotsAfterSpawn,
   getCurrentSearchKeywordHints,
   looksLikeCurrentFrameApplicationSurface,
   mergeAutofillResult,
   resolveGreenhouseSearchContextUrl,
   shouldAvoidApplyClickFocus,
   shouldAvoidApplyScroll,
-  shouldKeepResultsPageOpenAfterZeroSpawn,
   shouldBlockApplicationTargetProbeFailure,
+  shouldKeepTopFrameSessionSyncAlive,
+  shouldMirrorControllerBoundSessionInTopFrame,
   shouldPreferMonsterClickContinuation,
   shouldRetryAlternateApplyTargets,
   shouldTreatCurrentPageAsApplied,
@@ -195,23 +199,25 @@ type ContentRequest =
   | { type: "start-automation"; session?: AutomationSession }
   | { type: "get-status" }
   | { type: "automation-child-tab-opened" }
-  | { type: "pause-automation"; message?: string };
+  | { type: "pause-automation"; message?: string }
+  | { type: "stop-automation"; message?: string };
 
 type ManagedSessionCompletionKind =
   | "successful"
   | "released"
   | "handoff";
 
-type ClaimedJobOpeningsResult = {
-  approvedUrls: string[];
-  remaining: number;
-  limit: number;
-};
-
 type OverlayPosition = {
   top: number;
   left: number;
 };
+
+class AutomationStoppedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AutomationStoppedError";
+  }
+}
 
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
 
@@ -223,7 +229,11 @@ const OVERLAY_POSITION_STORAGE_KEY = "remote-job-search-overlay-position";
 const MAX_STAGE_DEPTH = 10;
 const IS_TOP_FRAME = window.top === window;
 const CONTENT_READY_POLL_MS = 150;
+const TOP_FRAME_SESSION_SYNC_POLL_MS = 1_000;
+const TOP_FRAME_SESSION_SYNC_MAX_ATTEMPTS = 180;
 const RESPONSIVE_WAIT_SLICE_MS = 150;
+const EXTENSION_RELOAD_REQUIRED_MESSAGE =
+  "The extension was reloaded. Refresh this page and start automation again.";
 
 // ─── RESULT HELPERS ──────────────────────────────────────────────────────────
 
@@ -238,6 +248,7 @@ let currentProfileId: string | undefined;
 let currentRunId: string | undefined;
 let currentClaimedJobKey: string | undefined;
 let currentJobSlots: number | undefined;
+let currentRunSummary: AutomationRunSummary | undefined;
 let activeRun: Promise<void> | null = null;
 let answerFlushPromise: Promise<void> = Promise.resolve();
 let overlayHideTimerId: number | null = null;
@@ -248,8 +259,12 @@ let automationPauseRequested = false;
 let automationPauseMessage = "";
 let automationPausePromise: Promise<void> | null = null;
 let automationPauseResolve: (() => void) | null = null;
+let automationStopRequested = false;
+let automationStopMessage = "";
 let overlayPositionLoadPromise: Promise<void> | null = null;
 let overlayControlPending = false;
+let manualSubmitRequested = false;
+const explicitlyReviewedJobKeys = new Set<string>();
 const pendingAnswerBuckets: PendingAnswerBuckets =
   readPersistedPendingAnswerBuckets();
 const recentResumeUploadAttempts = new WeakMap<
@@ -261,21 +276,74 @@ const extensionManagedResumeUploads = new WeakMap<
   string
 >();
 
+function isExtensionContextInvalidatedError(error: unknown): boolean {
+  const message =
+    error instanceof Error ? error.message : String(error ?? "");
+  return message.toLowerCase().includes("extension context invalidated");
+}
+
+function isExtensionRuntimeAvailable(): boolean {
+  try {
+    return Boolean(chrome?.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
+async function sendRuntimeMessage<T>(message: unknown): Promise<T | null> {
+  if (!isExtensionRuntimeAvailable()) {
+    return null;
+  }
+
+  try {
+    return (await chrome.runtime.sendMessage(message as never)) as T;
+  } catch (error) {
+    if (isExtensionContextInvalidatedError(error)) {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+function getRuntimeMessageError(
+  response: { error?: unknown } | null | undefined,
+  fallbackMessage: string
+): string {
+  if (typeof response?.error === "string" && response.error.trim()) {
+    return response.error;
+  }
+
+  if (!response) {
+    return EXTENSION_RELOAD_REQUIRED_MESSAGE;
+  }
+
+  return fallbackMessage;
+}
+
 const overlay: {
   host: HTMLDivElement | null;
   panel: HTMLElement | null;
   dragHandle: HTMLElement | null;
   title: HTMLDivElement | null;
+  meta: HTMLDivElement | null;
+  spinner: HTMLSpanElement | null;
+  count: HTMLSpanElement | null;
   text: HTMLDivElement | null;
   actionButton: HTMLButtonElement | null;
+  stopButton: HTMLButtonElement | null;
   position: OverlayPosition | null;
 } = {
   host: null,
   panel: null,
   dragHandle: null,
   title: null,
+  meta: null,
+  spinner: null,
+  count: null,
   text: null,
   actionButton: null,
+  stopButton: null,
   position: null,
 };
 
@@ -435,6 +503,27 @@ function shouldKeepJobPageOpen(site: SiteKey | "unsupported"): boolean {
   return shouldKeepManagedJobPageOpen(site);
 }
 
+function hasLikelyApplyContinuationAction(
+  site: SiteKey | "unsupported" | null
+): boolean {
+  if (
+    !site ||
+    site === "unsupported" ||
+    (site !== "greenhouse" &&
+      site !== "builtin" &&
+      site !== "startup" &&
+      site !== "other_sites")
+  ) {
+    return false;
+  }
+
+  if (site === "greenhouse") {
+    return Boolean(findGreenhouseApplyAction() ?? findApplyAction(site, "job-page"));
+  }
+
+  return Boolean(findApplyAction(site, "job-page"));
+}
+
 async function openApplicationTargetInNewTab(
   url: string,
   site: SiteKey,
@@ -501,6 +590,77 @@ function resolveCurrentClaimedJobKey(): string | undefined {
   return currentClaimedJobKey || getJobDedupKey(window.location.href) || undefined;
 }
 
+async function markCurrentJobReviewedIfManaged(): Promise<void> {
+  if (status.site === "unsupported") {
+    return;
+  }
+
+  const claimedJobKey = resolveCurrentClaimedJobKey();
+  if (!claimedJobKey || explicitlyReviewedJobKeys.has(claimedJobKey)) {
+    return;
+  }
+
+  try {
+    const response = await sendRuntimeMessage<{
+      ok?: boolean;
+      session?: AutomationSession;
+    }>({
+      type: "mark-job-reviewed",
+      fallbackUrl: window.location.href,
+    });
+    if (response?.ok) {
+      explicitlyReviewedJobKeys.add(claimedJobKey);
+      applyOverlaySessionSnapshot(response.session);
+    }
+  } catch {
+    // Ignore reviewed-memory sync failures and keep the current session running.
+  }
+}
+
+function hasConfirmedManualSubmitSuccess(site: SiteKey): boolean {
+  if (hasLikelyApplicationSuccessSignals(document)) {
+    return true;
+  }
+
+  if (!manualSubmitRequested) {
+    return false;
+  }
+
+  return shouldTreatCurrentPageAsApplied(site, {
+    hasLikelyApplicationSurface,
+    findApplyAction,
+    findDiceApplyAction,
+    isCurrentPageAppliedJob,
+  });
+}
+
+async function waitForManualSubmitOutcome(
+  site: SiteKey,
+  waitingForSubmitMessage: string,
+  waitingForConfirmationMessage = "Submit detected. Waiting for confirmation page..."
+): Promise<void> {
+  throwIfAutomationStopped();
+  await markCurrentJobReviewedIfManaged();
+
+  while (true) {
+    throwIfAutomationStopped();
+
+    if (hasConfirmedManualSubmitSuccess(site)) {
+      await finalizeSuccessfulApplication("Application submitted successfully.");
+      return;
+    }
+
+    const nextMessage = manualSubmitRequested
+      ? waitingForConfirmationMessage
+      : waitingForSubmitMessage;
+    if (status.phase !== "running" || status.message !== nextMessage) {
+      updateStatus("running", nextMessage, true, currentStage);
+    }
+
+    await sleepWithAutomationChecks(manualSubmitRequested ? 900 : 250);
+  }
+}
+
 function describeBrokenApplicationTarget(
   description: string,
   reason: BrokenPageReason | "unreachable"
@@ -530,7 +690,11 @@ async function probeApplicationTargetReason(
   }
 
   try {
-    const response = await chrome.runtime.sendMessage({
+    const response = await sendRuntimeMessage<{
+      ok?: boolean;
+      reachable?: boolean;
+      reason?: BrokenPageReason | "unreachable" | null;
+    }>({
       type: "probe-application-target",
       url,
     });
@@ -614,7 +778,31 @@ function clearAutomationPause(updateRunningStatus = false): void {
   resolvePause?.();
 }
 
+function markAutomationStopped(message: string): void {
+  automationStopRequested = true;
+  automationStopMessage =
+    cleanText(message) || "Automation stopped. Press Start to begin again.";
+  clearAutomationPause(false);
+}
+
+function clearAutomationStop(): void {
+  automationStopRequested = false;
+  automationStopMessage = "";
+}
+
+function throwIfAutomationStopped(): void {
+  if (!automationStopRequested) {
+    return;
+  }
+
+  throw new AutomationStoppedError(
+    automationStopMessage || "Automation stopped."
+  );
+}
+
 async function waitForAutomationResumeIfPaused(): Promise<void> {
+  throwIfAutomationStopped();
+
   if (!automationPauseRequested && status.phase !== "paused") {
     return;
   }
@@ -630,18 +818,23 @@ async function waitForAutomationResumeIfPaused(): Promise<void> {
   }
 
   await ensureAutomationPausePromise();
+  throwIfAutomationStopped();
 }
 
 async function pauseAutomationAndWait(message: string): Promise<void> {
+  throwIfAutomationStopped();
   markAutomationPaused(message);
   updateStatus("paused", automationPauseMessage, false, currentStage);
   await ensureAutomationPausePromise();
+  throwIfAutomationStopped();
 }
 
 async function sleepWithAutomationChecks(ms: number): Promise<void> {
   let remaining = Math.max(0, Math.floor(ms));
 
   while (remaining > 0) {
+    throwIfAutomationStopped();
+
     if (automationPauseRequested || status.phase === "paused") {
       await waitForAutomationResumeIfPaused();
     }
@@ -669,6 +862,18 @@ function getOverlayActionLabel(): "Pause" | "Resume" | null {
   return status.phase === "paused" ? "Resume" : "Pause";
 }
 
+function shouldShowOverlayStopButton(): boolean {
+  return (
+    status.site !== "unsupported" &&
+    Boolean(currentRunId) &&
+    status.phase !== "idle" &&
+    !(
+      status.phase === "completed" &&
+      cleanText(status.message).toLowerCase().includes("stopped")
+    )
+  );
+}
+
 function isOverlayPositionCandidate(value: unknown): value is OverlayPosition {
   if (!value || typeof value !== "object") {
     return false;
@@ -680,6 +885,22 @@ function isOverlayPositionCandidate(value: unknown): value is OverlayPosition {
     Number.isFinite(candidate.top) &&
     typeof candidate.left === "number" &&
     Number.isFinite(candidate.left)
+  );
+}
+
+function isAutomationRunSummary(
+  value: unknown
+): value is AutomationRunSummary {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const candidate = value as Partial<AutomationRunSummary>;
+  return (
+    Number.isFinite(candidate.queuedJobCount) &&
+    Number.isFinite(candidate.successfulJobPages) &&
+    Number.isFinite(candidate.appliedTodayCount) &&
+    typeof candidate.stopRequested === "boolean"
   );
 }
 
@@ -696,20 +917,28 @@ function loadOverlayPosition(): void {
     return;
   }
 
-  overlayPositionLoadPromise = chrome.storage.local
-    .get(OVERLAY_POSITION_STORAGE_KEY)
-    .then((stored) => {
-      const value =
-        stored[
-          OVERLAY_POSITION_STORAGE_KEY as keyof typeof stored
-        ];
-      if (isOverlayPositionCandidate(value)) {
-        applyOverlayPositionSnapshot(value);
-      }
-    })
-    .catch(() => {
-      // Ignore storage read failures and keep the default overlay position.
-    });
+  if (!isExtensionRuntimeAvailable()) {
+    return;
+  }
+
+  try {
+    overlayPositionLoadPromise = chrome.storage.local
+      .get(OVERLAY_POSITION_STORAGE_KEY)
+      .then((stored) => {
+        const value =
+          stored[
+            OVERLAY_POSITION_STORAGE_KEY as keyof typeof stored
+          ];
+        if (isOverlayPositionCandidate(value)) {
+          applyOverlayPositionSnapshot(value);
+        }
+      })
+      .catch(() => {
+        // Ignore storage read failures and keep the default overlay position.
+      });
+  } catch {
+    overlayPositionLoadPromise = null;
+  }
 }
 
 function persistOverlayPosition(): void {
@@ -721,13 +950,21 @@ function persistOverlayPosition(): void {
     overlay.panel ? clampOverlayPosition(overlay.position, overlay.panel) : overlay.position;
   overlay.position = nextPosition;
 
-  void chrome.storage.local
-    .set({
-      [OVERLAY_POSITION_STORAGE_KEY]: nextPosition,
-    })
-    .catch(() => {
-      // Ignore storage write failures and keep the in-memory position.
-    });
+  if (!isExtensionRuntimeAvailable()) {
+    return;
+  }
+
+  try {
+    void chrome.storage.local
+      .set({
+        [OVERLAY_POSITION_STORAGE_KEY]: nextPosition,
+      })
+      .catch(() => {
+        // Ignore storage write failures and keep the in-memory position.
+      });
+  } catch {
+    // Ignore storage write failures and keep the in-memory position.
+  }
 }
 
 function applyOverlaySessionSnapshot(session: unknown): void {
@@ -736,6 +973,7 @@ function applyOverlaySessionSnapshot(session: unknown): void {
   }
 
   const candidate = session as Partial<AutomationSession>;
+  const previousClaimedJobKey = currentClaimedJobKey;
   if (
     typeof candidate.message !== "string" ||
     typeof candidate.updatedAt !== "number" ||
@@ -748,6 +986,7 @@ function applyOverlaySessionSnapshot(session: unknown): void {
   if (
     candidate.phase !== "idle" &&
     candidate.phase !== "running" &&
+    candidate.phase !== "queued" &&
     candidate.phase !== "paused" &&
     candidate.phase !== "waiting_for_verification" &&
     candidate.phase !== "completed" &&
@@ -765,12 +1004,63 @@ function applyOverlaySessionSnapshot(session: unknown): void {
     currentStage = candidate.stage;
   }
 
+  if ("label" in candidate) {
+    currentLabel =
+      typeof candidate.label === "string" ? candidate.label : undefined;
+  }
+
+  if ("keyword" in candidate) {
+    currentKeyword =
+      typeof candidate.keyword === "string" ? candidate.keyword : undefined;
+  }
+
+  if ("resumeKind" in candidate) {
+    currentResumeKind =
+      candidate.resumeKind === "front_end" ||
+      candidate.resumeKind === "back_end" ||
+      candidate.resumeKind === "full_stack"
+        ? candidate.resumeKind
+        : undefined;
+  }
+
+  if ("profileId" in candidate) {
+    currentProfileId =
+      typeof candidate.profileId === "string" ? candidate.profileId : undefined;
+  }
+
+  if ("runId" in candidate) {
+    currentRunId = typeof candidate.runId === "string" ? candidate.runId : undefined;
+  }
+
+  if ("claimedJobKey" in candidate) {
+    currentClaimedJobKey =
+      typeof candidate.claimedJobKey === "string" && candidate.claimedJobKey.trim()
+        ? candidate.claimedJobKey
+        : undefined;
+  }
+
+  if ("jobSlots" in candidate) {
+    currentJobSlots =
+      typeof candidate.jobSlots === "number" && Number.isFinite(candidate.jobSlots)
+        ? Math.max(0, Math.floor(candidate.jobSlots))
+        : undefined;
+  }
+
+  if (typeof candidate.manualSubmitPending === "boolean") {
+    manualSubmitRequested = candidate.manualSubmitPending;
+  } else if (currentClaimedJobKey !== previousClaimedJobKey) {
+    manualSubmitRequested = false;
+  }
+
   status = {
     site: candidate.site,
     phase: candidate.phase,
     message: candidate.message,
     updatedAt: candidate.updatedAt,
   };
+  currentRunSummary = isAutomationRunSummary(candidate.runSummary)
+    ? candidate.runSummary
+    : undefined;
   renderOverlay();
 }
 
@@ -781,10 +1071,28 @@ async function handleOverlayActionClick(): Promise<void> {
   }
 
   overlayControlPending = true;
+  status = {
+    ...status,
+    phase: actionLabel === "Resume" ? "running" : "paused",
+    message:
+      actionLabel === "Resume"
+        ? "Resuming automation..."
+        : "Pausing automation...",
+    updatedAt: Date.now(),
+  };
   renderOverlay();
 
   try {
-    const response = await chrome.runtime.sendMessage({
+    if (actionLabel === "Resume") {
+      captureVisibleRememberableAnswers();
+      await flushPendingAnswers();
+    }
+
+    const response = await sendRuntimeMessage<{
+      ok?: boolean;
+      error?: string;
+      session?: AutomationSession;
+    }>({
       type:
         actionLabel === "Resume"
           ? "resume-automation-session"
@@ -794,10 +1102,12 @@ async function handleOverlayActionClick(): Promise<void> {
     if (!response?.ok) {
       updateStatus(
         "error",
-        response?.error ??
-          (actionLabel === "Resume"
+        getRuntimeMessageError(
+          response,
+          actionLabel === "Resume"
             ? "The extension could not resume automation on this tab."
-            : "The extension could not pause automation on this tab."),
+            : "The extension could not pause automation on this tab."
+        ),
         false,
         currentStage
       );
@@ -819,6 +1129,86 @@ async function handleOverlayActionClick(): Promise<void> {
   } finally {
     overlayControlPending = false;
     renderOverlay();
+  }
+}
+
+async function handleOverlayStopClick(): Promise<void> {
+  if (overlayControlPending) {
+    return;
+  }
+
+  overlayControlPending = true;
+  renderOverlay();
+
+  try {
+    captureVisibleRememberableAnswers();
+    await flushPendingAnswers();
+
+    const response = await sendRuntimeMessage<{
+      ok?: boolean;
+      error?: string;
+      session?: AutomationSession;
+    }>({
+      type: "stop-automation-run",
+    });
+
+    if (!response?.ok) {
+      updateStatus(
+        "error",
+        getRuntimeMessageError(
+          response,
+          "The extension could not stop automation on this tab."
+        ),
+        false,
+        currentStage
+      );
+      return;
+    }
+
+    applyOverlaySessionSnapshot(response.session);
+  } catch (error) {
+    updateStatus(
+      "error",
+      error instanceof Error ? error.message : "Failed to stop automation.",
+      false,
+      currentStage
+    );
+  } finally {
+    overlayControlPending = false;
+    renderOverlay();
+  }
+}
+
+async function requestAutomationResumeFromPage(): Promise<void> {
+  try {
+    captureVisibleRememberableAnswers();
+    await flushPendingAnswers();
+    const response = await sendRuntimeMessage<{
+      ok?: boolean;
+      session?: AutomationSession;
+    }>({
+      type: "resume-automation-session",
+    });
+    if (response?.ok) {
+      applyOverlaySessionSnapshot(response.session);
+    }
+  } catch {
+    // Ignore failed resume attempts triggered from in-page manual actions.
+  }
+}
+
+async function readCurrentRunSummary(): Promise<AutomationRunSummary | null> {
+  try {
+    const response = await sendRuntimeMessage<{
+      summary?: AutomationRunSummary | null;
+    }>({
+      type: "get-run-summary",
+    });
+    return isAutomationRunSummary(response?.summary)
+      ? response.summary
+      : null;
+  } catch {
+    return null;
   }
 }
 
@@ -882,6 +1272,19 @@ chrome.runtime.onMessage.addListener(
       return false;
     }
 
+    if (message.type === "stop-automation") {
+      if (status.site === "unsupported") {
+        return false;
+      }
+      markAutomationStopped(
+        message.message || "Automation stopped. Press Start to begin again."
+      );
+      status = createStatus(status.site, "completed", automationStopMessage);
+      renderOverlay();
+      sendResponse({ ok: true, status });
+      return false;
+    }
+
     if (message.type === "start-automation") {
       const detectedSite = detectSupportedSiteFromPage(
         window.location.href,
@@ -889,6 +1292,17 @@ chrome.runtime.onMessage.addListener(
       );
       if (message.session) {
         if (!shouldHandleAutomationInCurrentFrame(message.session, detectedSite)) {
+          if (
+            IS_TOP_FRAME &&
+            shouldMirrorControllerBoundSessionInTopFrame(message.session, IS_TOP_FRAME)
+          ) {
+            applyOverlaySessionSnapshot({
+              ...message.session,
+              site: resolveSessionSite(message.session.site, detectedSite),
+            });
+            renderOverlay();
+            sendResponse({ ok: true, status });
+          }
           return false;
         }
       } else if (!IS_TOP_FRAME) {
@@ -910,7 +1324,12 @@ chrome.runtime.onMessage.addListener(
         currentRunId = message.session.runId;
         currentClaimedJobKey = message.session.claimedJobKey;
         currentJobSlots = message.session.jobSlots;
-        if (message.session.phase === "paused" || !message.session.shouldResume) {
+        currentRunSummary = isAutomationRunSummary(message.session.runSummary)
+          ? message.session.runSummary
+          : undefined;
+        manualSubmitRequested = Boolean(message.session.manualSubmitPending);
+        clearAutomationStop();
+        if (message.session.phase === "paused") {
           markAutomationPaused(message.session.message);
         } else {
           clearAutomationPause(false);
@@ -925,19 +1344,15 @@ chrome.runtime.onMessage.addListener(
         currentRunId = undefined;
         currentClaimedJobKey = undefined;
         currentJobSlots = undefined;
+        currentRunSummary = undefined;
+        manualSubmitRequested = false;
+        clearAutomationStop();
         clearAutomationPause(false);
       }
 
-      void ensureAutomationRunning()
-        .then(() => sendResponse({ ok: true, status }))
-        .catch((error: unknown) => {
-          const msg =
-            error instanceof Error
-              ? error.message
-              : "Failed to start automation.";
-          sendResponse({ ok: false, error: msg, status });
-        });
-      return true;
+      sendResponse({ ok: true, status });
+      void ensureAutomationRunning().catch(() => {});
+      return false;
     }
 
     return false;
@@ -961,6 +1376,8 @@ function initializeEventListeners(): void {
   document.addEventListener("focusout", handlePotentialAnswerMemory, true);
   document.addEventListener("click", handlePotentialChoiceAnswerMemory, true);
   document.addEventListener("click", handlePotentialManualReviewPause, true);
+  document.addEventListener("click", handlePotentialManualSubmit, true);
+  document.addEventListener("submit", handlePotentialManualSubmit, true);
   window.addEventListener("pagehide", flushPendingAnswersOnPageHide);
   document.addEventListener("visibilitychange", flushPendingAnswersOnPageHide, true);
 }
@@ -980,7 +1397,11 @@ async function resumeAutomationIfNeeded(): Promise<void> {
   childApplicationTabOpened = false;
   stageRetryState = createStageRetryState();
 
-  const maxAttempts = detectedSite ? 70 : 40;
+  const maxAttempts = IS_TOP_FRAME
+    ? TOP_FRAME_SESSION_SYNC_MAX_ATTEMPTS
+    : detectedSite
+      ? 70
+      : 40;
   let lastSessionState: string | null = null;
   let unchangedCount = 0;
 
@@ -992,7 +1413,11 @@ async function resumeAutomationIfNeeded(): Promise<void> {
     } | null = null;
 
     try {
-      response = await chrome.runtime.sendMessage({
+      response = await sendRuntimeMessage<{
+        ok?: boolean;
+        shouldResume?: boolean;
+        session?: AutomationSession | null;
+      }>({
         type: "content-ready",
         looksLikeApplicationSurface: looksLikeCurrentFrameApplicationSurface(
           detectedSite,
@@ -1001,6 +1426,8 @@ async function resumeAutomationIfNeeded(): Promise<void> {
             hasLikelyApplicationForm,
             hasLikelyApplicationFrame,
             hasLikelyApplicationPageContent,
+            hasLikelyApplyContinuationAction: () =>
+              hasLikelyApplyContinuationAction(detectedSite),
             isLikelyApplyUrl,
             isTopFrame: IS_TOP_FRAME,
             resumeFileInputCount: collectResumeFileInputs().length,
@@ -1011,10 +1438,25 @@ async function resumeAutomationIfNeeded(): Promise<void> {
       return;
     }
 
+    if (!response && !isExtensionRuntimeAvailable()) {
+      return;
+    }
+
     if (response?.session) {
       const s = response.session;
 
       if (!shouldHandleAutomationInCurrentFrame(s, detectedSite)) {
+        if (
+          IS_TOP_FRAME &&
+          shouldMirrorControllerBoundSessionInTopFrame(s, IS_TOP_FRAME)
+        ) {
+          applyOverlaySessionSnapshot({
+            ...s,
+            site: resolveSessionSite(s.site, detectedSite),
+          });
+          renderOverlay();
+        }
+
         if (
           s.stage === "autofill-form" &&
           typeof s.controllerFrameId !== "number" &&
@@ -1023,6 +1465,15 @@ async function resumeAutomationIfNeeded(): Promise<void> {
           await sleepWithAutomationChecks(CONTENT_READY_POLL_MS);
           continue;
         }
+
+        if (
+          shouldKeepTopFrameSessionSyncAlive(s, IS_TOP_FRAME) &&
+          attempt < maxAttempts - 1
+        ) {
+          await sleepWithAutomationChecks(TOP_FRAME_SESSION_SYNC_POLL_MS);
+          continue;
+        }
+
         return;
       }
 
@@ -1049,7 +1500,12 @@ async function resumeAutomationIfNeeded(): Promise<void> {
       currentRunId = s.runId;
       currentClaimedJobKey = s.claimedJobKey;
       currentJobSlots = s.jobSlots;
-      if (s.phase === "paused" || !s.shouldResume) {
+      currentRunSummary = isAutomationRunSummary(s.runSummary)
+        ? s.runSummary
+        : undefined;
+      manualSubmitRequested = Boolean(s.manualSubmitPending);
+      clearAutomationStop();
+      if (s.phase === "paused") {
         markAutomationPaused(s.message);
       } else {
         clearAutomationPause(false);
@@ -1085,6 +1541,9 @@ async function ensureAutomationRunning(): Promise<void> {
     try {
       await runAutomation();
     } catch (error: unknown) {
+      if (error instanceof AutomationStoppedError) {
+        return;
+      }
       const msg =
         error instanceof Error
           ? error.message
@@ -1100,6 +1559,8 @@ async function ensureAutomationRunning(): Promise<void> {
 }
 
 async function runAutomation(): Promise<void> {
+  throwIfAutomationStopped();
+
   if (status.site === "unsupported") {
     throw new Error(
       "This tab is not part of an active automation session."
@@ -1138,7 +1599,7 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
 
   updateStatus(
     "running",
-    `Opening ${getSiteLabel(site)} searches for your configured keywords...`,
+    `Opening one ${getSiteLabel(site)} search page from your configured keywords...`,
     true,
     "bootstrap"
   );
@@ -1176,14 +1637,19 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
       profileId: currentProfileId,
       keyword: target.keyword,
     }))
-    .filter((item) => Boolean(item.url));
+    .filter((item) => Boolean(item.url))
+    .slice(0, 1)
+    .map((item, index) => ({
+      ...item,
+      active: index === 0,
+    }));
 
   await waitForAutomationResumeIfPaused();
   const response = await spawnTabs(items);
 
   updateStatus(
     "completed",
-    `Opened ${response.opened} search tabs. Will open up to ${settings.jobPageLimit} job pages in this run.`,
+    `Opened ${response.opened} search page${response.opened === 1 ? "" : "s"}. Job pages will open one at a time as results are found.`,
     false,
     "bootstrap"
   );
@@ -1195,13 +1661,9 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   const settings = await readCurrentAutomationSettings();
   const labelPrefix = currentLabel ? `${currentLabel} ` : "";
   const postedWindowDescription = describePostedWindow(settings.datePostedWindow);
-  const effectiveLimit =
-    typeof currentJobSlots === "number"
-      ? Math.max(0, Math.floor(currentJobSlots))
-      : Math.max(1, Math.floor(settings.jobPageLimit));
   const collectionTargetCount = getJobResultCollectionTargetCount(
     site,
-    effectiveLimit
+    12
   );
   const keywordHints = getCurrentSearchKeywordHints(
     site,
@@ -1222,17 +1684,6 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   );
 
   await waitForAutomationResumeIfPaused();
-  if (effectiveLimit <= 0) {
-    updateStatus(
-      "completed",
-      `Skipped ${labelPrefix}${getSiteLabel(site)} search - no slots allocated.`,
-      false,
-      "collect-results"
-    );
-    await closeCurrentTab();
-    return;
-  }
-
   await waitForHumanVerificationToClear();
 
   // Dice job cards render through delayed custom elements.
@@ -1330,21 +1781,19 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     if (
       await continueCollectResultsOnNextPage({
         site,
-        remainingSlots: effectiveLimit,
         progressMessage: `No job pages found on this ${labelPrefix}${getSiteLabel(site)} page yet. Checking the next results page...`,
-        fallbackMessage: `No job pages found on this ${labelPrefix}${getSiteLabel(site)} results page${postedWindowDescription}, and no later results pages were available.`,
+        fallbackMessage: `No more new ${labelPrefix}${getSiteLabel(site)} results were available${postedWindowDescription}. Waiting for queued jobs or Stop.`,
       })
     ) {
       return;
     }
 
     updateStatus(
-      "completed",
-      `No job pages found on this ${labelPrefix}${getSiteLabel(site)} results page${postedWindowDescription}.`,
+      "queued",
+      `No new ${labelPrefix}${getSiteLabel(site)} jobs were found on this results page${postedWindowDescription}. Waiting for queued jobs or Stop.`,
       false,
       "collect-results"
     );
-    await closeCurrentTab();
     return;
   }
 
@@ -1352,7 +1801,9 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   let candidates = collectJobDetailCandidates(site);
   if (site === "monster") {
     try {
-      const response = await chrome.runtime.sendMessage({
+      const response = await sendRuntimeMessage<{
+        jobResults?: unknown[];
+      }>({
         type: "extract-monster-search-results",
       });
       candidates = [
@@ -1384,60 +1835,30 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   const reachableCollectedJobUrls = await filterReachableCollectedJobUrls(
     site,
     filteredJobUrls,
-    effectiveLimit
+    Math.max(4, Math.min(collectionTargetCount, filteredJobUrls.length))
   );
 
   if (reachableCollectedJobUrls.length === 0) {
     if (
       await continueCollectResultsOnNextPage({
         site,
-        remainingSlots: effectiveLimit,
         progressMessage: `No usable ${labelPrefix}${getSiteLabel(site)} job pages were left on this page. Checking the next results page...`,
-        fallbackMessage: `No usable ${labelPrefix}${getSiteLabel(site)} job pages were left after removing applied or broken results.`,
+        fallbackMessage: `No more usable ${labelPrefix}${getSiteLabel(site)} job pages were available after removing applied or broken results. Waiting for queued jobs or Stop.`,
       })
     ) {
       return;
     }
 
     updateStatus(
-      "completed",
-      `No usable ${labelPrefix}${getSiteLabel(site)} job pages were left after removing applied or broken results.`,
+      "queued",
+      `No usable ${labelPrefix}${getSiteLabel(site)} job pages were left after removing applied or broken results. Waiting for queued jobs or Stop.`,
       false,
       "collect-results"
     );
-    await closeCurrentTab();
     return;
   }
 
-  const claimResult = await claimJobOpenings(
-    reachableCollectedJobUrls,
-    effectiveLimit
-  );
-  const approvedUrls = claimResult.approvedUrls.slice(0, effectiveLimit);
-
-  if (approvedUrls.length === 0) {
-    if (
-      await continueCollectResultsOnNextPage({
-        site,
-        remainingSlots: claimResult.remaining,
-        progressMessage: `No new ${labelPrefix}${getSiteLabel(site)} job pages were available on this page. Checking the next results page...`,
-        fallbackMessage: `No new ${labelPrefix}${getSiteLabel(site)} job pages were available after removing duplicates and applied roles.`,
-      })
-    ) {
-      return;
-    }
-
-    updateStatus(
-      "completed",
-      `No new ${labelPrefix}${getSiteLabel(site)} job pages were available after removing duplicates and applied roles.`,
-      false,
-      "collect-results"
-    );
-    await closeCurrentTab();
-    return;
-  }
-
-  const items: SpawnTabRequest[] = approvedUrls.map((url, index) => {
+  const items: SpawnTabRequest[] = reachableCollectedJobUrls.map((url, index) => {
     const claimedJobKey = getJobDedupKey(url) || undefined;
     const jobTitle = titleMap.get(getJobDedupKey(url)) ?? "";
     const itemResumeKind = resolveResumeKindForJob({
@@ -1476,78 +1897,49 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   });
 
   await waitForAutomationResumeIfPaused();
-  const response = await spawnTabs(items, effectiveLimit);
-  const remainingSlotsAfterSpawn = getRemainingJobSlotsAfterSpawn(
-    effectiveLimit,
-    response.opened,
-    claimResult.remaining,
-    approvedUrls.length
-  );
+  const response = await queueJobTabs(items);
+  currentRunSummary = response.summary ?? currentRunSummary;
+  const queuedCount = response.queued;
+  const totalQueued = response.summary?.queuedJobCount ?? queuedCount;
 
-  const extra =
-    jobUrls.length > approvedUrls.length
-      ? ` (opened ${approvedUrls.length} unique jobs from ${jobUrls.length} found)`
-      : "";
-  const openedMessage = `Opened ${response.opened} job tabs from ${labelPrefix}${getSiteLabel(site)} search${extra}.`;
-  const shouldKeepResultsPageOpen = shouldKeepResultsPageOpenAfterZeroSpawn(
-    response.opened,
-    approvedUrls.length,
-    remainingSlotsAfterSpawn
-  );
+  const queuedMessage =
+    queuedCount > 0
+      ? `Queued ${queuedCount} ${labelPrefix}${getSiteLabel(site)} job page${queuedCount === 1 ? "" : "s"} and started applying one at a time${totalQueued > queuedCount ? ` (${totalQueued} waiting)` : ""}.`
+      : `No new ${labelPrefix}${getSiteLabel(site)} job pages were left after removing duplicates and applied roles on this page.`;
 
-  if (remainingSlotsAfterSpawn > 0) {
-    if (
-      await continueCollectResultsOnNextPage({
-        site,
-        remainingSlots: remainingSlotsAfterSpawn,
-        progressMessage: `${openedMessage} Continuing to the next results page for ${remainingSlotsAfterSpawn} more job${remainingSlotsAfterSpawn === 1 ? "" : "s"}...`,
-        fallbackMessage: `${openedMessage} No additional results pages were available.`,
-      })
-    ) {
-      return;
-    }
-  }
-
-  if (shouldKeepResultsPageOpen) {
-    updateStatus(
-      "completed",
-      `Found ${approvedUrls.length} ${labelPrefix}${getSiteLabel(site)} job page${approvedUrls.length === 1 ? "" : "s"} on this results page, but no new job tab opened. Keeping this results page open for review.`,
-      false,
-      "collect-results"
-    );
+  if (
+    await continueCollectResultsOnNextPage({
+      site,
+      progressMessage: `${queuedMessage} Checking the next results page...`,
+      fallbackMessage:
+        queuedCount > 0
+          ? `${queuedMessage} No more results pages were available. Waiting for queued jobs or Stop.`
+          : `No more new ${labelPrefix}${getSiteLabel(site)} job pages were available after removing duplicates and applied roles. Waiting for queued jobs or Stop.`,
+    })
+  ) {
     return;
   }
 
   updateStatus(
-    "completed",
-    openedMessage,
+    "queued",
+    queuedMessage,
     false,
     "collect-results"
   );
-
-  await closeCurrentTab();
 }
 
 async function continueCollectResultsOnNextPage(options: {
   site: SiteKey;
-  remainingSlots: number;
   progressMessage: string;
   fallbackMessage: string;
 }): Promise<boolean> {
-  const { site, remainingSlots, progressMessage, fallbackMessage } = options;
-  const safeRemainingSlots = Math.max(0, Math.floor(remainingSlots));
-
-  if (safeRemainingSlots <= 0) {
-    return false;
-  }
+  const { site, progressMessage, fallbackMessage } = options;
 
   updateStatus(
     "running",
     progressMessage,
     true,
-    "collect-results",
-    undefined,
-    safeRemainingSlots
+    "collect-results"
   );
 
   await waitForAutomationResumeIfPaused();
@@ -1563,14 +1955,11 @@ async function continueCollectResultsOnNextPage(options: {
   }
 
   updateStatus(
-    "completed",
+    "queued",
     fallbackMessage,
     false,
-    "collect-results",
-    undefined,
-    safeRemainingSlots
+    "collect-results"
   );
-  await closeCurrentTab();
   return true;
 }
 
@@ -1586,7 +1975,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       "Job page opened. Review and apply manually.",
       false,
       "autofill-form",
-      "successful"
+      "released"
     );
     return;
   }
@@ -1602,6 +1991,11 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       isCurrentPageAppliedJob,
     })
   ) {
+    if (manualSubmitRequested) {
+      await finalizeSuccessfulApplication("Application submitted successfully.");
+      return;
+    }
+
     updateStatus(
       "completed",
       "Skipped - already applied.",
@@ -1775,6 +2169,11 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       if (action) break;
     }
 
+    if (site === "greenhouse") {
+      action = findGreenhouseApplyAction() ?? findApplyAction(site, "job-page");
+      if (action) break;
+    }
+
     if (site === "ziprecruiter") {
       action = findZipRecruiterApplyAction();
       if (action) break;
@@ -1792,8 +2191,10 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       if (action) break;
     }
 
-    action = findApplyAction(site, "job-page");
-    if (action) break;
+    if (site !== "dice" && site !== "greenhouse") {
+      action = findApplyAction(site, "job-page");
+      if (action) break;
+    }
 
     if (site !== "ziprecruiter") {
       action = findCompanySiteAction();
@@ -2293,7 +2694,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     "Apply button clicked but no application form detected. Review the page manually.",
     false,
     "autofill-form",
-    "successful"
+    "released"
   );
 }
 
@@ -2309,7 +2710,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       "Application page opened. Review and complete manually.",
       false,
       "autofill-form",
-      "successful"
+      "released"
     );
     return;
   }
@@ -2322,14 +2723,35 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       isCurrentPageAppliedJob,
     })
   ) {
+    if (manualSubmitRequested) {
+      await finalizeSuccessfulApplication("Application submitted successfully.");
+    } else {
+      updateStatus(
+        "completed",
+        "Skipped - already applied.",
+        false,
+        "autofill-form",
+        "released"
+      );
+      await closeCurrentTab();
+    }
+    return;
+  }
+
+  if (
+    !isAlreadyOnApplyPage(site, window.location.href) &&
+    !hasLikelyApplicationForm() &&
+    !hasLikelyApplicationSurface(site) &&
+    hasLikelyApplyContinuationAction(site)
+  ) {
+    currentStage = "open-apply";
     updateStatus(
-      "completed",
-      "Skipped - already applied.",
-      false,
-      "autofill-form",
-      "released"
+      "running",
+      "Another apply step was found on this page. Continuing...",
+      true,
+      "open-apply"
     );
-    await closeCurrentTab();
+    await runOpenApplyStage(site);
     return;
   }
 
@@ -2416,6 +2838,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     ) {
       noProgressCount = 0;
       manualReviewPauseUntil = 0;
+      await markCurrentJobReviewedIfManaged();
       await pauseAutomationAndWait(
         "Manual review detected on this step. Press Resume after you finish editing."
       );
@@ -2426,18 +2849,17 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       hasVisibleManualSubmitAction() &&
       isLikelyManualSubmitReviewPage(document);
     if (onManualSubmitReviewPage) {
-      updateStatus(
-        "completed",
-        "Final review page ready. Complete any required checks and submit manually.",
-        false,
-        "autofill-form",
-        "successful"
+      noProgressCount = 0;
+      await waitForManualSubmitOutcome(
+        site,
+        "Final review page ready. Waiting for you to press Submit."
       );
       return;
     }
 
     if (hasPendingRequiredAutofillFields(currentFields)) {
       noProgressCount = 0;
+      await markCurrentJobReviewedIfManaged();
       await pauseAutomationAndWait(
         "Required questions need manual input on this step. Fill them, then press Resume."
       );
@@ -2492,6 +2914,19 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
         continue;
       }
       return;
+    }
+
+    if (site === "ziprecruiter" && hasZipRecruiterApplyModal()) {
+      noProgressCount += 1;
+      if (noProgressCount >= 4) {
+        noProgressCount = 0;
+        await pauseAutomationAndWait(
+          "ZipRecruiter application opened. Review it, then press Resume when you are ready."
+        );
+      } else {
+        await sleepWithAutomationChecks(1_200);
+      }
+      continue;
     }
 
     const followUp = findApplyAction(site, "follow-up");
@@ -2654,25 +3089,53 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     combinedResult.filledFields > 0 ||
     combinedResult.uploadedResume
   ) {
-    updateStatus(
-      "completed",
-      buildAutofillSummary(combinedResult),
-      false,
-      "autofill-form",
-      "successful"
+    if (hasVisibleManualSubmitAction()) {
+      await waitForManualSubmitOutcome(
+        site,
+        `${buildAutofillSummary(combinedResult)} Waiting for you to press Submit.`
+      );
+      return;
+    }
+
+    await markCurrentJobReviewedIfManaged();
+    await pauseAutomationAndWait(
+      `${buildAutofillSummary(combinedResult)} Submit manually, then press Resume or Stop.`
     );
+    await runAutofillStage(site);
     return;
   }
 
   if (hasLikelyApplicationForm() || hasLikelyApplicationPageContent()) {
-    updateStatus(
-      "completed",
+    if (hasConfirmedManualSubmitSuccess(site)) {
+      await finalizeSuccessfulApplication("Application submitted successfully.");
+      return;
+    }
+
+    if (hasVisibleManualSubmitAction() || isLikelyManualSubmitReviewPage(document)) {
+      await waitForManualSubmitOutcome(
+        site,
+        hasLikelyApplicationForm()
+          ? "Application opened. Review manually, then press Submit."
+          : "Final review page opened. Waiting for you to press Submit."
+      );
+      return;
+    }
+
+    await markCurrentJobReviewedIfManaged();
+    await pauseAutomationAndWait(
       hasLikelyApplicationForm()
-        ? "Application opened. No fields auto-filled - review manually."
-        : "Final review page opened. Review and submit manually.",
-      false,
-      "autofill-form",
-      "successful"
+        ? "Application opened. Review manually, then press Resume or Stop."
+        : "Final review page opened. Submit manually, then press Resume or Stop."
+    );
+    await runAutofillStage(site);
+    return;
+  }
+
+  if (manualSubmitRequested) {
+    await waitForManualSubmitOutcome(
+      site,
+      "Waiting for your submit to continue...",
+      "Submit detected. Waiting for confirmation page..."
     );
     return;
   }
@@ -2692,25 +3155,6 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
 // ─── WAITING HELPERS ─────────────────────────────────────────────────────────
 
 async function waitForHumanVerificationToClear(): Promise<void> {
-  const brokenReason = await confirmBrokenPageReason(
-    detectBrokenPageReason(document)
-  );
-  if (brokenReason === "access_denied") {
-    throw new Error(
-      `The page returned an access-denied error instead of a usable application page.`
-    );
-  }
-  if (brokenReason === "bad_gateway") {
-    throw new Error(
-      `The page returned a server error instead of a usable application page.`
-    );
-  }
-  if (brokenReason === "not_found") {
-    throw new Error(
-      `The page returned a page-not-found error instead of a usable application page.`
-    );
-  }
-
   const getManualBlockKind = (): "verification" | "auth" | null => {
     if (isProbablyHumanVerificationPage(document)) {
       return "verification";
@@ -2721,61 +3165,49 @@ async function waitForHumanVerificationToClear(): Promise<void> {
     return null;
   };
 
-  const initialBlockKind = getManualBlockKind();
-  if (!initialBlockKind) return;
-
-  updateStatus(
-    "waiting_for_verification",
-    initialBlockKind === "auth"
-      ? "Sign-in required. Complete it manually and the run will continue automatically."
-      : "Verification detected. Complete it manually.",
-    true
-  );
-
-  let lastReminderAt = Date.now();
-
-  while (getManualBlockKind()) {
-    await waitForAutomationResumeIfPaused();
-
-    const pendingBrokenReason = await confirmBrokenPageReason(
+  while (true) {
+    const brokenReason = await confirmBrokenPageReason(
       detectBrokenPageReason(document)
     );
-    if (pendingBrokenReason === "access_denied") {
+    if (brokenReason === "access_denied") {
       throw new Error(
         `The page returned an access-denied error instead of a usable application page.`
       );
     }
-    if (pendingBrokenReason === "bad_gateway") {
+    if (brokenReason === "bad_gateway") {
       throw new Error(
         `The page returned a server error instead of a usable application page.`
       );
     }
-    if (pendingBrokenReason === "not_found") {
+    if (brokenReason === "not_found") {
       throw new Error(
         `The page returned a page-not-found error instead of a usable application page.`
       );
     }
 
-    if (Date.now() - lastReminderAt > VERIFICATION_TIMEOUT_MS) {
-      const currentBlockKind = getManualBlockKind();
+    const blockKind = getManualBlockKind();
+    if (!blockKind) {
+      return;
+    }
+
+    const waitMessage =
+      blockKind === "auth"
+        ? "Sign-in required. Complete it and the extension will continue automatically."
+        : "Verification code or captcha required. Complete it and the extension will continue automatically.";
+    clearAutomationPause(false);
+    if (
+      status.phase !== "waiting_for_verification" ||
+      status.message !== waitMessage
+    ) {
       updateStatus(
         "waiting_for_verification",
-        currentBlockKind === "auth"
-          ? "Still waiting for sign-in. Complete it manually and the run will resume automatically."
-          : "Still waiting for verification. Complete it manually and the run will resume automatically.",
-        true
+        waitMessage,
+        true,
+        currentStage
       );
-      lastReminderAt = Date.now();
     }
     await sleepWithAutomationChecks(VERIFICATION_POLL_MS);
   }
-
-  updateStatus(
-    "running",
-    "Verification cleared. Continuing...",
-    true
-  );
-  await sleepWithAutomationChecks(300);
 }
 
 
@@ -3465,20 +3897,62 @@ async function spawnTabs(
   items: SpawnTabRequest[],
   maxJobPages?: number
 ): Promise<{ opened: number }> {
-  const response = await chrome.runtime.sendMessage({
+  const response = await sendRuntimeMessage<{
+    ok?: boolean;
+    error?: string;
+    opened?: number;
+  }>({
     type: "spawn-tabs",
     items,
     maxJobPages,
   });
   if (!response?.ok)
     throw new Error(
-      response?.error ?? "Could not open tabs."
+      getRuntimeMessageError(response, "Could not open tabs.")
     );
   // Guard against malformed background responses before using the count.
   const opened = typeof response.opened === "number" 
     ? Math.max(0, Math.floor(response.opened)) 
     : 0;
   return { opened };
+}
+
+async function queueJobTabs(
+  items: SpawnTabRequest[]
+): Promise<{
+  queued: number;
+  opened: number;
+  summary?: AutomationRunSummary | null;
+}> {
+  const response = await sendRuntimeMessage<{
+    ok?: boolean;
+    error?: string;
+    queued?: number;
+    opened?: number;
+    summary?: AutomationRunSummary | null;
+  }>({
+    type: "queue-job-tabs",
+    items,
+  });
+  if (!response?.ok) {
+    throw new Error(
+      getRuntimeMessageError(response, "Could not queue job pages.")
+    );
+  }
+
+  return {
+    queued:
+      typeof response.queued === "number"
+        ? Math.max(0, Math.floor(response.queued))
+        : 0,
+    opened:
+      typeof response.opened === "number"
+        ? Math.max(0, Math.floor(response.opened))
+        : 0,
+    summary: isAutomationRunSummary(response.summary)
+      ? response.summary
+      : null,
+  };
 }
 
 async function filterReachableCollectedJobUrls(
@@ -3525,7 +3999,11 @@ async function filterReachableCollectedJobUrls(
 
 async function probeCollectedJobUrl(url: string): Promise<boolean> {
   try {
-    const response = await chrome.runtime.sendMessage({
+    const response = await sendRuntimeMessage<{
+      ok?: boolean;
+      reachable?: boolean;
+      reason?: BrokenPageReason | "unreachable" | null;
+    }>({
       type: "probe-application-target",
       url,
     });
@@ -3539,77 +4017,9 @@ async function probeCollectedJobUrl(url: string): Promise<boolean> {
   }
 }
 
-async function claimJobOpenings(
-  urls: string[],
-  requested: number
-): Promise<ClaimedJobOpeningsResult> {
-  const uniqueMap = new Map<string, string>();
-  for (const url of urls) {
-    const key = getJobDedupKey(url);
-    if (key && !uniqueMap.has(key)) {
-      uniqueMap.set(key, url);
-    }
-  }
-
-  const candidates = Array.from(uniqueMap.entries()).map(
-    ([key, url]) => ({ key, url })
-  );
-  const safeRequested = Math.max(0, Math.floor(requested));
-
-  if (candidates.length === 0) {
-    return {
-      approvedUrls: [],
-      remaining: safeRequested,
-      limit: safeRequested,
-    };
-  }
-
-  try {
-    const response = await chrome.runtime.sendMessage({
-      type: "claim-job-openings",
-      requested,
-      candidates,
-    });
-
-    if (
-      response?.ok &&
-      Array.isArray(response.approvedUrls)
-    ) {
-      // Ignore malformed candidate responses instead of trusting unknown data.
-      const validatedApprovedUrls = response.approvedUrls.filter(
-        (u: unknown): u is string => typeof u === "string"
-      );
-      return {
-        approvedUrls: validatedApprovedUrls,
-        remaining: Number.isFinite(Number(response.remaining))
-          ? Math.max(0, Math.floor(Number(response.remaining)))
-          : Math.max(
-              0,
-              safeRequested - validatedApprovedUrls.length
-            ),
-        limit: Number.isFinite(Number(response.limit))
-          ? Math.max(0, Math.floor(Number(response.limit)))
-          : safeRequested,
-      };
-    }
-  } catch {
-    // Fall back to local dedupe
-  }
-
-  const approvedUrls = candidates
-    .slice(0, safeRequested)
-    .map((candidate) => candidate.url);
-
-  return {
-    approvedUrls,
-    remaining: Math.max(0, safeRequested - approvedUrls.length),
-    limit: safeRequested,
-  };
-}
-
 async function closeCurrentTab(): Promise<void> {
   try {
-    await chrome.runtime.sendMessage({
+    await sendRuntimeMessage({
       type: "close-current-tab",
     });
   } catch { /* ignore */ }
@@ -3630,6 +4040,8 @@ function shouldPreferInFrameProgressionClick(url: string): boolean {
       hasLikelyApplicationForm,
       hasLikelyApplicationFrame,
       hasLikelyApplicationPageContent,
+      hasLikelyApplyContinuationAction: () =>
+        hasLikelyApplyContinuationAction(status.site),
       isLikelyApplyUrl,
       isTopFrame: IS_TOP_FRAME,
       resumeFileInputCount: collectResumeFileInputs().length,
@@ -4138,20 +4550,39 @@ function ensureOverlay(): void {
   const shadow = host.attachShadow({ mode: "open" });
   const wrapper = document.createElement("section"),
     header = document.createElement("div"),
+    titleStack = document.createElement("div"),
     title = document.createElement("div"),
+    meta = document.createElement("div"),
+    spinner = document.createElement("span"),
+    count = document.createElement("span"),
+    controls = document.createElement("div"),
     text = document.createElement("div"),
     actionButton = document.createElement("button"),
+    stopButton = document.createElement("button"),
     style = document.createElement("style");
-  style.textContent = `:host{all:initial}.panel{position:fixed;top:${OVERLAY_EDGE_MARGIN}px;right:${OVERLAY_EDGE_MARGIN}px;z-index:2147483647;width:min(340px,calc(100vw - 36px));padding:14px 16px;border-radius:16px;background:rgba(18,34,53,.94);color:#f6efe2;font-family:"Segoe UI",sans-serif;box-shadow:0 16px 40px rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(12px);transition:opacity .3s}.header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 8px;cursor:grab;user-select:none;touch-action:none}.panel.dragging .header{cursor:grabbing}.title{margin:0;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#f2b54b}.text{margin:0;font-size:13px;line-height:1.5;color:#f8f5ef}.action{appearance:none;border:1px solid rgba(242,181,75,.35);background:rgba(255,255,255,.08);color:#f8f5ef;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700;line-height:1;cursor:pointer;white-space:nowrap}.action:hover:not(:disabled){background:rgba(255,255,255,.14)}.action:disabled{opacity:.55;cursor:wait}`;
+  style.textContent = `:host{all:initial}.panel{position:fixed;top:${OVERLAY_EDGE_MARGIN}px;right:${OVERLAY_EDGE_MARGIN}px;z-index:2147483647;width:min(380px,calc(100vw - 36px));padding:16px;border-radius:18px;background:rgba(16,26,39,.95);color:#f6efe2;font-family:"Segoe UI",sans-serif;box-shadow:0 18px 44px rgba(0,0,0,.32);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(14px);transition:opacity .3s,transform .3s}.header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 10px;cursor:grab;user-select:none;touch-action:none}.panel.dragging .header{cursor:grabbing}.title-stack{display:flex;flex-direction:column;gap:8px;min-width:0}.title{margin:0;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#f2b54b}.meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:rgba(248,245,239,.74)}.spinner{width:11px;height:11px;border-radius:999px;border:2px solid rgba(255,255,255,.2);border-top-color:#f2b54b;display:inline-block;animation:rjs-spin 1s linear infinite}.spinner[data-active='false']{animation:none;opacity:.45;border-top-color:rgba(255,255,255,.35)}.count{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.08)}.text{margin:0;font-size:13px;line-height:1.55;color:#f8f5ef}.controls{display:flex;align-items:center;gap:8px}.action,.stop{appearance:none;border:1px solid rgba(242,181,75,.35);background:rgba(255,255,255,.08);color:#f8f5ef;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700;line-height:1;cursor:pointer;white-space:nowrap}.action:hover:not(:disabled),.stop:hover:not(:disabled){background:rgba(255,255,255,.14)}.action:disabled,.stop:disabled{opacity:.55;cursor:wait}.stop{border-color:rgba(255,107,107,.4);color:#ffd4d4}@keyframes rjs-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`;
   wrapper.className = "panel";
   header.className = "header";
+  titleStack.className = "title-stack";
   title.className = "title";
+  meta.className = "meta";
+  spinner.className = "spinner";
+  spinner.setAttribute("aria-hidden", "true");
+  count.className = "count";
+  controls.className = "controls";
   text.className = "text";
   actionButton.className = "action";
   actionButton.type = "button";
   actionButton.hidden = true;
+  stopButton.className = "stop";
+  stopButton.type = "button";
+  stopButton.textContent = "Stop";
+  stopButton.hidden = true;
   header.title = "Drag to move";
-  header.append(title, actionButton);
+  meta.append(spinner, count);
+  controls.append(actionButton, stopButton);
+  titleStack.append(title, meta);
+  header.append(titleStack, controls);
   wrapper.append(header, text);
   shadow.append(style, wrapper);
 
@@ -4214,6 +4645,12 @@ function ensureOverlay(): void {
     void handleOverlayActionClick();
   });
 
+  stopButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void handleOverlayStopClick();
+  });
+
   wrapper.addEventListener("pointermove", (event) => {
     if (dragPointerId === null || event.pointerId !== dragPointerId) {
       return;
@@ -4250,8 +4687,12 @@ function ensureOverlay(): void {
   overlay.panel = wrapper;
   overlay.dragHandle = header;
   overlay.title = title;
+  overlay.meta = meta;
+  overlay.spinner = spinner;
+  overlay.count = count;
   overlay.text = text;
   overlay.actionButton = actionButton;
+  overlay.stopButton = stopButton;
   loadOverlayPosition();
 }
 
@@ -4319,8 +4760,11 @@ function renderOverlay(): void {
   if (
     !overlay.host ||
     !overlay.title ||
+    !overlay.spinner ||
+    !overlay.count ||
     !overlay.text ||
-    !overlay.actionButton
+    !overlay.actionButton ||
+    !overlay.stopButton
   )
     return;
   const siteText =
@@ -4330,12 +4774,21 @@ function renderOverlay(): void {
   overlay.title.textContent = currentResumeKind
     ? `Remote Job Search - ${siteText} - ${getResumeKindLabel(currentResumeKind)}`
     : `Remote Job Search - ${siteText}`;
+  overlay.spinner.dataset.active =
+    status.phase === "running" || status.phase === "waiting_for_verification"
+      ? "true"
+      : "false";
+  const appliedTodayCount = currentRunSummary?.appliedTodayCount ?? 0;
+  const queuedJobCount = currentRunSummary?.queuedJobCount ?? 0;
+  overlay.count.textContent = `Applied today: ${appliedTodayCount}${queuedJobCount > 0 ? ` | Queue: ${queuedJobCount}` : ""}`;
   overlay.text.textContent = status.message;
   const actionLabel = getOverlayActionLabel();
   overlay.actionButton.hidden = !actionLabel;
   overlay.actionButton.disabled = overlayControlPending;
   overlay.actionButton.textContent =
     overlayControlPending && actionLabel ? `${actionLabel}...` : actionLabel ?? "";
+  overlay.stopButton.hidden = !shouldShowOverlayStopButton();
+  overlay.stopButton.disabled = overlayControlPending;
   if (status.phase === "idle") {
     overlay.host.style.display = "none";
     return;
@@ -4343,8 +4796,8 @@ function renderOverlay(): void {
   overlay.host.style.display = "block";
   syncOverlayPanelPosition();
   if (
-    status.phase === "completed" ||
-    status.phase === "error"
+    (status.phase === "completed" || status.phase === "error") &&
+    cleanText(status.message).toLowerCase().includes("stopped")
   ) {
     overlayHideTimerId = window.setTimeout(() => {
       if (overlay.host)
@@ -4403,6 +4856,109 @@ async function handlePotentialChoiceAnswerMemory(
   void flushPendingAnswers();
 }
 
+function captureVisibleRememberableAnswers(): void {
+  if (status.site === "unsupported" || currentStage !== "autofill-form") {
+    return;
+  }
+
+  for (const field of collectAutofillFields()) {
+    if (!shouldRememberField(field)) {
+      continue;
+    }
+
+    const question = getQuestionText(field);
+    const value = readFieldAnswerForMemory(field);
+    rememberAnswer(question, value);
+  }
+}
+
+async function showSuccessFireworks(): Promise<void> {
+  if (!IS_TOP_FRAME || !document.body) {
+    return;
+  }
+
+  const container = document.createElement("div");
+  container.setAttribute(
+    "style",
+    "position:fixed;inset:0;pointer-events:none;z-index:2147483646;overflow:hidden"
+  );
+
+  for (let burstIndex = 0; burstIndex < 28; burstIndex += 1) {
+    const particle = document.createElement("span");
+    const hue = 20 + Math.floor(Math.random() * 45);
+    const left = 15 + Math.random() * 70;
+    const top = 20 + Math.random() * 35;
+    const size = 6 + Math.random() * 8;
+    const x = -140 + Math.random() * 280;
+    const y = -40 - Math.random() * 220;
+    particle.setAttribute(
+      "style",
+      `position:absolute;left:${left}%;top:${top}%;width:${size}px;height:${size}px;border-radius:999px;background:hsl(${hue} 92% 62%);box-shadow:0 0 14px hsla(${hue} 92% 62% /.65);transform:translate(-50%,-50%);animation:rjs-firework-${burstIndex} 1300ms ease-out forwards`
+    );
+    const style = document.createElement("style");
+    style.textContent = `@keyframes rjs-firework-${burstIndex}{0%{opacity:0;transform:translate(-50%,-50%) scale(.2)}15%{opacity:1}100%{opacity:0;transform:translate(calc(-50% + ${x}px),calc(-50% + ${y}px)) scale(.95)}}`;
+    container.append(style, particle);
+  }
+
+  document.body.append(container);
+  await sleep(1400);
+  container.remove();
+}
+
+async function pushFinalSessionStatus(
+  message: string,
+  completionKind: ManagedSessionCompletionKind
+): Promise<void> {
+  currentStage = "autofill-form";
+  status = createStatus(status.site, "completed", message);
+  renderOverlay();
+
+  try {
+    await sendRuntimeMessage({
+      type: "finalize-session",
+      status,
+      stage: currentStage,
+      label: currentLabel,
+      resumeKind: currentResumeKind,
+      profileId: currentProfileId,
+      jobSlots: currentJobSlots,
+      completionKind,
+    });
+  } catch {
+    // Ignore background sync failures and keep the local success flow moving.
+  }
+}
+
+async function finalizeSuccessfulApplication(message: string): Promise<void> {
+  manualSubmitRequested = false;
+  await pushFinalSessionStatus(message, "successful");
+  currentRunSummary = (await readCurrentRunSummary()) ?? currentRunSummary;
+  renderOverlay();
+  await showSuccessFireworks();
+  await sleep(250);
+  await closeCurrentTab();
+}
+
+async function persistManualSubmitAndResumeIfNeeded(): Promise<void> {
+  try {
+    const response = await sendRuntimeMessage<{
+      ok?: boolean;
+      session?: AutomationSession;
+    }>({
+      type: "manual-submit-detected",
+    });
+    if (response?.ok) {
+      applyOverlaySessionSnapshot(response.session);
+    }
+  } catch {
+    // Ignore background persistence failures and keep the local flag.
+  }
+
+  if (automationPauseRequested || status.phase === "paused") {
+    await requestAutomationResumeFromPage();
+  }
+}
+
 function handlePotentialManualReviewPause(event: Event): void {
   if (
     status.site === "unsupported" ||
@@ -4417,6 +4973,35 @@ function handlePotentialManualReviewPause(event: Event): void {
   }
 
   manualReviewPauseUntil = Date.now() + 15_000;
+}
+
+function handlePotentialManualSubmit(event: Event): void {
+  if (
+    status.site === "unsupported" ||
+    currentStage !== "autofill-form" ||
+    !event.isTrusted
+  ) {
+    return;
+  }
+
+  const isSubmitEvent =
+    event.type === "submit" && event.target instanceof HTMLFormElement;
+  if (!isSubmitEvent && !isManualSubmitActionTarget(event.target)) {
+    return;
+  }
+
+  if (
+    !isSubmitEvent &&
+    !shouldTreatManualSubmitActionAsReady(event.target, collectAutofillFields())
+  ) {
+    manualSubmitRequested = false;
+    return;
+  }
+
+  manualSubmitRequested = true;
+  captureVisibleRememberableAnswers();
+  void flushPendingAnswers();
+  void persistManualSubmitAndResumeIfNeeded();
 }
 
 const MAX_ANSWER_FLUSH_RETRIES = 3;
@@ -4592,6 +5177,8 @@ function shouldHandleAutomationInCurrentFrame(
   session: AutomationSession,
   detectedSite: SiteKey | null
 ): boolean {
+  const resolvedSite = resolveSessionSite(session.site, detectedSite);
+
   if (session.stage !== "autofill-form") {
     return IS_TOP_FRAME;
   }
@@ -4607,31 +5194,34 @@ function shouldHandleAutomationInCurrentFrame(
   }
 
   if (IS_TOP_FRAME) {
-    return looksLikeCurrentFrameApplicationSurface(session.site, {
+    return looksLikeCurrentFrameApplicationSurface(resolvedSite, {
       currentUrl: window.location.href,
       hasLikelyApplicationForm,
       hasLikelyApplicationFrame,
       hasLikelyApplicationPageContent,
+      hasLikelyApplyContinuationAction: () =>
+        hasLikelyApplyContinuationAction(resolvedSite),
       isLikelyApplyUrl,
       isTopFrame: IS_TOP_FRAME,
       resumeFileInputCount: collectResumeFileInputs().length,
     });
   }
 
-  if (session.site === "unsupported") {
+  if (resolvedSite === "unsupported") {
     return false;
   }
 
   const looksLikeApplyFrame =
-    isLikelyApplyUrl(window.location.href, session.site) ||
+    isLikelyApplyUrl(window.location.href, resolvedSite) ||
     hasLikelyApplicationForm() ||
     hasLikelyApplicationFrame() ||
     hasLikelyApplicationPageContent() ||
+    hasLikelyApplyContinuationAction(resolvedSite) ||
     collectResumeFileInputs().length > 0;
 
   if (!looksLikeApplyFrame) {
     return false;
   }
 
-  return detectedSite === session.site || isLikelyApplyUrl(window.location.href, session.site);
+  return detectedSite === resolvedSite || isLikelyApplyUrl(window.location.href, resolvedSite);
 }

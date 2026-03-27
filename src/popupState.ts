@@ -116,6 +116,7 @@ export function shouldDisableStartButtonForSession(
 ): boolean {
   const sessionIsActive =
     session?.phase === "running" ||
+    session?.phase === "queued" ||
     session?.phase === "paused" ||
     session?.phase === "waiting_for_verification";
 

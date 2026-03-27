@@ -213,6 +213,81 @@ export function hasVisibleManualSubmitAction(
   });
 }
 
+export function isManualSubmitActionTarget(
+  target: EventTarget | null
+): boolean {
+  return resolveManualSubmitActionElement(target) !== null;
+}
+
+export function resolveManualSubmitActionElement(
+  target: EventTarget | null
+): HTMLElement | null {
+  if (!(target instanceof HTMLElement)) {
+    return null;
+  }
+
+  const actionElement = target.closest<HTMLElement>(
+    "button, input[type='submit'], input[type='button'], a[href], [role='button']"
+  );
+  if (!actionElement || !isElementVisible(actionElement)) {
+    return null;
+  }
+
+  const text = cleanText(
+    getActionText(actionElement) ||
+      actionElement.getAttribute("aria-label") ||
+      actionElement.getAttribute("title") ||
+      ""
+  ).toLowerCase();
+
+  if (!text) {
+    return null;
+  }
+
+  return MANUAL_SUBMIT_ACTION_PATTERNS.some((pattern) => pattern.test(text))
+    ? actionElement
+    : null;
+}
+
+export function shouldTreatManualSubmitActionAsReady(
+  target: EventTarget | null,
+  fields: AutofillField[]
+): boolean {
+  const actionElement = resolveManualSubmitActionElement(target);
+  if (!actionElement) {
+    return false;
+  }
+
+  if (
+    actionElement.hasAttribute("disabled") ||
+    actionElement.getAttribute("aria-disabled") === "true"
+  ) {
+    return false;
+  }
+
+  const associatedForm = resolveAssociatedSubmitForm(actionElement);
+  if (associatedForm && !shouldSkipNativeSubmitValidation(actionElement)) {
+    try {
+      if (!associatedForm.checkValidity()) {
+        return false;
+      }
+    } catch {
+      // Ignore form validity errors and continue with field-based checks.
+    }
+  }
+
+  const relevantFields = collectRelevantManualSubmitFields(
+    actionElement,
+    fields,
+    associatedForm
+  );
+  if (hasPendingRequiredAutofillFields(relevantFields)) {
+    return false;
+  }
+
+  return !hasVisibleInvalidAutofillFields(relevantFields);
+}
+
 export function isLikelyManualSubmitReviewPage(
   root: ParentNode = document
 ): boolean {
@@ -239,4 +314,109 @@ export function shouldPauseAutomationForManualReview(
   now: number = Date.now()
 ): boolean {
   return now < pauseUntil && hasEditableAutofillFields(fields);
+}
+
+function resolveAssociatedSubmitForm(
+  actionElement: HTMLElement
+): HTMLFormElement | null {
+  if (
+    (actionElement instanceof HTMLButtonElement ||
+      actionElement instanceof HTMLInputElement) &&
+    actionElement.form
+  ) {
+    return actionElement.form;
+  }
+
+  const formAttribute = actionElement.getAttribute("form");
+  if (formAttribute) {
+    const formElement = document.getElementById(formAttribute);
+    if (formElement instanceof HTMLFormElement) {
+      return formElement;
+    }
+  }
+
+  const closestForm = actionElement.closest("form");
+  return closestForm instanceof HTMLFormElement ? closestForm : null;
+}
+
+function shouldSkipNativeSubmitValidation(actionElement: HTMLElement): boolean {
+  return (
+    (actionElement instanceof HTMLButtonElement ||
+      actionElement instanceof HTMLInputElement) &&
+    actionElement.formNoValidate
+  );
+}
+
+function collectRelevantManualSubmitFields(
+  actionElement: HTMLElement,
+  fields: AutofillField[],
+  associatedForm: HTMLFormElement | null
+): AutofillField[] {
+  if (associatedForm) {
+    const formId = associatedForm.id.trim();
+    return fields.filter((field) => {
+      if (!isFieldContextVisible(field)) {
+        return false;
+      }
+      if (associatedForm.contains(field)) {
+        return true;
+      }
+      return formId.length > 0 && field.getAttribute("form") === formId;
+    });
+  }
+
+  const container = actionElement.closest(
+    "form, [role='dialog'], [aria-modal='true'], main, article, section"
+  );
+  if (!(container instanceof HTMLElement)) {
+    return fields.filter((field) => isFieldContextVisible(field));
+  }
+
+  return fields.filter(
+    (field) => isFieldContextVisible(field) && container.contains(field)
+  );
+}
+
+function hasVisibleInvalidAutofillFields(fields: AutofillField[]): boolean {
+  return fields.some((field) => {
+    if (!isFieldContextVisible(field)) {
+      return false;
+    }
+
+    if (
+      field instanceof HTMLInputElement ||
+      field instanceof HTMLTextAreaElement ||
+      field instanceof HTMLSelectElement
+    ) {
+      try {
+        if (field.matches(":invalid")) {
+          return true;
+        }
+      } catch {
+        // Ignore selector support issues and fall back to attribute checks.
+      }
+    }
+
+    if (field.getAttribute("aria-invalid") === "true") {
+      return true;
+    }
+
+    const fieldSignals = [
+      field.className,
+      field.getAttribute("data-testid"),
+      field.getAttribute("data-test"),
+      field.getAttribute("data-cy"),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    if (/\b(error|invalid|is-invalid|has-error|field-error)\b/.test(fieldSignals)) {
+      return true;
+    }
+
+    const container = field.closest(
+      "[aria-invalid='true'], .error, .errors, .invalid, .is-invalid, .has-error, [class*='error'], [class*='invalid']"
+    );
+    return container instanceof HTMLElement && isElementVisible(container);
+  });
 }

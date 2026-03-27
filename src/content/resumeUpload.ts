@@ -5,7 +5,7 @@ import {
   inferResumeKindFromTitle,
 } from "../shared";
 import { getFieldDescriptor, getQuestionText } from "./autofill";
-import { getActionText, isElementVisible } from "./dom";
+import { isElementVisible } from "./dom";
 import { cleanText, normalizeChoiceText } from "./text";
 
 export function getSelectedFileName(input: HTMLInputElement): string {
@@ -450,87 +450,6 @@ export function findDiceResumePanel(
   root: ParentNode = document
 ): HTMLElement | null {
   return findDiceUploadPanel("resume", root);
-}
-
-export function findDiceResumeMenuButton(
-  panel: ParentNode
-): HTMLElement | null {
-  const buttons = Array.from(
-    panel.querySelectorAll<HTMLElement>("button, [role='button']")
-  ).filter((button) => isElementVisible(button));
-
-  let best:
-    | {
-        element: HTMLElement;
-        score: number;
-      }
-    | undefined;
-
-  for (const button of buttons) {
-    const metadata = normalizeChoiceText(
-      cleanText(
-        [
-          getActionText(button),
-          button.getAttribute("aria-label"),
-          button.getAttribute("title"),
-          button.className,
-          button.getAttribute("data-testid"),
-          button.getAttribute("data-test"),
-          button.getAttribute("aria-haspopup"),
-        ]
-          .filter(Boolean)
-          .join(" ")
-      )
-    );
-
-    let score = 0;
-
-    if (
-      metadata.includes("more") ||
-      metadata.includes("options") ||
-      metadata.includes("actions") ||
-      metadata.includes("menu") ||
-      metadata.includes("ellipsis") ||
-      metadata.includes("kebab")
-    ) {
-      score += 70;
-    }
-    if (
-      metadata.includes("haspopup") ||
-      button.getAttribute("aria-haspopup") === "menu"
-    ) {
-      score += 30;
-    }
-    if (
-      metadata === "" ||
-      metadata === "..." ||
-      metadata === "…" ||
-      metadata === "⋯"
-    ) {
-      score += 18;
-    }
-    if (
-      metadata.includes("replace") ||
-      metadata.includes("remove") ||
-      metadata.includes("delete") ||
-      metadata.includes("download")
-    ) {
-      score -= 20;
-    }
-
-    if (score <= 0) {
-      continue;
-    }
-
-    if (!best || score > best.score) {
-      best = {
-        element: button,
-        score,
-      };
-    }
-  }
-
-  return best?.element ?? null;
 }
 
 export function findScopedResumeUploadContainer(

@@ -1,6 +1,12 @@
 // Search-result extraction and site-specific candidate filtering.
 
-import { DatePostedWindow, ResumeKind, SiteKey, getJobDedupKey } from "../shared";
+import {
+  DatePostedWindow,
+  ResumeKind,
+  SiteKey,
+  getJobDedupKey,
+  hasLikelyApplicationSuccessSignals,
+} from "../shared";
 import { JobCandidate } from "./types";
 import { cleanText, getReadableText, normalizeChoiceText } from "./text";
 import {
@@ -1410,6 +1416,13 @@ export function isCurrentPageAppliedJob(site: SiteKey | null = null): boolean {
     if (isActiveIndeedApplyStep()) {
       return false;
     }
+  }
+
+  if (hasLikelyApplicationSuccessSignals(document)) {
+    if (site === "dice" && hasVisibleDiceApplySignal()) {
+      return false;
+    }
+    return true;
   }
 
   const currentSurfaceTexts = collectCurrentJobSurfaceTexts(site);

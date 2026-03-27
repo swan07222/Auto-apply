@@ -70,6 +70,27 @@ var STARTUP_REGION_LABELS = {
   uk: "UK",
   eu: "EU"
 };
+var DATE_POSTED_WINDOW_OPTIONS = [
+  "any",
+  "24h",
+  "2d",
+  "3d",
+  "5d",
+  "1w",
+  "10d",
+  "14d",
+  "30d"
+];
+var DATE_POSTED_WINDOW_DAY_COUNTS = {
+  "24h": 1,
+  "2d": 2,
+  "3d": 3,
+  "5d": 5,
+  "1w": 7,
+  "10d": 10,
+  "14d": 14,
+  "30d": 30
+};
 var RESUME_KIND_LABELS = {
   front_end: "Front End",
   back_end: "Back End",
@@ -102,11 +123,141 @@ var STARTUP_TARGET_REGIONS = [
   "uk",
   "eu"
 ];
+var INDEED_DATE_POSTED_WINDOWS = DATE_POSTED_WINDOW_OPTIONS;
+var ZIPRECRUITER_DATE_POSTED_WINDOWS = [
+  "any",
+  "24h",
+  "5d",
+  "10d",
+  "30d"
+];
+var DICE_DATE_POSTED_WINDOWS = [
+  "any",
+  "24h",
+  "3d",
+  "1w"
+];
+var MONSTER_DATE_POSTED_WINDOWS = [
+  "any",
+  "24h",
+  "2d",
+  "1w",
+  "14d",
+  "30d"
+];
+var GLASSDOOR_DATE_POSTED_WINDOWS = ["any"];
+var GREENHOUSE_BOARD_DATE_POSTED_WINDOWS = ["any"];
+var MY_GREENHOUSE_DATE_POSTED_WINDOWS = [
+  "any",
+  "24h",
+  "5d",
+  "10d",
+  "30d"
+];
+var BUILTIN_DATE_POSTED_WINDOWS = [
+  "any",
+  "24h",
+  "3d",
+  "1w",
+  "30d"
+];
+var STARTUP_DATE_POSTED_WINDOWS = ["any"];
+var OTHER_JOB_SITES_DATE_POSTED_WINDOWS = [
+  "any",
+  "24h",
+  "3d",
+  "1w",
+  "30d"
+];
 function getStartupTargetRegions() {
   return [...STARTUP_TARGET_REGIONS];
 }
+function isMyGreenhousePortalUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.toLowerCase().replace(/^www\./, "") === "my.greenhouse.io";
+  } catch {
+    return false;
+  }
+}
+function getSupportedDatePostedWindowsForJobBoardSite(site, currentUrl = "") {
+  switch (site) {
+    case "indeed":
+      return INDEED_DATE_POSTED_WINDOWS;
+    case "ziprecruiter":
+      return ZIPRECRUITER_DATE_POSTED_WINDOWS;
+    case "dice":
+      return DICE_DATE_POSTED_WINDOWS;
+    case "monster":
+      return MONSTER_DATE_POSTED_WINDOWS;
+    case "glassdoor":
+      return GLASSDOOR_DATE_POSTED_WINDOWS;
+    case "greenhouse":
+      return isMyGreenhousePortalUrl(currentUrl) ? MY_GREENHOUSE_DATE_POSTED_WINDOWS : GREENHOUSE_BOARD_DATE_POSTED_WINDOWS;
+    case "builtin":
+      return BUILTIN_DATE_POSTED_WINDOWS;
+  }
+}
+function getSupportedDatePostedWindowsForSearchMode(searchMode, site, currentUrl = "") {
+  if (searchMode === "startup_careers") {
+    return STARTUP_DATE_POSTED_WINDOWS;
+  }
+  if (searchMode === "other_job_sites") {
+    return OTHER_JOB_SITES_DATE_POSTED_WINDOWS;
+  }
+  if (!site) {
+    return DATE_POSTED_WINDOW_OPTIONS;
+  }
+  return getSupportedDatePostedWindowsForJobBoardSite(site, currentUrl);
+}
+function coerceDatePostedWindowToSupported(datePostedWindow, supportedWindows) {
+  if (supportedWindows.length === 0) {
+    return "any";
+  }
+  if (supportedWindows.includes(datePostedWindow)) {
+    return datePostedWindow;
+  }
+  if (datePostedWindow === "any") {
+    return supportedWindows[0] ?? "any";
+  }
+  const supportedDays = supportedWindows.map((window2) => getDatePostedWindowDays(window2)).filter((days) => typeof days === "number");
+  const matchedDays = getNearestSupportedDatePostedDays(
+    datePostedWindow,
+    supportedDays,
+    { fallbackToMax: true }
+  );
+  if (typeof matchedDays === "number") {
+    const matchedWindow = supportedWindows.find(
+      (window2) => getDatePostedWindowDays(window2) === matchedDays
+    );
+    if (matchedWindow) {
+      return matchedWindow;
+    }
+  }
+  return supportedWindows.includes("any") ? "any" : supportedWindows[0] ?? "any";
+}
 function isDatePostedWindow(value) {
   return value === "any" || value === "24h" || value === "2d" || value === "3d" || value === "5d" || value === "1w" || value === "10d" || value === "14d" || value === "30d";
+}
+function getDatePostedWindowDays(datePostedWindow) {
+  if (datePostedWindow === "any") {
+    return null;
+  }
+  return DATE_POSTED_WINDOW_DAY_COUNTS[datePostedWindow];
+}
+function getNearestSupportedDatePostedDays(datePostedWindow, supportedDays, options = {}) {
+  const requestedDays = getDatePostedWindowDays(datePostedWindow);
+  if (requestedDays === null) {
+    return null;
+  }
+  const match = supportedDays.find((days) => days >= requestedDays);
+  if (typeof match === "number") {
+    return match;
+  }
+  if (!options.fallbackToMax || supportedDays.length === 0) {
+    return null;
+  }
+  return supportedDays[supportedDays.length - 1] ?? null;
 }
 
 // src/shared/status.ts
@@ -157,8 +308,54 @@ function isJobBoardSite(site) {
 
 // src/shared/storage.ts
 var automationSettingsWriteQueue = Promise.resolve();
+var BLOCKED_SAVED_ANSWER_QUESTION_KEYS = /* @__PURE__ */ new Set([
+  "on",
+  "off",
+  "yes",
+  "no",
+  "true",
+  "false",
+  "search",
+  "keyword",
+  "keywords",
+  "query",
+  "q",
+  "what",
+  "where",
+  "radius",
+  "distance",
+  "filter"
+]);
+var BLOCKED_SAVED_ANSWER_QUESTION_PATTERNS = [
+  /^_{1,2}[a-z0-9_:-]+$/i,
+  /(?:^|[\s_-])(?:csrf|captcha|recaptcha|hcaptcha|g\s*recaptcha|requestverificationtoken|verificationtoken|authenticitytoken|viewstate|eventvalidation|xsrf|nonce)(?:$|[\s_-])/i,
+  /(?:^|[\s_-])(?:distance|radius|keyword|keywords|search|query)(?:$|[\s_-])/i
+];
 function normalizeQuestionKey(question) {
   return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+function isUsefulSavedAnswerQuestion(question) {
+  const cleanedQuestion = typeof question === "string" ? question.replace(/\s+/g, " ").trim() : "";
+  const normalizedQuestion = normalizeQuestionKey(cleanedQuestion);
+  if (!cleanedQuestion || !normalizedQuestion) {
+    return false;
+  }
+  if (BLOCKED_SAVED_ANSWER_QUESTION_KEYS.has(normalizedQuestion)) {
+    return false;
+  }
+  if (BLOCKED_SAVED_ANSWER_QUESTION_PATTERNS.some(
+    (pattern) => pattern.test(cleanedQuestion)
+  )) {
+    return false;
+  }
+  const compactQuestion = cleanedQuestion.replace(/[^a-z0-9]/gi, "");
+  if (compactQuestion.length >= 24 && !/\s/.test(cleanedQuestion) && /[A-Z]/.test(cleanedQuestion) && /[a-z]/.test(cleanedQuestion)) {
+    return false;
+  }
+  return true;
+}
+function isUsefulSavedAnswer(question, value) {
+  return isUsefulSavedAnswerQuestion(question) && readString2(value).length > 0;
 }
 async function readAutomationSettings() {
   const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
@@ -281,7 +478,7 @@ function sanitizeSavedAnswerRecord(raw) {
     if (!isRecord(value)) continue;
     const question = readString2(value.question);
     const savedValue = readString2(value.value);
-    if (!question || !savedValue) continue;
+    if (!isUsefulSavedAnswer(question, savedValue)) continue;
     const normalizedKey = normalizeQuestionKey(key || question);
     if (!normalizedKey) continue;
     answers[normalizedKey] = {
@@ -763,7 +960,7 @@ function derivePopupIdlePreview(options) {
   };
 }
 function shouldDisableStartButtonForSession(searchMode, activeSite2, session) {
-  const sessionIsActive = session?.phase === "running" || session?.phase === "paused" || session?.phase === "waiting_for_verification";
+  const sessionIsActive = session?.phase === "running" || session?.phase === "queued" || session?.phase === "paused" || session?.phase === "waiting_for_verification";
   if (searchMode === "job_board") {
     return !isJobBoardSite2(activeSite2) || sessionIsActive;
   }
@@ -783,6 +980,7 @@ var clearAnswersButton = requireElement("#clear-answers-button");
 var siteName = requireElement("#site-name");
 var statusPanel = requireElement("#status-panel");
 var statusText = requireElement("#status-text");
+var jobsAppliedToday = requireElement("#jobs-applied-today");
 var settingsStatus = requireElement("#settings-status");
 var savedAnswerCount = requireElement("#saved-answer-count");
 var savedAnswerList = requireElement("#saved-answer-list");
@@ -803,7 +1001,6 @@ var deleteProfileButton = requireElement(
 var searchModeInput = requireElement("#search-mode");
 var datePostedWindowInput = requireElement("#date-posted-window");
 var searchKeywordsInput = requireElement("#search-keywords");
-var jobLimitInput = requireElement("#job-limit");
 var fullNameInput = requireElement("#full-name");
 var emailInput = requireElement("#email");
 var phoneInput = requireElement("#phone");
@@ -858,8 +1055,10 @@ var dialogSubmitButton = requireElement(
   "#popup-dialog-submit-button"
 );
 var activeTabId = null;
+var activeTabUrl = "";
 var activeSite = detectSiteFromUrl("");
 var activeSession = null;
+var activeRunSummary = null;
 var currentStatusSnapshot = createStatus(
   "unsupported",
   "idle",
@@ -873,6 +1072,7 @@ var pendingAutoSaveRevision = 0;
 var savedAutoSaveRevision = 0;
 var settingsWriteQueue = Promise.resolve();
 var settings = createEmptySettings();
+var preferredDatePostedWindow = settings.datePostedWindow;
 var chromeTabListenersRegistered = false;
 var popupDialog = createPopupDialogController({
   root: dialogRoot,
@@ -947,6 +1147,7 @@ searchKeywordsInput.addEventListener("input", () => {
   scheduleAutoSave();
 });
 datePostedWindowInput.addEventListener("change", () => {
+  preferredDatePostedWindow = getSelectedDatePostedWindow();
   updateOverviewPreview();
   scheduleAutoSave();
 });
@@ -965,7 +1166,6 @@ resumeInput.addEventListener("change", () => {
   void storeResumeFile();
 });
 for (const element of [
-  jobLimitInput,
   fullNameInput,
   emailInput,
   phoneInput,
@@ -1249,6 +1449,7 @@ async function performRefreshStatus() {
   let activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
   const hasKeywords = getConfiguredKeywords().length > 0;
   activeSession = null;
+  activeRunSummary = null;
   updateSiteNameDisplay();
   if (!hasKeywords) {
     applyStatus(
@@ -1384,6 +1585,7 @@ async function performRefreshStatus() {
       updateSiteNameDisplay();
     }
     activeSession = parsedBackgroundSession ?? null;
+    activeRunSummary = parsedBackgroundSession?.runSummary ?? null;
     applyStatus(
       bgSession.phase === "idle" ? createStatus(
         activeJobBoardSite ?? "unsupported",
@@ -1403,6 +1605,7 @@ async function performRefreshStatus() {
       activeJobBoardSite = contentStatus.site;
       updateSiteNameDisplay();
     }
+    activeRunSummary = null;
     applyStatus(
       contentStatus.phase === "idle" ? createStatus(
         activeJobBoardSite ?? "unsupported",
@@ -1426,6 +1629,7 @@ async function performRefreshStatus() {
     setStartButtonDisabled(true);
     return;
   }
+  activeRunSummary = null;
   applyStatus(
     createStatus(
       activeJobBoardSite,
@@ -1487,6 +1691,7 @@ function updateSiteNameDisplay() {
     const sessionSite = activeSession?.site && activeSession.site !== "unsupported" ? activeSession.site : isJobBoardSite(currentStatusSnapshot.site) ? currentStatusSnapshot.site : null;
     siteName.textContent = isJobBoardSite(activeSite) ? getSiteLabel(activeSite) : sessionSite ? getSiteLabel(sessionSite) : "No supported site";
   }
+  updateDatePostedWindowInputState();
 }
 function handleChromeTabContextChanged() {
   scheduleRefreshStatus(0);
@@ -1525,6 +1730,7 @@ function applyStatus(status) {
   currentStatusSnapshot = status;
   statusPanel.dataset.phase = status.phase;
   statusText.textContent = status.message;
+  jobsAppliedToday.textContent = String(activeRunSummary?.appliedTodayCount ?? 0);
   updateSiteNameDisplay();
 }
 function setSettingsStatus(message, tone = "muted", visible = true) {
@@ -1561,7 +1767,6 @@ function buildFormSettingsUpdate(current, profileId, activeProfileId) {
     startupRegion: "auto",
     datePostedWindow: getSelectedDatePostedWindow(),
     searchKeywords: normalizeSearchKeywordsInput(),
-    jobPageLimit: Number(jobLimitInput.value) || 5,
     autoUploadResumes: true,
     activeProfileId,
     profiles: {
@@ -2025,13 +2230,12 @@ function populateSettingsForm(nextSettings) {
   );
   const activeProfile = getActiveAutomationProfile(scopedSettings);
   settings = scopedSettings;
+  preferredDatePostedWindow = scopedSettings.datePostedWindow;
   renderProfileOptions(scopedSettings.profiles, scopedSettings.activeProfileId);
   searchModeInput.value = scopedSettings.searchMode;
-  datePostedWindowInput.value = scopedSettings.datePostedWindow;
   searchKeywordsInput.value = formatSearchKeywordsInput(
     scopedSettings.searchKeywords
   );
-  jobLimitInput.value = String(scopedSettings.jobPageLimit);
   fullNameInput.value = activeProfile.candidate.fullName;
   emailInput.value = activeProfile.candidate.email;
   phoneInput.value = activeProfile.candidate.phone;
@@ -2048,6 +2252,7 @@ function populateSettingsForm(nextSettings) {
   renderSavedAnswers(activeProfile.answers, activeProfile.preferenceAnswers);
   resumeNameLabel.textContent = activeProfile.resume ? `${activeProfile.resume.name} (${formatFileSize(activeProfile.resume.size)})` : "No file saved";
   deleteProfileButton.disabled = Object.keys(scopedSettings.profiles).length <= 1;
+  updateDatePostedWindowInputState();
   updateOverviewPreview();
 }
 function renderProfileOptions(profiles, activeProfileId) {
@@ -2257,7 +2462,7 @@ function parseAutomationStatus(value) {
   }
   const candidate = value;
   const isSupportedSite = candidate.site === "unsupported" || candidate.site === "indeed" || candidate.site === "ziprecruiter" || candidate.site === "dice" || candidate.site === "monster" || candidate.site === "glassdoor" || candidate.site === "greenhouse" || candidate.site === "builtin" || candidate.site === "startup" || candidate.site === "other_sites";
-  const isSupportedPhase = candidate.phase === "idle" || candidate.phase === "running" || candidate.phase === "paused" || candidate.phase === "waiting_for_verification" || candidate.phase === "completed" || candidate.phase === "error";
+  const isSupportedPhase = candidate.phase === "idle" || candidate.phase === "running" || candidate.phase === "queued" || candidate.phase === "paused" || candidate.phase === "waiting_for_verification" || candidate.phase === "completed" || candidate.phase === "error";
   if (!isSupportedSite || !isSupportedPhase || typeof candidate.message !== "string" || !Number.isFinite(candidate.updatedAt)) {
     return void 0;
   }
@@ -2293,13 +2498,22 @@ function parseAutomationSession(value) {
     profileId: typeof candidate.profileId === "string" ? candidate.profileId : void 0,
     controllerFrameId: Number.isFinite(candidate.controllerFrameId) ? Number(candidate.controllerFrameId) : void 0,
     claimedJobKey: typeof candidate.claimedJobKey === "string" ? candidate.claimedJobKey : void 0,
-    openedUrlKey: typeof candidate.openedUrlKey === "string" ? candidate.openedUrlKey : void 0
+    openedUrlKey: typeof candidate.openedUrlKey === "string" ? candidate.openedUrlKey : void 0,
+    runSummary: isAutomationRunSummary(candidate.runSummary) ? candidate.runSummary : void 0
   };
+}
+function isAutomationRunSummary(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const candidate = value;
+  return Number.isFinite(candidate.queuedJobCount) && Number.isFinite(candidate.successfulJobPages) && Number.isFinite(candidate.appliedTodayCount) && typeof candidate.stopRequested === "boolean";
 }
 function updateModeUi() {
   const searchMode = getSelectedSearchMode2();
   startButton.textContent = getStartButtonLabel(searchMode);
   updateSiteNameDisplay();
+  updateDatePostedWindowInputState();
 }
 function updateOverviewPreview() {
   modePreview.textContent = getModePreviewLabel();
@@ -2401,15 +2615,41 @@ async function refreshActiveTabContext() {
     const tab = await findBestActiveTab();
     if (!tab) {
       activeTabId = null;
+      activeTabUrl = "";
       activeSite = null;
+      updateDatePostedWindowInputState();
       return;
     }
     activeTabId = tab?.id ?? null;
-    activeSite = detectSiteFromUrl(getTabUrl(tab));
+    activeTabUrl = getTabUrl(tab);
+    activeSite = detectSiteFromUrl(activeTabUrl);
+    updateDatePostedWindowInputState();
   } catch {
     activeTabId = null;
+    activeTabUrl = "";
     activeSite = null;
+    updateDatePostedWindowInputState();
   }
+}
+function updateDatePostedWindowInputState() {
+  const supportedWindows = getSupportedDatePostedWindowsForSearchMode(
+    getSelectedSearchMode2(),
+    isJobBoardSite(activeSite) ? activeSite : null,
+    activeTabUrl
+  );
+  const nextValue = coerceDatePostedWindowToSupported(
+    preferredDatePostedWindow,
+    supportedWindows
+  );
+  for (const option of Array.from(datePostedWindowInput.options)) {
+    const optionValue = option.value;
+    if (!isDatePostedWindow(optionValue)) {
+      option.disabled = false;
+      continue;
+    }
+    option.disabled = !supportedWindows.includes(optionValue);
+  }
+  datePostedWindowInput.value = nextValue;
 }
 async function findBestActiveTab() {
   const queryResults = await Promise.allSettled([

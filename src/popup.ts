@@ -4,6 +4,7 @@ import {
   AUTOMATION_SETTINGS_STORAGE_KEY,
   AutomationSession,
   AutomationProfile,
+  AutomationRunSummary,
   AutomationSettings,
   AutomationStatus,
   DatePostedWindow,
@@ -11,11 +12,13 @@ import {
   SavedAnswer,
   SearchMode,
   applyAutomationSettingsUpdate,
+  coerceDatePostedWindowToSupported,
   createAutomationProfile,
   createStatus,
   detectSiteFromUrl,
   formatStartupRegionList,
   getActiveAutomationProfile,
+  getSupportedDatePostedWindowsForSearchMode,
   isJobBoardSite,
   getSiteLabel,
   normalizeQuestionKey,
@@ -47,6 +50,7 @@ const clearAnswersButton =
 const siteName = requireElement<HTMLElement>("#site-name");
 const statusPanel = requireElement<HTMLElement>("#status-panel");
 const statusText = requireElement<HTMLElement>("#status-text");
+const jobsAppliedToday = requireElement<HTMLElement>("#jobs-applied-today");
 const settingsStatus = requireElement<HTMLElement>("#settings-status");
 const savedAnswerCount = requireElement<HTMLElement>("#saved-answer-count");
 const savedAnswerList = requireElement<HTMLElement>("#saved-answer-list");
@@ -69,7 +73,6 @@ const datePostedWindowInput =
   requireElement<HTMLSelectElement>("#date-posted-window");
 const searchKeywordsInput =
   requireElement<HTMLInputElement>("#search-keywords");
-const jobLimitInput = requireElement<HTMLInputElement>("#job-limit");
 const fullNameInput = requireElement<HTMLInputElement>("#full-name");
 const emailInput = requireElement<HTMLInputElement>("#email");
 const phoneInput = requireElement<HTMLInputElement>("#phone");
@@ -130,8 +133,10 @@ const dialogSubmitButton = requireElement<HTMLButtonElement>(
 );
 
 let activeTabId: number | null = null;
+let activeTabUrl = "";
 let activeSite = detectSiteFromUrl("");
 let activeSession: AutomationSession | null = null;
+let activeRunSummary: AutomationRunSummary | null = null;
 let currentStatusSnapshot = createStatus(
   "unsupported",
   "idle",
@@ -145,6 +150,7 @@ let pendingAutoSaveRevision = 0;
 let savedAutoSaveRevision = 0;
 let settingsWriteQueue: Promise<void> = Promise.resolve();
 let settings = createEmptySettings();
+let preferredDatePostedWindow: DatePostedWindow = settings.datePostedWindow;
 let chromeTabListenersRegistered = false;
 const popupDialog = createPopupDialogController({
   root: dialogRoot,
@@ -240,6 +246,7 @@ searchKeywordsInput.addEventListener("input", () => {
 });
 
 datePostedWindowInput.addEventListener("change", () => {
+  preferredDatePostedWindow = getSelectedDatePostedWindow();
   updateOverviewPreview();
   scheduleAutoSave();
 });
@@ -263,7 +270,6 @@ resumeInput.addEventListener("change", () => {
 });
 
 for (const element of [
-  jobLimitInput,
   fullNameInput,
   emailInput,
   phoneInput,
@@ -619,6 +625,7 @@ async function performRefreshStatus(): Promise<void> {
   let activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
   const hasKeywords = getConfiguredKeywords().length > 0;
   activeSession = null;
+  activeRunSummary = null;
 
   updateSiteNameDisplay();
 
@@ -803,6 +810,7 @@ async function performRefreshStatus(): Promise<void> {
     }
 
     activeSession = parsedBackgroundSession ?? null;
+    activeRunSummary = parsedBackgroundSession?.runSummary ?? null;
     applyStatus(
       bgSession.phase === "idle"
         ? createStatus(
@@ -837,6 +845,7 @@ async function performRefreshStatus(): Promise<void> {
       updateSiteNameDisplay();
     }
 
+    activeRunSummary = null;
     applyStatus(
       contentStatus.phase === "idle"
         ? createStatus(
@@ -868,6 +877,7 @@ async function performRefreshStatus(): Promise<void> {
     return;
   }
 
+  activeRunSummary = null;
   applyStatus(
     createStatus(
       activeJobBoardSite,
@@ -953,6 +963,8 @@ function updateSiteNameDisplay(): void {
         ? getSiteLabel(sessionSite)
         : "No supported site";
   }
+
+  updateDatePostedWindowInputState();
 }
 
 function handleChromeTabContextChanged(): void {
@@ -1012,6 +1024,7 @@ function applyStatus(status: AutomationStatus): void {
   currentStatusSnapshot = status;
   statusPanel.dataset.phase = status.phase;
   statusText.textContent = status.message;
+  jobsAppliedToday.textContent = String(activeRunSummary?.appliedTodayCount ?? 0);
   updateSiteNameDisplay();
 }
 
@@ -1064,7 +1077,6 @@ function buildFormSettingsUpdate(
     startupRegion: "auto",
     datePostedWindow: getSelectedDatePostedWindow(),
     searchKeywords: normalizeSearchKeywordsInput(),
-    jobPageLimit: Number(jobLimitInput.value) || 5,
     autoUploadResumes: true,
     activeProfileId,
     profiles: {
@@ -1633,14 +1645,13 @@ function populateSettingsForm(nextSettings: AutomationSettings): void {
   const activeProfile = getActiveAutomationProfile(scopedSettings);
 
   settings = scopedSettings;
+  preferredDatePostedWindow = scopedSettings.datePostedWindow;
 
   renderProfileOptions(scopedSettings.profiles, scopedSettings.activeProfileId);
   searchModeInput.value = scopedSettings.searchMode;
-  datePostedWindowInput.value = scopedSettings.datePostedWindow;
   searchKeywordsInput.value = formatSearchKeywordsInput(
     scopedSettings.searchKeywords
   );
-  jobLimitInput.value = String(scopedSettings.jobPageLimit);
   fullNameInput.value = activeProfile.candidate.fullName;
   emailInput.value = activeProfile.candidate.email;
   phoneInput.value = activeProfile.candidate.phone;
@@ -1659,6 +1670,7 @@ function populateSettingsForm(nextSettings: AutomationSettings): void {
     ? `${activeProfile.resume.name} (${formatFileSize(activeProfile.resume.size)})`
     : "No file saved";
   deleteProfileButton.disabled = Object.keys(scopedSettings.profiles).length <= 1;
+  updateDatePostedWindowInputState();
   updateOverviewPreview();
 }
 
@@ -1954,6 +1966,7 @@ function parseAutomationStatus(value: unknown): AutomationStatus | undefined {
   const isSupportedPhase =
     candidate.phase === "idle" ||
     candidate.phase === "running" ||
+    candidate.phase === "queued" ||
     candidate.phase === "paused" ||
     candidate.phase === "waiting_for_verification" ||
     candidate.phase === "completed" ||
@@ -2032,13 +2045,33 @@ function parseAutomationSession(value: unknown): AutomationSession | undefined {
       typeof candidate.openedUrlKey === "string"
         ? candidate.openedUrlKey
         : undefined,
+    runSummary: isAutomationRunSummary(candidate.runSummary)
+      ? candidate.runSummary
+      : undefined,
   };
+}
+
+function isAutomationRunSummary(
+  value: unknown
+): value is AutomationRunSummary {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const candidate = value as Partial<AutomationRunSummary>;
+  return (
+    Number.isFinite(candidate.queuedJobCount) &&
+    Number.isFinite(candidate.successfulJobPages) &&
+    Number.isFinite(candidate.appliedTodayCount) &&
+    typeof candidate.stopRequested === "boolean"
+  );
 }
 
 function updateModeUi(): void {
   const searchMode = getSelectedSearchMode();
   startButton.textContent = getStartButtonLabel(searchMode);
   updateSiteNameDisplay();
+  updateDatePostedWindowInputState();
 }
 
 function updateOverviewPreview(): void {
@@ -2173,16 +2206,46 @@ async function refreshActiveTabContext(): Promise<void> {
 
     if (!tab) {
       activeTabId = null;
+      activeTabUrl = "";
       activeSite = null;
+      updateDatePostedWindowInputState();
       return;
     }
 
     activeTabId = tab?.id ?? null;
-    activeSite = detectSiteFromUrl(getTabUrl(tab));
+    activeTabUrl = getTabUrl(tab);
+    activeSite = detectSiteFromUrl(activeTabUrl);
+    updateDatePostedWindowInputState();
   } catch {
     activeTabId = null;
+    activeTabUrl = "";
     activeSite = null;
+    updateDatePostedWindowInputState();
   }
+}
+
+function updateDatePostedWindowInputState(): void {
+  const supportedWindows = getSupportedDatePostedWindowsForSearchMode(
+    getSelectedSearchMode(),
+    isJobBoardSite(activeSite) ? activeSite : null,
+    activeTabUrl
+  );
+  const nextValue = coerceDatePostedWindowToSupported(
+    preferredDatePostedWindow,
+    supportedWindows
+  );
+
+  for (const option of Array.from(datePostedWindowInput.options)) {
+    const optionValue = option.value;
+    if (!isDatePostedWindow(optionValue)) {
+      option.disabled = false;
+      continue;
+    }
+
+    option.disabled = !supportedWindows.includes(optionValue);
+  }
+
+  datePostedWindowInput.value = nextValue;
 }
 
 async function findBestActiveTab(): Promise<ActiveContextTab | null> {

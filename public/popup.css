@@ -245,6 +245,16 @@ h3 {
   box-shadow: 0 0 0 6px rgba(95, 115, 141, 0.14);
 }
 
+.status-panel[data-phase="queued"] {
+  background: linear-gradient(180deg, #eef5ff 0%, #e4eefc 100%);
+  border-color: rgba(63, 101, 173, 0.2);
+}
+
+.status-panel[data-phase="queued"] .status-dot {
+  background: #4b6fb2;
+  box-shadow: 0 0 0 6px rgba(75, 111, 178, 0.14);
+}
+
 .status-panel[data-phase="waiting_for_verification"] {
   background: linear-gradient(180deg, #fff8eb 0%, #fff1d9 100%);
   border-color: rgba(185, 122, 16, 0.22);

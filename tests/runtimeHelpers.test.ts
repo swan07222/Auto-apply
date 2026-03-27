@@ -2,18 +2,17 @@ import {
   createEmptyAutofillResult,
   detectSupportedSiteFromPage,
   getGreenhousePortalSearchKeyword,
-  getRemainingJobSlotsAfterSpawn,
   getCurrentSearchKeywordHints,
   looksLikeCurrentFrameApplicationSurface,
   mergeAutofillResult,
+  shouldKeepTopFrameSessionSyncAlive,
+  shouldMirrorControllerBoundSessionInTopFrame,
   shouldAvoidApplyClickFocus,
   resolveGreenhouseSearchContextUrl,
   shouldAvoidApplyScroll,
-  shouldKeepResultsPageOpenAfterZeroSpawn,
   shouldBlockApplicationTargetProbeFailure,
   shouldPreferMonsterClickContinuation,
   shouldRetryAlternateApplyTargets,
-  shouldSkipCurrentPageByPostedDateWindow,
   shouldTreatCurrentPageAsApplied,
   throwIfRateLimited,
 } from "../src/content/runtimeHelpers";
@@ -153,11 +152,68 @@ describe("content runtime helpers", () => {
         hasLikelyApplicationForm: () => false,
         hasLikelyApplicationFrame: () => false,
         hasLikelyApplicationPageContent: () => false,
+        hasLikelyApplyContinuationAction: () => false,
         isLikelyApplyUrl: () => true,
         isTopFrame: true,
         resumeFileInputCount: 0,
       })
     ).toBe(true);
+  });
+
+  it("treats apply-continuation pages as valid top-frame autofill targets", () => {
+    expect(
+      looksLikeCurrentFrameApplicationSurface("greenhouse", {
+        currentUrl: "https://job-boards.greenhouse.io/example/jobs/1234567",
+        hasLikelyApplicationForm: () => false,
+        hasLikelyApplicationFrame: () => false,
+        hasLikelyApplicationPageContent: () => false,
+        hasLikelyApplyContinuationAction: () => true,
+        isLikelyApplyUrl: () => false,
+        isTopFrame: true,
+        resumeFileInputCount: 0,
+      })
+    ).toBe(true);
+  });
+
+  it("keeps the top frame subscribed to controller-bound autofill sessions for overlay updates", () => {
+    expect(
+      shouldMirrorControllerBoundSessionInTopFrame(
+        {
+          stage: "autofill-form",
+          controllerFrameId: 7,
+        },
+        true
+      )
+    ).toBe(true);
+    expect(
+      shouldKeepTopFrameSessionSyncAlive(
+        {
+          stage: "autofill-form",
+          phase: "running",
+          controllerFrameId: 7,
+        },
+        true
+      )
+    ).toBe(true);
+    expect(
+      shouldKeepTopFrameSessionSyncAlive(
+        {
+          stage: "autofill-form",
+          phase: "completed",
+          controllerFrameId: 7,
+        },
+        true
+      )
+    ).toBe(false);
+    expect(
+      shouldMirrorControllerBoundSessionInTopFrame(
+        {
+          stage: "autofill-form",
+          controllerFrameId: 0,
+        },
+        true
+      )
+    ).toBe(false);
   });
 
   it("prefers Monster click continuation only for Monster-hosted targets", () => {
@@ -190,36 +246,6 @@ describe("content runtime helpers", () => {
     expect(shouldRetryAlternateApplyTargets("indeed")).toBe(true);
   });
 
-  it("decides whether the current job page should be skipped by the selected posted-date window", () => {
-    expect(
-      shouldSkipCurrentPageByPostedDateWindow("Posted today", "24h")
-    ).toBe(false);
-    expect(
-      shouldSkipCurrentPageByPostedDateWindow("Remote role. 3 d", "24h")
-    ).toBe(true);
-    expect(
-      shouldSkipCurrentPageByPostedDateWindow("Date posted Mar 10, 2026", "24h")
-    ).toBe(true);
-    expect(
-      shouldSkipCurrentPageByPostedDateWindow(
-        "Interview process starts Mar 10, 2026",
-        "24h"
-      )
-    ).toBe(false);
-    expect(
-      shouldSkipCurrentPageByPostedDateWindow("Remote role with React.", "24h")
-    ).toBe(false);
-    expect(
-      shouldSkipCurrentPageByPostedDateWindow("Posted 12 days ago", "14d")
-    ).toBe(false);
-    expect(
-      shouldSkipCurrentPageByPostedDateWindow("Posted 15 days ago", "14d")
-    ).toBe(true);
-    expect(
-      shouldSkipCurrentPageByPostedDateWindow("Date posted Mar 10, 2026", "any")
-    ).toBe(false);
-  });
-
   it("does not block external application handoffs when preflight probing is inconclusive", () => {
     expect(
       shouldBlockApplicationTargetProbeFailure("access_denied", true)
@@ -235,22 +261,4 @@ describe("content runtime helpers", () => {
     ).toBe(true);
   });
 
-  it("keeps remaining job-slot math aligned to the configured run limit", () => {
-    expect(getRemainingJobSlotsAfterSpawn(5, 5)).toBe(0);
-    expect(getRemainingJobSlotsAfterSpawn(5, 3)).toBe(2);
-    expect(getRemainingJobSlotsAfterSpawn(5, 2)).toBe(3);
-    expect(getRemainingJobSlotsAfterSpawn(5, 7)).toBe(0);
-    expect(getRemainingJobSlotsAfterSpawn(5, 2, 1)).toBe(1);
-    expect(getRemainingJobSlotsAfterSpawn(5, 1, 0)).toBe(0);
-    expect(getRemainingJobSlotsAfterSpawn(5, 0, 0, 5)).toBe(5);
-    expect(getRemainingJobSlotsAfterSpawn(5, 1, 0, 3)).toBe(2);
-    expect(getRemainingJobSlotsAfterSpawn(5, 2, 1, 4)).toBe(3);
-  });
-
-  it("keeps results pages open when jobs were found but zero new tabs opened", () => {
-    expect(shouldKeepResultsPageOpenAfterZeroSpawn(0, 3, 0)).toBe(true);
-    expect(shouldKeepResultsPageOpenAfterZeroSpawn(1, 3, 0)).toBe(false);
-    expect(shouldKeepResultsPageOpenAfterZeroSpawn(0, 0, 0)).toBe(false);
-    expect(shouldKeepResultsPageOpenAfterZeroSpawn(0, 3, 2)).toBe(false);
-  });
 });

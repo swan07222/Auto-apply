@@ -234,6 +234,7 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
       "#add-preference-button"
     ),
     statusText: requireElement<HTMLElement>("#status-text"),
+    jobsAppliedToday: requireElement<HTMLElement>("#jobs-applied-today"),
     settingsStatus: requireElement<HTMLElement>("#settings-status"),
     siteName: requireElement<HTMLElement>("#site-name"),
     modePreview: requireElement<HTMLElement>("#mode-preview"),
@@ -263,6 +264,7 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
     },
     profileSelect: requireElement<HTMLSelectElement>("#profile-select"),
     searchModeInput: requireElement<HTMLSelectElement>("#search-mode"),
+    datePostedWindowInput: requireElement<HTMLSelectElement>("#date-posted-window"),
     searchKeywordsInput: requireElement<HTMLInputElement>("#search-keywords"),
     countryInput: requireElement<HTMLInputElement>("#country"),
     fullNameInput: requireElement<HTMLInputElement>("#full-name"),
@@ -327,12 +329,47 @@ describe("popup workflow", () => {
     expect(popup.siteName.textContent).toBe("Indeed");
     expect(popup.modePreview.textContent).toBe("Job boards");
     expect(popup.statusText.textContent).toBe("Ready on Indeed.");
+    expect(popup.jobsAppliedToday.textContent).toBe("0");
     expect(popup.startButton.disabled).toBe(false);
     expect(popup.tabsQuery).toHaveBeenCalled();
     expect(popup.runtimeSendMessage).toHaveBeenCalledWith({
       type: "get-tab-session",
       tabId: 42,
     });
+  });
+
+  it("shows the applied-today counter from the active run summary", async () => {
+    const popup = await createPopupHarness({
+      runtimeSendMessage(message) {
+        if (message.type === "get-tab-session") {
+          return {
+            ok: true,
+            session: {
+              tabId: 42,
+              site: "indeed",
+              phase: "queued",
+              message: "Waiting for queued jobs or Stop.",
+              updatedAt: Date.now(),
+              shouldResume: false,
+              stage: "collect-results",
+              runId: "run-1",
+              runSummary: {
+                queuedJobCount: 3,
+                successfulJobPages: 4,
+                appliedTodayCount: 7,
+                stopRequested: false,
+              },
+            },
+          };
+        }
+
+        return {};
+      },
+    });
+
+    expect(popup.jobsAppliedToday.textContent).toBe("7");
+    expect(popup.statusText.textContent).toBe("Waiting for queued jobs or Stop.");
+    expect(popup.startButton.disabled).toBe(true);
   });
 
   it("removes the old top panels and keeps the compact status-first layout", async () => {
@@ -368,6 +405,7 @@ describe("popup workflow", () => {
     expect(document.body.textContent).not.toContain(
       "Automatically upload the matching resume whenever a resume or CV field is detected."
     );
+    expect(document.querySelector("#job-limit")).toBeNull();
     expect(popup.addPreferenceButton.textContent?.trim()).toBe("Add");
     expect(popup.resumeInput.closest(".settings-group")?.textContent).toContain(
       "Candidate Profile"
@@ -527,6 +565,91 @@ describe("popup workflow", () => {
     expect(greenhousePopup.siteName.textContent).toBe("Greenhouse");
     expect(greenhousePopup.statusText.textContent).toBe("Ready on Greenhouse.");
     expect(greenhousePopup.startButton.disabled).toBe(false);
+  });
+
+  it("disables unsupported date options for the active site context", async () => {
+    const builtInPopup = await createPopupHarness({
+      activeTabs: [
+        {
+          id: 42,
+          url: "https://builtin.com/jobs/remote?search=software%20engineer",
+        },
+      ],
+      settings: createSettings({ datePostedWindow: "14d" }),
+    });
+
+    const builtInOptions = Object.fromEntries(
+      Array.from(builtInPopup.datePostedWindowInput.options).map((option) => [
+        option.value,
+        option.disabled,
+      ])
+    );
+
+    expect(builtInPopup.datePostedWindowInput.value).toBe("30d");
+    expect(builtInOptions.any).toBe(false);
+    expect(builtInOptions["24h"]).toBe(false);
+    expect(builtInOptions["3d"]).toBe(false);
+    expect(builtInOptions["1w"]).toBe(false);
+    expect(builtInOptions["30d"]).toBe(false);
+    expect(builtInOptions["2d"]).toBe(true);
+    expect(builtInOptions["5d"]).toBe(true);
+    expect(builtInOptions["10d"]).toBe(true);
+    expect(builtInOptions["14d"]).toBe(true);
+
+    const greenhousePopup = await createPopupHarness({
+      activeTabs: [
+        {
+          id: 77,
+          url: "https://job-boards.greenhouse.io/vercel",
+        },
+      ],
+      settings: createSettings({ datePostedWindow: "30d" }),
+    });
+
+    const greenhouseOptions = Array.from(
+      greenhousePopup.datePostedWindowInput.options
+    ).map((option) => ({
+      value: option.value,
+      disabled: option.disabled,
+    }));
+
+    expect(greenhousePopup.datePostedWindowInput.value).toBe("any");
+    expect(greenhouseOptions.find((option) => option.value === "any")?.disabled).toBe(false);
+    expect(
+      greenhouseOptions
+        .filter((option) => option.value !== "any")
+        .every((option) => option.disabled)
+    ).toBe(true);
+  });
+
+  it("enables the MyGreenhouse-only date buckets on portal searches", async () => {
+    const popup = await createPopupHarness({
+      activeTabs: [
+        {
+          id: 91,
+          url: "https://my.greenhouse.io/jobs?query=full%20stack&location=United%20States",
+        },
+      ],
+      settings: createSettings({ datePostedWindow: "14d" }),
+    });
+
+    const options = Object.fromEntries(
+      Array.from(popup.datePostedWindowInput.options).map((option) => [
+        option.value,
+        option.disabled,
+      ])
+    );
+
+    expect(popup.datePostedWindowInput.value).toBe("30d");
+    expect(options.any).toBe(false);
+    expect(options["24h"]).toBe(false);
+    expect(options["5d"]).toBe(false);
+    expect(options["10d"]).toBe(false);
+    expect(options["30d"]).toBe(false);
+    expect(options["2d"]).toBe(true);
+    expect(options["3d"]).toBe(true);
+    expect(options["1w"]).toBe(true);
+    expect(options["14d"]).toBe(true);
   });
 
   it("treats redirected Greenhouse career pages as Greenhouse when the content script detects them", async () => {
@@ -1185,6 +1308,42 @@ describe("popup workflow", () => {
       "Why do you want this company?"
     );
     expect(popup.savedAnswerList.textContent).toContain("Can you work weekends?");
+  });
+
+  it("filters junk remembered answers out of the popup list", async () => {
+    const profile = createAutomationProfile("profile-clean", "Profile Clean");
+    profile.answers = {
+      good: {
+        question: "Why do you want this role?",
+        value: "Mission fit.",
+        updatedAt: 3,
+      },
+      token: {
+        question: "__RequestVerificationToken",
+        value: "CfDJ8tokenvalue",
+        updatedAt: 2,
+      },
+      search: {
+        question: "search",
+        value: "full stack",
+        updatedAt: 1,
+      },
+    };
+
+    const popup = await createPopupHarness({
+      settings: createSettings({
+        searchKeywords: "software engineer",
+        activeProfileId: profile.id,
+        profiles: {
+          [profile.id]: profile,
+        },
+      }),
+    });
+
+    expect(popup.savedAnswerCount.textContent).toBe("1");
+    expect(popup.savedAnswerList.textContent).toContain("Why do you want this role?");
+    expect(popup.savedAnswerList.textContent).not.toContain("__RequestVerificationToken");
+    expect(popup.savedAnswerList.textContent).not.toContain("search");
   });
 
   it("normalizes whitespace when editing remembered answers", async () => {

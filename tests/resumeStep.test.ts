@@ -3,7 +3,6 @@
 import {
   hasPendingResumeUploadSurface,
   hasSelectedResumeUpload,
-  isResumeUploadOnlySurface,
 } from "../src/content/resumeStep";
 import { AutofillField } from "../src/content/types";
 
@@ -25,7 +24,6 @@ describe("resume step helpers", () => {
       </form>
     `;
 
-    expect(isResumeUploadOnlySurface(collectors)).toBe(true);
     expect(hasPendingResumeUploadSurface(collectors)).toBe(true);
   });
 
@@ -48,7 +46,6 @@ describe("resume step helpers", () => {
     });
 
     expect(hasSelectedResumeUpload(input as HTMLInputElement)).toBe(true);
-    expect(isResumeUploadOnlySurface(collectors)).toBe(true);
     expect(hasPendingResumeUploadSurface(collectors)).toBe(true);
   });
 
@@ -74,7 +71,6 @@ describe("resume step helpers", () => {
       value: [{ name: "resume.pdf" }],
     });
 
-    expect(isResumeUploadOnlySurface(collectors)).toBe(false);
     expect(hasPendingResumeUploadSurface(collectors)).toBe(false);
   });
 });

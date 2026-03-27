@@ -39,6 +39,43 @@ const STABLE_PROFILE_FIELD_TOKENS = [
   "relocation",
 ] as const;
 
+const BLOCKED_REMEMBER_DESCRIPTOR_TOKENS = [
+  "search jobs",
+  "job search",
+  "search by keyword",
+  "search location",
+  "radius",
+  "distance",
+  "miles",
+  "captcha",
+  "recaptcha",
+  "hcaptcha",
+  "csrf",
+  "requestverificationtoken",
+  "verification token",
+  "authenticity token",
+  "viewstate",
+  "eventvalidation",
+] as const;
+
+const BLOCKED_REMEMBER_IDENTIFIER_PATTERNS = [
+  /^q$/i,
+  /^query$/i,
+  /^search$/i,
+  /^keywords?$/i,
+  /^radius$/i,
+  /^distance$/i,
+  /^_{1,2}[a-z0-9_:-]+$/i,
+  /requestverificationtoken/i,
+  /verificationtoken/i,
+  /authenticitytoken/i,
+  /csrf/i,
+  /captcha/i,
+  /recaptcha/i,
+  /viewstate/i,
+  /eventvalidation/i,
+] as const;
+
 export function shouldAutofillField(
   field: AutofillField,
   ignoreBlankCheck = false,
@@ -350,6 +387,13 @@ export function shouldRememberField(field: AutofillField): boolean {
     return false;
   }
 
+  if (
+    field instanceof HTMLInputElement &&
+    ["hidden", "search", "password"].includes(field.type.toLowerCase())
+  ) {
+    return false;
+  }
+
   const descriptor = getFieldDescriptor(field, getQuestionText(field));
   if (
     descriptor.includes("password") ||
@@ -366,6 +410,12 @@ export function shouldRememberField(field: AutofillField): boolean {
     return false;
   }
   if (
+    matchesDescriptor(descriptor, [...BLOCKED_REMEMBER_DESCRIPTOR_TOKENS]) ||
+    looksLikeBlockedRememberFieldIdentifier(field)
+  ) {
+    return false;
+  }
+  if (
     matchesDescriptor(descriptor, [
       ...STABLE_PROFILE_FIELD_TOKENS,
     ])
@@ -376,6 +426,22 @@ export function shouldRememberField(field: AutofillField): boolean {
     return false;
   }
   return true;
+}
+
+function looksLikeBlockedRememberFieldIdentifier(field: AutofillField): boolean {
+  const identifiers = [
+    field.getAttribute("name"),
+    field.getAttribute("id"),
+    field.getAttribute("autocomplete"),
+    field.getAttribute("placeholder"),
+    field.getAttribute("aria-label"),
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .map((value) => value.trim());
+
+  return identifiers.some((identifier) =>
+    BLOCKED_REMEMBER_IDENTIFIER_PATTERNS.some((pattern) => pattern.test(identifier))
+  );
 }
 
 export function readFieldAnswerForMemory(field: AutofillField): string {

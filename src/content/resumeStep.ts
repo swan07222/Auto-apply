@@ -12,15 +12,6 @@ export function hasSelectedResumeUpload(input: HTMLInputElement): boolean {
   return Boolean(input.files?.length) || Boolean(getSelectedFileName(input));
 }
 
-export function isResumeUploadOnlySurface(
-  collectors: ResumeStepCollectors
-): boolean {
-  return (
-    collectLikelyResumeInputs(collectors).length > 0 &&
-    collectLikelyNonFileApplicationFields(collectors).length === 0
-  );
-}
-
 export function hasPendingResumeUploadSurface(
   collectors: ResumeStepCollectors
 ): boolean {

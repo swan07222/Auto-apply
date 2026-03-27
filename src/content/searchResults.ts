@@ -54,6 +54,7 @@ const NEXT_PAGE_ARROW_LABELS = new Set([
 ]);
 const NEXT_PAGE_ADVANCE_TIMEOUT_MS = 6_000;
 const NEXT_PAGE_ADVANCE_POLL_MS = 200;
+const NEXT_PAGE_URL_CHANGE_GRACE_MS = 1_500;
 
 export type SearchResultsAdvanceResult =
   | "advanced"
@@ -1790,6 +1791,7 @@ async function waitForResultsPageAdvance(
   beforeSignature: string
 ): Promise<SearchResultsAdvanceResult> {
   const startedAt = Date.now();
+  let urlChangedAt: number | null = null;
 
   while (Date.now() - startedAt < NEXT_PAGE_ADVANCE_TIMEOUT_MS) {
     await waitForResultSurfaceSettle(site);
@@ -1797,14 +1799,24 @@ async function waitForResultsPageAdvance(
     const afterUrl = normalizeUrl(window.location.href);
     const afterSignature = getResultPageSignature(site);
 
-    if ((afterUrl && afterUrl !== beforeUrl) || afterSignature !== beforeSignature) {
-      return afterUrl && afterUrl !== beforeUrl ? "navigating" : "advanced";
+    if (afterSignature !== beforeSignature) {
+      return "advanced";
+    }
+
+    if (afterUrl && afterUrl !== beforeUrl) {
+      if (urlChangedAt === null) {
+        urlChangedAt = Date.now();
+      } else if (Date.now() - urlChangedAt >= NEXT_PAGE_URL_CHANGE_GRACE_MS) {
+        return "navigating";
+      }
+    } else {
+      urlChangedAt = null;
     }
 
     await sleep(NEXT_PAGE_ADVANCE_POLL_MS);
   }
 
-  return "none";
+  return urlChangedAt !== null ? "navigating" : "none";
 }
 
 function isMyGreenhousePortalHost(): boolean {

@@ -1,4 +1,8 @@
-import { SavedAnswer, normalizeQuestionKey } from "../shared";
+import {
+  SavedAnswer,
+  isUsefulSavedAnswer,
+  normalizeQuestionKey,
+} from "../shared";
 import { cleanText, normalizeChoiceText, textSimilarity } from "./text";
 
 const QUESTION_STOP_WORDS = new Set([
@@ -199,6 +203,10 @@ export function createRememberedAnswer(
     return null;
   }
 
+  if (!isUsefulSavedAnswer(cleanedQuestion, cleanedValue)) {
+    return null;
+  }
+
   return {
     key,
     answer: {
@@ -276,28 +284,6 @@ export function findBestSavedAnswerMatch(
   }
 
   return best && best.score >= 0.78 ? best.answer : null;
-}
-
-export function getRelevantSavedAnswers(
-  question: string,
-  answers: Record<string, SavedAnswer>
-): SavedAnswer[] {
-  const lookup = buildQuestionMatchContext(question);
-
-  return Object.values(answers)
-    .filter((answer) => {
-      const candidate = buildQuestionMatchContext(answer.question);
-      if (!isCompatibleQuestionMatchContext(lookup, candidate)) {
-        return false;
-      }
-
-      return (
-        textSimilarity(question, answer.question) >= 0.78 ||
-        calculateTokenOverlap(lookup.tokens, candidate.tokens) >= 0.5 ||
-        (lookup.intents.size > 0 && candidate.intents.size > 0)
-      );
-    })
-    .sort((left, right) => right.updatedAt - left.updatedAt);
 }
 
 function buildQuestionMatchContext(
