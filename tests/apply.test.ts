@@ -397,6 +397,74 @@ describe("application progression actions", () => {
     }
   });
 
+  it("extracts JSON-escaped apply URLs from inline script fallbacks", () => {
+    document.body.innerHTML = `
+      <main>
+        <button type="button">Apply on company site</button>
+        <script type="application/json">
+          {
+            "applyUrl": "https:\\/\\/boards.greenhouse.io\\/example\\/jobs\\/12345\\/apply"
+          }
+        </script>
+      </main>
+    `;
+
+    const action = findCompanySiteAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe("https://boards.greenhouse.io/example/jobs/12345/apply");
+    }
+  });
+
+  it("keeps Indeed-hosted apply URLs discoverable through fallback extraction", () => {
+    document.body.innerHTML = `
+      <main>
+        <button type="button">Apply on company site</button>
+        <script type="application/json">
+          {
+            "applyUrl": "https://smartapply.indeed.com/apply/start?jk=abc123"
+          }
+        </script>
+      </main>
+    `;
+
+    const action = findCompanySiteAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe("https://smartapply.indeed.com/apply/start?jk=abc123");
+    }
+  });
+
+  it("still scans large-page markup for hidden apply URLs", () => {
+    const filler = Array.from(
+      { length: 2605 },
+      (_, index) => `<div data-filler="${index}"></div>`
+    ).join("");
+    document.body.innerHTML = `
+      <main>
+        <button type="button">Apply on company site</button>
+        ${filler}
+        <template id="apply-template">
+          {"applyUrl":"https://job-boards.greenhouse.io/example/jobs/7654321/apply"}
+        </template>
+      </main>
+    `;
+
+    const action = findCompanySiteAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe(
+        "https://job-boards.greenhouse.io/example/jobs/7654321/apply"
+      );
+    }
+  });
+
   it("uses Monster shadow-dom apply controls when present", () => {
     const component = document.createElement("apply-button-wc");
     const shadow = component.attachShadow({ mode: "open" });
@@ -703,6 +771,121 @@ describe("application progression actions", () => {
     expect(action?.type).toBe("click");
     if (action?.type === "click") {
       expect(action.element).toBe(topButton);
+    }
+  });
+
+  it("prefers the title-aligned Monster apply CTA over earlier sticky controls", () => {
+    document.body.innerHTML = `
+      <main class="job-detail-panel">
+        <section class="sticky-toolbar">
+          <button id="sticky-apply" type="button">Apply</button>
+        </section>
+        <section class="job-hero">
+          <h1>Senior Backend Engineer</h1>
+          <button id="hero-apply" type="button">Quick Apply</button>
+        </section>
+        <section class="job-body">
+          <h2>About the role</h2>
+          <p>Real job details.</p>
+          <article class="related-card">
+            <button id="lower-fake-apply" type="button">Apply</button>
+          </article>
+        </section>
+      </main>
+    `;
+
+    const stickyButton = document.querySelector("#sticky-apply") as HTMLButtonElement;
+    const title = document.querySelector("h1") as HTMLElement;
+    const heroButton = document.querySelector("#hero-apply") as HTMLButtonElement;
+    const boundaryHeading = Array.from(document.querySelectorAll<HTMLElement>("h2")).find(
+      (element) => element.textContent === "About the role"
+    ) as HTMLElement;
+    const lowerFakeButton = document.querySelector(
+      "#lower-fake-apply"
+    ) as HTMLButtonElement;
+
+    Object.defineProperty(stickyButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 80,
+          left: 0,
+          width: 120,
+          height: 40,
+          right: 120,
+          bottom: 120,
+          x: 0,
+          y: 80,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(title, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 120,
+          left: 0,
+          width: 420,
+          height: 80,
+          right: 420,
+          bottom: 200,
+          x: 0,
+          y: 120,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(heroButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 430,
+          left: 450,
+          width: 180,
+          height: 44,
+          right: 630,
+          bottom: 474,
+          x: 450,
+          y: 430,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(boundaryHeading, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 520,
+          left: 0,
+          width: 240,
+          height: 32,
+          right: 240,
+          bottom: 552,
+          x: 0,
+          y: 520,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    Object.defineProperty(lowerFakeButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          top: 640,
+          left: 0,
+          width: 180,
+          height: 44,
+          right: 180,
+          bottom: 684,
+          x: 0,
+          y: 640,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+
+    const action = findMonsterApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    if (action?.type === "click") {
+      expect(action.element).toBe(heroButton);
     }
   });
 

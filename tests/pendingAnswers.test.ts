@@ -185,4 +185,21 @@ describe("pending answer helpers", () => {
       )
     ).toBe("profile-b");
   });
+
+  it("keeps unscoped pending answers parked when the active profile is unavailable", () => {
+    expect(
+      resolvePendingAnswerTargetProfileId(
+        {
+          "profile-b": {
+            id: "profile-b",
+          },
+          "profile-c": {
+            id: "profile-c",
+          },
+        },
+        "missing-profile",
+        undefined
+      )
+    ).toBeNull();
+  });
 });

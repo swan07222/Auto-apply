@@ -200,7 +200,7 @@ export function resolvePendingAnswerTargetProfileId(
     return normalizedActiveProfileId;
   }
 
-  return Object.keys(profiles).find((candidate) => candidate.trim().length > 0) ?? null;
+  return null;
 }
 
 function upsertSavedAnswer(

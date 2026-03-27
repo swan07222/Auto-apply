@@ -841,14 +841,14 @@ for (const target of buildSearchTargets("monster", "https://www.monster.com", "s
   test(`live Monster search works: ${target.label}`, async ({ page }) => {
     const probe = await navigateAndCollect(page, "monster", target);
 
-    test.skip(
-      Boolean(probe.navigationError),
+    expect(
+      probe.navigationError,
       `Monster target could not be reached.\n${describeProbeFailure(target, probe)}`
-    );
-    test.skip(
+    ).toBeFalsy();
+    expect(
       probe.verificationDetected,
       `Monster blocked automated browsing with a verification page.\n${describeProbeFailure(target, probe)}`
-    );
+    ).toBe(false);
     expect(
       probe.candidateUrls.length,
       `Monster search produced no job-detail candidates.\n${describeProbeFailure(target, probe)}`

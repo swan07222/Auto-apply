@@ -1,322 +1,230 @@
 # Remote Job Search Starter
 
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Chrome Extension](https://img.shields.io/badge/Manifest-V3-4285F4?logo=google-chrome&logoColor=white)](https://developer.chrome.com/docs/extensions/mv3/intro/)
-[![Build](https://img.shields.io/badge/build-esbuild-FFD166?logo=esbuild&logoColor=black)](https://esbuild.github.io/)
-[![Testing](https://img.shields.io/badge/test-vitest%20%7C%20playwright-6E3E9A?logo=vitest&logoColor=white)](https://vitest.dev/)
+Remote Job Search Starter is a Chrome extension for profile-based job search and application assistance across major job boards and curated career sites.
 
-A powerful Chrome extension for streamlining multi-site software job searches and reducing repetitive application work. Built with TypeScript, it automates job discovery across major job boards and curated career sites, autofills application forms, uploads resumes, and remembers answers to common questions.
+It can:
 
-> **Note:** This extension assists with application preparation and form completion. It does **not** auto-submit applications—all submissions require manual review and confirmation.
+- collect job results from supported search pages
+- open job detail or application flows one job at a time
+- autofill blank application fields with saved profile data
+- upload a saved resume when supported
+- remember answers from previous applications and reuse them later
+- pause when human verification or final review is required
 
----
+Important: the extension does not auto-submit applications. Final review and submission stay manual.
 
-## ✨ Features
+## Supported Modes
 
-### Search Modes
+### Job Boards
 
-| Mode | Description |
-|------|-------------|
-| **Job Boards** | Searches Indeed, ZipRecruiter, Dice, Monster, and Glassdoor using saved keywords |
-| **Startup Careers** | Opens curated startup career pages by region (US, UK, EU) |
-| **Other Job Sites** | Searches Built In, The Muse, Work at a Startup, Reed, CWJobs, Totaljobs, Welcome to the Jungle, Berlin Startup Jobs |
+Use the active tab on one of these supported sites:
 
-### Core Capabilities
+- Indeed
+- ZipRecruiter
+- Dice
+- Monster
+- Glassdoor
+- Greenhouse
+- Built In
 
-- 📝 **Multiple Profiles** — Separate candidate data, resumes, remembered answers, and custom preferences per profile
-- 🔑 **Keyword-Driven Search** — Use saved keyword lists instead of hardcoded role presets
-- 📄 **Resume Management** — Store one resume per profile (PDF, DOC, DOCX, TXT, MD, RTF)
-- 🎯 **Smart Filtering** — Date-posted filtering (24h, 3d, 1w, any) and job page limits (1-25)
-- 🔍 **Result Collection** — Scans result pages and opens matching job/application pages
-- ⚡ **Autofill** — Fills common fields on supported application forms
-- 📤 **Resume Upload** — Automatically uploads the active profile resume when enabled
-- 💾 **Answer Memory** — Remembers answers from application questions and reuses them later
-- ⏸️ **Human Verification** — Pauses for CAPTCHA/anti-bot challenges and resumes after clearance
-- ✅ **Applied Detection** — Skips jobs that already appear to be applied or submitted
+### Startup Careers
 
----
+Opens curated startup career pages by region:
 
-## 🏗️ Architecture
+- US
+- UK
+- EU
 
-```
-Remote Job Search Starter
-├── Background Service Worker  → Tab orchestration, session management, rate limiting
-├── Content Script             → Search collection, apply flows, autofill, answer memory
-├── Popup UI                   → Settings management, profile editing, search initiation
-└── Shared Modules             → Types, storage, URL utilities, curated targets
-```
+### Other Job Sites
 
-### Automation Stages
+Builds keyword searches for curated external sites:
 
-```
-bootstrap → collect-results → open-apply → autofill-form
-```
+- Built In
+- The Muse
+- Work at a Startup
+- Reed
+- CWJobs
+- Totaljobs
+- Welcome to the Jungle
+- Berlin Startup Jobs
 
-### Site-Specific Integrations
+## Core Features
 
-The extension includes specialized handlers for:
+- Multiple named profiles with isolated candidate data, resume, answers, and preferences
+- Search keywords entered as comma-separated or newline-separated terms
+- Date-posted filtering where the target site supports it
+- Resume upload support for `.pdf`, `.doc`, `.docx`, `.txt`, `.md`, and `.rtf`
+- Remembered answer capture plus editable saved question-and-answer entries
+- Applied-state detection to avoid retrying jobs that already look submitted
+- Manual-review and human-verification pauses so the run can safely resume
 
-- **Job Boards:** Indeed, ZipRecruiter, Dice, Monster, Glassdoor
-- **ATS Platforms:** Greenhouse, Lever, Ashby, Workday
-- **Curated Sites:** Built In, The Muse, Reed, CWJobs, Totaljobs, Welcome to the Jungle, Berlin Startup Jobs
-- **Startup Careers:** 16+ curated startup companies with region-aware URLs
+## How It Works
 
----
+At a high level, the extension runs through these stages:
 
-## 📦 Installation
+1. `bootstrap`
+2. `collect-results`
+3. `open-apply`
+4. `autofill-form`
+
+The background service worker manages tabs, session state, and spawn limits. The content script handles page detection, result collection, apply-flow discovery, autofill, resume upload, answer memory, and manual-review pauses.
+
+## Getting Started
 
 ### Prerequisites
 
-- Node.js 18+ and npm
-- Google Chrome (or Chromium-based browser)
+- Node.js 18+
+- npm
+- Chrome or another Chromium-based browser
 
-### Build from Source
+### Install Dependencies
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/auto-apply.git
-cd auto-apply
-
-# Install dependencies
+git clone https://github.com/swan07222/Auto-apply.git
+cd Auto-apply
 npm install
+```
 
-# Build the extension
+### Build the Extension
+
+```bash
 npm run build
 ```
 
-### Load in Chrome
+### Load It in Chrome
 
 1. Open `chrome://extensions`
-2. Enable **Developer mode** (toggle in top-right)
-3. Click **Load unpacked**
-4. Select the `dist` directory (or project root to use `manifest.json`)
+2. Enable Developer mode
+3. Click `Load unpacked`
+4. Select the project folder
 
----
+The manifest points Chrome at the built files in `dist/`, so run `npm run build` before loading or reloading the extension.
 
-## 🚀 Usage
+## Using the Extension
 
-### Job Boards Mode
+### 1. Set Up a Profile
 
-1. Navigate to Indeed, ZipRecruiter, Dice, Monster, or Glassdoor
-2. Open the extension popup
-3. Configure:
-   - **Profile:** Select or create a named profile
-   - **Keywords:** Add search keywords (e.g., "Software Engineer", "Frontend Developer")
-   - **Candidate Details:** Fill common application fields
-   - **Region:** Choose search region or use Auto
-   - **Job Page Limit:** Set max pages to process (1-25)
-4. Ensure **Search Mode** is set to `Job Boards`
-5. Click **Start Run**
+In the popup you can:
 
-### Startup Careers Mode
+- create, rename, and delete profiles
+- enter candidate basics like name, email, phone, city, state, and country
+- save optional data like LinkedIn, portfolio URL, current company, and work preferences
+- upload a resume
+- manage saved answers and preferences
 
-1. Open the extension popup from any page
-2. Set **Search Mode** to `Startup Careers`
-3. Choose region: `US`, `UK`, `EU`, or `Auto`
-4. Click **Start Run**
+### 2. Configure Automation
 
-### Other Job Sites Mode
+The popup lets you set:
 
-1. Open the extension popup from any page
-2. Set **Search Mode** to `Other Job Sites`
-3. Choose region: `US`, `UK`, `EU`, or `Auto`
-4. Click **Start Run**
+- search mode
+- date posted window
+- search keywords
 
----
+Keywords can be entered as a comma-separated list or one per line.
 
-## 🧪 Testing
+### 3. Start a Run
 
-### Unit Tests (Vitest)
+For Job Boards mode, open a supported job board in the active tab first.
+
+For Startup Careers and Other Job Sites mode, you can start from any page. The extension opens the generated targets for the configured region and keywords.
+
+### 4. Review Before Submit
+
+The extension may fill fields, upload resumes, and advance through application steps, but it intentionally stops short of automatic submission. If a site requires CAPTCHA, additional verification, or a final review screen, you handle that part manually.
+
+## Development Commands
 
 ```bash
-# Run all unit tests
+npm run build
+npm run typecheck
 npm run test:unit
-
-# Run with verbose output
 npm run test:unit:verbose
-
-# Run with coverage reports
 npm run test:coverage
-
-# Run specific test suites
 npm run test:features
-```
-
-### End-to-End Tests (Playwright)
-
-```bash
-# Run live smoke tests against real job sites (opt-in)
-npm run test:live
-
-# Run full CI pipeline
 npm run test:ci
 ```
 
-### Test Coverage
+## Live Tests
 
-| Suite | Coverage |
-|-------|----------|
-| **Unit Tests** | 33 test files covering background, content, popup, and shared modules |
-| **E2E Tests** | Live search testing against real job sites |
-| **Coverage Threshold** | 75% lines, 90% functions |
+Live Playwright smoke tests are opt-in because they hit real sites and can trigger verification pages or rate limits.
 
----
-
-## 📁 Project Structure
-
-```
-auto-apply/
-├── src/
-│   ├── background/           # Service worker modules
-│   │   ├── sessionState.ts   # Session lifecycle & rate limiting
-│   │   ├── sessionStore.ts   # Session storage & job distribution
-│   │   └── spawnQueue.ts     # Tab spawn deduplication
-│   ├── content/              # Content script modules
-│   │   ├── sites/            # Site-specific integrations
-│   │   │   ├── indeed/
-│   │   │   ├── ziprecruiter/
-│   │   │   ├── dice/
-│   │   │   ├── monster/
-│   │   │   ├── glassdoor/
-│   │   │   ├── greenhouse/
-│   │   │   ├── builtin/
-│   │   │   └── startup/
-│   │   ├── answerCapture.ts  # Form answer capture
-│   │   ├── answerMemory.ts   # Answer storage & retrieval
-│   │   ├── apply.ts          # Apply flow navigation
-│   │   ├── autofill.ts       # Form autofill logic
-│   │   ├── dom.ts            # DOM utilities
-│   │   ├── jobSearch.ts      # Job search collection
-│   │   ├── resumeUpload.ts   # Resume upload handling
-│   │   └── progression.ts    # Multi-step form progression
-│   ├── popup/                # Popup UI (empty, uses root files)
-│   ├── shared/               # Shared utilities
-│   │   ├── catalog.ts        # Constants & curated lists
-│   │   ├── profiles.ts       # Profile management
-│   │   ├── storage.ts        # Chrome storage wrappers
-│   │   ├── targets.ts        # Search target URL builders
-│   │   └── types.ts          # Core TypeScript interfaces
-│   ├── background.ts         # Main service worker (3084 lines)
-│   ├── content.ts            # Main content script (4638 lines)
-│   ├── popup.ts              # Popup controller (2278 lines)
-│   ├── popupDialog.ts        # Dialog controller
-│   └── popupState.ts         # Popup state management
-├── public/
-│   ├── manifest.json         # Source manifest
-│   ├── popup.html            # Popup UI structure
-│   └── popup.css             # Popup styles
-├── data/
-│   └── startup-companies.json # Curated startup company list
-├── tests/
-│   ├── *.test.ts             # Vitest unit tests
-│   └── live.search.spec.ts   # Playwright E2E tests
-├── scripts/
-│   └── build.mjs             # Esbuild build pipeline
-├── dist/                     # Built extension (generated)
-├── package.json
-├── tsconfig.json
-├── vitest.config.ts
-├── playwright.config.ts
-└── README.md
-```
-
----
-
-## 🛠️ Development
-
-### Build Commands
+Run the default live suite:
 
 ```bash
-npm run build          # Bundle with esbuild → dist/
-npm run typecheck      # TypeScript type checking
-npm run test:unit      # Run Vitest unit tests
-npm run test:coverage  # Run tests with coverage reports
-npm run test:live      # Run Playwright E2E (opt-in)
-npm run test:ci        # Full CI: test + typecheck + build
+npm run test:live
 ```
 
-### Technology Stack
+Run a filtered live suite directly:
 
-| Category | Technology |
-|----------|------------|
-| **Language** | TypeScript 5.9 |
-| **Bundler** | esbuild |
-| **Unit Testing** | Vitest + jsdom |
-| **E2E Testing** | Playwright |
-| **PDF Processing** | PDF.js |
-| **Document Parsing** | mammoth (DOCX), jszip |
-| **Extension API** | Chrome Manifest V3 |
+```bash
+npx playwright test tests/live.search.spec.ts --grep "Monster"
+```
 
-### Key Design Decisions
+The helper script sets `ENABLE_LIVE_TESTS=1` automatically for `npm run test:live`.
 
-- **Strict TypeScript** — Full strict mode for type safety
-- **Code Splitting** — ESM chunks for popup performance
-- **Session Management** — Rate-limited tab spawning with deduplication
-- **Heuristic-Based** — Apply-flow detection uses multi-signal scoring
-- **Profile Isolation** — Each profile has separate data, resume, and answers
+## Project Structure
 
----
+```text
+src/
+  background.ts              Main background service worker
+  content.ts                 Main content script
+  popup.ts                   Popup controller
+  popupDialog.ts             Popup dialog controller
+  popupState.ts              Popup state helpers
+  content/                   Apply, autofill, DOM, search, upload, and answer helpers
+  shared/                    Types, storage, targets, catalog, and shared utilities
+public/
+  popup.html                 Popup markup
+  popup.css                  Popup styling
+scripts/
+  build.mjs                  Build pipeline
+  run-live-tests.mjs         Live Playwright wrapper
+tests/
+  *.test.ts                  Vitest coverage for extension logic
+  live.search.spec.ts        Opt-in Playwright live smoke tests
+data/
+  startup-companies.json     Curated startup company list
+```
 
-## 💾 Stored Data
+## Permissions
 
-The extension stores data locally in Chrome extension storage:
+The extension currently requests:
 
-| Data Type | Description |
-|-----------|-------------|
-| **Named Profiles** | Multiple candidate profiles with separate settings |
-| **Resumes** | One resume per profile (PDF, DOC, DOCX, TXT, MD, RTF) |
-| **Candidate Details** | Common application fields (name, email, phone, etc.) |
-| **Search Preferences** | Keywords, regions, date filters, job limits |
-| **Remembered Answers** | Answers from previous applications |
-| **Custom Q&A Pairs** | User-defined work-preference questions and answers |
-| **Session State** | Temporary automation session data |
+- `storage`
+- `tabs`
+- `scripting`
+- `clipboardWrite`
+- `alarms`
+- broad `http://*/*` and `https://*/*` host permissions
 
----
+Those host permissions are required because the content script needs to inspect and assist across many job boards, ATS flows, and external career sites.
 
-## ⚠️ Limitations
+## Data Storage
 
-- **External Site Variability** — Career sites vary widely; autofill is heuristic-based and should be reviewed manually
-- **Human Verification** — CAPTCHA, anti-bot, and verification flows require user intervention
-- **Broad Permissions** — Host permissions are required for content script operation across job boards and application pages
-- **No Auto-Submit** — Applications require manual review and submission
+Data is stored locally through the extension's storage layer and includes:
 
----
+- profiles
+- candidate details
+- resumes
+- remembered answers
+- saved preferences
+- automation settings
+- session state
 
-## 🔐 Permissions
+## Limitations
 
-| Permission | Purpose |
-|------------|---------|
-| `storage` | Store profiles, resumes, answers, and settings |
-| `tabs` | Orchestrate multi-tab automation sessions |
-| `scripting` | Inject content scripts into job sites |
-| `clipboardWrite` | Copy application data to clipboard |
-| `alarms` | Schedule background tasks |
-| `host_permissions` | Run content scripts on job boards and application pages |
+- Site layouts and application flows change frequently, so behavior is heuristic-based
+- Some sites block automation with verification pages or rate limits
+- Resume upload and autofill depend on the target form exposing standard controls
+- Final application submission is intentionally manual
 
----
+## Contributing
 
-## 📄 License
+1. Create a branch
+2. Make your changes
+3. Run `npm run test:unit`, `npm run typecheck`, and `npm run build`
+4. Open a pull request
 
-MIT License — see [LICENSE](LICENSE) for details.
+## License
 
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
----
-
-## 📞 Support
-
-For issues, questions, or feature requests, please open an issue on the [GitHub repository](https://github.com/your-username/auto-apply/issues).
-
----
-
-**Built with ❤️ for job seekers everywhere.**
+MIT. See [LICENSE](LICENSE) if the file is present in your branch or release packaging.

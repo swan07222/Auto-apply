@@ -76,6 +76,10 @@ const KNOWN_BROKEN_APPLY_HOSTS = ["apply.monster.com"];
 const MAX_APPLY_URL_SOURCE_COUNT = 40;
 const MAX_APPLY_URL_SOURCE_LENGTH = 60_000;
 const MAX_APPLY_URL_MARKUP_LENGTH = 180_000;
+const MAX_APPLY_URL_MARKUP_SNIPPET_COUNT = 6;
+const APPLY_URL_MARKUP_SNIPPET_LENGTH = Math.floor(
+  MAX_APPLY_URL_MARKUP_LENGTH / MAX_APPLY_URL_MARKUP_SNIPPET_COUNT
+);
 const APPLY_URL_DISCOVERY_TOKENS = [
   "apply",
   "application",
@@ -87,6 +91,30 @@ const APPLY_URL_DISCOVERY_TOKENS = [
   "workday",
   "job",
 ];
+const MONSTER_DETAIL_BOUNDARY_PATTERNS = [
+  /^profile insights$/,
+  /^description$/,
+  /^job description$/,
+  /^job details$/,
+  /^job details and requirements$/,
+  /^about (?:the )?(?:job|role|position)$/,
+  /^about this (?:job|role|position)$/,
+  /^role overview$/,
+  /^responsibilities$/,
+  /^qualifications$/,
+  /^what (?:you'll|you will) do$/,
+];
+const MIN_MONSTER_TITLE_REGION_GAP_BELOW = 220;
+const MAX_MONSTER_TITLE_REGION_GAP_BELOW = 360;
+const MIN_MONSTER_TITLE_REGION_GAP_ABOVE = 80;
+const MAX_MONSTER_TITLE_REGION_GAP_ABOVE = 140;
+const MONSTER_TITLE_REGION_BELOW_MULTIPLIER = 4;
+const MONSTER_TITLE_REGION_ABOVE_MULTIPLIER = 1.5;
+const MONSTER_TITLE_REGION_HORIZONTAL_ALLOWANCE = 520;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 function isLegalOrPolicyText(text: string): boolean {
   const lower = text.toLowerCase();
@@ -754,6 +782,72 @@ function getMonsterActionTop(element: HTMLElement): number {
   return Number.isFinite(rect.top) ? rect.top : 0;
 }
 
+function getMonsterTitleRegionBelowThreshold(titleRect: DOMRect): number {
+  return Math.max(
+    MIN_MONSTER_TITLE_REGION_GAP_BELOW,
+    Math.min(
+      MAX_MONSTER_TITLE_REGION_GAP_BELOW,
+      Math.round(titleRect.height * MONSTER_TITLE_REGION_BELOW_MULTIPLIER)
+    )
+  );
+}
+
+function getMonsterTitleRegionAboveThreshold(titleRect: DOMRect): number {
+  return Math.max(
+    MIN_MONSTER_TITLE_REGION_GAP_ABOVE,
+    Math.min(
+      MAX_MONSTER_TITLE_REGION_GAP_ABOVE,
+      Math.round(titleRect.height * MONSTER_TITLE_REGION_ABOVE_MULTIPLIER)
+    )
+  );
+}
+
+function getMonsterSelectionScore(
+  candidate: {
+    element: HTMLElement;
+    score: number;
+    url: string | null;
+    text: string;
+  },
+  titleAnchor?: HTMLElement | null,
+  detailBoundary?: HTMLElement | null
+): number {
+  let selectionScore = candidate.score;
+
+  if (isMonsterPrimaryApplyLabel(candidate.text, candidate.url)) {
+    selectionScore += 40;
+  }
+
+  if (
+    titleAnchor &&
+    isMonsterCandidateInPrimaryTitleRegion(
+      candidate.element,
+      titleAnchor,
+      detailBoundary
+    )
+  ) {
+    selectionScore += 32;
+  }
+
+  if (
+    detailBoundary &&
+    isMonsterCandidateAboveDetailBoundary(candidate.element, detailBoundary)
+  ) {
+    selectionScore += 20;
+  }
+
+  const normalizedText = cleanText(candidate.text).toLowerCase();
+  if (
+    normalizedText === "apply now" ||
+    normalizedText === "quick apply" ||
+    normalizedText === "easy apply"
+  ) {
+    selectionScore += 8;
+  }
+
+  return selectionScore;
+}
+
 function choosePreferredMonsterPrimaryApplyCandidate(
   candidates: Array<{
     element: HTMLElement;
@@ -795,15 +889,27 @@ function choosePreferredMonsterPrimaryApplyCandidate(
     : [];
 
   if (titleAnchoredPrimaryCandidates.length >= 1) {
-    return sortMonsterApplyCandidates(titleAnchoredPrimaryCandidates)[0];
+    return sortMonsterApplyCandidates(
+      titleAnchoredPrimaryCandidates,
+      primaryTitleAnchor,
+      detailBoundary
+    )[0];
   }
 
   if (primaryCandidatesAboveDetailBoundary.length >= 1) {
-    return sortMonsterApplyCandidates(primaryCandidatesAboveDetailBoundary)[0];
+    return sortMonsterApplyCandidates(
+      primaryCandidatesAboveDetailBoundary,
+      primaryTitleAnchor,
+      detailBoundary
+    )[0];
   }
 
   if (primaryApplyCandidates.length >= 1) {
-    return sortMonsterApplyCandidates(primaryApplyCandidates)[0];
+    return sortMonsterApplyCandidates(
+      primaryApplyCandidates,
+      primaryTitleAnchor,
+      detailBoundary
+    )[0];
   }
 
   const nonSecondaryCandidates = candidates.filter(
@@ -816,22 +922,58 @@ function choosePreferredMonsterPrimaryApplyCandidate(
     : [];
 
   if (nonSecondaryCandidatesAboveDetailBoundary.length >= 1) {
-    return sortMonsterApplyCandidates(nonSecondaryCandidatesAboveDetailBoundary)[0];
+    return sortMonsterApplyCandidates(
+      nonSecondaryCandidatesAboveDetailBoundary,
+      primaryTitleAnchor,
+      detailBoundary
+    )[0];
   }
 
   if (nonSecondaryCandidates.length < 2) {
     return nonSecondaryCandidates[0];
   }
 
-  return sortMonsterApplyCandidates(nonSecondaryCandidates)[0];
+  return sortMonsterApplyCandidates(
+    nonSecondaryCandidates,
+    primaryTitleAnchor,
+    detailBoundary
+  )[0];
 }
 
-function sortMonsterApplyCandidates<T extends { element: HTMLElement; score: number; top: number }>(
-  candidates: T[]
+function sortMonsterApplyCandidates<
+  T extends {
+    element: HTMLElement;
+    score: number;
+    top: number;
+    text: string;
+    url: string | null;
+  }
+>(
+  candidates: T[],
+  titleAnchor?: HTMLElement | null,
+  detailBoundary?: HTMLElement | null
 ): T[] {
   return candidates.sort((left, right) => {
+    const leftSelectionScore = getMonsterSelectionScore(
+      left,
+      titleAnchor,
+      detailBoundary
+    );
+    const rightSelectionScore = getMonsterSelectionScore(
+      right,
+      titleAnchor,
+      detailBoundary
+    );
+    if (Math.abs(leftSelectionScore - rightSelectionScore) > 30) {
+      return rightSelectionScore - leftSelectionScore;
+    }
+
     if (left.top !== right.top) {
       return left.top - right.top;
+    }
+
+    if (leftSelectionScore !== rightSelectionScore) {
+      return rightSelectionScore - leftSelectionScore;
     }
 
     if (left.score !== right.score) {
@@ -875,11 +1017,7 @@ function findMonsterPrimaryDetailBoundary(): HTMLElement | null {
         .join(" ")
     ).toLowerCase();
 
-    if (
-      text !== "profile insights" &&
-      text !== "description" &&
-      text !== "job description"
-    ) {
+    if (!MONSTER_DETAIL_BOUNDARY_PATTERNS.some((pattern) => pattern.test(text))) {
       continue;
     }
 
@@ -955,8 +1093,23 @@ function isMonsterCandidateInPrimaryTitleRegion(
 
   const verticalGapBelow = elementRect.top - titleRect.bottom;
   const verticalGapAbove = titleRect.top - elementRect.bottom;
+  const horizontalGap =
+    elementRect.left > titleRect.right
+      ? elementRect.left - titleRect.right
+      : titleRect.left > elementRect.right
+        ? titleRect.left - elementRect.right
+        : 0;
+  const minimumTitleOverlap = Math.min(
+    32,
+    Math.max(16, Math.round(titleRect.height * 0.5))
+  );
 
-  return verticalGapBelow <= 220 && verticalGapAbove <= 80;
+  return (
+    elementRect.bottom >= titleRect.top + minimumTitleOverlap &&
+    verticalGapBelow <= getMonsterTitleRegionBelowThreshold(titleRect) &&
+    verticalGapAbove <= getMonsterTitleRegionAboveThreshold(titleRect) &&
+    horizontalGap <= MONSTER_TITLE_REGION_HORIZONTAL_ALLOWANCE
+  );
 }
 
 function isMonsterCandidateAboveDetailBoundary(
@@ -3278,7 +3431,16 @@ function findBestExternalApplyUrlFromSources(
     | undefined;
 
   for (const source of sources) {
-    for (const match of source.matchAll(/https?:\/\/[^"'\\<>\s]+/gi)) {
+    const normalizedSource = source
+      .replace(/\\u002f/gi, "/")
+      .replace(/\\u003a/gi, ":")
+      .replace(/\\u0026/gi, "&")
+      .replace(/&#x2f;|&#47;/gi, "/")
+      .replace(/&#x3a;|&#58;/gi, ":")
+      .replace(/&amp;/gi, "&")
+      .replace(/\\\//g, "/");
+
+    for (const match of normalizedSource.matchAll(/https?:\/\/[^"'\\<>\s]+/gi)) {
       const rawUrl = match[0];
       const url = normalizeUrl(rawUrl);
       if (!url || isKnownBrokenApplyUrl(url) || !isExternalUrl(url)) {
@@ -3286,15 +3448,17 @@ function findBestExternalApplyUrlFromSources(
       }
 
       const matchIndex =
-        typeof match.index === "number" ? match.index : source.indexOf(rawUrl);
+        typeof match.index === "number"
+          ? match.index
+          : normalizedSource.indexOf(rawUrl);
       const contextStart = Math.max(0, matchIndex - 120);
       const contextEnd = Math.min(
-        source.length,
+        normalizedSource.length,
         matchIndex + rawUrl.length + 120
       );
       const score = scoreExternalApplyUrl(
         url,
-        source.slice(contextStart, contextEnd)
+        normalizedSource.slice(contextStart, contextEnd)
       );
       if (score <= 0) {
         continue;
@@ -3369,19 +3533,65 @@ function getApplyUrlMarkupSources(): string[] {
     return [];
   }
 
-  if (root.childElementCount > 2500) {
-    return [];
-  }
-
   const markup = root.innerHTML || "";
   if (!markup) {
     return [];
   }
 
-  return [markup.slice(0, MAX_APPLY_URL_MARKUP_LENGTH)];
+  if (markup.length <= MAX_APPLY_URL_MARKUP_LENGTH) {
+    const limited = limitApplyUrlSource(markup, MAX_APPLY_URL_MARKUP_LENGTH);
+    return limited ? [limited] : [];
+  }
+
+  const tokenPattern = new RegExp(
+    APPLY_URL_DISCOVERY_TOKENS.map(escapeRegExp).join("|"),
+    "gi"
+  );
+  const snippets: string[] = [];
+  const seenStarts: number[] = [];
+  const duplicateDistance = Math.floor(APPLY_URL_MARKUP_SNIPPET_LENGTH / 3);
+
+  for (const match of markup.matchAll(tokenPattern)) {
+    const matchIndex =
+      typeof match.index === "number" ? match.index : markup.indexOf(match[0]);
+    const start = Math.max(
+      0,
+      matchIndex - Math.floor(APPLY_URL_MARKUP_SNIPPET_LENGTH / 2)
+    );
+    if (seenStarts.some((existingStart) => Math.abs(existingStart - start) < duplicateDistance)) {
+      continue;
+    }
+
+    seenStarts.push(start);
+    const limited = limitApplyUrlSource(
+      markup.slice(start, start + APPLY_URL_MARKUP_SNIPPET_LENGTH),
+      APPLY_URL_MARKUP_SNIPPET_LENGTH
+    );
+    if (!limited) {
+      continue;
+    }
+
+    snippets.push(limited);
+    if (snippets.length >= MAX_APPLY_URL_MARKUP_SNIPPET_COUNT) {
+      break;
+    }
+  }
+
+  if (snippets.length > 0) {
+    return snippets;
+  }
+
+  const fallback = limitApplyUrlSource(
+    markup.slice(0, MAX_APPLY_URL_MARKUP_LENGTH),
+    MAX_APPLY_URL_MARKUP_LENGTH
+  );
+  return fallback ? [fallback] : [];
 }
 
-function limitApplyUrlSource(source: string | null | undefined): string | null {
+function limitApplyUrlSource(
+  source: string | null | undefined,
+  maxLength = MAX_APPLY_URL_SOURCE_LENGTH
+): string | null {
   if (!source) {
     return null;
   }
@@ -3396,7 +3606,7 @@ function limitApplyUrlSource(source: string | null | undefined): string | null {
     return null;
   }
 
-  return trimmed.slice(0, MAX_APPLY_URL_SOURCE_LENGTH);
+  return trimmed.slice(0, maxLength);
 }
 
 function hasApplyLikeExternalUrlCue(url: string): boolean {
@@ -3460,15 +3670,20 @@ function scoreExternalApplyUrl(url: string, sourceContext = ""): number {
     return -1;
   }
 
-  if (lower.includes("indeed.com")) {
+  let score = 0;
+  const hasApplyCue = hasApplyLikeExternalUrlCue(url);
+  const indeedHosted = lower.includes("indeed.com");
+
+  if (indeedHosted && !isLikelyApplyUrl(url, "indeed")) {
     return -1;
   }
 
-  let score = 0;
-  const hasApplyCue = hasApplyLikeExternalUrlCue(url);
-
   if (includesAnyToken(lower, KNOWN_ATS_HOST_TOKENS)) {
     score += hasApplyCue ? 120 : 20;
+  }
+
+  if (indeedHosted) {
+    score += hasApplyCue ? 120 : 30;
   }
 
   if (includesAnyToken(lower, ATS_SCORING_URL_TOKENS)) {
