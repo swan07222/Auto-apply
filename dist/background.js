@@ -76,7 +76,7 @@
       regions: ["us", "uk", "eu"]
     },
     { name: "Monzo", careersUrl: "https://job-boards.greenhouse.io/monzo", regions: ["uk"] },
-    { name: "Wise", careersUrl: "https://wise.jobs/", regions: ["uk"] },
+    { name: "Wise", careersUrl: "https://wise.jobs/engineering", regions: ["uk"] },
     { name: "Synthesia", careersUrl: "https://synthesia.io/careers", regions: ["uk"] },
     { name: "Snyk", careersUrl: "https://snyk.io/careers/", regions: ["uk"] },
     { name: "Checkout.com", careersUrl: "https://www.checkout.com/careers", regions: ["uk"] },
@@ -92,7 +92,11 @@
     {
       label: "Built In",
       regions: ["us"],
-      buildUrl: (keyword) => `https://builtin.com/jobs/remote?search=${encodeURIComponent(keyword)}`
+      buildUrl: (keyword, datePostedWindow = "any") => {
+        const encodedKeyword = encodeURIComponent(keyword);
+        const daysSinceUpdated = getBuiltInDaysSinceUpdatedValue(datePostedWindow);
+        return daysSinceUpdated ? `https://builtin.com/jobs/remote?search=${encodedKeyword}&daysSinceUpdated=${daysSinceUpdated}` : `https://builtin.com/jobs/remote?search=${encodedKeyword}`;
+      }
     },
     {
       label: "The Muse",
@@ -165,6 +169,18 @@
   }
   function encodeSearchQueryForPath(query) {
     return query.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+  function getBuiltInDaysSinceUpdatedValue(datePostedWindow) {
+    switch (datePostedWindow) {
+      case "24h":
+        return "1";
+      case "3d":
+        return "3";
+      case "1w":
+        return "7";
+      case "any":
+        return "";
+    }
   }
 
   // src/shared/status.ts
@@ -432,7 +448,7 @@
     return dedupeSearchTargets(
       matchingCompanies.map((company) => ({
         label: company.name,
-        url: company.careersUrl,
+        url: resolveStartupCompanyCareersUrl(company),
         keyword: keywordHints || void 0
       }))
     );
@@ -450,7 +466,7 @@
         if (!site.regions.some((region) => regionSet.has(region))) {
           continue;
         }
-        const url = site.buildUrl(keyword);
+        const url = site.buildUrl(keyword, settings.datePostedWindow);
         if (!url) {
           continue;
         }
@@ -528,6 +544,23 @@
   }
   function formatStartupRegionList(regions) {
     return regions.filter((region, index, values) => values.indexOf(region) === index).map((region) => STARTUP_REGION_LABELS[region]).join(" / ");
+  }
+  function resolveStartupCompanyCareersUrl(company) {
+    const normalizedUrl = sanitizeHttpUrl(company.careersUrl);
+    if (!normalizedUrl) {
+      return "";
+    }
+    try {
+      const parsed = new URL(normalizedUrl);
+      const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
+      const normalizedPath = parsed.pathname.replace(/\/+$/, "");
+      if (hostname === "wise.jobs" && (normalizedPath === "" || normalizedPath === "/" || normalizedPath === "/jobs")) {
+        return new URL("/engineering", `${parsed.protocol}//${parsed.host}`).toString();
+      }
+      return parsed.toString();
+    } catch {
+      return normalizedUrl;
+    }
   }
   function dedupeSearchTargets(targets) {
     const deduped = /* @__PURE__ */ new Map();

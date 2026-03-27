@@ -1,5 +1,6 @@
 import {
   type AutomationSettings,
+  type DatePostedWindow,
   type BrokenPageReason,
   type SiteKey,
   detectSiteFromUrl,
@@ -8,6 +9,10 @@ import {
   parseSearchKeywords,
 } from "../shared";
 import { type AutofillResult } from "./types";
+import {
+  extractPostedAgeHours,
+  isPostedAgeWithinDateWindow,
+} from "./jobSearchHeuristics";
 
 export function createEmptyAutofillResult(): AutofillResult {
   return {
@@ -413,6 +418,18 @@ export function shouldAvoidApplyClickFocus(site: SiteKey): boolean {
 
 export function shouldRetryAlternateApplyTargets(site: SiteKey): boolean {
   return site !== "monster";
+}
+
+export function shouldSkipCurrentPageByPostedDateWindow(
+  pageText: string,
+  datePostedWindow: DatePostedWindow
+): boolean {
+  if (datePostedWindow === "any") {
+    return false;
+  }
+
+  const postedAgeHours = extractPostedAgeHours(pageText);
+  return !isPostedAgeWithinDateWindow(postedAgeHours, datePostedWindow);
 }
 
 export function getRemainingJobSlotsAfterSpawn(

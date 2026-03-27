@@ -588,6 +588,12 @@ export function pickRelevantJobUrls(
     site,
     currentUrl
   );
+  const hasKnownPostedAge = valid.some(
+    (candidate) => extractPostedAgeHours(candidate.contextText) !== null
+  );
+  if (site === "ziprecruiter" && datePostedWindow !== "any" && valid.length > 0 && !hasKnownPostedAge) {
+    return [];
+  }
 
   const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
   const recencyEligible = datePostedWindow === "any" ? valid : recencyFiltered;
@@ -2293,28 +2299,92 @@ function filterZipRecruiterAppliedCandidates(
   candidates: JobCandidate[]
 ): JobCandidate[] {
   const appliedKeys = collectZipRecruiterAppliedDedupKeys();
+  const keptCandidates: JobCandidate[] = [];
 
-  return candidates.filter((candidate) => {
+  for (const candidate of candidates) {
     if (
       isAppliedJobText(candidate.contextText) ||
       isAppliedJobText(candidate.title)
     ) {
-      return false;
+      continue;
     }
 
     const key = getZipRecruiterCandidateKey(candidate.url);
     if (key && appliedKeys.has(key)) {
-      return false;
+      continue;
     }
 
-    for (const contextText of collectZipRecruiterCandidateDomContexts(candidate, key)) {
-      if (isAppliedJobText(contextText)) {
-        return false;
-      }
+    const domContexts = collectZipRecruiterCandidateDomContexts(candidate, key);
+    if (domContexts.some((contextText) => isAppliedJobText(contextText))) {
+      continue;
     }
 
-    return true;
+    keptCandidates.push({
+      ...candidate,
+      contextText: mergeZipRecruiterCandidateContext(candidate, domContexts),
+    });
+  }
+
+  return keptCandidates;
+}
+
+function mergeZipRecruiterCandidateContext(
+  candidate: JobCandidate,
+  domContexts: string[]
+): string {
+  const contexts = new Set<string>();
+  const addContext = (value: string | null | undefined) => {
+    const text = cleanText(value);
+    if (text) {
+      contexts.add(text);
+    }
+  };
+
+  addContext(candidate.contextText);
+  for (const contextText of domContexts) {
+    addContext(contextText);
+  }
+
+  const rankedContexts = Array.from(contexts).sort((left, right) => {
+    const scoreDelta =
+      scoreZipRecruiterContextText(candidate, right) -
+      scoreZipRecruiterContextText(candidate, left);
+    if (scoreDelta !== 0) {
+      return scoreDelta;
+    }
+
+    return right.length - left.length;
   });
+
+  const bestContext = rankedContexts[0] ?? "";
+  if (extractPostedAgeHours(bestContext) !== null) {
+    return bestContext;
+  }
+
+  const recencyContext = rankedContexts.find(
+    (context) => extractPostedAgeHours(context) !== null
+  );
+  if (!recencyContext || recencyContext === bestContext) {
+    return bestContext;
+  }
+
+  return cleanText(`${bestContext} ${recencyContext}`);
+}
+
+function scoreZipRecruiterContextText(
+  candidate: JobCandidate,
+  contextText: string
+): number {
+  let score = scoreCandidateContextQuality({
+    ...candidate,
+    contextText,
+  });
+
+  if (extractPostedAgeHours(contextText) !== null) {
+    score += 8;
+  }
+
+  return score;
 }
 
 function collectZipRecruiterCandidateDomContexts(
@@ -2729,7 +2799,7 @@ function buildZipRecruiterCandidateContext(
     }
   };
 
-  addContext(buildCandidateContextText(container, anchor));
+  addContext(buildZipRecruiterReadableContextText(container, anchor));
 
   const metadataSelectors = [
     "[data-status]",
@@ -2763,6 +2833,83 @@ function buildZipRecruiterCandidateContext(
         node.id
       )
     );
+  }
+
+  return cleanText(Array.from(contexts).join(" "));
+}
+
+function buildZipRecruiterReadableContextText(
+  container: HTMLElement,
+  anchor?: HTMLAnchorElement | null
+): string {
+  const contexts = new Set<string>();
+
+  const addElementText = (element: HTMLElement | null | undefined) => {
+    if (!element) {
+      return;
+    }
+
+    const text = cleanText(
+      [
+        getReadableText(element) || element.innerText || element.textContent || "",
+        element.getAttribute("aria-label") || "",
+        element.getAttribute("title") || "",
+        element.getAttribute("data-status") || "",
+        element.getAttribute("data-testid") || "",
+        element.getAttribute("data-qa") || "",
+        element.getAttribute("data-cy") || "",
+        element.getAttribute("datetime") || "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+    if (text) {
+      contexts.add(text);
+    }
+  };
+
+  addElementText(container);
+
+  if (anchor) {
+    let current = anchor.parentElement;
+    for (let depth = 0; current && current !== container && depth < 6; depth += 1) {
+      if (
+        /^(article|li|section)$/i.test(current.tagName) ||
+        current.getAttribute("role") === "listitem" ||
+        current.hasAttribute("data-testid") ||
+        /(?:job|card|result|listing)/i.test(current.className || "")
+      ) {
+        addElementText(current);
+      }
+      current = current.parentElement;
+    }
+  }
+
+  addElementText(anchor);
+
+  for (const node of Array.from(
+    container.querySelectorAll<HTMLElement>(
+      "time, [datetime], [aria-label], [title], [data-testid], [data-qa], [data-cy], span, p, small, li, div"
+    )
+  ).slice(0, 48)) {
+    const text = cleanText(
+      [
+        getReadableText(node) || node.innerText || node.textContent || "",
+        node.getAttribute("aria-label") || "",
+        node.getAttribute("title") || "",
+        node.getAttribute("datetime") || "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+
+    if (!text || text.length > 120) {
+      continue;
+    }
+
+    if (extractPostedAgeHours(text) !== null) {
+      contexts.add(text);
+    }
   }
 
   return cleanText(Array.from(contexts).join(" "));

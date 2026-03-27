@@ -1,4 +1,8 @@
-import { normalizeQuestionKey } from "../shared";
+import {
+  buildSearchTargets,
+  normalizeQuestionKey,
+  type DatePostedWindow,
+} from "../shared";
 import { collectDeepMatches, getNavigationUrl, isElementInteractive } from "./dom";
 import { cleanText } from "./text";
 
@@ -97,6 +101,27 @@ export function getMyGreenhouseControlValue(
 
   const input = control as HTMLInputElement;
   return cleanText(input.value || control.innerText || control.textContent || "");
+}
+
+export function resolveMyGreenhouseCanonicalSearchUrl(
+  currentUrl: string,
+  keyword: string,
+  candidateCountry: string,
+  datePostedWindow: DatePostedWindow = "any"
+): string | null {
+  if (!currentUrl || !keyword.trim()) {
+    return null;
+  }
+
+  return (
+    buildSearchTargets(
+      "greenhouse",
+      currentUrl,
+      keyword,
+      candidateCountry,
+      datePostedWindow
+    )[0]?.url ?? null
+  );
 }
 
 export function findMyGreenhouseKeywordInput(): HTMLInputElement | null {

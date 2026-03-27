@@ -4,6 +4,7 @@ import {
   comparePostedAgeHours,
   extractPostedAgeHours,
   filterCandidatesByDatePostedWindow,
+  isPostedAgeWithinDateWindow,
   isAppliedJobText,
   looksLikeTechnicalRoleTitle,
   scoreCandidateKeywordRelevance,
@@ -66,6 +67,30 @@ describe("job search heuristic helpers", () => {
     expect(extractPostedAgeHours("Updated 15 minutes ago")).toBe(0);
     expect(extractPostedAgeHours("Posted Mar 25, 2026")).toBe(24);
     expect(extractPostedAgeHours("Listed 2026-03-19")).toBe(168);
+  });
+
+  it("parses compact standalone age chips and expanded posted-date labels", () => {
+    expect(extractPostedAgeHours("71h")).toBe(71);
+    expect(extractPostedAgeHours("3 d")).toBe(72);
+    expect(extractPostedAgeHours("Remote role. 3 d")).toBe(72);
+    expect(extractPostedAgeHours("1 wk ago")).toBe(168);
+    expect(extractPostedAgeHours("Date posted 2 days ago")).toBe(48);
+    expect(extractPostedAgeHours("Posted within 24 hours")).toBe(24);
+    expect(isPostedAgeWithinDateWindow(96, "3d")).toBe(false);
+  });
+
+  it("treats standalone New badges as recent without misreading location or title text", () => {
+    expect(extractPostedAgeHours("New")).toBe(12);
+    expect(extractPostedAgeHours("Quick Apply New")).toBe(12);
+    expect(extractPostedAgeHours("Remote role. Quick Apply New.")).toBe(12);
+    expect(extractPostedAgeHours("Remote role. New.")).toBe(12);
+    expect(extractPostedAgeHours("New York, NY")).toBeNull();
+    expect(extractPostedAgeHours("New Grad Software Engineer")).toBeNull();
+  });
+
+  it("ignores unrelated page dates that are not posted-date signals", () => {
+    expect(extractPostedAgeHours("Interview process starts Mar 10, 2026")).toBeNull();
+    expect(extractPostedAgeHours("Compensation reviewed every quarter")).toBeNull();
   });
 
   it("keeps technical-title and applied-state heuristics explicit", () => {

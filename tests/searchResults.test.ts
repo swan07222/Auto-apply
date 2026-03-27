@@ -6,6 +6,7 @@ import {
   advanceToNextResultsPage,
   findNextResultsPageAction,
   getJobResultCollectionTargetCount,
+  tryApplySupportedResultsDateFilter,
   waitForJobDetailUrls,
 } from "../src/content/searchResults";
 
@@ -649,6 +650,109 @@ describe("search result collection", () => {
     expect(urls).toEqual([
       "https://example.com/careers/jobs/frontend-engineer-123",
     ]);
+  });
+
+  it("respects compact posted-age chips when collecting career-site job URLs", async () => {
+    document.body.innerHTML = `
+      <main>
+        <article class="job-result">
+          <h2>Frontend Engineer</h2>
+          <a href="https://example.com/careers/jobs/frontend-engineer-123">
+            Frontend Engineer
+          </a>
+          <span>Remote</span>
+          <span>2 h</span>
+        </article>
+        <article class="job-result">
+          <h2>Platform Engineer</h2>
+          <a href="https://example.com/careers/jobs/platform-engineer-456">
+            Platform Engineer
+          </a>
+          <span>Remote</span>
+          <span>3 d</span>
+        </article>
+      </main>
+    `;
+
+    const urls = await waitForJobDetailUrls({
+      site: "other_sites",
+      datePostedWindow: "24h",
+      targetCount: 1,
+      detectedSite: "other_sites",
+    });
+
+    expect(urls).toEqual([
+      "https://example.com/careers/jobs/frontend-engineer-123",
+    ]);
+  });
+
+  it("applies the ZipRecruiter posted-date filter on the search surface before collecting results", async () => {
+    document.body.innerHTML = `
+      <main>
+        <button id="date-filter-toggle" type="button" aria-expanded="false">
+          Date Posted
+        </button>
+        <section id="date-filter-menu" hidden>
+          <button id="date-filter-24h" type="button">Past 24 hours</button>
+        </section>
+      </main>
+    `;
+
+    const toggle = document.getElementById("date-filter-toggle") as HTMLButtonElement;
+    const menu = document.getElementById("date-filter-menu") as HTMLElement;
+    const option = document.getElementById("date-filter-24h") as HTMLButtonElement;
+
+    const makeVisibleRect = () =>
+      ({
+        width: 180,
+        height: 32,
+        top: 10,
+        left: 10,
+        right: 190,
+        bottom: 42,
+        x: 10,
+        y: 10,
+        toJSON: () => ({}),
+      }) as DOMRect;
+
+    Object.defineProperty(toggle, "getBoundingClientRect", {
+      configurable: true,
+      value: makeVisibleRect,
+    });
+    Object.defineProperty(option, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          width: 0,
+          height: 0,
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+
+    toggle.addEventListener("click", () => {
+      menu.hidden = false;
+      toggle.setAttribute("aria-expanded", "true");
+      Object.defineProperty(option, "getBoundingClientRect", {
+        configurable: true,
+        value: makeVisibleRect,
+      });
+    });
+    option.addEventListener("click", () => {
+      document.body.setAttribute("data-zip-date-filter", "24h");
+    });
+
+    const promise = tryApplySupportedResultsDateFilter("ziprecruiter", "24h");
+
+    await vi.runAllTimersAsync();
+
+    await expect(promise).resolves.toBe(true);
+    expect(document.body.getAttribute("data-zip-date-filter")).toBe("24h");
   });
 
   it("does not try generic career-surface recovery clicks on the MyGreenhouse portal", async () => {

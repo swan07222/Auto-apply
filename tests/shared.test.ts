@@ -122,6 +122,69 @@ describe("shared automation target logic", () => {
     expect(firstUrl.searchParams.get("location")).toBeNull();
   });
 
+  it("adds the selected Dice date window to the initial search URL", () => {
+    const targets = buildSearchTargets(
+      "dice",
+      "https://www.dice.com",
+      "software engineer",
+      "",
+      "3d"
+    );
+
+    expect(targets).toHaveLength(1);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(firstUrl.searchParams.get("filters.postedDate")).toBe("THREE");
+  });
+
+  it("adds the selected ZipRecruiter date window to the initial search URL", () => {
+    const targets = buildSearchTargets(
+      "ziprecruiter",
+      "https://www.ziprecruiter.com",
+      "software engineer",
+      "",
+      "24h"
+    );
+
+    expect(targets).toHaveLength(1);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(firstUrl.pathname).toBe("/jobs-search");
+    expect(firstUrl.searchParams.get("search")).toBe("software engineer");
+    expect(firstUrl.searchParams.get("location")).toBe("Remote");
+    expect(firstUrl.searchParams.get("days")).toBe("1");
+  });
+
+  it("omits ZipRecruiter date params when any time is selected", () => {
+    const targets = buildSearchTargets(
+      "ziprecruiter",
+      "https://www.ziprecruiter.com",
+      "software engineer",
+      "",
+      "any"
+    );
+
+    expect(targets).toHaveLength(1);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(firstUrl.searchParams.get("days")).toBeNull();
+  });
+
+  it("omits Dice date params when any time is selected", () => {
+    const targets = buildSearchTargets(
+      "dice",
+      "https://www.dice.com",
+      "software engineer",
+      "",
+      "any"
+    );
+
+    expect(targets).toHaveLength(1);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(firstUrl.searchParams.get("filters.postedDate")).toBeNull();
+  });
+
   it("builds Greenhouse search targets from the current board path using a remote keyword hint", () => {
     const targets = buildSearchTargets(
       "greenhouse",
@@ -211,7 +274,7 @@ describe("shared automation target logic", () => {
     expect(firstUrl.origin).toBe("https://my.greenhouse.io");
     expect(firstUrl.pathname).toBe("/jobs");
     expect(targets[0].url).toBe(
-      "https://my.greenhouse.io/jobs?query=site%20engineer&location=United%20States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type[]=remote"
+      "https://my.greenhouse.io/jobs?query=site+engineer&location=United+States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type%5B%5D=remote"
     );
     expect(firstUrl.searchParams.get("query")).toBe("site engineer");
     expect(firstUrl.searchParams.get("keyword")).toBeNull();
@@ -234,7 +297,7 @@ describe("shared automation target logic", () => {
     const firstUrl = new URL(targets[0].url);
 
     expect(targets[0].url).toBe(
-      "https://my.greenhouse.io/jobs?query=site%20engineer&location=United%20States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type[]=remote"
+      "https://my.greenhouse.io/jobs?query=site+engineer&location=United+States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type%5B%5D=remote"
     );
     expect(firstUrl.pathname).toBe("/jobs");
     expect(firstUrl.searchParams.get("query")).toBe("site engineer");
@@ -258,7 +321,7 @@ describe("shared automation target logic", () => {
     const firstUrl = new URL(targets[0].url);
 
     expect(targets[0].url).toBe(
-      "https://my.greenhouse.io/jobs?query=full%20stack&location=United%20States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type[]=remote"
+      "https://my.greenhouse.io/jobs?query=full+stack&location=United+States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type%5B%5D=remote"
     );
     expect(firstUrl.pathname).toBe("/jobs");
     expect(firstUrl.searchParams.get("query")).toBe("full stack");
@@ -268,6 +331,43 @@ describe("shared automation target logic", () => {
     expect(firstUrl.searchParams.get("location_type")).toBe("country");
     expect(firstUrl.searchParams.get("country_short_name")).toBe("US");
     expect(firstUrl.searchParams.getAll("work_type[]")).toEqual(["remote"]);
+  });
+
+  it("adds the selected MyGreenhouse date window to the portal search URL", () => {
+    const targets = buildSearchTargets(
+      "greenhouse",
+      "https://my.greenhouse.io/jobs",
+      "full stack",
+      "US",
+      "24h"
+    );
+
+    expect(targets).toHaveLength(1);
+    expect(new URL(targets[0].url).searchParams.get("date_posted")).toBe("past_day");
+  });
+
+  it("maps stricter extension date windows onto the nearest broader MyGreenhouse buckets", () => {
+    const threeDayTargets = buildSearchTargets(
+      "greenhouse",
+      "https://my.greenhouse.io/jobs",
+      "full stack",
+      "US",
+      "3d"
+    );
+    const oneWeekTargets = buildSearchTargets(
+      "greenhouse",
+      "https://my.greenhouse.io/jobs",
+      "full stack",
+      "US",
+      "1w"
+    );
+
+    expect(new URL(threeDayTargets[0].url).searchParams.get("date_posted")).toBe(
+      "past_five_days"
+    );
+    expect(new URL(oneWeekTargets[0].url).searchParams.get("date_posted")).toBe(
+      "past_ten_days"
+    );
   });
 
   it("builds Built In search targets with the current remote jobs route", () => {
@@ -282,6 +382,36 @@ describe("shared automation target logic", () => {
 
     expect(firstUrl.pathname).toBe("/jobs/remote");
     expect(firstUrl.searchParams.get("search")).toBe("software engineer");
+  });
+
+  it("adds the selected Built In date window to the initial search URL", () => {
+    const targets = buildSearchTargets(
+      "builtin",
+      "https://builtin.com/job/software-engineer/3985663",
+      "software engineer",
+      "",
+      "24h"
+    );
+
+    expect(targets).toHaveLength(1);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(firstUrl.searchParams.get("daysSinceUpdated")).toBe("1");
+  });
+
+  it("omits Built In date params when any time is selected", () => {
+    const targets = buildSearchTargets(
+      "builtin",
+      "https://builtin.com/job/software-engineer/3985663",
+      "software engineer",
+      "",
+      "any"
+    );
+
+    expect(targets).toHaveLength(1);
+    const firstUrl = new URL(targets[0].url);
+
+    expect(firstUrl.searchParams.get("daysSinceUpdated")).toBeNull();
   });
 
   it("keeps Dice and ZipRecruiter job pages open when the apply flow moves to a new tab", () => {
@@ -369,9 +499,40 @@ describe("shared automation target logic", () => {
     expect(buildStartupSearchTargets(ukSettings).map((target) => target.url)).toContain(
       "https://careers.veeva.com/job-search-results/"
     );
+    expect(buildStartupSearchTargets(ukSettings).map((target) => target.url)).toContain(
+      "https://wise.jobs/engineering"
+    );
     expect(buildStartupSearchTargets(euSettings).map((target) => target.url)).toContain(
       "https://careers.veeva.com/job-search-results/"
     );
+  });
+
+  it("normalizes refreshed Wise startup targets to the engineering board", () => {
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      startupRegion: "uk" as const,
+      searchKeywords: "software engineer",
+      candidate: {
+        ...DEFAULT_SETTINGS.candidate,
+        country: "United Kingdom",
+      },
+    };
+
+    const targets = buildStartupSearchTargets(settings, [
+      {
+        name: "Wise",
+        careersUrl: "https://wise.jobs/",
+        regions: ["uk"],
+      },
+    ]);
+
+    expect(targets).toEqual([
+      {
+        label: "Wise",
+        url: "https://wise.jobs/engineering",
+        keyword: "software engineer",
+      },
+    ]);
   });
 
   it("builds startup targets from refreshed company lists when provided", () => {
@@ -407,6 +568,7 @@ describe("shared automation target logic", () => {
     const settings = {
       ...DEFAULT_SETTINGS,
       startupRegion: "us" as const,
+      datePostedWindow: "24h" as const,
       searchKeywords: "frontend engineer\nsoftware engineer",
       candidate: {
         ...DEFAULT_SETTINGS.candidate,
@@ -418,7 +580,7 @@ describe("shared automation target logic", () => {
     const urls = targets.map((target) => target.url);
 
     expect(urls).toContain(
-      "https://builtin.com/jobs/remote?search=frontend%20engineer"
+      "https://builtin.com/jobs/remote?search=frontend%20engineer&daysSinceUpdated=1"
     );
     expect(urls).toContain(
       "https://www.workatastartup.com/jobs?query=frontend%20engineer"

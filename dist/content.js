@@ -502,12 +502,14 @@
         const url = new URL("/jobs-search", baseOrigin);
         url.searchParams.set("search", query);
         url.searchParams.set("location", "Remote");
+        applyZipRecruiterDatePostedWindow(url, datePostedWindow);
         return url.toString();
       }
       case "dice": {
         const url = new URL("/jobs", baseOrigin);
         url.searchParams.set("q", query);
         url.searchParams.set("filters.workplaceTypes", "Remote");
+        applyDiceDatePostedWindow(url, datePostedWindow);
         return url.toString();
       }
       case "monster":
@@ -519,10 +521,11 @@
           query,
           currentUrl,
           baseOrigin,
-          candidateCountry
+          candidateCountry,
+          datePostedWindow
         );
       case "builtin":
-        return buildBuiltInSearchUrl(query, baseOrigin);
+        return buildBuiltInSearchUrl(query, baseOrigin, datePostedWindow);
     }
   }
   function applyBoardDatePostedWindow(url, site, datePostedWindow) {
@@ -536,7 +539,27 @@
     }
     url.searchParams.set("fromage", fromAge);
   }
+  function applyZipRecruiterDatePostedWindow(url, datePostedWindow) {
+    const days = getZipRecruiterDaysValue(datePostedWindow);
+    if (!days) {
+      url.searchParams.delete("days");
+      return;
+    }
+    url.searchParams.set("days", days);
+  }
   function getIndeedFromAgeValue(datePostedWindow) {
+    switch (datePostedWindow) {
+      case "24h":
+        return "1";
+      case "3d":
+        return "3";
+      case "1w":
+        return "7";
+      case "any":
+        return "";
+    }
+  }
+  function getZipRecruiterDaysValue(datePostedWindow) {
     switch (datePostedWindow) {
       case "24h":
         return "1";
@@ -562,10 +585,46 @@
     url.searchParams.set("locId", "1");
     return url.toString();
   }
-  function buildBuiltInSearchUrl(query, baseOrigin) {
+  function buildBuiltInSearchUrl(query, baseOrigin, datePostedWindow) {
     const url = new URL("/jobs/remote", baseOrigin);
     url.searchParams.set("search", query);
+    const daysSinceUpdated = getBuiltInDaysSinceUpdatedValue(datePostedWindow);
+    if (daysSinceUpdated) {
+      url.searchParams.set("daysSinceUpdated", daysSinceUpdated);
+    }
     return url.toString();
+  }
+  function applyDiceDatePostedWindow(url, datePostedWindow) {
+    const postedDate = getDicePostedDateValue(datePostedWindow);
+    if (!postedDate) {
+      url.searchParams.delete("filters.postedDate");
+      return;
+    }
+    url.searchParams.set("filters.postedDate", postedDate);
+  }
+  function getDicePostedDateValue(datePostedWindow) {
+    switch (datePostedWindow) {
+      case "24h":
+        return "ONE";
+      case "3d":
+        return "THREE";
+      case "1w":
+        return "SEVEN";
+      case "any":
+        return "";
+    }
+  }
+  function getBuiltInDaysSinceUpdatedValue(datePostedWindow) {
+    switch (datePostedWindow) {
+      case "24h":
+        return "1";
+      case "3d":
+        return "3";
+      case "1w":
+        return "7";
+      case "any":
+        return "";
+    }
   }
   function isMyGreenhousePortalUrl(currentUrl) {
     try {
@@ -587,13 +646,14 @@
       return fallbackOrigin;
     }
   }
-  function buildGreenhouseSearchUrl(query, currentUrl, fallbackOrigin, candidateCountry = "") {
+  function buildGreenhouseSearchUrl(query, currentUrl, fallbackOrigin, candidateCountry = "", datePostedWindow = "any") {
     if (isMyGreenhousePortalUrl(currentUrl)) {
       try {
         const parsed = new URL(currentUrl);
         return buildMyGreenhousePortalSearchUrl(
           `${parsed.protocol}//${parsed.host}`,
-          buildMyGreenhousePortalQuery(query)
+          buildMyGreenhousePortalQuery(query),
+          datePostedWindow
         );
       } catch {
         return currentUrl;
@@ -607,8 +667,32 @@
   function buildMyGreenhousePortalQuery(query) {
     return query.trim();
   }
-  function buildMyGreenhousePortalSearchUrl(origin, query) {
-    return `${origin}/jobs?query=${encodeURIComponent(query)}&location=United%20States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type[]=remote`;
+  function buildMyGreenhousePortalSearchUrl(origin, query, datePostedWindow) {
+    const url = new URL("/jobs", origin);
+    url.searchParams.set("query", query);
+    url.searchParams.set("location", "United States");
+    url.searchParams.set("lat", "39.71614");
+    url.searchParams.set("lon", "-96.999246");
+    url.searchParams.set("location_type", "country");
+    url.searchParams.set("country_short_name", "US");
+    url.searchParams.append("work_type[]", "remote");
+    const datePosted = getMyGreenhouseDatePostedValue(datePostedWindow);
+    if (datePosted) {
+      url.searchParams.set("date_posted", datePosted);
+    }
+    return url.toString();
+  }
+  function getMyGreenhouseDatePostedValue(datePostedWindow) {
+    switch (datePostedWindow) {
+      case "24h":
+        return "past_day";
+      case "3d":
+        return "past_five_days";
+      case "1w":
+        return "past_ten_days";
+      case "any":
+        return "";
+    }
   }
   function buildGreenhouseKeywordQuery(query) {
     const trimmed = query.trim();
@@ -3240,6 +3324,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const input = control;
     return cleanText(input.value || control.innerText || control.textContent || "");
   }
+  function resolveMyGreenhouseCanonicalSearchUrl(currentUrl, keyword, candidateCountry, datePostedWindow = "any") {
+    if (!currentUrl || !keyword.trim()) {
+      return null;
+    }
+    return buildSearchTargets(
+      "greenhouse",
+      currentUrl,
+      keyword,
+      candidateCountry,
+      datePostedWindow
+    )[0]?.url ?? null;
+  }
   function findMyGreenhouseKeywordInput() {
     return collectInteractiveMatches([
       "input[placeholder*='job title' i]",
@@ -4066,6 +4162,43 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     december: 11
   };
   var POSTED_DATE_CUE_PATTERN = /\b(posted|reposted|updated|listed|active|date posted|new)\b/i;
+  var POSTED_DATE_FRAGMENT_SPLIT_PATTERN = /[\r\n]+|[•·|]+/;
+  var POSTED_AGE_UNIT_PATTERN = "(?:minutes?|mins?|min|m|hours?|hrs?|hr|h|days?|d|weeks?|w|wks?|wk|months?|mos?|mo)";
+  var COMPACT_PLUS_AGE_PATTERN = new RegExp(
+    `\\b(\\d+)\\s*(${POSTED_AGE_UNIT_PATTERN})\\+(?=\\s|$)`,
+    "i"
+  );
+  var EXPLICIT_AGO_AGE_PATTERN = new RegExp(
+    `\\b(?:(?:posted|active|updated|listed|reposted|date posted)\\s+)?(\\d+)\\+?\\s*(${POSTED_AGE_UNIT_PATTERN})\\s+ago\\b`,
+    "i"
+  );
+  var POSTED_WITHIN_AGE_PATTERN = new RegExp(
+    `\\b(?:posted|active|updated|listed|reposted|date posted)\\s+(\\d+)\\+?\\s*(${POSTED_AGE_UNIT_PATTERN})\\b`,
+    "i"
+  );
+  var POSTED_WITHIN_RANGE_PATTERN = new RegExp(
+    `\\b(?:posted|active|updated|listed|reposted|date posted)\\s+(?:within|in the last)\\s+(\\d+)\\+?\\s*(${POSTED_AGE_UNIT_PATTERN})\\b`,
+    "i"
+  );
+  var EXACT_STANDALONE_AGE_PATTERN = new RegExp(
+    `^(\\d+)\\+?\\s*(${POSTED_AGE_UNIT_PATTERN})(?:\\s+ago)?$`,
+    "i"
+  );
+  var EXACT_PREFIXED_AGE_PATTERN = new RegExp(
+    `^(?:posted|active|updated|listed|reposted|date posted|new)\\s+(\\d+)\\+?\\s*(${POSTED_AGE_UNIT_PATTERN})(?:\\s+ago)?$`,
+    "i"
+  );
+  var EMBEDDED_STANDALONE_AGE_PATTERN = new RegExp(
+    `\\b(\\d+)\\+?\\s*(${POSTED_AGE_UNIT_PATTERN})(?:\\s+ago)?\\b`,
+    "i"
+  );
+  var RELATIVE_AGE_SIGNAL_PATTERN = new RegExp(
+    `\\b\\d+\\+?\\s*(${POSTED_AGE_UNIT_PATTERN})(?:\\s+ago)?\\b`,
+    "i"
+  );
+  var STANDALONE_RECENT_BADGE_PATTERN = /^(?:quick apply|easy apply|one click apply|one-click apply|featured)\s+new$|^new(?:\s+(?:quick apply|easy apply|featured))?$/i;
+  var TRAILING_RECENT_BADGE_PATTERN = /\bnew(?:\s*[|,.;:!?•])?\s*$/i;
+  var SEPARATED_NEW_BADGE_PATTERN = /(?:^|[|,.;:!?•])\s*new(?:\s*[|,.;:!?•]|$)/i;
   function shouldFilterBoardResultsByKeyword(site, eligibleCount, matchedCount) {
     if (matchedCount <= 0 || eligibleCount <= 0) {
       return false;
@@ -4315,50 +4448,11 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return left - right;
   }
   function extractPostedAgeHours(text) {
-    const cleaned = cleanText(text);
-    const raw = cleaned.toLowerCase();
-    const normalized = normalizeChoiceText(cleaned).replace(/\s+/g, " ");
-    if (!normalized) {
-      return null;
-    }
-    if (/\b(just posted|just now|moments? ago|few moments ago|seconds? ago)\b/.test(
-      normalized
-    )) {
-      return 0;
-    }
-    if (/\b(?:posted|active|updated|listed|reposted)\s+today\b/.test(normalized) || /\bnew today\b/.test(normalized)) {
-      return 12;
-    }
-    if (/\b(?:posted|active|updated|listed|reposted)\s+yesterday\b/.test(normalized)) {
-      return 24;
-    }
-    const compactPlusMatch = raw.match(
-      /\b(\d+)\s*(minutes?|mins?|min|m|hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\+(?=\s|$)/
-    );
-    if (compactPlusMatch) {
-      return convertAgeValueToHours(compactPlusMatch[1], compactPlusMatch[2]);
-    }
-    const explicitAgoMatch = normalized.match(
-      /\b(?:(?:posted|active|updated|listed|reposted)\s+)?(\d+)\+?\s*(minutes?|mins?|min|m|hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\s+ago\b/
-    );
-    if (explicitAgoMatch) {
-      return convertAgeValueToHours(explicitAgoMatch[1], explicitAgoMatch[2]);
-    }
-    const postedWithinMatch = normalized.match(
-      /\b(?:posted|active|updated|listed|reposted)\s+(\d+)\+?\s*(minutes?|mins?|min|m|hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\b/
-    );
-    if (postedWithinMatch) {
-      return convertAgeValueToHours(postedWithinMatch[1], postedWithinMatch[2]);
-    }
-    const absoluteAge = extractAbsolutePostedAgeHours(cleaned);
-    if (absoluteAge !== null) {
-      return absoluteAge;
-    }
-    if (/\btoday\b/.test(normalized)) {
-      return 12;
-    }
-    if (/\byesterday\b/.test(normalized)) {
-      return 24;
+    for (const fragment of buildPostedAgeFragments(text)) {
+      const ageHours = extractPostedAgeHoursFromFragment(fragment);
+      if (ageHours !== null) {
+        return ageHours;
+      }
     }
     return null;
   }
@@ -4431,10 +4525,133 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (unit === "w" || unit === "week" || unit === "weeks") {
       return value * 24 * 7;
     }
+    if (unit === "wk" || unit === "wks") {
+      return value * 24 * 7;
+    }
     if (unit === "mo" || unit === "mos" || unit === "month" || unit === "months") {
       return value * 24 * 30;
     }
     return null;
+  }
+  function buildPostedAgeFragments(source) {
+    const fragments = /* @__PURE__ */ new Set();
+    const addFragment = (value) => {
+      const text = cleanText(value);
+      if (text) {
+        fragments.add(text);
+      }
+    };
+    addFragment(source);
+    for (const section of source.split(POSTED_DATE_FRAGMENT_SPLIT_PATTERN)) {
+      addFragment(section);
+    }
+    return Array.from(fragments).sort((left, right) => {
+      const scoreDelta = scorePostedAgeFragment(right) - scorePostedAgeFragment(left);
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+      return left.length - right.length;
+    });
+  }
+  function scorePostedAgeFragment(fragment) {
+    const normalized = normalizeChoiceText(fragment).replace(/\s+/g, " ");
+    if (!normalized) {
+      return -1;
+    }
+    let score = 0;
+    if (POSTED_DATE_CUE_PATTERN.test(normalized)) {
+      score += 6;
+    }
+    if (normalized === "today" || normalized === "yesterday" || /\b(just posted|just now|moments? ago|few moments ago|seconds? ago)\b/.test(
+      normalized
+    )) {
+      score += 5;
+    }
+    if (EXACT_STANDALONE_AGE_PATTERN.test(normalized) || EXACT_PREFIXED_AGE_PATTERN.test(normalized)) {
+      score += 4;
+    }
+    if (RELATIVE_AGE_SIGNAL_PATTERN.test(normalized) || COMPACT_PLUS_AGE_PATTERN.test(fragment) || POSTED_WITHIN_RANGE_PATTERN.test(normalized)) {
+      score += 3;
+    }
+    if (looksLikeStandaloneDateOnlyFragment(fragment, normalized)) {
+      score += 2;
+    }
+    if (normalized.length <= 40) {
+      score += 1;
+    }
+    return score;
+  }
+  function extractPostedAgeHoursFromFragment(fragment) {
+    const cleaned = cleanText(fragment);
+    const raw = cleaned.toLowerCase();
+    const normalized = normalizeChoiceText(cleaned).replace(/\s+/g, " ");
+    if (!normalized) {
+      return null;
+    }
+    if (/\b(just posted|just now|moments? ago|few moments ago|seconds? ago)\b/.test(
+      normalized
+    )) {
+      return 0;
+    }
+    if (normalized === "new" || STANDALONE_RECENT_BADGE_PATTERN.test(normalized) || TRAILING_RECENT_BADGE_PATTERN.test(cleaned) || SEPARATED_NEW_BADGE_PATTERN.test(cleaned)) {
+      return 12;
+    }
+    if (normalized === "today" || /\b(?:posted|active|updated|listed|reposted|date posted)\s+today\b/.test(
+      normalized
+    ) || /\bnew today\b/.test(normalized)) {
+      return 12;
+    }
+    if (normalized === "yesterday" || /\b(?:posted|active|updated|listed|reposted|date posted)\s+yesterday\b/.test(
+      normalized
+    )) {
+      return 24;
+    }
+    const compactPlusMatch = raw.match(COMPACT_PLUS_AGE_PATTERN);
+    if (compactPlusMatch) {
+      return convertAgeValueToHours(compactPlusMatch[1], compactPlusMatch[2]);
+    }
+    const explicitAgoMatch = normalized.match(EXPLICIT_AGO_AGE_PATTERN);
+    if (explicitAgoMatch) {
+      return convertAgeValueToHours(explicitAgoMatch[1], explicitAgoMatch[2]);
+    }
+    const postedWithinMatch = normalized.match(POSTED_WITHIN_AGE_PATTERN);
+    if (postedWithinMatch) {
+      return convertAgeValueToHours(postedWithinMatch[1], postedWithinMatch[2]);
+    }
+    const postedWithinRangeMatch = normalized.match(POSTED_WITHIN_RANGE_PATTERN);
+    if (postedWithinRangeMatch) {
+      return convertAgeValueToHours(
+        postedWithinRangeMatch[1],
+        postedWithinRangeMatch[2]
+      );
+    }
+    const exactStandaloneMatch = normalized.match(EXACT_STANDALONE_AGE_PATTERN);
+    if (exactStandaloneMatch) {
+      return convertAgeValueToHours(exactStandaloneMatch[1], exactStandaloneMatch[2]);
+    }
+    const exactPrefixedMatch = normalized.match(EXACT_PREFIXED_AGE_PATTERN);
+    if (exactPrefixedMatch) {
+      return convertAgeValueToHours(exactPrefixedMatch[1], exactPrefixedMatch[2]);
+    }
+    if (normalized.length <= 120) {
+      const embeddedStandaloneMatch = normalized.match(EMBEDDED_STANDALONE_AGE_PATTERN);
+      if (embeddedStandaloneMatch) {
+        return convertAgeValueToHours(
+          embeddedStandaloneMatch[1],
+          embeddedStandaloneMatch[2]
+        );
+      }
+    }
+    if (POSTED_DATE_CUE_PATTERN.test(cleaned) || looksLikeStandaloneDateOnlyFragment(cleaned, normalized)) {
+      const absoluteAge = extractAbsolutePostedAgeHours(cleaned);
+      if (absoluteAge !== null) {
+        return absoluteAge;
+      }
+    }
+    return null;
+  }
+  function looksLikeStandaloneDateOnlyFragment(cleaned, _normalized) {
+    return POSTED_DATE_CUE_PATTERN.test(cleaned);
   }
   function extractAbsolutePostedAgeHours(source) {
     if (!source) {
@@ -5056,6 +5273,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       site,
       currentUrl
     );
+    const hasKnownPostedAge = valid.some(
+      (candidate) => extractPostedAgeHours(candidate.contextText) !== null
+    );
+    if (site === "ziprecruiter" && datePostedWindow !== "any" && valid.length > 0 && !hasKnownPostedAge) {
+      return [];
+    }
     const recencyFiltered = filterCandidatesByDatePostedWindow(valid, datePostedWindow);
     const recencyEligible = datePostedWindow === "any" ? valid : recencyFiltered;
     const eligible = site === "dice" ? recencyEligible.filter((candidate) => isExplicitlyRemoteDiceCandidate(candidate)) : filterCandidatesForRemotePreference(
@@ -6179,21 +6402,66 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function filterZipRecruiterAppliedCandidates(candidates) {
     const appliedKeys = collectZipRecruiterAppliedDedupKeys();
-    return candidates.filter((candidate) => {
+    const keptCandidates = [];
+    for (const candidate of candidates) {
       if (isAppliedJobText(candidate.contextText) || isAppliedJobText(candidate.title)) {
-        return false;
+        continue;
       }
       const key = getZipRecruiterCandidateKey(candidate.url);
       if (key && appliedKeys.has(key)) {
-        return false;
+        continue;
       }
-      for (const contextText of collectZipRecruiterCandidateDomContexts(candidate, key)) {
-        if (isAppliedJobText(contextText)) {
-          return false;
-        }
+      const domContexts = collectZipRecruiterCandidateDomContexts(candidate, key);
+      if (domContexts.some((contextText) => isAppliedJobText(contextText))) {
+        continue;
       }
-      return true;
+      keptCandidates.push({
+        ...candidate,
+        contextText: mergeZipRecruiterCandidateContext(candidate, domContexts)
+      });
+    }
+    return keptCandidates;
+  }
+  function mergeZipRecruiterCandidateContext(candidate, domContexts) {
+    const contexts = /* @__PURE__ */ new Set();
+    const addContext = (value) => {
+      const text = cleanText(value);
+      if (text) {
+        contexts.add(text);
+      }
+    };
+    addContext(candidate.contextText);
+    for (const contextText of domContexts) {
+      addContext(contextText);
+    }
+    const rankedContexts = Array.from(contexts).sort((left, right) => {
+      const scoreDelta = scoreZipRecruiterContextText(candidate, right) - scoreZipRecruiterContextText(candidate, left);
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+      return right.length - left.length;
     });
+    const bestContext = rankedContexts[0] ?? "";
+    if (extractPostedAgeHours(bestContext) !== null) {
+      return bestContext;
+    }
+    const recencyContext = rankedContexts.find(
+      (context) => extractPostedAgeHours(context) !== null
+    );
+    if (!recencyContext || recencyContext === bestContext) {
+      return bestContext;
+    }
+    return cleanText(`${bestContext} ${recencyContext}`);
+  }
+  function scoreZipRecruiterContextText(candidate, contextText) {
+    let score = scoreCandidateContextQuality({
+      ...candidate,
+      contextText
+    });
+    if (extractPostedAgeHours(contextText) !== null) {
+      score += 8;
+    }
+    return score;
   }
   function collectZipRecruiterCandidateDomContexts(candidate, candidateKey = getZipRecruiterCandidateKey(candidate.url)) {
     const contexts = /* @__PURE__ */ new Set();
@@ -6486,7 +6754,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         contexts.add(text);
       }
     };
-    addContext(buildCandidateContextText(container, anchor));
+    addContext(buildZipRecruiterReadableContextText(container, anchor));
     const metadataSelectors = [
       "[data-status]",
       "[aria-label]",
@@ -6517,6 +6785,61 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           node.id
         )
       );
+    }
+    return cleanText(Array.from(contexts).join(" "));
+  }
+  function buildZipRecruiterReadableContextText(container, anchor) {
+    const contexts = /* @__PURE__ */ new Set();
+    const addElementText = (element) => {
+      if (!element) {
+        return;
+      }
+      const text = cleanText(
+        [
+          getReadableText(element) || element.innerText || element.textContent || "",
+          element.getAttribute("aria-label") || "",
+          element.getAttribute("title") || "",
+          element.getAttribute("data-status") || "",
+          element.getAttribute("data-testid") || "",
+          element.getAttribute("data-qa") || "",
+          element.getAttribute("data-cy") || "",
+          element.getAttribute("datetime") || ""
+        ].filter(Boolean).join(" ")
+      );
+      if (text) {
+        contexts.add(text);
+      }
+    };
+    addElementText(container);
+    if (anchor) {
+      let current = anchor.parentElement;
+      for (let depth = 0; current && current !== container && depth < 6; depth += 1) {
+        if (/^(article|li|section)$/i.test(current.tagName) || current.getAttribute("role") === "listitem" || current.hasAttribute("data-testid") || /(?:job|card|result|listing)/i.test(current.className || "")) {
+          addElementText(current);
+        }
+        current = current.parentElement;
+      }
+    }
+    addElementText(anchor);
+    for (const node of Array.from(
+      container.querySelectorAll(
+        "time, [datetime], [aria-label], [title], [data-testid], [data-qa], [data-cy], span, p, small, li, div"
+      )
+    ).slice(0, 48)) {
+      const text = cleanText(
+        [
+          getReadableText(node) || node.innerText || node.textContent || "",
+          node.getAttribute("aria-label") || "",
+          node.getAttribute("title") || "",
+          node.getAttribute("datetime") || ""
+        ].filter(Boolean).join(" ")
+      );
+      if (!text || text.length > 120) {
+        continue;
+      }
+      if (extractPostedAgeHours(text) !== null) {
+        contexts.add(text);
+      }
     }
     return cleanText(Array.from(contexts).join(" "));
   }
@@ -10129,6 +10452,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     return bestUrls;
   }
+  async function tryApplySupportedResultsDateFilter(site, datePostedWindow) {
+    if (datePostedWindow === "any") {
+      return false;
+    }
+    if (site === "ziprecruiter") {
+      return tryApplyZipRecruiterPostedDateFilter(datePostedWindow);
+    }
+    return false;
+  }
   function mergeJobUrlLists(...lists) {
     const merged = [];
     const seenKeys = /* @__PURE__ */ new Set();
@@ -10147,6 +10479,152 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   async function waitForResultSurfaceSettle(site) {
     await waitForDomSettle(getSiteResultSurfaceSettleMs(site), 350);
+  }
+  async function tryApplyZipRecruiterPostedDateFilter(datePostedWindow) {
+    const directOption = findZipRecruiterDateFilterOption(datePostedWindow);
+    if (directOption && activateZipRecruiterDateFilterOption(directOption, datePostedWindow)) {
+      await sleep(900);
+      return true;
+    }
+    const launchers = findZipRecruiterDateFilterLaunchers();
+    for (const launcher of launchers.slice(0, 3)) {
+      if (!isElementInteractive(launcher)) {
+        continue;
+      }
+      performClickAction(launcher);
+      await sleep(700);
+      const option = findZipRecruiterDateFilterOption(datePostedWindow);
+      if (!option) {
+        continue;
+      }
+      if (activateZipRecruiterDateFilterOption(option, datePostedWindow)) {
+        await sleep(900);
+        return true;
+      }
+    }
+    return false;
+  }
+  function findZipRecruiterDateFilterLaunchers() {
+    const launchers = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const element of collectDeepMatches(
+      "button, [role='button'], summary, a[href], label, div[tabindex], span[tabindex]"
+    )) {
+      if (!isElementVisible(element)) {
+        continue;
+      }
+      const text = cleanText(
+        [
+          getActionText(element),
+          element.getAttribute("aria-label"),
+          element.getAttribute("title"),
+          element.getAttribute("data-testid"),
+          element.getAttribute("data-qa")
+        ].filter(Boolean).join(" ")
+      ).toLowerCase();
+      if (!text) {
+        continue;
+      }
+      if (text.includes("date posted") || text.includes("posted date") || text === "date" || text.startsWith("date ")) {
+        if (!seen.has(element)) {
+          seen.add(element);
+          launchers.push({
+            element,
+            score: (text.includes("date posted") || text.includes("posted date") ? 40 : 0) + (element.getAttribute("aria-expanded") !== null ? 8 : 0)
+          });
+        }
+      }
+    }
+    return launchers.sort((left, right) => right.score - left.score).map((entry) => entry.element);
+  }
+  function findZipRecruiterDateFilterOption(datePostedWindow) {
+    const targetLabels = getZipRecruiterDateFilterTargetLabels(datePostedWindow);
+    const scored = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const element of collectDeepMatches(
+      "button, [role='button'], [role='option'], a[href], label, li, div, span"
+    )) {
+      if (!isElementVisible(element)) {
+        continue;
+      }
+      const text = cleanText(
+        [
+          getActionText(element),
+          element.getAttribute("aria-label"),
+          element.getAttribute("title")
+        ].filter(Boolean).join(" ")
+      ).toLowerCase();
+      if (!text) {
+        continue;
+      }
+      const labelIndex = targetLabels.findIndex((label) => text === label || text.includes(label));
+      if (labelIndex < 0) {
+        continue;
+      }
+      if (!seen.has(element)) {
+        seen.add(element);
+        scored.push({
+          element,
+          score: (text === targetLabels[labelIndex] ? 30 : 0) + (element.matches("button, [role='button'], [role='option'], label") ? 8 : 0)
+        });
+      }
+    }
+    const bestElement = scored.sort((left, right) => right.score - left.score).map((entry) => entry.element)[0];
+    if (bestElement) {
+      return bestElement;
+    }
+    for (const select of Array.from(document.querySelectorAll("select"))) {
+      if (!isElementVisible(select)) {
+        continue;
+      }
+      const option = Array.from(select.options).find((entry) => {
+        const text = cleanText(entry.textContent || "").toLowerCase();
+        return targetLabels.some((label) => text === label || text.includes(label));
+      });
+      if (option) {
+        return select;
+      }
+    }
+    return null;
+  }
+  function activateZipRecruiterDateFilterOption(target, datePostedWindow) {
+    if (target instanceof HTMLSelectElement) {
+      const labels = getZipRecruiterDateFilterTargetLabels(datePostedWindow);
+      const option = Array.from(target.options).find((entry) => {
+        const text = cleanText(entry.textContent || "").toLowerCase();
+        return labels.some((label) => text === label || text.includes(label));
+      });
+      if (!option?.value) {
+        return false;
+      }
+      target.value = option.value;
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+      target.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+    const labelInput = target.matches("label") ? target.querySelector("input") : null;
+    if (labelInput && !labelInput.checked) {
+      labelInput.checked = true;
+      labelInput.dispatchEvent(new Event("input", { bubbles: true }));
+      labelInput.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    if (!isElementInteractive(target) && !target.matches("label")) {
+      return false;
+    }
+    performClickAction(target);
+    return true;
+  }
+  function getZipRecruiterDateFilterTargetLabels(datePostedWindow) {
+    switch (datePostedWindow) {
+      case "24h":
+        return ["past 24 hours", "last 24 hours", "24 hours"];
+      case "3d":
+        return ["past 3 days", "last 3 days", "3 days"];
+      case "1w":
+        return ["past week", "past 7 days", "last 7 days", "7 days"];
+      case "any":
+        return [];
+    }
   }
   function advanceCareerSiteResultsSurface(site, attempt) {
     const container = findCareerSiteScrollableResultsContainer(site);
@@ -12278,9 +12756,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       document,
       isProbablyRateLimitPage
     });
+    if (settings.datePostedWindow !== "any" && await tryApplySupportedResultsDateFilter(site, settings.datePostedWindow)) {
+      await waitForAutomationResumeIfPaused();
+      throwIfRateLimited(site, {
+        detectBrokenPageReason,
+        document,
+        isProbablyRateLimitPage
+      });
+    }
     if (site === "greenhouse" && greenhousePortalKeyword && await searchMyGreenhousePortal(
       greenhousePortalKeyword,
-      settings.candidate.country
+      settings.candidate.country,
+      settings.datePostedWindow
     )) {
       const greenhouseLabelPrefix = currentLabel ? `${currentLabel} ` : "";
       updateStatus(
@@ -14248,19 +14735,19 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     window.location.assign(trimmedUrl);
   }
-  async function searchMyGreenhousePortal(keyword, candidateCountry) {
+  async function searchMyGreenhousePortal(keyword, candidateCountry, datePostedWindow) {
     if (!isMyGreenhousePortalPage()) {
       return false;
     }
-    const canonicalPortalTarget = buildSearchTargets(
-      "greenhouse",
+    const canonicalPortalTarget = resolveMyGreenhouseCanonicalSearchUrl(
       window.location.href,
       keyword,
-      candidateCountry
-    )[0]?.url;
+      candidateCountry,
+      datePostedWindow
+    );
     const normalizedCurrentUrl = normalizeUrl(window.location.href);
     const normalizedPortalTarget = normalizeUrl(canonicalPortalTarget || "");
-    if (normalizedPortalTarget && normalizedCurrentUrl && normalizedPortalTarget !== normalizedCurrentUrl) {
+    if (canonicalPortalTarget && normalizedPortalTarget && normalizedCurrentUrl && normalizedPortalTarget !== normalizedCurrentUrl) {
       navigateCurrentTabPreservingInput(canonicalPortalTarget);
       return true;
     }

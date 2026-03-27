@@ -8,6 +8,7 @@ import {
   findMyGreenhouseWorkTypeButton,
   getMyGreenhouseControlValue,
   isMyGreenhouseRemoteOptionSelected,
+  resolveMyGreenhouseCanonicalSearchUrl,
 } from "../src/content/greenhouseSearch";
 
 describe("greenhouse search helpers", () => {
@@ -89,6 +90,19 @@ describe("greenhouse search helpers", () => {
     expect(remoteOption).not.toBeNull();
     expect(isMyGreenhouseRemoteOptionSelected(remoteOption as HTMLElement)).toBe(
       true
+    );
+  });
+
+  it("resolves MyGreenhouse canonical targets with the selected date window", () => {
+    expect(
+      resolveMyGreenhouseCanonicalSearchUrl(
+        "https://my.greenhouse.io/jobs",
+        "full stack",
+        "US",
+        "24h"
+      )
+    ).toBe(
+      "https://my.greenhouse.io/jobs?query=full+stack&location=United+States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type%5B%5D=remote&date_posted=past_day"
     );
   });
 });

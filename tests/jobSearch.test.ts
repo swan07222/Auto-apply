@@ -138,6 +138,68 @@ describe("job search candidate filtering", () => {
     ).toEqual(["https://example.com/jobs/frontend-engineer-1"]);
   });
 
+  it("filters compact posted-age chips that appear without an explicit posted label", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://example.com/jobs/frontend-engineer-1",
+        title: "Frontend Engineer",
+        contextText: "Remote • 2 h",
+      },
+      {
+        url: "https://example.com/jobs/platform-engineer-2",
+        title: "Platform Engineer",
+        contextText: "Remote • 3 d",
+      },
+      {
+        url: "https://example.com/jobs/site-reliability-engineer-3",
+        title: "Site Reliability Engineer",
+        contextText: "Remote • 1 wk ago",
+      },
+    ];
+
+    expect(
+      pickRelevantJobUrls(candidates, "other_sites", undefined, "24h")
+    ).toEqual(["https://example.com/jobs/frontend-engineer-1"]);
+  });
+
+  it("treats ZipRecruiter New badges as recent when a date window is selected", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://www.ziprecruiter.com/jobs/full-stack-engineer-1?jid=fs-1",
+        title: "Full Stack Engineer",
+        contextText: "Remote role. Quick Apply New.",
+      },
+      {
+        url: "https://www.ziprecruiter.com/jobs/full-stack-engineer-2?jid=fs-2",
+        title: "Full Stack Engineer",
+        contextText: "Remote role. Posted 8 days ago.",
+      },
+    ];
+
+    expect(
+      pickRelevantJobUrls(candidates, "ziprecruiter", undefined, "24h")
+    ).toEqual(["https://www.ziprecruiter.com/jobs/full-stack-engineer-1?jid=fs-1"]);
+  });
+
+  it("does not open ZipRecruiter jobs when a date window is selected but no visible result exposes recency text", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://www.ziprecruiter.com/jobs/full-stack-engineer-1?jid=fs-1",
+        title: "Full Stack Engineer",
+        contextText: "Remote role. 1-Click Apply.",
+      },
+      {
+        url: "https://www.ziprecruiter.com/jobs/platform-engineer-2?jid=pe-2",
+        title: "Platform Engineer",
+        contextText: "Remote role. Save job.",
+      },
+    ];
+
+    expect(
+      pickRelevantJobUrls(candidates, "ziprecruiter", undefined, "24h")
+    ).toEqual([]);
+  });
+
   it("keeps fallback generic jobs after preferred matches so boards can fill the requested limit", () => {
     const candidates: JobCandidate[] = [
       {
@@ -674,6 +736,49 @@ describe("job search candidate filtering", () => {
 
     expect(urls).toEqual([
       "https://www.ziprecruiter.com/jobs/platform-engineer-2",
+    ]);
+  });
+
+  it("preserves ZipRecruiter recency text from multi-link result cards so date filters still work", () => {
+    document.body.innerHTML = `
+      <main>
+        <article class="job_result">
+          <h2>
+            <a href="https://www.ziprecruiter.com/jobs/front-end-engineer-1?jid=alpha123">
+              Front End Engineer
+            </a>
+          </h2>
+          <a href="https://www.ziprecruiter.com/job/apply/alpha123?zipapply=true">
+            1-Click Apply
+          </a>
+          <span>Remote</span>
+          <span>2 days ago</span>
+        </article>
+        <article class="job_result">
+          <h2>
+            <a href="https://www.ziprecruiter.com/jobs/platform-engineer-2?jid=beta456">
+              Platform Engineer
+            </a>
+          </h2>
+          <a href="https://www.ziprecruiter.com/job/apply/beta456?zipapply=true">
+            1-Click Apply
+          </a>
+          <span>Remote</span>
+          <span>Posted today</span>
+        </article>
+      </main>
+    `;
+
+    const candidates = collectJobDetailCandidates("ziprecruiter");
+    const olderCandidate = candidates.find((candidate) =>
+      candidate.url.includes("alpha123")
+    );
+
+    expect(olderCandidate?.contextText).toContain("2 days ago");
+    expect(
+      pickRelevantJobUrls(candidates, "ziprecruiter", undefined, "24h")
+    ).toEqual([
+      "https://www.ziprecruiter.com/jobs/platform-engineer-2?jid=beta456",
     ]);
   });
 

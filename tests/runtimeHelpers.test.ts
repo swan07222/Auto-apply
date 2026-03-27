@@ -13,6 +13,7 @@ import {
   shouldBlockApplicationTargetProbeFailure,
   shouldPreferMonsterClickContinuation,
   shouldRetryAlternateApplyTargets,
+  shouldSkipCurrentPageByPostedDateWindow,
   shouldTreatCurrentPageAsApplied,
   throwIfRateLimited,
 } from "../src/content/runtimeHelpers";
@@ -187,6 +188,30 @@ describe("content runtime helpers", () => {
     expect(shouldAvoidApplyClickFocus("indeed")).toBe(false);
     expect(shouldRetryAlternateApplyTargets("monster")).toBe(false);
     expect(shouldRetryAlternateApplyTargets("indeed")).toBe(true);
+  });
+
+  it("decides whether the current job page should be skipped by the selected posted-date window", () => {
+    expect(
+      shouldSkipCurrentPageByPostedDateWindow("Posted today", "24h")
+    ).toBe(false);
+    expect(
+      shouldSkipCurrentPageByPostedDateWindow("Remote role. 3 d", "24h")
+    ).toBe(true);
+    expect(
+      shouldSkipCurrentPageByPostedDateWindow("Date posted Mar 10, 2026", "24h")
+    ).toBe(true);
+    expect(
+      shouldSkipCurrentPageByPostedDateWindow(
+        "Interview process starts Mar 10, 2026",
+        "24h"
+      )
+    ).toBe(false);
+    expect(
+      shouldSkipCurrentPageByPostedDateWindow("Remote role with React.", "24h")
+    ).toBe(false);
+    expect(
+      shouldSkipCurrentPageByPostedDateWindow("Date posted Mar 10, 2026", "any")
+    ).toBe(false);
   });
 
   it("does not block external application handoffs when preflight probing is inconclusive", () => {

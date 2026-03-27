@@ -12,7 +12,10 @@ import { createAutomationProfile, createEmptyCandidateProfile } from "./profiles
 type CuratedJobSiteDefinition = {
   label: string;
   regions: Exclude<StartupRegion, "auto">[];
-  buildUrl: (keyword: string) => string | null;
+  buildUrl: (
+    keyword: string,
+    datePostedWindow?: DatePostedWindow
+  ) => string | null;
 };
 
 export const SUPPORTED_SITE_LABELS: Record<SiteKey, string> = {
@@ -65,7 +68,7 @@ export const DEFAULT_STARTUP_COMPANIES: StartupCompany[] = [
     regions: ["us", "uk", "eu"],
   },
   { name: "Monzo", careersUrl: "https://job-boards.greenhouse.io/monzo", regions: ["uk"] },
-  { name: "Wise", careersUrl: "https://wise.jobs/", regions: ["uk"] },
+  { name: "Wise", careersUrl: "https://wise.jobs/engineering", regions: ["uk"] },
   { name: "Synthesia", careersUrl: "https://synthesia.io/careers", regions: ["uk"] },
   { name: "Snyk", careersUrl: "https://snyk.io/careers/", regions: ["uk"] },
   { name: "Checkout.com", careersUrl: "https://www.checkout.com/careers", regions: ["uk"] },
@@ -84,8 +87,13 @@ export const OTHER_JOB_SITE_DEFINITIONS: CuratedJobSiteDefinition[] = [
   {
     label: "Built In",
     regions: ["us"],
-    buildUrl: (keyword) =>
-      `https://builtin.com/jobs/remote?search=${encodeURIComponent(keyword)}`,
+    buildUrl: (keyword, datePostedWindow = "any") => {
+      const encodedKeyword = encodeURIComponent(keyword);
+      const daysSinceUpdated = getBuiltInDaysSinceUpdatedValue(datePostedWindow);
+      return daysSinceUpdated
+        ? `https://builtin.com/jobs/remote?search=${encodedKeyword}&daysSinceUpdated=${daysSinceUpdated}`
+        : `https://builtin.com/jobs/remote?search=${encodedKeyword}`;
+    },
   },
   {
     label: "The Muse",
@@ -189,4 +197,19 @@ function encodeSearchQueryForPath(query: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function getBuiltInDaysSinceUpdatedValue(
+  datePostedWindow: DatePostedWindow
+): string {
+  switch (datePostedWindow) {
+    case "24h":
+      return "1";
+    case "3d":
+      return "3";
+    case "1w":
+      return "7";
+    case "any":
+      return "";
+  }
 }

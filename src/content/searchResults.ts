@@ -286,6 +286,21 @@ export async function waitForJobDetailUrls({
   return bestUrls;
 }
 
+export async function tryApplySupportedResultsDateFilter(
+  site: SiteKey,
+  datePostedWindow: DatePostedWindow
+): Promise<boolean> {
+  if (datePostedWindow === "any") {
+    return false;
+  }
+
+  if (site === "ziprecruiter") {
+    return tryApplyZipRecruiterPostedDateFilter(datePostedWindow);
+  }
+
+  return false;
+}
+
 function mergeJobUrlLists(...lists: string[][]): string[] {
   const merged: string[] = [];
   const seenKeys = new Set<string>();
@@ -309,6 +324,208 @@ function mergeJobUrlLists(...lists: string[][]): string[] {
 
 async function waitForResultSurfaceSettle(site: SiteKey): Promise<void> {
   await waitForDomSettle(getSiteResultSurfaceSettleMs(site), 350);
+}
+
+async function tryApplyZipRecruiterPostedDateFilter(
+  datePostedWindow: DatePostedWindow
+): Promise<boolean> {
+  const directOption = findZipRecruiterDateFilterOption(datePostedWindow);
+  if (directOption && activateZipRecruiterDateFilterOption(directOption, datePostedWindow)) {
+    await sleep(900);
+    return true;
+  }
+
+  const launchers = findZipRecruiterDateFilterLaunchers();
+  for (const launcher of launchers.slice(0, 3)) {
+    if (!isElementInteractive(launcher)) {
+      continue;
+    }
+
+    performClickAction(launcher);
+    await sleep(700);
+
+    const option = findZipRecruiterDateFilterOption(datePostedWindow);
+    if (!option) {
+      continue;
+    }
+
+    if (activateZipRecruiterDateFilterOption(option, datePostedWindow)) {
+      await sleep(900);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function findZipRecruiterDateFilterLaunchers(): HTMLElement[] {
+  const launchers: Array<{ element: HTMLElement; score: number }> = [];
+  const seen = new Set<HTMLElement>();
+
+  for (const element of collectDeepMatches<HTMLElement>(
+    "button, [role='button'], summary, a[href], label, div[tabindex], span[tabindex]"
+  )) {
+    if (!isElementVisible(element)) {
+      continue;
+    }
+
+    const text = cleanText(
+      [
+        getActionText(element),
+        element.getAttribute("aria-label"),
+        element.getAttribute("title"),
+        element.getAttribute("data-testid"),
+        element.getAttribute("data-qa"),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    ).toLowerCase();
+
+    if (!text) {
+      continue;
+    }
+
+    if (
+      text.includes("date posted") ||
+      text.includes("posted date") ||
+      text === "date" ||
+      text.startsWith("date ")
+    ) {
+      if (!seen.has(element)) {
+        seen.add(element);
+        launchers.push({
+          element,
+          score:
+            (text.includes("date posted") || text.includes("posted date") ? 40 : 0) +
+            (element.getAttribute("aria-expanded") !== null ? 8 : 0),
+        });
+      }
+    }
+  }
+
+  return launchers
+    .sort((left, right) => right.score - left.score)
+    .map((entry) => entry.element);
+}
+
+function findZipRecruiterDateFilterOption(
+  datePostedWindow: DatePostedWindow
+): HTMLElement | HTMLSelectElement | null {
+  const targetLabels = getZipRecruiterDateFilterTargetLabels(datePostedWindow);
+  const scored: Array<{ element: HTMLElement; score: number }> = [];
+  const seen = new Set<HTMLElement>();
+
+  for (const element of collectDeepMatches<HTMLElement>(
+    "button, [role='button'], [role='option'], a[href], label, li, div, span"
+  )) {
+    if (!isElementVisible(element)) {
+      continue;
+    }
+
+    const text = cleanText(
+      [
+        getActionText(element),
+        element.getAttribute("aria-label"),
+        element.getAttribute("title"),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    ).toLowerCase();
+    if (!text) {
+      continue;
+    }
+
+    const labelIndex = targetLabels.findIndex((label) => text === label || text.includes(label));
+    if (labelIndex < 0) {
+      continue;
+    }
+
+    if (!seen.has(element)) {
+      seen.add(element);
+      scored.push({
+        element,
+        score:
+          (text === targetLabels[labelIndex] ? 30 : 0) +
+          (element.matches("button, [role='button'], [role='option'], label") ? 8 : 0),
+      });
+    }
+  }
+
+  const bestElement = scored
+    .sort((left, right) => right.score - left.score)
+    .map((entry) => entry.element)[0];
+  if (bestElement) {
+    return bestElement;
+  }
+
+  for (const select of Array.from(document.querySelectorAll<HTMLSelectElement>("select"))) {
+    if (!isElementVisible(select)) {
+      continue;
+    }
+
+    const option = Array.from(select.options).find((entry) => {
+      const text = cleanText(entry.textContent || "").toLowerCase();
+      return targetLabels.some((label) => text === label || text.includes(label));
+    });
+
+    if (option) {
+      return select;
+    }
+  }
+
+  return null;
+}
+
+function activateZipRecruiterDateFilterOption(
+  target: HTMLElement | HTMLSelectElement,
+  datePostedWindow: DatePostedWindow
+): boolean {
+  if (target instanceof HTMLSelectElement) {
+    const labels = getZipRecruiterDateFilterTargetLabels(datePostedWindow);
+    const option = Array.from(target.options).find((entry) => {
+      const text = cleanText(entry.textContent || "").toLowerCase();
+      return labels.some((label) => text === label || text.includes(label));
+    });
+    if (!option?.value) {
+      return false;
+    }
+
+    target.value = option.value;
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+    target.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  }
+
+  const labelInput = target.matches("label")
+    ? target.querySelector<HTMLInputElement>("input")
+    : null;
+  if (labelInput && !labelInput.checked) {
+    labelInput.checked = true;
+    labelInput.dispatchEvent(new Event("input", { bubbles: true }));
+    labelInput.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  if (!isElementInteractive(target) && !target.matches("label")) {
+    return false;
+  }
+
+  performClickAction(target);
+  return true;
+}
+
+function getZipRecruiterDateFilterTargetLabels(
+  datePostedWindow: DatePostedWindow
+): string[] {
+  switch (datePostedWindow) {
+    case "24h":
+      return ["past 24 hours", "last 24 hours", "24 hours"];
+    case "3d":
+      return ["past 3 days", "last 3 days", "3 days"];
+    case "1w":
+      return ["past week", "past 7 days", "last 7 days", "7 days"];
+    case "any":
+      return [];
+  }
 }
 
 function advanceCareerSiteResultsSurface(

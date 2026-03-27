@@ -115,6 +115,7 @@ import {
   findMyGreenhouseWorkTypeButton,
   getMyGreenhouseControlValue,
   isMyGreenhouseRemoteOptionSelected,
+  resolveMyGreenhouseCanonicalSearchUrl,
 } from "./content/greenhouseSearch";
 import {
   collectJobDetailCandidates,
@@ -154,6 +155,7 @@ import {
   getJobResultCollectionTargetCount,
   getPostedWindowDescription as describePostedWindow,
   scrollPageForLazyContent as scrollSearchResultsPage,
+  tryApplySupportedResultsDateFilter,
   waitForJobDetailUrls as collectJobDetailUrls,
 } from "./content/searchResults";
 import {
@@ -1257,11 +1259,24 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
   });
 
   if (
+    settings.datePostedWindow !== "any" &&
+    (await tryApplySupportedResultsDateFilter(site, settings.datePostedWindow))
+  ) {
+    await waitForAutomationResumeIfPaused();
+    throwIfRateLimited(site, {
+      detectBrokenPageReason,
+      document,
+      isProbablyRateLimitPage,
+    });
+  }
+
+  if (
     site === "greenhouse" &&
     greenhousePortalKeyword &&
     (await searchMyGreenhousePortal(
       greenhousePortalKeyword,
-      settings.candidate.country
+      settings.candidate.country,
+      settings.datePostedWindow
     ))
   ) {
     const greenhouseLabelPrefix = currentLabel ? `${currentLabel} ` : "";
@@ -3788,22 +3803,24 @@ function navigateCurrentTabPreservingInput(url: string): void {
 
 async function searchMyGreenhousePortal(
   keyword: string,
-  candidateCountry: string
+  candidateCountry: string,
+  datePostedWindow: AutomationSettings["datePostedWindow"]
 ): Promise<boolean> {
   if (!isMyGreenhousePortalPage()) {
     return false;
   }
 
-  const canonicalPortalTarget = buildSearchTargets(
-    "greenhouse",
+  const canonicalPortalTarget = resolveMyGreenhouseCanonicalSearchUrl(
     window.location.href,
     keyword,
-    candidateCountry
-  )[0]?.url;
+    candidateCountry,
+    datePostedWindow
+  );
   const normalizedCurrentUrl = normalizeUrl(window.location.href);
   const normalizedPortalTarget = normalizeUrl(canonicalPortalTarget || "");
 
   if (
+    canonicalPortalTarget &&
     normalizedPortalTarget &&
     normalizedCurrentUrl &&
     normalizedPortalTarget !== normalizedCurrentUrl

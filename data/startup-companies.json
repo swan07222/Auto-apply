@@ -7,7 +7,7 @@
     { "name": "Notion", "careersUrl": "https://www.notion.so/careers", "regions": ["us"] },
     { "name": "Veeva", "careersUrl": "https://careers.veeva.com/job-search-results/", "regions": ["us", "uk", "eu"] },
     { "name": "Monzo", "careersUrl": "https://job-boards.greenhouse.io/monzo", "regions": ["uk"] },
-    { "name": "Wise", "careersUrl": "https://wise.jobs/", "regions": ["uk"] },
+    { "name": "Wise", "careersUrl": "https://wise.jobs/engineering", "regions": ["uk"] },
     { "name": "Synthesia", "careersUrl": "https://synthesia.io/careers", "regions": ["uk"] },
     { "name": "Snyk", "careersUrl": "https://snyk.io/careers/", "regions": ["uk"] },
     { "name": "Checkout.com", "careersUrl": "https://www.checkout.com/careers", "regions": ["uk"] },

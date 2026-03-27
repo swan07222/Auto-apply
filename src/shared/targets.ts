@@ -80,7 +80,7 @@ export function buildStartupSearchTargets(
   return dedupeSearchTargets(
     matchingCompanies.map((company) => ({
       label: company.name,
-      url: company.careersUrl,
+      url: resolveStartupCompanyCareersUrl(company),
       keyword: keywordHints || undefined,
     }))
   );
@@ -103,7 +103,7 @@ export function buildOtherJobSiteTargets(
         continue;
       }
 
-      const url = site.buildUrl(keyword);
+      const url = site.buildUrl(keyword, settings.datePostedWindow);
       if (!url) {
         continue;
       }
@@ -182,6 +182,30 @@ export function formatStartupRegionList(
     .join(" / ");
 }
 
+function resolveStartupCompanyCareersUrl(company: StartupCompany): string {
+  const normalizedUrl = sanitizeHttpUrl(company.careersUrl);
+  if (!normalizedUrl) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(normalizedUrl);
+    const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    const normalizedPath = parsed.pathname.replace(/\/+$/, "");
+
+    if (
+      hostname === "wise.jobs" &&
+      (normalizedPath === "" || normalizedPath === "/" || normalizedPath === "/jobs")
+    ) {
+      return new URL("/engineering", `${parsed.protocol}//${parsed.host}`).toString();
+    }
+
+    return parsed.toString();
+  } catch {
+    return normalizedUrl;
+  }
+}
+
 function dedupeSearchTargets(targets: SearchTarget[]): SearchTarget[] {
   const deduped = new Map<string, SearchTarget>();
 
@@ -224,12 +248,14 @@ function buildSingleSearchUrl(
       const url = new URL("/jobs-search", baseOrigin);
       url.searchParams.set("search", query);
       url.searchParams.set("location", "Remote");
+      applyZipRecruiterDatePostedWindow(url, datePostedWindow);
       return url.toString();
     }
     case "dice": {
       const url = new URL("/jobs", baseOrigin);
       url.searchParams.set("q", query);
       url.searchParams.set("filters.workplaceTypes", "Remote");
+      applyDiceDatePostedWindow(url, datePostedWindow);
       return url.toString();
     }
     case "monster":
@@ -241,10 +267,11 @@ function buildSingleSearchUrl(
         query,
         currentUrl,
         baseOrigin,
-        candidateCountry
+        candidateCountry,
+        datePostedWindow
       );
     case "builtin":
-      return buildBuiltInSearchUrl(query, baseOrigin);
+      return buildBuiltInSearchUrl(query, baseOrigin, datePostedWindow);
   }
 }
 
@@ -266,7 +293,33 @@ function applyBoardDatePostedWindow(
   url.searchParams.set("fromage", fromAge);
 }
 
+function applyZipRecruiterDatePostedWindow(
+  url: URL,
+  datePostedWindow: DatePostedWindow
+): void {
+  const days = getZipRecruiterDaysValue(datePostedWindow);
+  if (!days) {
+    url.searchParams.delete("days");
+    return;
+  }
+
+  url.searchParams.set("days", days);
+}
+
 function getIndeedFromAgeValue(datePostedWindow: DatePostedWindow): string {
+  switch (datePostedWindow) {
+    case "24h":
+      return "1";
+    case "3d":
+      return "3";
+    case "1w":
+      return "7";
+    case "any":
+      return "";
+  }
+}
+
+function getZipRecruiterDaysValue(datePostedWindow: DatePostedWindow): string {
   switch (datePostedWindow) {
     case "24h":
       return "1";
@@ -295,10 +348,59 @@ function buildGlassdoorSearchUrl(query: string, baseOrigin: string): string {
   return url.toString();
 }
 
-function buildBuiltInSearchUrl(query: string, baseOrigin: string): string {
+function buildBuiltInSearchUrl(
+  query: string,
+  baseOrigin: string,
+  datePostedWindow: DatePostedWindow
+): string {
   const url = new URL("/jobs/remote", baseOrigin);
   url.searchParams.set("search", query);
+  const daysSinceUpdated = getBuiltInDaysSinceUpdatedValue(datePostedWindow);
+  if (daysSinceUpdated) {
+    url.searchParams.set("daysSinceUpdated", daysSinceUpdated);
+  }
   return url.toString();
+}
+
+function applyDiceDatePostedWindow(
+  url: URL,
+  datePostedWindow: DatePostedWindow
+): void {
+  const postedDate = getDicePostedDateValue(datePostedWindow);
+  if (!postedDate) {
+    url.searchParams.delete("filters.postedDate");
+    return;
+  }
+
+  url.searchParams.set("filters.postedDate", postedDate);
+}
+
+function getDicePostedDateValue(datePostedWindow: DatePostedWindow): string {
+  switch (datePostedWindow) {
+    case "24h":
+      return "ONE";
+    case "3d":
+      return "THREE";
+    case "1w":
+      return "SEVEN";
+    case "any":
+      return "";
+  }
+}
+
+function getBuiltInDaysSinceUpdatedValue(
+  datePostedWindow: DatePostedWindow
+): string {
+  switch (datePostedWindow) {
+    case "24h":
+      return "1";
+    case "3d":
+      return "3";
+    case "1w":
+      return "7";
+    case "any":
+      return "";
+  }
 }
 
 function isMyGreenhousePortalUrl(currentUrl: string): boolean {
@@ -332,14 +434,16 @@ function buildGreenhouseSearchUrl(
   query: string,
   currentUrl: string,
   fallbackOrigin: string,
-  candidateCountry = ""
+  candidateCountry = "",
+  datePostedWindow: DatePostedWindow = "any"
 ): string {
   if (isMyGreenhousePortalUrl(currentUrl)) {
     try {
       const parsed = new URL(currentUrl);
       return buildMyGreenhousePortalSearchUrl(
         `${parsed.protocol}//${parsed.host}`,
-        buildMyGreenhousePortalQuery(query)
+        buildMyGreenhousePortalQuery(query),
+        datePostedWindow
       );
     } catch {
       return currentUrl;
@@ -358,9 +462,41 @@ function buildMyGreenhousePortalQuery(query: string): string {
 
 function buildMyGreenhousePortalSearchUrl(
   origin: string,
-  query: string
+  query: string,
+  datePostedWindow: DatePostedWindow
 ): string {
-  return `${origin}/jobs?query=${encodeURIComponent(query)}&location=United%20States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type[]=remote`;
+  const url = new URL("/jobs", origin);
+  url.searchParams.set("query", query);
+  url.searchParams.set("location", "United States");
+  url.searchParams.set("lat", "39.71614");
+  url.searchParams.set("lon", "-96.999246");
+  url.searchParams.set("location_type", "country");
+  url.searchParams.set("country_short_name", "US");
+  url.searchParams.append("work_type[]", "remote");
+
+  const datePosted = getMyGreenhouseDatePostedValue(datePostedWindow);
+  if (datePosted) {
+    url.searchParams.set("date_posted", datePosted);
+  }
+
+  return url.toString();
+}
+
+function getMyGreenhouseDatePostedValue(
+  datePostedWindow: DatePostedWindow
+): string {
+  switch (datePostedWindow) {
+    case "24h":
+      return "past_day";
+    case "3d":
+      // MyGreenhouse exposes 1/5/10/30-day buckets, so use the closest broader
+      // bucket and let our local recency backstop enforce the stricter 3-day window.
+      return "past_five_days";
+    case "1w":
+      return "past_ten_days";
+    case "any":
+      return "";
+  }
 }
 
 export function buildGreenhouseKeywordQuery(query: string): string {

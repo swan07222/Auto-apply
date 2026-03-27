@@ -68,6 +68,45 @@ const MONTH_NAME_TO_INDEX: Record<string, number> = {
 };
 const POSTED_DATE_CUE_PATTERN =
   /\b(posted|reposted|updated|listed|active|date posted|new)\b/i;
+const POSTED_DATE_FRAGMENT_SPLIT_PATTERN = /[\r\n]+|[•·|]+/;
+const POSTED_AGE_UNIT_PATTERN =
+  "(?:minutes?|mins?|min|m|hours?|hrs?|hr|h|days?|d|weeks?|w|wks?|wk|months?|mos?|mo)";
+const COMPACT_PLUS_AGE_PATTERN = new RegExp(
+  `\\b(\\d+)\\s*(${POSTED_AGE_UNIT_PATTERN})\\+(?=\\s|$)`,
+  "i"
+);
+const EXPLICIT_AGO_AGE_PATTERN = new RegExp(
+  `\\b(?:(?:posted|active|updated|listed|reposted|date posted)\\s+)?(\\d+)\\+?\\s*(${POSTED_AGE_UNIT_PATTERN})\\s+ago\\b`,
+  "i"
+);
+const POSTED_WITHIN_AGE_PATTERN = new RegExp(
+  `\\b(?:posted|active|updated|listed|reposted|date posted)\\s+(\\d+)\\+?\\s*(${POSTED_AGE_UNIT_PATTERN})\\b`,
+  "i"
+);
+const POSTED_WITHIN_RANGE_PATTERN = new RegExp(
+  `\\b(?:posted|active|updated|listed|reposted|date posted)\\s+(?:within|in the last)\\s+(\\d+)\\+?\\s*(${POSTED_AGE_UNIT_PATTERN})\\b`,
+  "i"
+);
+const EXACT_STANDALONE_AGE_PATTERN = new RegExp(
+  `^(\\d+)\\+?\\s*(${POSTED_AGE_UNIT_PATTERN})(?:\\s+ago)?$`,
+  "i"
+);
+const EXACT_PREFIXED_AGE_PATTERN = new RegExp(
+  `^(?:posted|active|updated|listed|reposted|date posted|new)\\s+(\\d+)\\+?\\s*(${POSTED_AGE_UNIT_PATTERN})(?:\\s+ago)?$`,
+  "i"
+);
+const EMBEDDED_STANDALONE_AGE_PATTERN = new RegExp(
+  `\\b(\\d+)\\+?\\s*(${POSTED_AGE_UNIT_PATTERN})(?:\\s+ago)?\\b`,
+  "i"
+);
+const RELATIVE_AGE_SIGNAL_PATTERN = new RegExp(
+  `\\b\\d+\\+?\\s*(${POSTED_AGE_UNIT_PATTERN})(?:\\s+ago)?\\b`,
+  "i"
+);
+const STANDALONE_RECENT_BADGE_PATTERN =
+  /^(?:quick apply|easy apply|one click apply|one-click apply|featured)\s+new$|^new(?:\s+(?:quick apply|easy apply|featured))?$/i;
+const TRAILING_RECENT_BADGE_PATTERN = /\bnew(?:\s*[|,.;:!?•])?\s*$/i;
+const SEPARATED_NEW_BADGE_PATTERN = /(?:^|[|,.;:!?•])\s*new(?:\s*[|,.;:!?•]|$)/i;
 
 export function shouldFilterBoardResultsByKeyword(
   site: SiteKey | null,
@@ -412,63 +451,26 @@ export function comparePostedAgeHours(
   return left - right;
 }
 
+export function isPostedAgeWithinDateWindow(
+  ageHours: number | null,
+  datePostedWindow: DatePostedWindow
+): boolean {
+  const maxAgeHours = getMaxPostedAgeHours(datePostedWindow);
+  if (maxAgeHours === null || ageHours === null) {
+    return true;
+  }
+
+  return ageHours <= maxAgeHours;
+}
+
 export function extractPostedAgeHours(text: string): number | null {
-  const cleaned = cleanText(text);
-  const raw = cleaned.toLowerCase();
-  const normalized = normalizeChoiceText(cleaned).replace(/\s+/g, " ");
-  if (!normalized) {
-    return null;
+  for (const fragment of buildPostedAgeFragments(text)) {
+    const ageHours = extractPostedAgeHoursFromFragment(fragment);
+    if (ageHours !== null) {
+      return ageHours;
+    }
   }
 
-  if (
-    /\b(just posted|just now|moments? ago|few moments ago|seconds? ago)\b/.test(
-      normalized
-    )
-  ) {
-    return 0;
-  }
-  if (
-    /\b(?:posted|active|updated|listed|reposted)\s+today\b/.test(normalized) ||
-    /\bnew today\b/.test(normalized)
-  ) {
-    return 12;
-  }
-  if (/\b(?:posted|active|updated|listed|reposted)\s+yesterday\b/.test(normalized)) {
-    return 24;
-  }
-
-  const compactPlusMatch = raw.match(
-    /\b(\d+)\s*(minutes?|mins?|min|m|hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\+(?=\s|$)/
-  );
-  if (compactPlusMatch) {
-    return convertAgeValueToHours(compactPlusMatch[1], compactPlusMatch[2]);
-  }
-
-  const explicitAgoMatch = normalized.match(
-    /\b(?:(?:posted|active|updated|listed|reposted)\s+)?(\d+)\+?\s*(minutes?|mins?|min|m|hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\s+ago\b/
-  );
-  if (explicitAgoMatch) {
-    return convertAgeValueToHours(explicitAgoMatch[1], explicitAgoMatch[2]);
-  }
-
-  const postedWithinMatch = normalized.match(
-    /\b(?:posted|active|updated|listed|reposted)\s+(\d+)\+?\s*(minutes?|mins?|min|m|hours?|hrs?|hr|h|days?|d|weeks?|w|months?|mos?|mo)\b/
-  );
-  if (postedWithinMatch) {
-    return convertAgeValueToHours(postedWithinMatch[1], postedWithinMatch[2]);
-  }
-
-  const absoluteAge = extractAbsolutePostedAgeHours(cleaned);
-  if (absoluteAge !== null) {
-    return absoluteAge;
-  }
-
-  if (/\btoday\b/.test(normalized)) {
-    return 12;
-  }
-  if (/\byesterday\b/.test(normalized)) {
-    return 24;
-  }
   return null;
 }
 
@@ -551,10 +553,185 @@ function convertAgeValueToHours(rawValue: string, rawUnit: string): number | nul
   if (unit === "w" || unit === "week" || unit === "weeks") {
     return value * 24 * 7;
   }
+  if (unit === "wk" || unit === "wks") {
+    return value * 24 * 7;
+  }
   if (unit === "mo" || unit === "mos" || unit === "month" || unit === "months") {
     return value * 24 * 30;
   }
   return null;
+}
+
+function buildPostedAgeFragments(source: string): string[] {
+  const fragments = new Set<string>();
+
+  const addFragment = (value: string | null | undefined) => {
+    const text = cleanText(value);
+    if (text) {
+      fragments.add(text);
+    }
+  };
+
+  addFragment(source);
+
+  for (const section of source.split(POSTED_DATE_FRAGMENT_SPLIT_PATTERN)) {
+    addFragment(section);
+  }
+
+  return Array.from(fragments).sort((left, right) => {
+    const scoreDelta = scorePostedAgeFragment(right) - scorePostedAgeFragment(left);
+    if (scoreDelta !== 0) {
+      return scoreDelta;
+    }
+
+    return left.length - right.length;
+  });
+}
+
+function scorePostedAgeFragment(fragment: string): number {
+  const normalized = normalizeChoiceText(fragment).replace(/\s+/g, " ");
+  if (!normalized) {
+    return -1;
+  }
+
+  let score = 0;
+  if (POSTED_DATE_CUE_PATTERN.test(normalized)) {
+    score += 6;
+  }
+  if (
+    normalized === "today" ||
+    normalized === "yesterday" ||
+    /\b(just posted|just now|moments? ago|few moments ago|seconds? ago)\b/.test(
+      normalized
+    )
+  ) {
+    score += 5;
+  }
+  if (
+    EXACT_STANDALONE_AGE_PATTERN.test(normalized) ||
+    EXACT_PREFIXED_AGE_PATTERN.test(normalized)
+  ) {
+    score += 4;
+  }
+  if (
+    RELATIVE_AGE_SIGNAL_PATTERN.test(normalized) ||
+    COMPACT_PLUS_AGE_PATTERN.test(fragment) ||
+    POSTED_WITHIN_RANGE_PATTERN.test(normalized)
+  ) {
+    score += 3;
+  }
+  if (looksLikeStandaloneDateOnlyFragment(fragment, normalized)) {
+    score += 2;
+  }
+  if (normalized.length <= 40) {
+    score += 1;
+  }
+
+  return score;
+}
+
+function extractPostedAgeHoursFromFragment(fragment: string): number | null {
+  const cleaned = cleanText(fragment);
+  const raw = cleaned.toLowerCase();
+  const normalized = normalizeChoiceText(cleaned).replace(/\s+/g, " ");
+  if (!normalized) {
+    return null;
+  }
+
+  if (
+    /\b(just posted|just now|moments? ago|few moments ago|seconds? ago)\b/.test(
+      normalized
+    )
+  ) {
+    return 0;
+  }
+  if (
+    normalized === "new" ||
+    STANDALONE_RECENT_BADGE_PATTERN.test(normalized) ||
+    TRAILING_RECENT_BADGE_PATTERN.test(cleaned) ||
+    SEPARATED_NEW_BADGE_PATTERN.test(cleaned)
+  ) {
+    return 12;
+  }
+  if (
+    normalized === "today" ||
+    /\b(?:posted|active|updated|listed|reposted|date posted)\s+today\b/.test(
+      normalized
+    ) ||
+    /\bnew today\b/.test(normalized)
+  ) {
+    return 12;
+  }
+  if (
+    normalized === "yesterday" ||
+    /\b(?:posted|active|updated|listed|reposted|date posted)\s+yesterday\b/.test(
+      normalized
+    )
+  ) {
+    return 24;
+  }
+
+  const compactPlusMatch = raw.match(COMPACT_PLUS_AGE_PATTERN);
+  if (compactPlusMatch) {
+    return convertAgeValueToHours(compactPlusMatch[1], compactPlusMatch[2]);
+  }
+
+  const explicitAgoMatch = normalized.match(EXPLICIT_AGO_AGE_PATTERN);
+  if (explicitAgoMatch) {
+    return convertAgeValueToHours(explicitAgoMatch[1], explicitAgoMatch[2]);
+  }
+
+  const postedWithinMatch = normalized.match(POSTED_WITHIN_AGE_PATTERN);
+  if (postedWithinMatch) {
+    return convertAgeValueToHours(postedWithinMatch[1], postedWithinMatch[2]);
+  }
+
+  const postedWithinRangeMatch = normalized.match(POSTED_WITHIN_RANGE_PATTERN);
+  if (postedWithinRangeMatch) {
+    return convertAgeValueToHours(
+      postedWithinRangeMatch[1],
+      postedWithinRangeMatch[2]
+    );
+  }
+
+  const exactStandaloneMatch = normalized.match(EXACT_STANDALONE_AGE_PATTERN);
+  if (exactStandaloneMatch) {
+    return convertAgeValueToHours(exactStandaloneMatch[1], exactStandaloneMatch[2]);
+  }
+
+  const exactPrefixedMatch = normalized.match(EXACT_PREFIXED_AGE_PATTERN);
+  if (exactPrefixedMatch) {
+    return convertAgeValueToHours(exactPrefixedMatch[1], exactPrefixedMatch[2]);
+  }
+
+  if (normalized.length <= 120) {
+    const embeddedStandaloneMatch = normalized.match(EMBEDDED_STANDALONE_AGE_PATTERN);
+    if (embeddedStandaloneMatch) {
+      return convertAgeValueToHours(
+        embeddedStandaloneMatch[1],
+        embeddedStandaloneMatch[2]
+      );
+    }
+  }
+
+  if (
+    POSTED_DATE_CUE_PATTERN.test(cleaned) ||
+    looksLikeStandaloneDateOnlyFragment(cleaned, normalized)
+  ) {
+    const absoluteAge = extractAbsolutePostedAgeHours(cleaned);
+    if (absoluteAge !== null) {
+      return absoluteAge;
+    }
+  }
+
+  return null;
+}
+
+function looksLikeStandaloneDateOnlyFragment(
+  cleaned: string,
+  _normalized: string
+): boolean {
+  return POSTED_DATE_CUE_PATTERN.test(cleaned);
 }
 
 function extractAbsolutePostedAgeHours(source: string): number | null {
