@@ -106,8 +106,23 @@
   var DATE_POSTED_WINDOW_LABELS = {
     any: "Any time",
     "24h": "Past 24 hours",
+    "2d": "Past 2 days",
     "3d": "Past 3 days",
-    "1w": "Past week"
+    "5d": "Past 5 days",
+    "1w": "Past week",
+    "10d": "Past 10 days",
+    "14d": "Past 14 days",
+    "30d": "Past 30 days"
+  };
+  var DATE_POSTED_WINDOW_DAY_COUNTS = {
+    "24h": 1,
+    "2d": 2,
+    "3d": 3,
+    "5d": 5,
+    "1w": 7,
+    "10d": 10,
+    "14d": 14,
+    "30d": 30
   };
   var RESUME_KIND_LABELS = {
     front_end: "Front End",
@@ -147,6 +162,37 @@
     greenhouse: "https://job-boards.greenhouse.io",
     builtin: "https://builtin.com"
   };
+  function isDatePostedWindow(value) {
+    return value === "any" || value === "24h" || value === "2d" || value === "3d" || value === "5d" || value === "1w" || value === "10d" || value === "14d" || value === "30d";
+  }
+  function getDatePostedWindowDays(datePostedWindow) {
+    if (datePostedWindow === "any") {
+      return null;
+    }
+    return DATE_POSTED_WINDOW_DAY_COUNTS[datePostedWindow];
+  }
+  function getNearestSupportedDatePostedDays(datePostedWindow, supportedDays, options = {}) {
+    const requestedDays = getDatePostedWindowDays(datePostedWindow);
+    if (requestedDays === null) {
+      return null;
+    }
+    const match = supportedDays.find((days) => days >= requestedDays);
+    if (typeof match === "number") {
+      return match;
+    }
+    if (!options.fallbackToMax || supportedDays.length === 0) {
+      return null;
+    }
+    return supportedDays[supportedDays.length - 1] ?? null;
+  }
+  function getBuiltInDaysSinceUpdatedValue(datePostedWindow) {
+    const daysSinceUpdated = getNearestSupportedDatePostedDays(
+      datePostedWindow,
+      [1, 3, 7, 30],
+      { fallbackToMax: true }
+    );
+    return typeof daysSinceUpdated === "number" ? String(daysSinceUpdated) : "";
+  }
 
   // src/shared/status.ts
   function detectSiteFromUrl(url) {
@@ -430,7 +476,7 @@
     return value === "us" || value === "uk" || value === "eu" || value === "auto" ? value : DEFAULT_SETTINGS.startupRegion;
   }
   function sanitizeDatePostedWindow(value) {
-    return value === "24h" || value === "3d" || value === "1w" || value === "any" ? value : DEFAULT_SETTINGS.datePostedWindow;
+    return isDatePostedWindow(value) ? value : DEFAULT_SETTINGS.datePostedWindow;
   }
   function readString2(value) {
     return typeof value === "string" ? value.trim() : "";
@@ -513,7 +559,7 @@
         return url.toString();
       }
       case "monster":
-        return buildMonsterSearchUrl(query, baseOrigin);
+        return buildMonsterSearchUrl(query, baseOrigin, datePostedWindow);
       case "glassdoor":
         return buildGlassdoorSearchUrl(query, baseOrigin);
       case "greenhouse":
@@ -548,35 +594,49 @@
     url.searchParams.set("days", days);
   }
   function getIndeedFromAgeValue(datePostedWindow) {
-    switch (datePostedWindow) {
-      case "24h":
-        return "1";
-      case "3d":
-        return "3";
-      case "1w":
-        return "7";
-      case "any":
-        return "";
-    }
+    const days = getDatePostedWindowDays(datePostedWindow);
+    return typeof days === "number" ? String(days) : "";
   }
   function getZipRecruiterDaysValue(datePostedWindow) {
-    switch (datePostedWindow) {
-      case "24h":
-        return "1";
-      case "3d":
-        return "3";
-      case "1w":
-        return "7";
-      case "any":
-        return "";
-    }
+    const days = getNearestSupportedDatePostedDays(
+      datePostedWindow,
+      [1, 5, 10, 30],
+      { fallbackToMax: true }
+    );
+    return typeof days === "number" ? String(days) : "";
   }
-  function buildMonsterSearchUrl(query, baseOrigin) {
+  function buildMonsterSearchUrl(query, baseOrigin, datePostedWindow) {
     const url = new URL("/jobs/search", baseOrigin);
     url.searchParams.set("q", query);
     url.searchParams.set("where", "remote");
+    url.searchParams.set("page", "1");
+    const recency = getMonsterRecencyValue(datePostedWindow);
+    if (recency) {
+      url.searchParams.set("recency", recency);
+    }
     url.searchParams.set("so", "m.h.s");
     return url.toString();
+  }
+  function getMonsterRecencyValue(datePostedWindow) {
+    const bucket = getNearestSupportedDatePostedDays(
+      datePostedWindow,
+      [1, 2, 7, 14, 30],
+      { fallbackToMax: true }
+    );
+    switch (bucket) {
+      case 1:
+        return "today";
+      case 2:
+        return "last 2 days";
+      case 7:
+        return "last week";
+      case 14:
+        return "last 2 weeks";
+      case 30:
+        return "last month";
+      default:
+        return "";
+    }
   }
   function buildGlassdoorSearchUrl(query, baseOrigin) {
     const url = new URL("/Job/jobs.htm", baseOrigin);
@@ -603,26 +663,18 @@
     url.searchParams.set("filters.postedDate", postedDate);
   }
   function getDicePostedDateValue(datePostedWindow) {
-    switch (datePostedWindow) {
-      case "24h":
+    const bucket = getNearestSupportedDatePostedDays(
+      datePostedWindow,
+      [1, 3, 7]
+    );
+    switch (bucket) {
+      case 1:
         return "ONE";
-      case "3d":
+      case 3:
         return "THREE";
-      case "1w":
+      case 7:
         return "SEVEN";
-      case "any":
-        return "";
-    }
-  }
-  function getBuiltInDaysSinceUpdatedValue(datePostedWindow) {
-    switch (datePostedWindow) {
-      case "24h":
-        return "1";
-      case "3d":
-        return "3";
-      case "1w":
-        return "7";
-      case "any":
+      default:
         return "";
     }
   }
@@ -683,14 +735,21 @@
     return url.toString();
   }
   function getMyGreenhouseDatePostedValue(datePostedWindow) {
-    switch (datePostedWindow) {
-      case "24h":
+    const bucket = getNearestSupportedDatePostedDays(
+      datePostedWindow,
+      [1, 5, 10, 30],
+      { fallbackToMax: true }
+    );
+    switch (bucket) {
+      case 1:
         return "past_day";
-      case "3d":
+      case 5:
         return "past_five_days";
-      case "1w":
+      case 10:
         return "past_ten_days";
-      case "any":
+      case 30:
+        return "past_month";
+      default:
         return "";
     }
   }
@@ -4496,16 +4555,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
   }
   function getMaxPostedAgeHours(datePostedWindow) {
-    switch (datePostedWindow) {
-      case "24h":
-        return 24;
-      case "3d":
-        return 24 * 3;
-      case "1w":
-        return 24 * 7;
-      case "any":
-        return null;
-    }
+    const days = getDatePostedWindowDays(datePostedWindow);
+    return days === null ? null : days * 24;
   }
   function convertAgeValueToHours(rawValue, rawUnit) {
     const value = Number.parseInt(rawValue, 10);
@@ -10459,6 +10510,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (site === "ziprecruiter") {
       return tryApplyZipRecruiterPostedDateFilter(datePostedWindow);
     }
+    if (site === "monster") {
+      return tryApplyMonsterPostedDateFilter(datePostedWindow);
+    }
     return false;
   }
   function mergeJobUrlLists(...lists) {
@@ -10503,6 +10557,47 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
     }
     return false;
+  }
+  async function tryApplyMonsterPostedDateFilter(datePostedWindow) {
+    const select = findMonsterDateFilterControl();
+    if (!select || !activateMonsterDateFilterOption(select, datePostedWindow)) {
+      return false;
+    }
+    await sleep(900);
+    return true;
+  }
+  function findMonsterDateFilterControl() {
+    const targetLabels = getMonsterDateFilterTargetLabels("30d");
+    for (const select of Array.from(document.querySelectorAll("select"))) {
+      if (!isElementVisible(select)) {
+        continue;
+      }
+      const optionTexts = Array.from(select.options).map(
+        (option) => cleanText(option.textContent || "").toLowerCase()
+      );
+      const hasAllDates = optionTexts.some((text) => text === "all dates");
+      const hasDateOptions = targetLabels.some(
+        (label) => optionTexts.some((text) => text === label || text.includes(label))
+      );
+      if (hasAllDates && hasDateOptions) {
+        return select;
+      }
+    }
+    return null;
+  }
+  function activateMonsterDateFilterOption(select, datePostedWindow) {
+    const labels = getMonsterDateFilterTargetLabels(datePostedWindow);
+    const optionIndex = Array.from(select.options).findIndex((option) => {
+      const text = cleanText(option.textContent || "").toLowerCase();
+      return labels.some((label) => text === label || text.includes(label));
+    });
+    if (optionIndex < 0) {
+      return false;
+    }
+    select.selectedIndex = optionIndex;
+    select.dispatchEvent(new Event("input", { bubbles: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
   }
   function findZipRecruiterDateFilterLaunchers() {
     const launchers = [];
@@ -10615,14 +10710,49 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return true;
   }
   function getZipRecruiterDateFilterTargetLabels(datePostedWindow) {
-    switch (datePostedWindow) {
-      case "24h":
-        return ["past 24 hours", "last 24 hours", "24 hours"];
-      case "3d":
-        return ["past 3 days", "last 3 days", "3 days"];
-      case "1w":
-        return ["past week", "past 7 days", "last 7 days", "7 days"];
-      case "any":
+    const bucket = getNearestSupportedDatePostedDays(
+      datePostedWindow,
+      [1, 5, 10, 30],
+      { fallbackToMax: true }
+    );
+    switch (bucket) {
+      case 1:
+        return ["within 1 day", "past 24 hours", "last 24 hours", "24 hours"];
+      case 5:
+        return ["within 5 days", "past 5 days", "last 5 days", "5 days"];
+      case 10:
+        return ["within 10 days", "past 10 days", "last 10 days", "10 days"];
+      case 30:
+        return [
+          "within 30 days",
+          "past 30 days",
+          "last 30 days",
+          "30 days",
+          "past month",
+          "last month"
+        ];
+      default:
+        return [];
+    }
+  }
+  function getMonsterDateFilterTargetLabels(datePostedWindow) {
+    const bucket = getNearestSupportedDatePostedDays(
+      datePostedWindow,
+      [1, 2, 7, 14, 30],
+      { fallbackToMax: true }
+    );
+    switch (bucket) {
+      case 1:
+        return ["today", "last 24 hours", "within 1 day"];
+      case 2:
+        return ["last 2 days", "past 2 days", "within 2 days"];
+      case 7:
+        return ["last week", "past week", "last 7 days", "past 7 days"];
+      case 14:
+        return ["last 2 weeks", "past 2 weeks", "last 14 days", "past 14 days"];
+      case 30:
+        return ["last month", "past month", "last 30 days", "past 30 days"];
+      default:
         return [];
     }
   }

@@ -59,6 +59,7 @@ const JOB_BOARD_CASES: Array<{
     assertRemoteTarget: (url) => {
       expect(url.pathname).toBe("/jobs/search");
       expect(url.searchParams.get("where")).toBe("remote");
+      expect(url.searchParams.get("page")).toBe("1");
     },
   },
   {
@@ -175,8 +176,13 @@ describe("extension feature matrix", () => {
     expect(DATE_POSTED_WINDOW_LABELS).toEqual({
       any: "Any time",
       "24h": "Past 24 hours",
+      "2d": "Past 2 days",
       "3d": "Past 3 days",
+      "5d": "Past 5 days",
       "1w": "Past week",
+      "10d": "Past 10 days",
+      "14d": "Past 14 days",
+      "30d": "Past 30 days",
     });
 
     expect(SEARCH_MODE_LABELS[DEFAULT_SETTINGS.searchMode]).toBe("Job Boards");

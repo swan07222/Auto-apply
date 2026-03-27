@@ -46,8 +46,27 @@ export const STARTUP_REGION_LABELS: Record<StartupRegion, string> = {
 export const DATE_POSTED_WINDOW_LABELS: Record<DatePostedWindow, string> = {
   any: "Any time",
   "24h": "Past 24 hours",
+  "2d": "Past 2 days",
   "3d": "Past 3 days",
+  "5d": "Past 5 days",
   "1w": "Past week",
+  "10d": "Past 10 days",
+  "14d": "Past 14 days",
+  "30d": "Past 30 days",
+};
+
+const DATE_POSTED_WINDOW_DAY_COUNTS: Record<
+  Exclude<DatePostedWindow, "any">,
+  number
+> = {
+  "24h": 1,
+  "2d": 2,
+  "3d": 3,
+  "5d": 5,
+  "1w": 7,
+  "10d": 10,
+  "14d": 14,
+  "30d": 30,
 };
 
 export const RESUME_KIND_LABELS: Record<ResumeKind, string> = {
@@ -199,17 +218,59 @@ function encodeSearchQueryForPath(query: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-function getBuiltInDaysSinceUpdatedValue(
+export function isDatePostedWindow(value: unknown): value is DatePostedWindow {
+  return (
+    value === "any" ||
+    value === "24h" ||
+    value === "2d" ||
+    value === "3d" ||
+    value === "5d" ||
+    value === "1w" ||
+    value === "10d" ||
+    value === "14d" ||
+    value === "30d"
+  );
+}
+
+export function getDatePostedWindowDays(
+  datePostedWindow: DatePostedWindow
+): number | null {
+  if (datePostedWindow === "any") {
+    return null;
+  }
+
+  return DATE_POSTED_WINDOW_DAY_COUNTS[datePostedWindow];
+}
+
+export function getNearestSupportedDatePostedDays(
+  datePostedWindow: DatePostedWindow,
+  supportedDays: readonly number[],
+  options: { fallbackToMax?: boolean } = {}
+): number | null {
+  const requestedDays = getDatePostedWindowDays(datePostedWindow);
+  if (requestedDays === null) {
+    return null;
+  }
+
+  const match = supportedDays.find((days) => days >= requestedDays);
+  if (typeof match === "number") {
+    return match;
+  }
+
+  if (!options.fallbackToMax || supportedDays.length === 0) {
+    return null;
+  }
+
+  return supportedDays[supportedDays.length - 1] ?? null;
+}
+
+export function getBuiltInDaysSinceUpdatedValue(
   datePostedWindow: DatePostedWindow
 ): string {
-  switch (datePostedWindow) {
-    case "24h":
-      return "1";
-    case "3d":
-      return "3";
-    case "1w":
-      return "7";
-    case "any":
-      return "";
-  }
+  const daysSinceUpdated = getNearestSupportedDatePostedDays(
+    datePostedWindow,
+    [1, 3, 7, 30],
+    { fallbackToMax: true }
+  );
+  return typeof daysSinceUpdated === "number" ? String(daysSinceUpdated) : "";
 }

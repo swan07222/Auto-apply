@@ -3,6 +3,9 @@ import {
   OTHER_JOB_SITE_DEFINITIONS,
   STARTUP_COMPANIES,
   STARTUP_REGION_LABELS,
+  getBuiltInDaysSinceUpdatedValue,
+  getDatePostedWindowDays,
+  getNearestSupportedDatePostedDays,
   getStartupTargetRegions,
 } from "./catalog";
 import type {
@@ -259,7 +262,7 @@ function buildSingleSearchUrl(
       return url.toString();
     }
     case "monster":
-      return buildMonsterSearchUrl(query, baseOrigin);
+      return buildMonsterSearchUrl(query, baseOrigin, datePostedWindow);
     case "glassdoor":
       return buildGlassdoorSearchUrl(query, baseOrigin);
     case "greenhouse":
@@ -307,37 +310,57 @@ function applyZipRecruiterDatePostedWindow(
 }
 
 function getIndeedFromAgeValue(datePostedWindow: DatePostedWindow): string {
-  switch (datePostedWindow) {
-    case "24h":
-      return "1";
-    case "3d":
-      return "3";
-    case "1w":
-      return "7";
-    case "any":
-      return "";
-  }
+  const days = getDatePostedWindowDays(datePostedWindow);
+  return typeof days === "number" ? String(days) : "";
 }
 
 function getZipRecruiterDaysValue(datePostedWindow: DatePostedWindow): string {
-  switch (datePostedWindow) {
-    case "24h":
-      return "1";
-    case "3d":
-      return "3";
-    case "1w":
-      return "7";
-    case "any":
-      return "";
-  }
+  const days = getNearestSupportedDatePostedDays(
+    datePostedWindow,
+    [1, 5, 10, 30],
+    { fallbackToMax: true }
+  );
+  return typeof days === "number" ? String(days) : "";
 }
 
-function buildMonsterSearchUrl(query: string, baseOrigin: string): string {
+function buildMonsterSearchUrl(
+  query: string,
+  baseOrigin: string,
+  datePostedWindow: DatePostedWindow
+): string {
   const url = new URL("/jobs/search", baseOrigin);
   url.searchParams.set("q", query);
   url.searchParams.set("where", "remote");
+  url.searchParams.set("page", "1");
+  const recency = getMonsterRecencyValue(datePostedWindow);
+  if (recency) {
+    url.searchParams.set("recency", recency);
+  }
   url.searchParams.set("so", "m.h.s");
   return url.toString();
+}
+
+function getMonsterRecencyValue(datePostedWindow: DatePostedWindow): string {
+  const bucket = getNearestSupportedDatePostedDays(
+    datePostedWindow,
+    [1, 2, 7, 14, 30],
+    { fallbackToMax: true }
+  );
+
+  switch (bucket) {
+    case 1:
+      return "today";
+    case 2:
+      return "last 2 days";
+    case 7:
+      return "last week";
+    case 14:
+      return "last 2 weeks";
+    case 30:
+      return "last month";
+    default:
+      return "";
+  }
 }
 
 function buildGlassdoorSearchUrl(query: string, baseOrigin: string): string {
@@ -376,29 +399,19 @@ function applyDiceDatePostedWindow(
 }
 
 function getDicePostedDateValue(datePostedWindow: DatePostedWindow): string {
-  switch (datePostedWindow) {
-    case "24h":
-      return "ONE";
-    case "3d":
-      return "THREE";
-    case "1w":
-      return "SEVEN";
-    case "any":
-      return "";
-  }
-}
+  const bucket = getNearestSupportedDatePostedDays(
+    datePostedWindow,
+    [1, 3, 7]
+  );
 
-function getBuiltInDaysSinceUpdatedValue(
-  datePostedWindow: DatePostedWindow
-): string {
-  switch (datePostedWindow) {
-    case "24h":
-      return "1";
-    case "3d":
-      return "3";
-    case "1w":
-      return "7";
-    case "any":
+  switch (bucket) {
+    case 1:
+      return "ONE";
+    case 3:
+      return "THREE";
+    case 7:
+      return "SEVEN";
+    default:
       return "";
   }
 }
@@ -485,16 +498,22 @@ function buildMyGreenhousePortalSearchUrl(
 function getMyGreenhouseDatePostedValue(
   datePostedWindow: DatePostedWindow
 ): string {
-  switch (datePostedWindow) {
-    case "24h":
+  const bucket = getNearestSupportedDatePostedDays(
+    datePostedWindow,
+    [1, 5, 10, 30],
+    { fallbackToMax: true }
+  );
+
+  switch (bucket) {
+    case 1:
       return "past_day";
-    case "3d":
-      // MyGreenhouse exposes 1/5/10/30-day buckets, so use the closest broader
-      // bucket and let our local recency backstop enforce the stricter 3-day window.
+    case 5:
       return "past_five_days";
-    case "1w":
+    case 10:
       return "past_ten_days";
-    case "any":
+    case 30:
+      return "past_month";
+    default:
       return "";
   }
 }

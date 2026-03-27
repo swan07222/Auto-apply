@@ -4,6 +4,7 @@ import {
   ResumeKind,
   SiteKey,
   getJobDedupKey,
+  getNearestSupportedDatePostedDays,
   getSiteLabel,
   sleep,
 } from "../shared";
@@ -298,6 +299,10 @@ export async function tryApplySupportedResultsDateFilter(
     return tryApplyZipRecruiterPostedDateFilter(datePostedWindow);
   }
 
+  if (site === "monster") {
+    return tryApplyMonsterPostedDateFilter(datePostedWindow);
+  }
+
   return false;
 }
 
@@ -356,6 +361,61 @@ async function tryApplyZipRecruiterPostedDateFilter(
   }
 
   return false;
+}
+
+async function tryApplyMonsterPostedDateFilter(
+  datePostedWindow: DatePostedWindow
+): Promise<boolean> {
+  const select = findMonsterDateFilterControl();
+  if (!select || !activateMonsterDateFilterOption(select, datePostedWindow)) {
+    return false;
+  }
+
+  await sleep(900);
+  return true;
+}
+
+function findMonsterDateFilterControl(): HTMLSelectElement | null {
+  const targetLabels = getMonsterDateFilterTargetLabels("30d");
+  for (const select of Array.from(document.querySelectorAll<HTMLSelectElement>("select"))) {
+    if (!isElementVisible(select)) {
+      continue;
+    }
+
+    const optionTexts = Array.from(select.options).map((option) =>
+      cleanText(option.textContent || "").toLowerCase()
+    );
+    const hasAllDates = optionTexts.some((text) => text === "all dates");
+    const hasDateOptions = targetLabels.some((label) =>
+      optionTexts.some((text) => text === label || text.includes(label))
+    );
+
+    if (hasAllDates && hasDateOptions) {
+      return select;
+    }
+  }
+
+  return null;
+}
+
+function activateMonsterDateFilterOption(
+  select: HTMLSelectElement,
+  datePostedWindow: DatePostedWindow
+): boolean {
+  const labels = getMonsterDateFilterTargetLabels(datePostedWindow);
+  const optionIndex = Array.from(select.options).findIndex((option) => {
+    const text = cleanText(option.textContent || "").toLowerCase();
+    return labels.some((label) => text === label || text.includes(label));
+  });
+
+  if (optionIndex < 0) {
+    return false;
+  }
+
+  select.selectedIndex = optionIndex;
+  select.dispatchEvent(new Event("input", { bubbles: true }));
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
 }
 
 function findZipRecruiterDateFilterLaunchers(): HTMLElement[] {
@@ -516,14 +576,54 @@ function activateZipRecruiterDateFilterOption(
 function getZipRecruiterDateFilterTargetLabels(
   datePostedWindow: DatePostedWindow
 ): string[] {
-  switch (datePostedWindow) {
-    case "24h":
-      return ["past 24 hours", "last 24 hours", "24 hours"];
-    case "3d":
-      return ["past 3 days", "last 3 days", "3 days"];
-    case "1w":
-      return ["past week", "past 7 days", "last 7 days", "7 days"];
-    case "any":
+  const bucket = getNearestSupportedDatePostedDays(
+    datePostedWindow,
+    [1, 5, 10, 30],
+    { fallbackToMax: true }
+  );
+
+  switch (bucket) {
+    case 1:
+      return ["within 1 day", "past 24 hours", "last 24 hours", "24 hours"];
+    case 5:
+      return ["within 5 days", "past 5 days", "last 5 days", "5 days"];
+    case 10:
+      return ["within 10 days", "past 10 days", "last 10 days", "10 days"];
+    case 30:
+      return [
+        "within 30 days",
+        "past 30 days",
+        "last 30 days",
+        "30 days",
+        "past month",
+        "last month",
+      ];
+    default:
+      return [];
+  }
+}
+
+function getMonsterDateFilterTargetLabels(
+  datePostedWindow: DatePostedWindow
+): string[] {
+  const bucket = getNearestSupportedDatePostedDays(
+    datePostedWindow,
+    [1, 2, 7, 14, 30],
+    { fallbackToMax: true }
+  );
+
+  switch (bucket) {
+    case 1:
+      return ["today", "last 24 hours", "within 1 day"];
+    case 2:
+      return ["last 2 days", "past 2 days", "within 2 days"];
+    case 7:
+      return ["last week", "past week", "last 7 days", "past 7 days"];
+    case 14:
+      return ["last 2 weeks", "past 2 weeks", "last 14 days", "past 14 days"];
+    case 30:
+      return ["last month", "past month", "last 30 days", "past 30 days"];
+    default:
       return [];
   }
 }

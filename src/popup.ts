@@ -19,6 +19,7 @@ import {
   isJobBoardSite,
   getSiteLabel,
   normalizeQuestionKey,
+  isDatePostedWindow,
   parseSearchKeywords,
   readAutomationSettings,
   resolveStartupTargetRegions,
@@ -2051,7 +2052,7 @@ function getSelectedSearchMode(): SearchMode {
 
 function getSelectedDatePostedWindow(): DatePostedWindow {
   const value = datePostedWindowInput.value;
-  if (value === "24h" || value === "3d" || value === "1w" || value === "any") {
+  if (isDatePostedWindow(value)) {
     return value;
   }
   return "any";

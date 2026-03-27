@@ -105,6 +105,9 @@ var STARTUP_TARGET_REGIONS = [
 function getStartupTargetRegions() {
   return [...STARTUP_TARGET_REGIONS];
 }
+function isDatePostedWindow(value) {
+  return value === "any" || value === "24h" || value === "2d" || value === "3d" || value === "5d" || value === "1w" || value === "10d" || value === "14d" || value === "30d";
+}
 
 // src/shared/status.ts
 function detectSiteFromUrl(url) {
@@ -365,7 +368,7 @@ function sanitizeStartupRegion(value) {
   return value === "us" || value === "uk" || value === "eu" || value === "auto" ? value : DEFAULT_SETTINGS.startupRegion;
 }
 function sanitizeDatePostedWindow(value) {
-  return value === "24h" || value === "3d" || value === "1w" || value === "any" ? value : DEFAULT_SETTINGS.datePostedWindow;
+  return isDatePostedWindow(value) ? value : DEFAULT_SETTINGS.datePostedWindow;
 }
 function readString2(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -2306,7 +2309,7 @@ function getSelectedSearchMode2() {
 }
 function getSelectedDatePostedWindow() {
   const value = datePostedWindowInput.value;
-  if (value === "24h" || value === "3d" || value === "1w" || value === "any") {
+  if (isDatePostedWindow(value)) {
     return value;
   }
   return "any";

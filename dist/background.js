@@ -59,6 +59,16 @@
     uk: "UK",
     eu: "EU"
   };
+  var DATE_POSTED_WINDOW_DAY_COUNTS = {
+    "24h": 1,
+    "2d": 2,
+    "3d": 3,
+    "5d": 5,
+    "1w": 7,
+    "10d": 10,
+    "14d": 14,
+    "30d": 30
+  };
   var RESUME_KIND_LABELS = {
     front_end: "Front End",
     back_end: "Back End",
@@ -170,17 +180,36 @@
   function encodeSearchQueryForPath(query) {
     return query.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   }
-  function getBuiltInDaysSinceUpdatedValue(datePostedWindow) {
-    switch (datePostedWindow) {
-      case "24h":
-        return "1";
-      case "3d":
-        return "3";
-      case "1w":
-        return "7";
-      case "any":
-        return "";
+  function isDatePostedWindow(value) {
+    return value === "any" || value === "24h" || value === "2d" || value === "3d" || value === "5d" || value === "1w" || value === "10d" || value === "14d" || value === "30d";
+  }
+  function getDatePostedWindowDays(datePostedWindow) {
+    if (datePostedWindow === "any") {
+      return null;
     }
+    return DATE_POSTED_WINDOW_DAY_COUNTS[datePostedWindow];
+  }
+  function getNearestSupportedDatePostedDays(datePostedWindow, supportedDays, options = {}) {
+    const requestedDays = getDatePostedWindowDays(datePostedWindow);
+    if (requestedDays === null) {
+      return null;
+    }
+    const match = supportedDays.find((days) => days >= requestedDays);
+    if (typeof match === "number") {
+      return match;
+    }
+    if (!options.fallbackToMax || supportedDays.length === 0) {
+      return null;
+    }
+    return supportedDays[supportedDays.length - 1] ?? null;
+  }
+  function getBuiltInDaysSinceUpdatedValue(datePostedWindow) {
+    const daysSinceUpdated = getNearestSupportedDatePostedDays(
+      datePostedWindow,
+      [1, 3, 7, 30],
+      { fallbackToMax: true }
+    );
+    return typeof daysSinceUpdated === "number" ? String(daysSinceUpdated) : "";
   }
 
   // src/shared/status.ts
@@ -408,7 +437,7 @@
     return value === "us" || value === "uk" || value === "eu" || value === "auto" ? value : DEFAULT_SETTINGS.startupRegion;
   }
   function sanitizeDatePostedWindow(value) {
-    return value === "24h" || value === "3d" || value === "1w" || value === "any" ? value : DEFAULT_SETTINGS.datePostedWindow;
+    return isDatePostedWindow(value) ? value : DEFAULT_SETTINGS.datePostedWindow;
   }
   function readString2(value) {
     return typeof value === "string" ? value.trim() : "";

@@ -13,7 +13,16 @@ export type JobBoardSite = Exclude<SiteKey, "startup" | "other_sites">;
 export type ResumeKind = "front_end" | "back_end" | "full_stack";
 export type SearchMode = "job_board" | "startup_careers" | "other_job_sites";
 export type StartupRegion = "auto" | "us" | "uk" | "eu";
-export type DatePostedWindow = "any" | "24h" | "3d" | "1w";
+export type DatePostedWindow =
+  | "any"
+  | "24h"
+  | "2d"
+  | "3d"
+  | "5d"
+  | "1w"
+  | "10d"
+  | "14d"
+  | "30d";
 
 export type AutomationStage =
   | "bootstrap"

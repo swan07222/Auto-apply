@@ -1,6 +1,7 @@
 import {
   AUTOMATION_SETTINGS_STORAGE_KEY,
   DEFAULT_SETTINGS,
+  isDatePostedWindow,
   MAX_JOB_PAGE_LIMIT,
   MIN_JOB_PAGE_LIMIT,
   RESUME_KIND_LABELS,
@@ -361,9 +362,7 @@ function sanitizeStartupRegion(value: unknown): StartupRegion {
 }
 
 function sanitizeDatePostedWindow(value: unknown): DatePostedWindow {
-  return value === "24h" || value === "3d" || value === "1w" || value === "any"
-    ? value
-    : DEFAULT_SETTINGS.datePostedWindow;
+  return isDatePostedWindow(value) ? value : DEFAULT_SETTINGS.datePostedWindow;
 }
 
 function readString(value: unknown): string {

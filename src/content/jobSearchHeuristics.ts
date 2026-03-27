@@ -1,4 +1,5 @@
 import { type DatePostedWindow, type ResumeKind, type SiteKey } from "../shared";
+import { getDatePostedWindowDays } from "../shared/catalog";
 import { cleanText, normalizeChoiceText } from "./text";
 import { type JobCandidate } from "./types";
 
@@ -516,16 +517,8 @@ export function scoreJobTitleForResume(title: string, resumeKind: ResumeKind): n
 }
 
 function getMaxPostedAgeHours(datePostedWindow: DatePostedWindow): number | null {
-  switch (datePostedWindow) {
-    case "24h":
-      return 24;
-    case "3d":
-      return 24 * 3;
-    case "1w":
-      return 24 * 7;
-    case "any":
-      return null;
-  }
+  const days = getDatePostedWindowDays(datePostedWindow);
+  return days === null ? null : days * 24;
 }
 
 function convertAgeValueToHours(rawValue: string, rawUnit: string): number | null {

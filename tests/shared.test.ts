@@ -61,6 +61,7 @@ describe("shared automation target logic", () => {
     expect(firstUrl.pathname).toBe("/jobs/search");
     expect(firstUrl.searchParams.get("q")).toBe("frontend engineer");
     expect(firstUrl.searchParams.get("where")).toBe("remote");
+    expect(firstUrl.searchParams.get("page")).toBe("1");
     expect(firstUrl.searchParams.get("so")).toBe("m.h.s");
     expect(
       targets.some(
@@ -68,6 +69,43 @@ describe("shared automation target logic", () => {
           new URL(target.url).searchParams.get("q") === "platform engineer"
       )
     ).toBe(true);
+  });
+
+  it("adds the selected Monster date window to the initial search URL", () => {
+    const todayTargets = buildSearchTargets(
+      "monster",
+      "https://www.monster.com",
+      "software engineer",
+      "",
+      "24h"
+    );
+    const twoWeekTargets = buildSearchTargets(
+      "monster",
+      "https://www.monster.com",
+      "software engineer",
+      "",
+      "14d"
+    );
+
+    expect(new URL(todayTargets[0].url).searchParams.get("recency")).toBe("today");
+    expect(new URL(twoWeekTargets[0].url).searchParams.get("recency")).toBe(
+      "last 2 weeks"
+    );
+  });
+
+  it("matches the live Monster past-2-days URL shape", () => {
+    const targets = buildSearchTargets(
+      "monster",
+      "https://www.monster.com",
+      "full stack",
+      "",
+      "2d"
+    );
+
+    expect(targets).toHaveLength(1);
+    expect(targets[0].url).toBe(
+      "https://www.monster.com/jobs/search?q=full+stack&where=remote&page=1&recency=last+2+days&so=m.h.s"
+    );
   });
 
   it("adds the selected Indeed date window to the initial search URL", () => {
@@ -86,6 +124,19 @@ describe("shared automation target logic", () => {
     expect(firstUrl.searchParams.get("q")).toBe("software engineer");
     expect(firstUrl.searchParams.get("l")).toBe("Remote");
     expect(firstUrl.searchParams.get("fromage")).toBe("3");
+  });
+
+  it("supports broader Indeed posted-date windows", () => {
+    const targets = buildSearchTargets(
+      "indeed",
+      "https://www.indeed.com",
+      "software engineer",
+      "",
+      "14d"
+    );
+
+    expect(targets).toHaveLength(1);
+    expect(new URL(targets[0].url).searchParams.get("fromage")).toBe("14");
   });
 
   it("builds remote Glassdoor search targets using the jobs route", () => {
@@ -137,6 +188,32 @@ describe("shared automation target logic", () => {
     expect(firstUrl.searchParams.get("filters.postedDate")).toBe("THREE");
   });
 
+  it("maps broader Dice windows onto the nearest supported bucket when possible", () => {
+    const targets = buildSearchTargets(
+      "dice",
+      "https://www.dice.com",
+      "software engineer",
+      "",
+      "5d"
+    );
+
+    expect(targets).toHaveLength(1);
+    expect(new URL(targets[0].url).searchParams.get("filters.postedDate")).toBe("SEVEN");
+  });
+
+  it("omits Dice date params when the selected window is broader than Dice supports", () => {
+    const targets = buildSearchTargets(
+      "dice",
+      "https://www.dice.com",
+      "software engineer",
+      "",
+      "14d"
+    );
+
+    expect(targets).toHaveLength(1);
+    expect(new URL(targets[0].url).searchParams.get("filters.postedDate")).toBeNull();
+  });
+
   it("adds the selected ZipRecruiter date window to the initial search URL", () => {
     const targets = buildSearchTargets(
       "ziprecruiter",
@@ -153,6 +230,26 @@ describe("shared automation target logic", () => {
     expect(firstUrl.searchParams.get("search")).toBe("software engineer");
     expect(firstUrl.searchParams.get("location")).toBe("Remote");
     expect(firstUrl.searchParams.get("days")).toBe("1");
+  });
+
+  it("maps broader ZipRecruiter windows onto the nearest available bucket", () => {
+    const threeDayTargets = buildSearchTargets(
+      "ziprecruiter",
+      "https://www.ziprecruiter.com",
+      "software engineer",
+      "",
+      "3d"
+    );
+    const twoWeekTargets = buildSearchTargets(
+      "ziprecruiter",
+      "https://www.ziprecruiter.com",
+      "software engineer",
+      "",
+      "14d"
+    );
+
+    expect(new URL(threeDayTargets[0].url).searchParams.get("days")).toBe("5");
+    expect(new URL(twoWeekTargets[0].url).searchParams.get("days")).toBe("30");
   });
 
   it("omits ZipRecruiter date params when any time is selected", () => {
@@ -370,6 +467,30 @@ describe("shared automation target logic", () => {
     );
   });
 
+  it("supports the broader native MyGreenhouse date buckets", () => {
+    const twoWeekTargets = buildSearchTargets(
+      "greenhouse",
+      "https://my.greenhouse.io/jobs",
+      "full stack",
+      "US",
+      "14d"
+    );
+    const monthTargets = buildSearchTargets(
+      "greenhouse",
+      "https://my.greenhouse.io/jobs",
+      "full stack",
+      "US",
+      "30d"
+    );
+
+    expect(new URL(twoWeekTargets[0].url).searchParams.get("date_posted")).toBe(
+      "past_month"
+    );
+    expect(new URL(monthTargets[0].url).searchParams.get("date_posted")).toBe(
+      "past_month"
+    );
+  });
+
   it("builds Built In search targets with the current remote jobs route", () => {
     const targets = buildSearchTargets(
       "builtin",
@@ -397,6 +518,26 @@ describe("shared automation target logic", () => {
     const firstUrl = new URL(targets[0].url);
 
     expect(firstUrl.searchParams.get("daysSinceUpdated")).toBe("1");
+  });
+
+  it("maps broader Built In windows onto the nearest available bucket", () => {
+    const tenDayTargets = buildSearchTargets(
+      "builtin",
+      "https://builtin.com/job/software-engineer/3985663",
+      "software engineer",
+      "",
+      "10d"
+    );
+    const monthTargets = buildSearchTargets(
+      "builtin",
+      "https://builtin.com/job/software-engineer/3985663",
+      "software engineer",
+      "",
+      "30d"
+    );
+
+    expect(new URL(tenDayTargets[0].url).searchParams.get("daysSinceUpdated")).toBe("30");
+    expect(new URL(monthTargets[0].url).searchParams.get("daysSinceUpdated")).toBe("30");
   });
 
   it("omits Built In date params when any time is selected", () => {

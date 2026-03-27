@@ -77,6 +77,9 @@ describe("job search heuristic helpers", () => {
     expect(extractPostedAgeHours("Date posted 2 days ago")).toBe(48);
     expect(extractPostedAgeHours("Posted within 24 hours")).toBe(24);
     expect(isPostedAgeWithinDateWindow(96, "3d")).toBe(false);
+    expect(isPostedAgeWithinDateWindow(216, "10d")).toBe(true);
+    expect(isPostedAgeWithinDateWindow(360, "14d")).toBe(false);
+    expect(isPostedAgeWithinDateWindow(720, "30d")).toBe(true);
   });
 
   it("treats standalone New badges as recent without misreading location or title text", () => {

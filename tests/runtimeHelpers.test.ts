@@ -210,6 +210,12 @@ describe("content runtime helpers", () => {
       shouldSkipCurrentPageByPostedDateWindow("Remote role with React.", "24h")
     ).toBe(false);
     expect(
+      shouldSkipCurrentPageByPostedDateWindow("Posted 12 days ago", "14d")
+    ).toBe(false);
+    expect(
+      shouldSkipCurrentPageByPostedDateWindow("Posted 15 days ago", "14d")
+    ).toBe(true);
+    expect(
       shouldSkipCurrentPageByPostedDateWindow("Date posted Mar 10, 2026", "any")
     ).toBe(false);
   });

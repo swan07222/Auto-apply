@@ -693,7 +693,7 @@ describe("search result collection", () => {
           Date Posted
         </button>
         <section id="date-filter-menu" hidden>
-          <button id="date-filter-24h" type="button">Past 24 hours</button>
+          <button id="date-filter-24h" type="button">Within 1 day</button>
         </section>
       </main>
     `;
@@ -753,6 +753,117 @@ describe("search result collection", () => {
 
     await expect(promise).resolves.toBe(true);
     expect(document.body.getAttribute("data-zip-date-filter")).toBe("24h");
+  });
+
+  it("maps narrower ZipRecruiter date windows onto the next available native bucket", async () => {
+    document.body.innerHTML = `
+      <main>
+        <button id="date-filter-toggle" type="button" aria-expanded="false">
+          Date Posted
+        </button>
+        <section id="date-filter-menu" hidden>
+          <button id="date-filter-5d" type="button">Within 5 days</button>
+        </section>
+      </main>
+    `;
+
+    const toggle = document.getElementById("date-filter-toggle") as HTMLButtonElement;
+    const menu = document.getElementById("date-filter-menu") as HTMLElement;
+    const option = document.getElementById("date-filter-5d") as HTMLButtonElement;
+
+    const makeVisibleRect = () =>
+      ({
+        width: 180,
+        height: 32,
+        top: 10,
+        left: 10,
+        right: 190,
+        bottom: 42,
+        x: 10,
+        y: 10,
+        toJSON: () => ({}),
+      }) as DOMRect;
+
+    Object.defineProperty(toggle, "getBoundingClientRect", {
+      configurable: true,
+      value: makeVisibleRect,
+    });
+    Object.defineProperty(option, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          width: 0,
+          height: 0,
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+
+    toggle.addEventListener("click", () => {
+      menu.hidden = false;
+      toggle.setAttribute("aria-expanded", "true");
+      Object.defineProperty(option, "getBoundingClientRect", {
+        configurable: true,
+        value: makeVisibleRect,
+      });
+    });
+    option.addEventListener("click", () => {
+      document.body.setAttribute("data-zip-date-filter", "5d");
+    });
+
+    const promise = tryApplySupportedResultsDateFilter("ziprecruiter", "3d");
+
+    await vi.runAllTimersAsync();
+
+    await expect(promise).resolves.toBe(true);
+    expect(document.body.getAttribute("data-zip-date-filter")).toBe("5d");
+  });
+
+  it("applies the Monster posted-date filter through the visible results select", async () => {
+    document.body.innerHTML = `
+      <main>
+        <select id="monster-date-filter">
+          <option value="">All Dates</option>
+          <option value="today">Today</option>
+          <option value="last-2-days">Last 2 days</option>
+          <option value="last-week">Last week</option>
+          <option value="last-2-weeks">Last 2 weeks</option>
+          <option value="last-month">Last month</option>
+        </select>
+      </main>
+    `;
+
+    const select = document.getElementById("monster-date-filter") as HTMLSelectElement;
+    Object.defineProperty(select, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          width: 180,
+          height: 32,
+          top: 10,
+          left: 10,
+          right: 190,
+          bottom: 42,
+          x: 10,
+          y: 10,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+    select.addEventListener("change", () => {
+      document.body.setAttribute("data-monster-date-filter", select.value);
+    });
+
+    const promise = tryApplySupportedResultsDateFilter("monster", "14d");
+
+    await vi.runAllTimersAsync();
+
+    await expect(promise).resolves.toBe(true);
+    expect(document.body.getAttribute("data-monster-date-filter")).toBe("last-2-weeks");
   });
 
   it("does not try generic career-surface recovery clicks on the MyGreenhouse portal", async () => {
