@@ -2600,6 +2600,22 @@ describe("job search candidate filtering", () => {
     expect(isCurrentPageAppliedJob("indeed")).toBe(true);
   });
 
+  it("treats Indeed post-apply survey pages as already applied", () => {
+    window.history.replaceState({}, "", "/beta/indeedapply/form/post-apply");
+    document.title = "Your application";
+
+    document.body.innerHTML = `
+      <main>
+        <p>You will get an email confirmation at ava.stone@example.com</p>
+        <button type="button">Take survey</button>
+        <button type="button">Return to job search</button>
+        <p>Keep track of your applications.</p>
+      </main>
+    `;
+
+    expect(isCurrentPageAppliedJob("indeed")).toBe(true);
+  });
+
   it("does not treat Indeed review-details intro steps as already applied", () => {
     window.history.replaceState(
       {},

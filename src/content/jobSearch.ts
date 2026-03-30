@@ -1266,6 +1266,7 @@ function getIndeedApplyPageText(): string {
 function isIndeedApplyConfirmationPage(): boolean {
   const lowerUrl = window.location.href.toLowerCase();
   const lowerPath = window.location.pathname.toLowerCase();
+  const lowerTitle = (document.title || "").toLowerCase();
   if (
     !(
       lowerUrl.includes("smartapply.indeed.com") ||
@@ -1275,8 +1276,22 @@ function isIndeedApplyConfirmationPage(): boolean {
     return false;
   }
 
-  return /\b(your application has been submitted|thanks for applying|application submitted|application complete|application received)\b/.test(
-    getIndeedApplyPageText()
+  const pageText = getIndeedApplyPageText();
+
+  if (
+    /\b(your application has been submitted|thanks for applying|application submitted|application complete|application received)\b/.test(
+      pageText
+    )
+  ) {
+    return true;
+  }
+
+  return (
+    lowerPath.includes("/post-apply") &&
+    (lowerTitle.includes("your application") ||
+      /\b(you will get an email confirmation|return to job search|keep track of your applications|take survey)\b/.test(
+        pageText
+      ))
   );
 }
 

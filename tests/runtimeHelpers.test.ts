@@ -14,6 +14,7 @@ import {
   shouldAvoidApplyScroll,
   shouldBlockApplicationTargetProbeFailure,
   shouldPreferMonsterClickContinuation,
+  shouldPreferZipRecruiterApplyEntryBeforeAutofill,
   shouldRetryAlternateApplyTargets,
   shouldTreatCurrentPageAsApplied,
   throwIfRateLimited,
@@ -207,6 +208,26 @@ describe("content runtime helpers", () => {
         findApplyAction: () => null,
       })
     ).toBe(true);
+  });
+
+  it("routes ZipRecruiter autofill back through the apply button when no real modal or form is open yet", () => {
+    expect(
+      shouldPreferZipRecruiterApplyEntryBeforeAutofill("ziprecruiter", {
+        hasLikelyApplicationForm: () => false,
+        hasLikelyApplicationFrame: () => false,
+        hasZipRecruiterApplyModal: () => false,
+        findZipRecruiterApplyAction: () => ({ type: "click" }),
+      })
+    ).toBe(true);
+
+    expect(
+      shouldPreferZipRecruiterApplyEntryBeforeAutofill("ziprecruiter", {
+        hasLikelyApplicationForm: () => false,
+        hasLikelyApplicationFrame: () => false,
+        hasZipRecruiterApplyModal: () => true,
+        findZipRecruiterApplyAction: () => ({ type: "click" }),
+      })
+    ).toBe(false);
   });
 
   it("detects likely application surfaces in the current frame", () => {

@@ -1170,6 +1170,21 @@ describe("shared automation target logic", () => {
     expect(isProbablyAuthGatePage(document)).toBe(false);
   });
 
+  it("detects Indeed post-apply confirmation pages from their survey and email-confirmation copy", () => {
+    window.history.replaceState({}, "", "/beta/indeedapply/form/post-apply");
+    document.title = "Your application";
+    document.body.innerHTML = `
+      <main>
+        <p>You will get an email confirmation at ava.stone@example.com</p>
+        <button type="button">Take survey</button>
+        <button type="button">Return to job search</button>
+        <p>Keep track of your applications.</p>
+      </main>
+    `;
+
+    expect(hasLikelyApplicationSuccessSignals(document)).toBe(true);
+  });
+
   it("detects interactive captcha gates on Indeed final submit pages as verification", () => {
     window.history.replaceState({}, "", "/beta/indeedapply/form/review-module");
     document.title = "Indeed Apply";

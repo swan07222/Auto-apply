@@ -647,6 +647,11 @@ export function hasLikelyApplicationSuccessSignals(doc: Document): boolean {
     /\b(thank you for applying|application submitted|application received|we have received your application|we'll be in touch)\b/.test(
       combinedText
     );
+  const indeedPostApplyConfirmation =
+    pageUrl.includes("/indeedapply/form/post-apply") &&
+    /\b(your application has been submitted|application submitted|thanks for applying|application received|you will get an email confirmation|return to job search|keep track of your applications)\b/.test(
+      combinedText
+    );
   const diceWizardSuccess =
     pageUrl.includes("/wizard/success") &&
     /\b(application is on its way|application submitted|thanks for applying|my jobs|job search)\b/.test(
@@ -655,6 +660,7 @@ export function hasLikelyApplicationSuccessSignals(doc: Document): boolean {
 
   return (
     greenhouseConfirmation ||
+    indeedPostApplyConfirmation ||
     diceWizardSuccess ||
     successSignalCount >= 2 ||
     (onKnownApplyFlowUrl && successSignalCount >= 1)

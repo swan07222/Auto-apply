@@ -436,6 +436,30 @@ export function shouldTreatCurrentPageAsApplied(
   return !diceApplyAction;
 }
 
+export function shouldPreferZipRecruiterApplyEntryBeforeAutofill(
+  site: SiteKey,
+  dependencies: {
+    hasLikelyApplicationForm: () => boolean;
+    hasLikelyApplicationFrame: () => boolean;
+    hasZipRecruiterApplyModal: () => boolean;
+    findZipRecruiterApplyAction: () => unknown;
+  }
+): boolean {
+  if (site !== "ziprecruiter") {
+    return false;
+  }
+
+  if (
+    dependencies.hasLikelyApplicationForm() ||
+    dependencies.hasLikelyApplicationFrame() ||
+    dependencies.hasZipRecruiterApplyModal()
+  ) {
+    return false;
+  }
+
+  return Boolean(dependencies.findZipRecruiterApplyAction());
+}
+
 export function looksLikeCurrentFrameApplicationSurface(
   site: SiteKey | "unsupported" | null,
   dependencies: {

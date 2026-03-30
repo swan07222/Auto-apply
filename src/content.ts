@@ -196,6 +196,7 @@ import {
   shouldMirrorControllerBoundSessionInTopFrame,
   shouldMirrorPendingAutofillSessionInTopFrame,
   shouldPreferMonsterClickContinuation,
+  shouldPreferZipRecruiterApplyEntryBeforeAutofill as shouldPreferZipRecruiterApplyEntryBeforeAutofillHelper,
   shouldRenderAutomationFeedbackInCurrentFrame,
   shouldRetryAlternateApplyTargets,
   shouldTreatCurrentPageAsApplied,
@@ -845,6 +846,17 @@ function shouldPreferGreenhouseApplyEntryBeforeAutofill(site: SiteKey): boolean 
   }
 
   return Boolean(findGreenhouseApplyAction() ?? findApplyAction(site, "job-page"));
+}
+
+function shouldPreferZipRecruiterApplyEntryBeforeAutofill(
+  site: SiteKey
+): boolean {
+  return shouldPreferZipRecruiterApplyEntryBeforeAutofillHelper(site, {
+    hasLikelyApplicationForm,
+    hasLikelyApplicationFrame,
+    hasZipRecruiterApplyModal,
+    findZipRecruiterApplyAction,
+  });
 }
 
 function getReadyVisibleManualSubmitAction(
@@ -3144,6 +3156,18 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     return;
   }
 
+  if (shouldPreferZipRecruiterApplyEntryBeforeAutofill(site)) {
+    currentStage = "open-apply";
+    updateStatus(
+      "running",
+      "ZipRecruiter still needs its Apply button before the modal opens. Continuing...",
+      true,
+      "open-apply"
+    );
+    await runOpenApplyStage(site);
+    return;
+  }
+
   if (
     !isAlreadyOnApplyPage(site, window.location.href) &&
     !hasLikelyApplicationForm() &&
@@ -3186,6 +3210,18 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     updateStatus(
       "running",
       "Greenhouse form is still closed on the job page. Reopening the Apply step...",
+      true,
+      "open-apply"
+    );
+    await runOpenApplyStage(site);
+    return;
+  }
+
+  if (shouldPreferZipRecruiterApplyEntryBeforeAutofill(site)) {
+    currentStage = "open-apply";
+    updateStatus(
+      "running",
+      "ZipRecruiter modal is still closed on the job page. Reopening the Apply step...",
       true,
       "open-apply"
     );

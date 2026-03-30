@@ -1357,10 +1357,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const greenhouseConfirmation = pageUrl.includes("application_confirmation") && /\b(thank you for applying|application submitted|application received|we have received your application|we'll be in touch)\b/.test(
       combinedText
     );
+    const indeedPostApplyConfirmation = pageUrl.includes("/indeedapply/form/post-apply") && /\b(your application has been submitted|application submitted|thanks for applying|application received|you will get an email confirmation|return to job search|keep track of your applications)\b/.test(
+      combinedText
+    );
     const diceWizardSuccess = pageUrl.includes("/wizard/success") && /\b(application is on its way|application submitted|thanks for applying|my jobs|job search)\b/.test(
       combinedText
     );
-    return greenhouseConfirmation || diceWizardSuccess || successSignalCount >= 2 || onKnownApplyFlowUrl && successSignalCount >= 1;
+    return greenhouseConfirmation || indeedPostApplyConfirmation || diceWizardSuccess || successSignalCount >= 2 || onKnownApplyFlowUrl && successSignalCount >= 1;
   }
   function isLikelyVisibleFormField(field) {
     if (field.disabled) {
@@ -8995,12 +8998,19 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   function isIndeedApplyConfirmationPage() {
     const lowerUrl = window.location.href.toLowerCase();
     const lowerPath = window.location.pathname.toLowerCase();
+    const lowerTitle = (document.title || "").toLowerCase();
     if (!(lowerUrl.includes("smartapply.indeed.com") || lowerPath.includes("/indeedapply/form/"))) {
       return false;
     }
-    return /\b(your application has been submitted|thanks for applying|application submitted|application complete|application received)\b/.test(
-      getIndeedApplyPageText()
-    );
+    const pageText = getIndeedApplyPageText();
+    if (/\b(your application has been submitted|thanks for applying|application submitted|application complete|application received)\b/.test(
+      pageText
+    )) {
+      return true;
+    }
+    return lowerPath.includes("/post-apply") && (lowerTitle.includes("your application") || /\b(you will get an email confirmation|return to job search|keep track of your applications|take survey)\b/.test(
+      pageText
+    ));
   }
   function isActiveIndeedApplyStep() {
     const lowerUrl = window.location.href.toLowerCase();
@@ -13429,6 +13439,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const diceApplyAction = dependencies.findDiceApplyAction() ?? dependencies.findApplyAction(site, "job-page");
     return !diceApplyAction;
   }
+  function shouldPreferZipRecruiterApplyEntryBeforeAutofill(site, dependencies) {
+    if (site !== "ziprecruiter") {
+      return false;
+    }
+    if (dependencies.hasLikelyApplicationForm() || dependencies.hasLikelyApplicationFrame() || dependencies.hasZipRecruiterApplyModal()) {
+      return false;
+    }
+    return Boolean(dependencies.findZipRecruiterApplyAction());
+  }
   function looksLikeCurrentFrameApplicationSurface(site, dependencies) {
     if (site && site !== "unsupported" && dependencies.isLikelyApplyUrl(dependencies.currentUrl, site)) {
       return true;
@@ -13915,6 +13934,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return false;
     }
     return Boolean(findGreenhouseApplyAction() ?? findApplyAction(site, "job-page"));
+  }
+  function shouldPreferZipRecruiterApplyEntryBeforeAutofill2(site) {
+    return shouldPreferZipRecruiterApplyEntryBeforeAutofill(site, {
+      hasLikelyApplicationForm: hasLikelyApplicationForm2,
+      hasLikelyApplicationFrame: hasLikelyApplicationFrame2,
+      hasZipRecruiterApplyModal,
+      findZipRecruiterApplyAction
+    });
   }
   function getReadyVisibleManualSubmitAction(fields, root = document) {
     const action = findVisibleManualSubmitAction(root);
@@ -15626,6 +15653,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       await runOpenApplyStage(site);
       return;
     }
+    if (shouldPreferZipRecruiterApplyEntryBeforeAutofill2(site)) {
+      currentStage = "open-apply";
+      updateStatus(
+        "running",
+        "ZipRecruiter still needs its Apply button before the modal opens. Continuing...",
+        true,
+        "open-apply"
+      );
+      await runOpenApplyStage(site);
+      return;
+    }
     if (!isAlreadyOnApplyPage(site, window.location.href) && !hasLikelyApplicationForm2() && !hasLikelyApplicationSurface2(site) && hasLikelyApplyContinuationAction(site)) {
       currentStage = "open-apply";
       updateStatus(
@@ -15656,6 +15694,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       updateStatus(
         "running",
         "Greenhouse form is still closed on the job page. Reopening the Apply step...",
+        true,
+        "open-apply"
+      );
+      await runOpenApplyStage(site);
+      return;
+    }
+    if (shouldPreferZipRecruiterApplyEntryBeforeAutofill2(site)) {
+      currentStage = "open-apply";
+      updateStatus(
+        "running",
+        "ZipRecruiter modal is still closed on the job page. Reopening the Apply step...",
         true,
         "open-apply"
       );
