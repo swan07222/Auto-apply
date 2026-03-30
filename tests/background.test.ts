@@ -29,6 +29,10 @@ type TabRemovedListener = (
 ) => void;
 
 type TabCreatedListener = (tab: chrome.tabs.Tab) => void;
+type StorageChangedListener = (
+  changes: Record<string, chrome.storage.StorageChange>,
+  areaName: string
+) => void;
 
 function createBackgroundChrome(
   initialState: Record<string, unknown>,
@@ -39,6 +43,7 @@ function createBackgroundChrome(
   const tabUpdatedListeners = new Set<TabUpdatedListener>();
   const tabRemovedListeners = new Set<TabRemovedListener>();
   const tabCreatedListeners = new Set<TabCreatedListener>();
+  const storageChangedListeners = new Set<StorageChangedListener>();
   const reloadMock = vi.fn(async (tabId: number) => {
     const tab = await chrome.tabs.get(tabId).catch(() => ({ id: tabId }));
     for (const listener of Array.from(tabUpdatedListeners)) {
@@ -103,6 +108,14 @@ function createBackgroundChrome(
       },
       storage: {
         local,
+        onChanged: {
+          addListener(listener: StorageChangedListener) {
+            storageChangedListeners.add(listener);
+          },
+          removeListener(listener: StorageChangedListener) {
+            storageChangedListeners.delete(listener);
+          },
+        },
       },
     },
   });
@@ -127,6 +140,14 @@ function createBackgroundChrome(
     dispatchTabCreated(tab: chrome.tabs.Tab) {
       for (const listener of Array.from(tabCreatedListeners)) {
         listener(tab);
+      }
+    },
+    dispatchStorageChanged(
+      changes: Record<string, chrome.storage.StorageChange>,
+      areaName = "local"
+    ) {
+      for (const listener of Array.from(storageChangedListeners)) {
+        listener(changes, areaName);
       }
     },
     getMessageListener() {
@@ -1069,6 +1090,265 @@ describe("background spawn quota handling", () => {
     await new Promise((resolve) => setTimeout(resolve, 700));
     await flushAsyncWork();
 
+    expect(createTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: nextUrl,
+        openerTabId: 42,
+        index: 1,
+      })
+    );
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(102, {
+      type: "start-automation",
+      session: expect.objectContaining({
+        tabId: 102,
+        runId,
+        stage: "open-apply",
+        runSummary: expect.objectContaining({
+          appliedTodayCount: 1,
+          successfulJobPages: 1,
+          queuedJobCount: 0,
+        }),
+      }),
+    });
+  });
+
+  it("uses the pending completion fallback when close-current-tab arrives before finalize-session", async () => {
+    const runId = "run-close-pending-completion";
+    const completedUrl = "https://job-boards.greenhouse.io/example/jobs/123";
+    const nextUrl = "https://job-boards.greenhouse.io/example/jobs/456";
+    const completedKey = getJobDedupKey(completedUrl);
+    const nextKey = getJobDedupKey(nextUrl);
+    const runStateKey = `remote-job-search-run:${runId}`;
+    const pendingCompletionKey =
+      `remote-job-search-pending-managed-completion:${encodeURIComponent(runId)}:${encodeURIComponent(
+        completedKey
+      )}`;
+    const createTabMock = vi.fn().mockResolvedValue({ id: 102 });
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 2,
+          openedJobPages: 2,
+          openedJobKeys: [completedKey, nextKey],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          queuedJobItems: [
+            {
+              url: nextUrl,
+              site: "greenhouse",
+              stage: "open-apply",
+              runId,
+              claimedJobKey: nextKey,
+              active: true,
+              sourceTabId: 42,
+              sourceWindowId: 7,
+              sourceTabIndex: 0,
+              enqueuedAt: 1,
+            },
+          ],
+          stopRequested: false,
+          updatedAt: 2,
+        },
+        "remote-job-search-session:42": {
+          tabId: 42,
+          site: "greenhouse",
+          phase: "running",
+          message: "Collecting Greenhouse results...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "collect-results",
+          runId,
+        },
+        "remote-job-search-session:101": {
+          tabId: 101,
+          site: "greenhouse",
+          phase: "running",
+          message: "Submitting application...",
+          updatedAt: 3,
+          shouldResume: true,
+          stage: "autofill-form",
+          runId,
+          claimedJobKey: completedKey,
+        },
+        [pendingCompletionKey]: {
+          runId,
+          claimedJobKey: completedKey,
+          fallbackUrl: completedUrl,
+          completionKind: "successful",
+          message: "Application submitted successfully.",
+          updatedAt: 4,
+        },
+      },
+      createTabMock
+    );
+
+    chrome.tabs.get = vi.fn(async (tabId: number) => ({
+      id: tabId,
+      index: tabId === 42 ? 0 : 1,
+      windowId: 7,
+      url:
+        tabId === 42
+          ? "https://job-boards.greenhouse.io/example"
+          : tabId === 101
+            ? completedUrl
+            : nextUrl,
+    }));
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "close-current-tab",
+      },
+      {
+        tab: {
+          id: 101,
+          index: 1,
+          windowId: 7,
+          url: completedUrl,
+        },
+      }
+    );
+
+    expect(response).toEqual({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await flushAsyncWork();
+
+    expect(chromeMock.local.state[pendingCompletionKey]).toBeUndefined();
+    expect(chromeMock.local.state[runStateKey]).toEqual(
+      expect.objectContaining({
+        successfulJobPages: 1,
+        successfulJobKeys: [completedKey],
+        queuedJobItems: [],
+      })
+    );
+    expect(chromeMock.local.state["remote-job-search-applied-job-history"]).toEqual(
+      expect.arrayContaining([[completedKey, expect.any(Number)]])
+    );
+    expect(createTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: nextUrl,
+        openerTabId: 42,
+        index: 1,
+      })
+    );
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(102, {
+      type: "start-automation",
+      session: expect.objectContaining({
+        tabId: 102,
+        runId,
+        stage: "open-apply",
+        runSummary: expect.objectContaining({
+          appliedTodayCount: 1,
+          successfulJobPages: 1,
+          queuedJobCount: 0,
+        }),
+      }),
+    });
+  });
+
+  it("recovers a successful managed completion from fallback storage when the tab closes before finalize-session is mirrored to the background", async () => {
+    const runId = "run-pending-completion";
+    const completedUrl = "https://job-boards.greenhouse.io/example/jobs/123";
+    const nextUrl = "https://job-boards.greenhouse.io/example/jobs/456";
+    const completedKey = getJobDedupKey(completedUrl);
+    const nextKey = getJobDedupKey(nextUrl);
+    const runStateKey = `remote-job-search-run:${runId}`;
+    const pendingCompletionKey =
+      `remote-job-search-pending-managed-completion:${encodeURIComponent(runId)}:${encodeURIComponent(
+        completedKey
+      )}`;
+    const createTabMock = vi.fn().mockResolvedValue({ id: 102 });
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 2,
+          openedJobPages: 2,
+          openedJobKeys: [completedKey, nextKey],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          queuedJobItems: [
+            {
+              url: nextUrl,
+              site: "greenhouse",
+              stage: "open-apply",
+              runId,
+              claimedJobKey: nextKey,
+              active: true,
+              sourceTabId: 42,
+              sourceWindowId: 7,
+              sourceTabIndex: 0,
+              enqueuedAt: 1,
+            },
+          ],
+          stopRequested: false,
+          updatedAt: 2,
+        },
+        "remote-job-search-session:42": {
+          tabId: 42,
+          site: "greenhouse",
+          phase: "running",
+          message: "Collecting Greenhouse results...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "collect-results",
+          runId,
+        },
+        "remote-job-search-session:101": {
+          tabId: 101,
+          site: "greenhouse",
+          phase: "running",
+          message: "Submitting application...",
+          updatedAt: 3,
+          shouldResume: true,
+          stage: "autofill-form",
+          runId,
+          claimedJobKey: completedKey,
+        },
+        [pendingCompletionKey]: {
+          runId,
+          claimedJobKey: completedKey,
+          fallbackUrl: completedUrl,
+          completionKind: "successful",
+          message: "Application submitted successfully.",
+          updatedAt: 4,
+        },
+      },
+      createTabMock
+    );
+
+    chrome.tabs.get = vi.fn(async (tabId: number) => ({
+      id: tabId,
+      index: tabId === 42 ? 0 : 1,
+      windowId: 7,
+      url:
+        tabId === 42
+          ? "https://job-boards.greenhouse.io/example"
+          : tabId === 101
+            ? completedUrl
+            : nextUrl,
+    }));
+
+    await import("../src/background");
+
+    chromeMock.dispatchTabRemoved(101);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await flushAsyncWork();
+
+    expect(chromeMock.local.state[pendingCompletionKey]).toBeUndefined();
+    expect(chromeMock.local.state[runStateKey]).toEqual(
+      expect.objectContaining({
+        successfulJobPages: 1,
+        successfulJobKeys: [completedKey],
+        queuedJobItems: [],
+      })
+    );
+    expect(chromeMock.local.state["remote-job-search-applied-job-history"]).toEqual(
+      expect.arrayContaining([[completedKey, expect.any(Number)]])
+    );
     expect(createTabMock).toHaveBeenCalledWith(
       expect.objectContaining({
         url: nextUrl,

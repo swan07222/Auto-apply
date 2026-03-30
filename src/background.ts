@@ -97,17 +97,30 @@ type BackgroundRequest =
 
 type ProbedTargetFailureReason = BrokenPageReason | "unreachable";
 
+type PendingManagedCompletionRecord = {
+  runId: string;
+  claimedJobKey: string;
+  fallbackUrl?: string;
+  completionKind: ManagedSessionCompletionKind;
+  message: string;
+  updatedAt: number;
+};
+
 const ZIPRECRUITER_SPAWN_DELAY_MS = 4_000;
 const MONSTER_SPAWN_DELAY_MS = 9_000;
 const RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1_000;
+const PENDING_MANAGED_COMPLETION_FALLBACK_DELAY_MS = 3_000;
 
 const APPLIED_JOB_HISTORY_STORAGE_KEY = "remote-job-search-applied-job-history";
 const REVIEWED_JOB_HISTORY_STORAGE_KEY = "remote-job-search-reviewed-job-history";
+const PENDING_MANAGED_COMPLETION_STORAGE_KEY_PREFIX =
+  "remote-job-search-pending-managed-completion:";
 const MAX_APPLIED_JOB_HISTORY = 5_000;
 const MAX_REVIEWED_JOB_HISTORY = 10_000;
 
 const runLocks = new Map<string, Promise<void>>();
 const pendingExtensionTabSpawns = new Map<number, number>();
+const pendingManagedCompletionTimerIds = new Map<string, number>();
 let pendingSpawnPersistTimerId: number | null = null;
 let appliedJobHistoryCache: Map<string, number> | null = null;
 let appliedJobHistoryLoadPromise: Promise<Map<string, number>> | null = null;
@@ -135,6 +148,27 @@ chrome.runtime.onMessage.addListener(
 chrome.tabs.onRemoved.addListener((tabId) => {
   void (async () => {
     const session = await getSession(tabId);
+    const pendingCompletion =
+      session?.runId && isManagedJobSession(session)
+        ? await consumePendingManagedCompletionForSession(session)
+        : null;
+
+    if (session?.runId && pendingCompletion) {
+      if (pendingCompletion.completionKind === "successful") {
+        await recordSuccessfulJobCompletion(
+          session.runId,
+          tabId,
+          pendingCompletion.fallbackUrl
+        );
+      } else if (pendingCompletion.completionKind === "released") {
+        await releaseManagedJobOpening(
+          session.runId,
+          tabId,
+          pendingCompletion.fallbackUrl
+        );
+      }
+    }
+
     await removeSession(tabId);
     if (session?.runId) {
       await maybeOpenNextQueuedJobForRunId(session.runId);
@@ -145,6 +179,34 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 chrome.tabs.onCreated.addListener((tab) => {
   void attachSessionToSiteOpenedChildTab(tab);
+});
+
+chrome.storage.onChanged?.addListener((changes, areaName) => {
+  if (areaName !== "local") {
+    return;
+  }
+
+  for (const [key, change] of Object.entries(changes)) {
+    if (!key.startsWith(PENDING_MANAGED_COMPLETION_STORAGE_KEY_PREFIX)) {
+      continue;
+    }
+
+    const existingTimerId = pendingManagedCompletionTimerIds.get(key);
+    if (existingTimerId !== undefined) {
+      clearTimeout(existingTimerId);
+      pendingManagedCompletionTimerIds.delete(key);
+    }
+
+    if (!isPendingManagedCompletionRecord(change.newValue)) {
+      continue;
+    }
+
+    const timerId = setTimeout(() => {
+      pendingManagedCompletionTimerIds.delete(key);
+      void processPendingManagedCompletionRecord(change.newValue);
+    }, PENDING_MANAGED_COMPLETION_FALLBACK_DELAY_MS) as unknown as number;
+    pendingManagedCompletionTimerIds.set(key, timerId);
+  }
 });
 
 chrome.runtime.onStartup.addListener(() => {
@@ -192,6 +254,110 @@ async function scheduleStartupCompanyRefresh(): Promise<void> {
   } catch {
     // Ignore alarm scheduling errors.
   }
+}
+
+function buildPendingManagedCompletionStorageKey(
+  runId: string,
+  claimedJobKey: string
+): string {
+  return `${PENDING_MANAGED_COMPLETION_STORAGE_KEY_PREFIX}${encodeURIComponent(
+    runId
+  )}:${encodeURIComponent(claimedJobKey)}`;
+}
+
+function isPendingManagedCompletionRecord(
+  value: unknown
+): value is PendingManagedCompletionRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const candidate = value as Partial<PendingManagedCompletionRecord>;
+  return (
+    typeof candidate.runId === "string" &&
+    candidate.runId.trim().length > 0 &&
+    typeof candidate.claimedJobKey === "string" &&
+    candidate.claimedJobKey.trim().length > 0 &&
+    typeof candidate.message === "string" &&
+    Number.isFinite(candidate.updatedAt) &&
+    (candidate.completionKind === "successful" ||
+      candidate.completionKind === "released" ||
+      candidate.completionKind === "handoff")
+  );
+}
+
+async function consumePendingManagedCompletionForSession(
+  session: AutomationSession
+): Promise<PendingManagedCompletionRecord | null> {
+  const runId = session.runId?.trim();
+  const claimedJobKey = session.claimedJobKey?.trim();
+
+  if (!runId || !claimedJobKey) {
+    return null;
+  }
+
+  const storageKey = buildPendingManagedCompletionStorageKey(
+    runId,
+    claimedJobKey
+  );
+
+  try {
+    const stored = await chrome.storage.local.get(storageKey);
+    const record = stored[storageKey];
+    if (!isPendingManagedCompletionRecord(record)) {
+      return null;
+    }
+
+    await chrome.storage.local.remove(storageKey);
+    return record;
+  } catch {
+    return null;
+  }
+}
+
+async function processPendingManagedCompletionRecord(
+  record: PendingManagedCompletionRecord
+): Promise<void> {
+  const sessions = await listSessionsForRunId(record.runId);
+  const session = sessions.find(
+    (candidate) =>
+      isManagedJobSession(candidate) &&
+      candidate.claimedJobKey?.trim() === record.claimedJobKey
+  );
+
+  if (!session) {
+    return;
+  }
+
+  const pendingCompletion = await consumePendingManagedCompletionForSession(session);
+  if (!pendingCompletion) {
+    return;
+  }
+
+  if (pendingCompletion.completionKind === "successful") {
+    await recordSuccessfulJobCompletion(
+      pendingCompletion.runId,
+      session.tabId,
+      pendingCompletion.fallbackUrl
+    );
+  } else if (pendingCompletion.completionKind === "released") {
+    await releaseManagedJobOpening(
+      pendingCompletion.runId,
+      session.tabId,
+      pendingCompletion.fallbackUrl
+    );
+  }
+
+  await removeSession(session.tabId);
+
+  try {
+    await chrome.tabs.remove(session.tabId);
+  } catch {
+    // Tab may already be closed.
+  }
+
+  await maybeOpenNextQueuedJobForRunId(pendingCompletion.runId);
+  await maybeFinalizeExhaustedRun(pendingCompletion.runId);
 }
 
 async function extractMonsterSearchResults(tabId: number): Promise<{
@@ -956,6 +1122,27 @@ async function handleMessage(
       }
 
       const session = await getSession(tabId);
+      const pendingCompletion =
+        session?.runId && isManagedJobSession(session)
+          ? await consumePendingManagedCompletionForSession(session)
+          : null;
+
+      if (session?.runId && pendingCompletion) {
+        if (pendingCompletion.completionKind === "successful") {
+          await recordSuccessfulJobCompletion(
+            session.runId,
+            tabId,
+            pendingCompletion.fallbackUrl
+          );
+        } else if (pendingCompletion.completionKind === "released") {
+          await releaseManagedJobOpening(
+            session.runId,
+            tabId,
+            pendingCompletion.fallbackUrl
+          );
+        }
+      }
+
       await removeSession(tabId);
 
       try {

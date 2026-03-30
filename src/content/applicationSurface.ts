@@ -51,7 +51,7 @@ export async function waitForLikelyApplicationSurface(
       site !== "monster" &&
       APPLICATION_SURFACE_SCROLL_ATTEMPTS.has(attempt)
     ) {
-      revealLikelyApplicationRegion(site, attempt);
+      revealLikelyApplicationRegion(site, attempt, collectors);
     }
 
     await sleep(APPLICATION_SURFACE_WAIT_DELAYS_MS[attempt]);
@@ -60,8 +60,12 @@ export async function waitForLikelyApplicationSurface(
   return false;
 }
 
-function revealLikelyApplicationRegion(site: SiteKey, attempt: number): void {
-  if (scrollLikelyApplicationAnchorIntoView()) {
+function revealLikelyApplicationRegion(
+  site: SiteKey,
+  attempt: number,
+  collectors: ApplicationSurfaceCollectors
+): void {
+  if (scrollLikelyApplicationAnchorIntoView(collectors)) {
     return;
   }
 
@@ -94,11 +98,13 @@ function revealLikelyApplicationRegion(site: SiteKey, attempt: number): void {
 
   window.scrollTo({
     top: targetTop,
-    behavior: "smooth",
+    behavior: "auto",
   });
 }
 
-function scrollLikelyApplicationAnchorIntoView(): boolean {
+function scrollLikelyApplicationAnchorIntoView(
+  collectors: ApplicationSurfaceCollectors
+): boolean {
   const hashTarget = decodeHashTarget(window.location.hash);
   const candidateIds = [
     hashTarget,
@@ -114,18 +120,164 @@ function scrollLikelyApplicationAnchorIntoView(): boolean {
       continue;
     }
 
-    try {
-      target.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
+    if (scrollElementNearTop(target)) {
       return true;
-    } catch {
+    }
+  }
+
+  const revealTarget = findLikelyApplicationRevealTarget(collectors);
+  if (revealTarget) {
+    return scrollElementNearTop(revealTarget);
+  }
+
+  return false;
+}
+
+function findLikelyApplicationRevealTarget(
+  collectors: ApplicationSurfaceCollectors
+): HTMLElement | null {
+  const candidates: HTMLElement[] = [];
+  const seen = new Set<HTMLElement>();
+  const pushCandidate = (element: HTMLElement | null | undefined) => {
+    if (!element || seen.has(element) || !isRevealableElement(element)) {
+      return;
+    }
+
+    seen.add(element);
+    candidates.push(element);
+  };
+
+  for (const field of collectors.collectAutofillFields()) {
+    if (!isRevealableApplicationField(field)) {
+      continue;
+    }
+
+    pushCandidate(getApplicationRevealContainer(field));
+    pushCandidate(field);
+  }
+
+  for (const input of collectors.collectResumeFileInputs()) {
+    if (!isRevealableElement(input)) {
+      continue;
+    }
+
+    pushCandidate(getApplicationRevealContainer(input));
+    pushCandidate(input);
+  }
+
+  let best: { element: HTMLElement; top: number; priority: number } | null = null;
+  const currentScrollTop =
+    window.scrollY ||
+    window.pageYOffset ||
+    document.documentElement?.scrollTop ||
+    document.body?.scrollTop ||
+    0;
+
+  for (const candidate of candidates) {
+    const rect = candidate.getBoundingClientRect();
+    const documentTop = currentScrollTop + rect.top;
+    const priority = getRevealTargetPriority(candidate);
+
+    if (
+      !best ||
+      documentTop < best.top - 1 ||
+      (Math.abs(documentTop - best.top) <= 1 && priority < best.priority)
+    ) {
+      best = {
+        element: candidate,
+        top: documentTop,
+        priority,
+      };
+    }
+  }
+
+  return best?.element ?? null;
+}
+
+function getApplicationRevealContainer(element: HTMLElement): HTMLElement | null {
+  return element.closest(
+    "form, [role='form'], fieldset, [id*='application' i], [id*='apply' i], [class*='application' i], [class*='apply' i], [data-testid*='application' i], [data-testid*='apply' i]"
+  );
+}
+
+function getRevealTargetPriority(element: HTMLElement): number {
+  if (
+    element.matches(
+      "form, [role='form'], fieldset, [id*='application' i], [class*='application' i]"
+    )
+  ) {
+    return 0;
+  }
+
+  if (element.matches("input[type='file'], input, textarea, select")) {
+    return 1;
+  }
+
+  return 2;
+}
+
+function isRevealableApplicationField(field: AutofillField): boolean {
+  if (!field.isConnected || field.disabled || !isRevealableElement(field)) {
+    return false;
+  }
+
+  if (field instanceof HTMLInputElement) {
+    const type = field.type.toLowerCase();
+    if (["hidden", "submit", "button", "reset", "image"].includes(type)) {
       return false;
     }
   }
 
-  return false;
+  return isLikelyApplicationField(field);
+}
+
+function isRevealableElement(element: HTMLElement): boolean {
+  if (!element.isConnected) {
+    return false;
+  }
+
+  let current: HTMLElement | null = element;
+  while (current) {
+    const styles = window.getComputedStyle(current);
+    const opacity = Number.parseFloat(styles.opacity);
+    if (
+      styles.visibility === "hidden" ||
+      styles.visibility === "collapse" ||
+      styles.display === "none" ||
+      (Number.isFinite(opacity) && opacity <= 0.01)
+    ) {
+      return false;
+    }
+    current = current.parentElement;
+  }
+
+  const rect = element.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+function scrollElementNearTop(target: HTMLElement): boolean {
+  try {
+    const rect = target.getBoundingClientRect();
+    const currentScrollTop =
+      window.scrollY ||
+      window.pageYOffset ||
+      document.documentElement?.scrollTop ||
+      document.body?.scrollTop ||
+      0;
+    const topPadding = Math.max(96, Math.round(window.innerHeight * 0.14));
+    const targetTop = Math.max(
+      0,
+      Math.round(currentScrollTop + rect.top - topPadding)
+    );
+
+    window.scrollTo({
+      top: targetTop,
+      behavior: "auto",
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function decodeHashTarget(hash: string): string {
@@ -497,6 +649,9 @@ function hasLikelyGreenhouseLaunchSurface(): boolean {
         /\bcontinue\b/.test(controlText) ||
         /\bnext\b/.test(controlText) ||
         /\breview\b/.test(controlText) ||
+        /\bsubmit(?:\s+your)?\s+application\b/.test(controlText) ||
+        /\bconfirm\s+and\s+submit\b/.test(controlText) ||
+        /\bsend\s+application\b/.test(controlText) ||
         /\bautofill with resume\b/.test(controlText) ||
         /\bauto[- ]?fill with resume\b/.test(controlText) ||
         /\bapply manually\b/.test(controlText) ||

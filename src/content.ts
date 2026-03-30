@@ -216,6 +216,15 @@ type ManagedSessionCompletionKind =
   | "released"
   | "handoff";
 
+type PendingManagedCompletionRecord = {
+  runId: string;
+  claimedJobKey: string;
+  fallbackUrl: string;
+  completionKind: ManagedSessionCompletionKind;
+  message: string;
+  updatedAt: number;
+};
+
 type OverlayPosition = {
   top: number;
   left: number;
@@ -235,6 +244,8 @@ const OVERLAY_AUTO_HIDE_MS = 10_000;
 const OVERLAY_EDGE_MARGIN = 18;
 const OVERLAY_DRAG_PADDING = 12;
 const OVERLAY_POSITION_STORAGE_KEY = "remote-job-search-overlay-position";
+const PENDING_MANAGED_COMPLETION_STORAGE_KEY_PREFIX =
+  "remote-job-search-pending-managed-completion:";
 const MAX_STAGE_DEPTH = 10;
 const IS_TOP_FRAME = window.top === window;
 const CONTENT_READY_POLL_MS = 80;
@@ -314,6 +325,48 @@ async function sendRuntimeMessage<T>(message: unknown): Promise<T | null> {
     }
 
     throw error;
+  }
+}
+
+function buildPendingManagedCompletionStorageKey(
+  runId: string,
+  claimedJobKey: string
+): string {
+  return `${PENDING_MANAGED_COMPLETION_STORAGE_KEY_PREFIX}${encodeURIComponent(
+    runId
+  )}:${encodeURIComponent(claimedJobKey)}`;
+}
+
+async function persistPendingManagedCompletion(
+  completionKind: ManagedSessionCompletionKind,
+  message: string
+): Promise<void> {
+  if (!isExtensionRuntimeAvailable()) {
+    return;
+  }
+
+  const runId = currentRunId?.trim();
+  const claimedJobKey = resolveCurrentClaimedJobKey()?.trim();
+
+  if (!runId || !claimedJobKey) {
+    return;
+  }
+
+  const record: PendingManagedCompletionRecord = {
+    runId,
+    claimedJobKey,
+    fallbackUrl: window.location.href,
+    completionKind,
+    message,
+    updatedAt: Date.now(),
+  };
+
+  try {
+    await chrome.storage.local.set({
+      [buildPendingManagedCompletionStorageKey(runId, claimedJobKey)]: record,
+    });
+  } catch {
+    // Ignore fallback persistence failures and still try the runtime finalize path.
   }
 }
 
@@ -809,7 +862,7 @@ function getReadyVisibleManualSubmitAction(
 }
 
 function shouldAutoSubmitReadyManualAction(site: SiteKey): boolean {
-  return site === "ziprecruiter";
+  return site === "ziprecruiter" || site === "greenhouse";
 }
 
 async function tryAutoSubmitReadyManualAction(
@@ -2760,6 +2813,11 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 
     if (childApplicationTabOpened) return;
 
+    if (shouldTreatCurrentPageAsAppliedSafely(site)) {
+      await finalizeSuccessfulApplication("Application submitted successfully.");
+      return;
+    }
+
     if (window.location.href !== urlBeforeClick) {
       await waitForApplyTransitionSignals(site, urlBeforeClick);
       await waitForHumanVerificationToClear();
@@ -2928,6 +2986,11 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     });
     await waitForApplyTransitionSignals(site, urlBeforeClick);
 
+    if (shouldTreatCurrentPageAsAppliedSafely(site)) {
+      await finalizeSuccessfulApplication("Application submitted successfully.");
+      return;
+    }
+
     if (
       window.location.href !== urlBeforeClick ||
       hasLikelyApplicationSurface(site)
@@ -3007,6 +3070,11 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       await runOpenApplyStage(site);
       return;
     }
+  }
+
+  if (shouldTreatCurrentPageAsAppliedSafely(site)) {
+    await finalizeSuccessfulApplication("Application submitted successfully.");
+    return;
   }
 
   if (isProbablyAuthGatePage(document)) {
@@ -5735,6 +5803,7 @@ async function pushFinalSessionStatus(
   currentStage = "autofill-form";
   status = createStatus(status.site, "completed", message);
   renderOverlay();
+  await persistPendingManagedCompletion(completionKind, message);
 
   try {
     await sendRuntimeMessage({

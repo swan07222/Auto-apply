@@ -10653,14 +10653,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         return true;
       }
       if (site !== "monster" && APPLICATION_SURFACE_SCROLL_ATTEMPTS.has(attempt)) {
-        revealLikelyApplicationRegion(site, attempt);
+        revealLikelyApplicationRegion(site, attempt, collectors);
       }
       await sleep(APPLICATION_SURFACE_WAIT_DELAYS_MS[attempt]);
     }
     return false;
   }
-  function revealLikelyApplicationRegion(site, attempt) {
-    if (scrollLikelyApplicationAnchorIntoView()) {
+  function revealLikelyApplicationRegion(site, attempt, collectors) {
+    if (scrollLikelyApplicationAnchorIntoView(collectors)) {
       return;
     }
     const totalHeight = Math.max(
@@ -10677,10 +10677,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const targetTop = Math.round(maxScrollTop * waypoints[waypointIndex]);
     window.scrollTo({
       top: targetTop,
-      behavior: "smooth"
+      behavior: "auto"
     });
   }
-  function scrollLikelyApplicationAnchorIntoView() {
+  function scrollLikelyApplicationAnchorIntoView(collectors) {
     const hashTarget = decodeHashTarget(window.location.hash);
     const candidateIds = [
       hashTarget,
@@ -10694,17 +10694,117 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       if (!target) {
         continue;
       }
-      try {
-        target.scrollIntoView({
-          behavior: "smooth",
-          block: "start"
-        });
+      if (scrollElementNearTop(target)) {
         return true;
-      } catch {
+      }
+    }
+    const revealTarget = findLikelyApplicationRevealTarget(collectors);
+    if (revealTarget) {
+      return scrollElementNearTop(revealTarget);
+    }
+    return false;
+  }
+  function findLikelyApplicationRevealTarget(collectors) {
+    const candidates = [];
+    const seen = /* @__PURE__ */ new Set();
+    const pushCandidate = (element) => {
+      if (!element || seen.has(element) || !isRevealableElement(element)) {
+        return;
+      }
+      seen.add(element);
+      candidates.push(element);
+    };
+    for (const field of collectors.collectAutofillFields()) {
+      if (!isRevealableApplicationField(field)) {
+        continue;
+      }
+      pushCandidate(getApplicationRevealContainer(field));
+      pushCandidate(field);
+    }
+    for (const input of collectors.collectResumeFileInputs()) {
+      if (!isRevealableElement(input)) {
+        continue;
+      }
+      pushCandidate(getApplicationRevealContainer(input));
+      pushCandidate(input);
+    }
+    let best = null;
+    const currentScrollTop = window.scrollY || window.pageYOffset || document.documentElement?.scrollTop || document.body?.scrollTop || 0;
+    for (const candidate of candidates) {
+      const rect = candidate.getBoundingClientRect();
+      const documentTop = currentScrollTop + rect.top;
+      const priority = getRevealTargetPriority(candidate);
+      if (!best || documentTop < best.top - 1 || Math.abs(documentTop - best.top) <= 1 && priority < best.priority) {
+        best = {
+          element: candidate,
+          top: documentTop,
+          priority
+        };
+      }
+    }
+    return best?.element ?? null;
+  }
+  function getApplicationRevealContainer(element) {
+    return element.closest(
+      "form, [role='form'], fieldset, [id*='application' i], [id*='apply' i], [class*='application' i], [class*='apply' i], [data-testid*='application' i], [data-testid*='apply' i]"
+    );
+  }
+  function getRevealTargetPriority(element) {
+    if (element.matches(
+      "form, [role='form'], fieldset, [id*='application' i], [class*='application' i]"
+    )) {
+      return 0;
+    }
+    if (element.matches("input[type='file'], input, textarea, select")) {
+      return 1;
+    }
+    return 2;
+  }
+  function isRevealableApplicationField(field) {
+    if (!field.isConnected || field.disabled || !isRevealableElement(field)) {
+      return false;
+    }
+    if (field instanceof HTMLInputElement) {
+      const type = field.type.toLowerCase();
+      if (["hidden", "submit", "button", "reset", "image"].includes(type)) {
         return false;
       }
     }
-    return false;
+    return isLikelyApplicationField(field);
+  }
+  function isRevealableElement(element) {
+    if (!element.isConnected) {
+      return false;
+    }
+    let current = element;
+    while (current) {
+      const styles = window.getComputedStyle(current);
+      const opacity = Number.parseFloat(styles.opacity);
+      if (styles.visibility === "hidden" || styles.visibility === "collapse" || styles.display === "none" || Number.isFinite(opacity) && opacity <= 0.01) {
+        return false;
+      }
+      current = current.parentElement;
+    }
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+  function scrollElementNearTop(target) {
+    try {
+      const rect = target.getBoundingClientRect();
+      const currentScrollTop = window.scrollY || window.pageYOffset || document.documentElement?.scrollTop || document.body?.scrollTop || 0;
+      const topPadding = Math.max(96, Math.round(window.innerHeight * 0.14));
+      const targetTop = Math.max(
+        0,
+        Math.round(currentScrollTop + rect.top - topPadding)
+      );
+      window.scrollTo({
+        top: targetTop,
+        behavior: "auto"
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
   function decodeHashTarget(hash) {
     const trimmed = hash.trim().replace(/^#/, "");
@@ -10968,7 +11068,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             control.getAttribute("data-test")
           ].filter(Boolean).join(" ")
         ).toLowerCase();
-        return /\bcontinue\b/.test(controlText) || /\bnext\b/.test(controlText) || /\breview\b/.test(controlText) || /\bautofill with resume\b/.test(controlText) || /\bauto[- ]?fill with resume\b/.test(controlText) || /\bapply manually\b/.test(controlText) || /\buse my last application\b/.test(controlText) || /\bstart (?:my |your )?application\b/.test(controlText) || /\bcontinue application\b/.test(controlText);
+        return /\bcontinue\b/.test(controlText) || /\bnext\b/.test(controlText) || /\breview\b/.test(controlText) || /\bsubmit(?:\s+your)?\s+application\b/.test(controlText) || /\bconfirm\s+and\s+submit\b/.test(controlText) || /\bsend\s+application\b/.test(controlText) || /\bautofill with resume\b/.test(controlText) || /\bauto[- ]?fill with resume\b/.test(controlText) || /\bapply manually\b/.test(controlText) || /\buse my last application\b/.test(controlText) || /\bstart (?:my |your )?application\b/.test(controlText) || /\bcontinue application\b/.test(controlText);
       });
       const signalCount = [
         "apply for this job",
@@ -13405,6 +13505,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   var OVERLAY_EDGE_MARGIN = 18;
   var OVERLAY_DRAG_PADDING = 12;
   var OVERLAY_POSITION_STORAGE_KEY = "remote-job-search-overlay-position";
+  var PENDING_MANAGED_COMPLETION_STORAGE_KEY_PREFIX = "remote-job-search-pending-managed-completion:";
   var MAX_STAGE_DEPTH = 10;
   var IS_TOP_FRAME = window.top === window;
   var CONTENT_READY_POLL_MS = 80;
@@ -13465,6 +13566,35 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         return null;
       }
       throw error;
+    }
+  }
+  function buildPendingManagedCompletionStorageKey(runId, claimedJobKey) {
+    return `${PENDING_MANAGED_COMPLETION_STORAGE_KEY_PREFIX}${encodeURIComponent(
+      runId
+    )}:${encodeURIComponent(claimedJobKey)}`;
+  }
+  async function persistPendingManagedCompletion(completionKind, message) {
+    if (!isExtensionRuntimeAvailable()) {
+      return;
+    }
+    const runId = currentRunId?.trim();
+    const claimedJobKey = resolveCurrentClaimedJobKey()?.trim();
+    if (!runId || !claimedJobKey) {
+      return;
+    }
+    const record = {
+      runId,
+      claimedJobKey,
+      fallbackUrl: window.location.href,
+      completionKind,
+      message,
+      updatedAt: Date.now()
+    };
+    try {
+      await chrome.storage.local.set({
+        [buildPendingManagedCompletionStorageKey(runId, claimedJobKey)]: record
+      });
+    } catch {
     }
   }
   function getRuntimeMessageError(response, fallbackMessage) {
@@ -13794,7 +13924,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return shouldTreatManualSubmitActionAsReady(action, fields) ? action : null;
   }
   function shouldAutoSubmitReadyManualAction(site) {
-    return site === "ziprecruiter";
+    return site === "ziprecruiter" || site === "greenhouse";
   }
   async function tryAutoSubmitReadyManualAction(site, action) {
     const waitSteps = [250, 250, 300, 300, 400, 400, 500, 500, 700, 700, 900, 900];
@@ -15218,6 +15348,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       await waitForAutomationResumeIfPaused();
       await sleepWithAutomationChecks(700);
       if (childApplicationTabOpened) return;
+      if (shouldTreatCurrentPageAsAppliedSafely(site)) {
+        await finalizeSuccessfulApplication("Application submitted successfully.");
+        return;
+      }
       if (window.location.href !== urlBeforeClick) {
         await waitForApplyTransitionSignals(site, urlBeforeClick);
         await waitForHumanVerificationToClear();
@@ -15361,6 +15495,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         skipFocus: skipApplyClickFocus
       });
       await waitForApplyTransitionSignals(site, urlBeforeClick);
+      if (shouldTreatCurrentPageAsAppliedSafely(site)) {
+        await finalizeSuccessfulApplication("Application submitted successfully.");
+        return;
+      }
       if (window.location.href !== urlBeforeClick || hasLikelyApplicationSurface2(site)) {
         if (window.location.href !== urlBeforeClick) {
           await waitForHumanVerificationToClear();
@@ -15428,6 +15566,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         await runOpenApplyStage(site);
         return;
       }
+    }
+    if (shouldTreatCurrentPageAsAppliedSafely(site)) {
+      await finalizeSuccessfulApplication("Application submitted successfully.");
+      return;
     }
     if (isProbablyAuthGatePage(document)) {
       await waitForHumanVerificationToClear();
@@ -17411,6 +17553,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     currentStage = "autofill-form";
     status = createStatus(status.site, "completed", message);
     renderOverlay();
+    await persistPendingManagedCompletion(completionKind, message);
     try {
       await sendRuntimeMessage({
         type: "finalize-session",

@@ -208,6 +208,31 @@ describe("application surface helpers", () => {
     expect(hasLikelyApplicationSurface("greenhouse", collectors)).toBe(true);
   });
 
+  it("recognizes Greenhouse final review surfaces that only expose submit application", () => {
+    document.body.innerHTML = `
+      <section
+        role="dialog"
+        aria-modal="true"
+        class="greenhouse-application-drawer"
+        data-testid="greenhouse-application-shell"
+      >
+        <h2>Review your application</h2>
+        <p>Submit application when everything looks right.</p>
+        <label>
+          First Name
+          <input name="first_name" type="text" autocomplete="given-name" value="Ava" />
+        </label>
+        <label>
+          Last Name
+          <input name="last_name" type="text" autocomplete="family-name" value="Stone" />
+        </label>
+        <button>Submit Application</button>
+      </section>
+    `;
+
+    expect(hasLikelyApplicationSurface("greenhouse", collectors)).toBe(true);
+  });
+
   it("does not treat a plain Greenhouse job page with only the primary apply CTA as an application surface", () => {
     document.body.innerHTML = `
       <main class="main font-secondary job-post">
@@ -305,6 +330,124 @@ describe("application surface helpers", () => {
         value !== null &&
         "top" in value &&
         Number(value.top ?? 0) >= 1400
+      )
+    ).toBe(true);
+  });
+
+  it("jumps directly to far-below Greenhouse form fields that already exist in the DOM", async () => {
+    vi.useFakeTimers();
+    document.body.innerHTML = `
+      <main>
+        <section style="height: 2400px">
+          <h1>Job details</h1>
+        </section>
+        <form id="application-form">
+          <input
+            id="greenhouse-first-name"
+            type="text"
+            autocomplete="given-name"
+            aria-label="First name"
+          />
+          <input
+            id="greenhouse-email"
+            type="email"
+            autocomplete="email"
+            aria-label="Email"
+          />
+        </form>
+      </main>
+    `;
+
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 900,
+    });
+    Object.defineProperty(document.body, "scrollHeight", {
+      configurable: true,
+      value: 4200,
+    });
+    Object.defineProperty(document.documentElement, "scrollHeight", {
+      configurable: true,
+      value: 4200,
+    });
+
+    let appliedScrollTop = 0;
+    const firstName = document.querySelector<HTMLInputElement>(
+      "#greenhouse-first-name"
+    );
+    const email = document.querySelector<HTMLInputElement>("#greenhouse-email");
+    const form = document.querySelector<HTMLElement>("#application-form");
+
+    expect(firstName).not.toBeNull();
+    expect(email).not.toBeNull();
+    expect(form).not.toBeNull();
+
+    const offscreenTop = 3150;
+    const visibleTop = 320;
+    const fieldRect = () => {
+      const top = appliedScrollTop >= 2800 ? visibleTop : offscreenTop;
+      return {
+        x: 0,
+        y: top,
+        top,
+        left: 0,
+        bottom: top + 48,
+        right: 320,
+        width: 320,
+        height: 48,
+        toJSON() {
+          return this;
+        },
+      };
+    };
+    const formRect = () => {
+      const top = appliedScrollTop >= 2800 ? visibleTop - 120 : offscreenTop - 120;
+      return {
+        x: 0,
+        y: top,
+        top,
+        left: 0,
+        bottom: top + 220,
+        right: 640,
+        width: 640,
+        height: 220,
+        toJSON() {
+          return this;
+        },
+      };
+    };
+
+    Object.defineProperty(firstName as HTMLInputElement, "getBoundingClientRect", {
+      configurable: true,
+      value: fieldRect,
+    });
+    Object.defineProperty(email as HTMLInputElement, "getBoundingClientRect", {
+      configurable: true,
+      value: fieldRect,
+    });
+    Object.defineProperty(form as HTMLElement, "getBoundingClientRect", {
+      configurable: true,
+      value: formRect,
+    });
+
+    const scrollSpy = vi.spyOn(window, "scrollTo").mockImplementation((value) => {
+      if (typeof value === "object" && value !== null && "top" in value) {
+        appliedScrollTop = Number(value.top ?? 0);
+      }
+    });
+
+    const promise = waitForLikelyApplicationSurface("greenhouse", collectors);
+
+    await vi.advanceTimersByTimeAsync(1_200);
+
+    await expect(promise).resolves.toBe(true);
+    expect(scrollSpy).toHaveBeenCalled();
+    expect(
+      scrollSpy.mock.calls.some(([value]) =>
+        typeof value === "object" &&
+        value !== null &&
+        "top" in value &&
+        Number(value.top ?? 0) >= 2800
       )
     ).toBe(true);
   });
