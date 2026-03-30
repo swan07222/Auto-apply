@@ -3,16 +3,31 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Remote Job Search Starter</title>
+    <title>Remote Job Search Control</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
     <main class="popup-shell">
       <section class="dashboard">
         <section class="status-panel" id="status-panel" data-phase="idle" aria-live="polite">
+          <div class="status-intro">
+            <div class="status-crest" aria-hidden="true">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+            <div class="status-intro-copy">
+              <p class="status-eyebrow">Control Center</p>
+              <h1 class="status-heading">Remote job automation</h1>
+            </div>
+          </div>
+
           <div class="status-header">
-            <p class="status-label">Status</p>
-            <span class="status-dot" aria-hidden="true"></span>
+            <p class="status-label">Current session</p>
+            <div class="status-presence">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span class="status-presence-text">Live</span>
+            </div>
           </div>
 
           <div class="status-meta-row">
@@ -25,8 +40,8 @@
               <span id="mode-preview" class="status-chip-value">Job boards</span>
             </span>
             <span class="status-chip">
-              <span class="status-chip-label">Applied Today</span>
-              <span id="jobs-applied-today" class="status-chip-value">0</span>
+              <span class="status-chip-label">Queue</span>
+              <span id="queue-count" class="status-chip-value">0</span>
             </span>
           </div>
 

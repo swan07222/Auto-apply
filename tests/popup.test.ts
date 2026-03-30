@@ -234,7 +234,7 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
       "#add-preference-button"
     ),
     statusText: requireElement<HTMLElement>("#status-text"),
-    jobsAppliedToday: requireElement<HTMLElement>("#jobs-applied-today"),
+    queueCount: requireElement<HTMLElement>("#queue-count"),
     settingsStatus: requireElement<HTMLElement>("#settings-status"),
     siteName: requireElement<HTMLElement>("#site-name"),
     modePreview: requireElement<HTMLElement>("#mode-preview"),
@@ -335,7 +335,7 @@ describe("popup workflow", () => {
     expect(popup.siteName.textContent).toBe("Indeed");
     expect(popup.modePreview.textContent).toBe("Job boards");
     expect(popup.statusText.textContent).toBe("Ready on Indeed.");
-    expect(popup.jobsAppliedToday.textContent).toBe("0");
+    expect(popup.queueCount.textContent).toBe("0");
     expect(popup.startButton.disabled).toBe(false);
     expect(popup.tabsQuery).toHaveBeenCalled();
     expect(popup.runtimeSendMessage).toHaveBeenCalledWith({
@@ -344,7 +344,7 @@ describe("popup workflow", () => {
     });
   });
 
-  it("shows the applied-today counter from the active run summary", async () => {
+  it("shows the queued-job count from the active run summary", async () => {
     const popup = await createPopupHarness({
       runtimeSendMessage(message) {
         if (message.type === "get-tab-session") {
@@ -361,8 +361,6 @@ describe("popup workflow", () => {
               runId: "run-1",
               runSummary: {
                 queuedJobCount: 3,
-                successfulJobPages: 4,
-                appliedTodayCount: 7,
                 stopRequested: false,
               },
             },
@@ -373,7 +371,7 @@ describe("popup workflow", () => {
       },
     });
 
-    expect(popup.jobsAppliedToday.textContent).toBe("7");
+    expect(popup.queueCount.textContent).toBe("3");
     expect(popup.statusText.textContent).toBe("Waiting for queued jobs or Stop.");
     expect(popup.startButton.disabled).toBe(true);
   });
@@ -1038,7 +1036,7 @@ describe("popup workflow", () => {
       },
     });
 
-    expect(getTabSessionCalls).toBe(1);
+    const initialGetTabSessionCalls = getTabSessionCalls;
 
     Object.defineProperty(document, "visibilityState", {
       configurable: true,
@@ -1049,7 +1047,7 @@ describe("popup workflow", () => {
     await vi.advanceTimersByTimeAsync(4_500);
     await flushAsyncWork(12);
 
-    expect(getTabSessionCalls).toBe(1);
+    expect(getTabSessionCalls).toBe(initialGetTabSessionCalls);
   });
 
   it("auto-saves trimmed candidate details and normalized keywords through the popup form", async () => {

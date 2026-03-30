@@ -1286,6 +1286,10 @@
     const sessionKeys = allKeys.filter(
       (key) => key.startsWith(SESSION_STORAGE_PREFIX)
     );
+    const runState = await getRunState(runId);
+    if (runState && runState.stopRequested !== true && runState.queuedJobItems.length > 0) {
+      return;
+    }
     if (sessionKeys.length === 0) {
       await removeRunState(runId);
       await removeActiveRunId(runId);
@@ -1386,9 +1390,10 @@
       if (!isPendingManagedCompletionRecord(change.newValue)) {
         continue;
       }
+      const pendingRecord = change.newValue;
       const timerId = setTimeout(() => {
         pendingManagedCompletionTimerIds.delete(key);
-        void processPendingManagedCompletionRecord(change.newValue);
+        void processPendingManagedCompletionRecord(pendingRecord);
       }, PENDING_MANAGED_COMPLETION_FALLBACK_DELAY_MS);
       pendingManagedCompletionTimerIds.set(key, timerId);
     }
@@ -2155,8 +2160,6 @@
     }
     return {
       queuedJobCount: runState.queuedJobItems.length,
-      successfulJobPages: runState.successfulJobPages,
-      appliedTodayCount: await countAppliedJobsForToday(),
       stopRequested: runState.stopRequested
     };
   }
@@ -2856,6 +2859,9 @@
     };
   }
   async function probeUrlForHardFailure(url) {
+    if (!isFetchProbeSupportedUrl(url)) {
+      return { reason: "unreachable" };
+    }
     const timeout = 8e3;
     const controller = new AbortController();
     const timeoutId = globalThis.setTimeout(() => controller.abort(), timeout);
@@ -2952,6 +2958,14 @@
       "failed to parse url",
       "unsupported protocol"
     ].some((token) => message.includes(token));
+  }
+  function isFetchProbeSupportedUrl(url) {
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+      return false;
+    }
   }
   async function queueJobTabsForSender(sender, items) {
     const tabId = sender.tab?.id;
@@ -3701,20 +3715,6 @@
       loadReviewedJobHistory()
     ]);
     return /* @__PURE__ */ new Set([...appliedHistory.keys(), ...reviewedHistory.keys()]);
-  }
-  async function countAppliedJobsForToday(now = Date.now()) {
-    const appliedHistory = await loadAppliedJobHistory();
-    const startOfDay = new Date(now);
-    startOfDay.setHours(0, 0, 0, 0);
-    const startAt = startOfDay.getTime();
-    const endAt = startAt + 24 * 60 * 60 * 1e3;
-    let count = 0;
-    for (const appliedAt of appliedHistory.values()) {
-      if (appliedAt >= startAt && appliedAt < endAt) {
-        count += 1;
-      }
-    }
-    return count;
   }
   async function getTabSafely(tabId) {
     try {

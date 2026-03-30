@@ -987,7 +987,7 @@ var clearAnswersButton = requireElement("#clear-answers-button");
 var siteName = requireElement("#site-name");
 var statusPanel = requireElement("#status-panel");
 var statusText = requireElement("#status-text");
-var jobsAppliedToday = requireElement("#jobs-applied-today");
+var queueCount = requireElement("#queue-count");
 var settingsStatus = requireElement("#settings-status");
 var savedAnswerCount = requireElement("#saved-answer-count");
 var savedAnswerList = requireElement("#saved-answer-list");
@@ -1444,10 +1444,18 @@ function scheduleRefreshStatus(delayMs = 120) {
 }
 function stopPeriodicRefresh() {
   if (refreshPollTimerId === null) {
+    if (refreshStatusTimerId !== null) {
+      window.clearTimeout(refreshStatusTimerId);
+      refreshStatusTimerId = null;
+    }
     return;
   }
   window.clearTimeout(refreshPollTimerId);
   refreshPollTimerId = null;
+  if (refreshStatusTimerId !== null) {
+    window.clearTimeout(refreshStatusTimerId);
+    refreshStatusTimerId = null;
+  }
 }
 function schedulePeriodicRefresh(delayMs = 900) {
   stopPeriodicRefresh();
@@ -1749,7 +1757,7 @@ function applyStatus(status) {
   currentStatusSnapshot = status;
   statusPanel.dataset.phase = status.phase;
   statusText.textContent = status.message;
-  jobsAppliedToday.textContent = String(activeRunSummary?.appliedTodayCount ?? 0);
+  queueCount.textContent = String(activeRunSummary?.queuedJobCount ?? 0);
   updateSiteNameDisplay();
 }
 function setSettingsStatus(message, tone = "muted", visible = true) {
@@ -2563,7 +2571,7 @@ function isAutomationRunSummary(value) {
     return false;
   }
   const candidate = value;
-  return Number.isFinite(candidate.queuedJobCount) && Number.isFinite(candidate.successfulJobPages) && Number.isFinite(candidate.appliedTodayCount) && typeof candidate.stopRequested === "boolean";
+  return Number.isFinite(candidate.queuedJobCount) && typeof candidate.stopRequested === "boolean";
 }
 function updateModeUi() {
   const searchMode = getSelectedSearchMode2();

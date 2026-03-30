@@ -884,8 +884,6 @@ describe("background spawn quota handling", () => {
         opened: 1,
         summary: expect.objectContaining({
           queuedJobCount: 1,
-          successfulJobPages: 0,
-          appliedTodayCount: 0,
           stopRequested: false,
         }),
       })
@@ -997,7 +995,7 @@ describe("background spawn quota handling", () => {
     );
   });
 
-  it("opens the next queued job after a completed tab closes and keeps the applied-today count in the next start payload", async () => {
+  it("opens the next queued job after a completed tab closes and keeps the queue summary in the next start payload", async () => {
     const runId = "run-close-next";
     const completedUrl = "https://job-boards.greenhouse.io/example/jobs/123";
     const nextUrl = "https://job-boards.greenhouse.io/example/jobs/456";
@@ -1104,8 +1102,6 @@ describe("background spawn quota handling", () => {
         runId,
         stage: "open-apply",
         runSummary: expect.objectContaining({
-          appliedTodayCount: 1,
-          successfulJobPages: 1,
           queuedJobCount: 0,
         }),
       }),
@@ -1241,10 +1237,121 @@ describe("background spawn quota handling", () => {
         runId,
         stage: "open-apply",
         runSummary: expect.objectContaining({
-          appliedTodayCount: 1,
-          successfulJobPages: 1,
           queuedJobCount: 0,
         }),
+      }),
+    });
+  });
+
+  it("keeps queued run state alive when the closing successful tab is the only live session", async () => {
+    const runId = "run-close-pending-completion-single-session";
+    const completedUrl = "https://job-boards.greenhouse.io/example/jobs/123";
+    const nextUrl = "https://job-boards.greenhouse.io/example/jobs/456";
+    const completedKey = getJobDedupKey(completedUrl);
+    const nextKey = getJobDedupKey(nextUrl);
+    const runStateKey = `remote-job-search-run:${runId}`;
+    const pendingCompletionKey =
+      `remote-job-search-pending-managed-completion:${encodeURIComponent(runId)}:${encodeURIComponent(
+        completedKey
+      )}`;
+    const createTabMock = vi.fn().mockResolvedValue({ id: 102 });
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 2,
+          openedJobPages: 2,
+          openedJobKeys: [completedKey, nextKey],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          queuedJobItems: [
+            {
+              url: nextUrl,
+              site: "greenhouse",
+              stage: "open-apply",
+              runId,
+              claimedJobKey: nextKey,
+              active: true,
+              sourceTabId: 101,
+              sourceWindowId: 7,
+              sourceTabIndex: 1,
+              enqueuedAt: 1,
+            },
+          ],
+          stopRequested: false,
+          updatedAt: 2,
+        },
+        "remote-job-search-session:101": {
+          tabId: 101,
+          site: "greenhouse",
+          phase: "running",
+          message: "Submitting application...",
+          updatedAt: 3,
+          shouldResume: true,
+          stage: "autofill-form",
+          runId,
+          claimedJobKey: completedKey,
+        },
+        [pendingCompletionKey]: {
+          runId,
+          claimedJobKey: completedKey,
+          fallbackUrl: completedUrl,
+          completionKind: "successful",
+          message: "Application submitted successfully.",
+          updatedAt: 4,
+        },
+      },
+      createTabMock
+    );
+
+    chrome.tabs.get = vi.fn(async (tabId: number) => ({
+      id: tabId,
+      index: 1,
+      windowId: 7,
+      url: tabId === 101 ? completedUrl : nextUrl,
+    }));
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "close-current-tab",
+      },
+      {
+        tab: {
+          id: 101,
+          index: 1,
+          windowId: 7,
+          url: completedUrl,
+        },
+      }
+    );
+
+    expect(response).toEqual({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await flushAsyncWork();
+
+    expect(chromeMock.local.state[runStateKey]).toEqual(
+      expect.objectContaining({
+        successfulJobPages: 1,
+        successfulJobKeys: [completedKey],
+        queuedJobItems: [],
+      })
+    );
+    expect(createTabMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: nextUrl,
+        openerTabId: 101,
+        index: 2,
+      })
+    );
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(102, {
+      type: "start-automation",
+      session: expect.objectContaining({
+        tabId: 102,
+        runId,
+        claimedJobKey: nextKey,
       }),
     });
   });
@@ -1363,8 +1470,6 @@ describe("background spawn quota handling", () => {
         runId,
         stage: "open-apply",
         runSummary: expect.objectContaining({
-          appliedTodayCount: 1,
-          successfulJobPages: 1,
           queuedJobCount: 0,
         }),
       }),
@@ -1660,6 +1765,35 @@ describe("background spawn quota handling", () => {
       reachable: false,
       reason: "not_found",
     });
+  });
+
+  it("skips fetch probes for mailto application targets", async () => {
+    const chromeMock = createBackgroundChrome({}, vi.fn());
+    const fetchMock = vi.fn();
+
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      writable: true,
+      value: fetchMock,
+    });
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "probe-application-target",
+        url: "mailto:careers@serpapi.com?subject=Application%20for%20Ruby%20Developer%20Advocate%20from%20website",
+      },
+      {}
+    );
+
+    expect(response).toEqual({
+      ok: true,
+      reachable: false,
+      reason: "unreachable",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("reports gateway timeout error pages from application target probes", async () => {
@@ -2609,8 +2743,8 @@ describe("background spawn quota handling", () => {
     });
   });
 
-  it("reports applied-today counts after a successful managed completion", async () => {
-    const runId = "run-applied-today-summary";
+  it("reports queue-only run summaries after a successful managed completion", async () => {
+    const runId = "run-queue-summary";
     const firstUrl = "https://www.indeed.com/viewjob?jk=alpha123";
     const firstKey = getJobDedupKey(firstUrl)!;
     const runStateKey = `remote-job-search-run:${runId}`;
@@ -2682,8 +2816,7 @@ describe("background spawn quota handling", () => {
       expect.objectContaining({
         ok: true,
         summary: expect.objectContaining({
-          successfulJobPages: 1,
-          appliedTodayCount: 1,
+          queuedJobCount: 0,
         }),
       })
     );

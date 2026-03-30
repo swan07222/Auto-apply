@@ -41,8 +41,6 @@ export type AutomationPhase =
 
 export interface AutomationRunSummary {
   queuedJobCount: number;
-  successfulJobPages: number;
-  appliedTodayCount: number;
   stopRequested: boolean;
 }
 

@@ -231,6 +231,15 @@ export async function removeRunStateIfUnused(runId: string): Promise<void> {
   const sessionKeys = allKeys.filter((key) =>
     key.startsWith(SESSION_STORAGE_PREFIX)
   );
+  const runState = await getRunState(runId);
+
+  if (
+    runState &&
+    runState.stopRequested !== true &&
+    runState.queuedJobItems.length > 0
+  ) {
+    return;
+  }
 
   if (sessionKeys.length === 0) {
     await removeRunState(runId);

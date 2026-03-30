@@ -201,9 +201,10 @@ chrome.storage.onChanged?.addListener((changes, areaName) => {
       continue;
     }
 
+    const pendingRecord = change.newValue;
     const timerId = setTimeout(() => {
       pendingManagedCompletionTimerIds.delete(key);
-      void processPendingManagedCompletionRecord(change.newValue);
+      void processPendingManagedCompletionRecord(pendingRecord);
     }, PENDING_MANAGED_COMPLETION_FALLBACK_DELAY_MS) as unknown as number;
     pendingManagedCompletionTimerIds.set(key, timerId);
   }
@@ -1346,8 +1347,6 @@ async function getRunSummaryForSession(
 
   return {
     queuedJobCount: runState.queuedJobItems.length,
-    successfulJobPages: runState.successfulJobPages,
-    appliedTodayCount: await countAppliedJobsForToday(),
     stopRequested: runState.stopRequested,
   };
 }
@@ -2347,6 +2346,10 @@ async function probeApplicationTargetUrl(url: string): Promise<{
 async function probeUrlForHardFailure(
   url: string
 ): Promise<{ reason: ProbedTargetFailureReason | null }> {
+  if (!isFetchProbeSupportedUrl(url)) {
+    return { reason: "unreachable" };
+  }
+
   const timeout = 8_000;
   const controller = new AbortController();
   const timeoutId = globalThis.setTimeout(() => controller.abort(), timeout);
@@ -2486,6 +2489,15 @@ function isHardSearchTargetProbeError(error: unknown): boolean {
     "failed to parse url",
     "unsupported protocol",
   ].some((token) => message.includes(token));
+}
+
+function isFetchProbeSupportedUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 async function queueJobTabsForSender(
@@ -3580,24 +3592,6 @@ async function loadBlockedJobKeySet(): Promise<Set<string>> {
   ]);
 
   return new Set([...appliedHistory.keys(), ...reviewedHistory.keys()]);
-}
-
-async function countAppliedJobsForToday(now = Date.now()): Promise<number> {
-  const appliedHistory = await loadAppliedJobHistory();
-  const startOfDay = new Date(now);
-  startOfDay.setHours(0, 0, 0, 0);
-  const startAt = startOfDay.getTime();
-  const endAt = startAt + 24 * 60 * 60 * 1000;
-
-  let count = 0;
-
-  for (const appliedAt of appliedHistory.values()) {
-    if (appliedAt >= startAt && appliedAt < endAt) {
-      count += 1;
-    }
-  }
-
-  return count;
 }
 
 type BackgroundSourceTab = chrome.tabs.Tab & { pendingUrl?: string };

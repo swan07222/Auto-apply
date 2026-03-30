@@ -51,7 +51,7 @@ const clearAnswersButton =
 const siteName = requireElement<HTMLElement>("#site-name");
 const statusPanel = requireElement<HTMLElement>("#status-panel");
 const statusText = requireElement<HTMLElement>("#status-text");
-const jobsAppliedToday = requireElement<HTMLElement>("#jobs-applied-today");
+const queueCount = requireElement<HTMLElement>("#queue-count");
 const settingsStatus = requireElement<HTMLElement>("#settings-status");
 const savedAnswerCount = requireElement<HTMLElement>("#saved-answer-count");
 const savedAnswerList = requireElement<HTMLElement>("#saved-answer-list");
@@ -613,11 +613,20 @@ function scheduleRefreshStatus(delayMs = 120): void {
 
 function stopPeriodicRefresh(): void {
   if (refreshPollTimerId === null) {
+    if (refreshStatusTimerId !== null) {
+      window.clearTimeout(refreshStatusTimerId);
+      refreshStatusTimerId = null;
+    }
     return;
   }
 
   window.clearTimeout(refreshPollTimerId);
   refreshPollTimerId = null;
+
+  if (refreshStatusTimerId !== null) {
+    window.clearTimeout(refreshStatusTimerId);
+    refreshStatusTimerId = null;
+  }
 }
 
 function schedulePeriodicRefresh(delayMs = 900): void {
@@ -1047,7 +1056,7 @@ function applyStatus(status: AutomationStatus): void {
   currentStatusSnapshot = status;
   statusPanel.dataset.phase = status.phase;
   statusText.textContent = status.message;
-  jobsAppliedToday.textContent = String(activeRunSummary?.appliedTodayCount ?? 0);
+  queueCount.textContent = String(activeRunSummary?.queuedJobCount ?? 0);
   updateSiteNameDisplay();
 }
 
@@ -2139,8 +2148,6 @@ function isAutomationRunSummary(
   const candidate = value as Partial<AutomationRunSummary>;
   return (
     Number.isFinite(candidate.queuedJobCount) &&
-    Number.isFinite(candidate.successfulJobPages) &&
-    Number.isFinite(candidate.appliedTodayCount) &&
     typeof candidate.stopRequested === "boolean"
   );
 }

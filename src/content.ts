@@ -1033,6 +1033,20 @@ function describeBrokenApplicationTarget(
   }
 }
 
+function isSupportedApplicationTargetUrl(url: string): boolean {
+  const normalizedUrl = normalizeUrl(url);
+  if (!normalizedUrl) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(normalizedUrl);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 async function probeApplicationTargetReason(
   url: string,
   site: SiteKey
@@ -1068,6 +1082,17 @@ async function ensureApplicationTargetReachable(
   site: SiteKey,
   description: string
 ): Promise<boolean> {
+  if (!isSupportedApplicationTargetUrl(url)) {
+    updateStatus(
+      "error",
+      `${description} uses an unsupported application link. Skipping this job.`,
+      false,
+      currentStage,
+      "released"
+    );
+    return false;
+  }
+
   const reason = await probeApplicationTargetReason(url, site);
   if (!reason) {
     return true;
@@ -1255,8 +1280,6 @@ function isAutomationRunSummary(
   const candidate = value as Partial<AutomationRunSummary>;
   return (
     Number.isFinite(candidate.queuedJobCount) &&
-    Number.isFinite(candidate.successfulJobPages) &&
-    Number.isFinite(candidate.appliedTodayCount) &&
     typeof candidate.stopRequested === "boolean"
   );
 }
@@ -5648,9 +5671,9 @@ function renderOverlay(): void {
     status.phase === "running" || status.phase === "waiting_for_verification"
       ? "true"
       : "false";
-  const appliedTodayCount = currentRunSummary?.appliedTodayCount ?? 0;
   const queuedJobCount = currentRunSummary?.queuedJobCount ?? 0;
-  overlay.count.textContent = `Applied today: ${appliedTodayCount}${queuedJobCount > 0 ? ` | Queue: ${queuedJobCount}` : ""}`;
+  overlay.count.hidden = queuedJobCount <= 0;
+  overlay.count.textContent = queuedJobCount > 0 ? `Queue: ${queuedJobCount}` : "";
   overlay.text.textContent = status.message;
   const actionLabel = getOverlayActionLabel();
   overlay.actionButton.hidden = !actionLabel;

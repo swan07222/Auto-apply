@@ -14050,6 +14050,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         return `${description} could not be reached. Skipping this job.`;
     }
   }
+  function isSupportedApplicationTargetUrl(url) {
+    const normalizedUrl = normalizeUrl(url);
+    if (!normalizedUrl) {
+      return false;
+    }
+    try {
+      const parsed = new URL(normalizedUrl);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+      return false;
+    }
+  }
   async function probeApplicationTargetReason(url, site) {
     if (isSameOriginInternalApplyStepNavigation(url)) {
       return null;
@@ -14071,6 +14083,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
   }
   async function ensureApplicationTargetReachable(url, site, description) {
+    if (!isSupportedApplicationTargetUrl(url)) {
+      updateStatus(
+        "error",
+        `${description} uses an unsupported application link. Skipping this job.`,
+        false,
+        currentStage,
+        "released"
+      );
+      return false;
+    }
     const reason = await probeApplicationTargetReason(url, site);
     if (!reason) {
       return true;
@@ -14192,7 +14214,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return false;
     }
     const candidate = value;
-    return Number.isFinite(candidate.queuedJobCount) && Number.isFinite(candidate.successfulJobPages) && Number.isFinite(candidate.appliedTodayCount) && typeof candidate.stopRequested === "boolean";
+    return Number.isFinite(candidate.queuedJobCount) && typeof candidate.stopRequested === "boolean";
   }
   function applyOverlayPositionSnapshot(position) {
     overlay.position = {
@@ -17456,9 +17478,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const siteText = status.site === "unsupported" ? "Automation" : getSiteLabel(status.site);
     overlay.title.textContent = currentResumeKind ? `Remote Job Search - ${siteText} - ${getResumeKindLabel(currentResumeKind)}` : `Remote Job Search - ${siteText}`;
     overlay.spinner.dataset.active = status.phase === "running" || status.phase === "waiting_for_verification" ? "true" : "false";
-    const appliedTodayCount = currentRunSummary?.appliedTodayCount ?? 0;
     const queuedJobCount = currentRunSummary?.queuedJobCount ?? 0;
-    overlay.count.textContent = `Applied today: ${appliedTodayCount}${queuedJobCount > 0 ? ` | Queue: ${queuedJobCount}` : ""}`;
+    overlay.count.hidden = queuedJobCount <= 0;
+    overlay.count.textContent = queuedJobCount > 0 ? `Queue: ${queuedJobCount}` : "";
     overlay.text.textContent = status.message;
     const actionLabel = getOverlayActionLabel();
     overlay.actionButton.hidden = !actionLabel;

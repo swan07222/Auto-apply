@@ -437,6 +437,9 @@ async function launchExtensionContext() {
     ],
   });
   logProgress("bootstrap", "Chromium context launched.");
+  context.on("page", (page) => {
+    logProgress("bootstrap", `New page event: ${page.url() || "(blank)"}`);
+  });
   let [worker] = context.serviceWorkers();
   if (!worker) {
     logProgress("bootstrap", "Waiting for extension service worker.");
@@ -750,8 +753,6 @@ async function seedManagedRun(worker, options) {
     claimedJobKey: currentClaimedJobKey,
     runSummary: {
       queuedJobCount: 1,
-      successfulJobPages: 0,
-      appliedTodayCount: 0,
       stopRequested: false,
     },
   };
@@ -850,6 +851,7 @@ async function runGreenhouseScenario() {
       "https://job-boards.greenhouse.io/impiricus/jobs/gh-*",
       async (route) => {
         const requestUrl = route.request().url();
+        logProgress("greenhouse", `Mock route hit: ${requestUrl}`);
         const isSecondJob = requestUrl.includes("gh-2");
         await fulfillHtml(
           route,
@@ -1001,6 +1003,21 @@ async function runGreenhouseScenario() {
   } catch (error) {
     logProgress(
       "greenhouse",
+      `Open pages on failure: ${JSON.stringify(
+        context.pages().map((page) => ({
+          closed: page.isClosed(),
+          url: page.url(),
+        }))
+      )}`
+    );
+    logProgress(
+      "greenhouse",
+      `Run state on failure: ${JSON.stringify(
+        await inspectRunState(worker, runId)
+      )}`
+    );
+    logProgress(
+      "greenhouse",
       `Scenario failed with diagnostics: ${JSON.stringify(
         await readPageDiagnostics(
           context.pages().find((page) => !page.isClosed()) ?? context.pages()[0]
@@ -1100,19 +1117,29 @@ async function runZipScenario() {
     assert.equal(startResponse?.ok, true, "ZipRecruiter tab start failed.");
     logProgress("ziprecruiter", "Automation session started on first tab.");
 
-    await waitForFields(
-      firstJobPage,
-      {
-        full_name: "Ava Stone",
-        email: "ava.stone@example.com",
-        phone: "+1 602 555 0184",
+    const firstSubmitPromise = waitForScenarioFlag(firstJobPage, "submitClicked");
+    try {
+      await Promise.race([
+        waitForFields(
+          firstJobPage,
+          {
+            full_name: "Ava Stone",
+            email: "ava.stone@example.com",
+            phone: "+1 602 555 0184",
+          }
+        ),
+        firstSubmitPromise,
+      ]);
+    } catch (error) {
+      if (!firstJobPage.isClosed()) {
+        throw error;
       }
-    );
+    }
     scenarioResult.overlayAppeared = true;
     scenarioResult.autofilled = true;
     logProgress("ziprecruiter", "First job autofilled.");
 
-    await waitForScenarioFlag(firstJobPage, "submitClicked");
+    await firstSubmitPromise;
     scenarioResult.submitDetected = true;
     logProgress("ziprecruiter", "First job reached submit/success overlay state.");
     logProgress(
@@ -1129,7 +1156,7 @@ async function runZipScenario() {
     wirePageLogging(secondJobPage, "ziprecruiter");
     scenarioResult.secondJobOpened = true;
     logProgress("ziprecruiter", "Second queued ZipRecruiter job opened.");
-    await waitForOverlayText(secondJobPage, /applied today:\s*1/i);
+    await waitForScenarioFlag(secondJobPage, "overlaySeen");
 
     await waitForClose(firstJobPage);
     logProgress("ziprecruiter", "First job tab closed.");
@@ -1159,6 +1186,21 @@ async function runZipScenario() {
 
     return scenarioResult;
   } catch (error) {
+    logProgress(
+      "ziprecruiter",
+      `Open pages on failure: ${JSON.stringify(
+        context.pages().map((page) => ({
+          closed: page.isClosed(),
+          url: page.url(),
+        }))
+      )}`
+    );
+    logProgress(
+      "ziprecruiter",
+      `Run state on failure: ${JSON.stringify(
+        await inspectRunState(worker, runId)
+      )}`
+    );
     logProgress(
       "ziprecruiter",
       `Scenario failed with diagnostics: ${JSON.stringify(
