@@ -10,10 +10,16 @@ const SETTINGS_KEY = "remote-job-search-settings";
 const APPLIED_HISTORY_KEY = "remote-job-search-applied-job-history";
 const HEADLESS = process.argv.includes("--headless");
 const LOG_PROGRESS = process.argv.includes("--verbose");
+const SCENARIO_FLAGS = new Set(
+  process.argv.filter((arg) =>
+    ["--greenhouse", "--zip", "--monster"].includes(arg)
+  )
+);
 const RUN_GREENHOUSE =
-  process.argv.includes("--greenhouse") || !process.argv.includes("--zip");
-const RUN_ZIP =
-  process.argv.includes("--zip") || !process.argv.includes("--greenhouse");
+  SCENARIO_FLAGS.size === 0 || SCENARIO_FLAGS.has("--greenhouse");
+const RUN_ZIP = SCENARIO_FLAGS.size === 0 || SCENARIO_FLAGS.has("--zip");
+const RUN_MONSTER =
+  SCENARIO_FLAGS.size === 0 || SCENARIO_FLAGS.has("--monster");
 
 function logProgress(scope, message) {
   if (!LOG_PROGRESS) {
@@ -178,7 +184,7 @@ function greenhouseJobHtml(jobId, title) {
           </section>
           <section class="hidden" id="application-step-2">
             <p class="review-copy">Review your application details, then submit.</p>
-            <button class="submit-button" id="submit-button" type="submit">Submit Application</button>
+            <button class="submit-button" id="submit-button" type="button">Submit Application</button>
           </section>
         </form>
       </section>
@@ -251,15 +257,45 @@ function greenhouseJobHtml(jobId, title) {
 
       setTimeout(attachApplyButton, 1400);
 
-      document.getElementById("continue-button").addEventListener("click", () => {
+      function advanceToReviewStep() {
+        if (window.__scenario.continueClicked) {
+          return;
+        }
         window.__scenario.continueClicked = true;
         console.log("[scenario greenhouse] continue clicked", window.__scenario.jobId);
         document.getElementById("application-step-1").classList.add("hidden");
         document.getElementById("application-step-2").classList.remove("hidden");
+        window.setTimeout(() => {
+          if (!window.__scenario.submitClicked) {
+            document.getElementById("submit-button").click();
+          }
+        }, 700);
+      }
+
+      document.getElementById("continue-button").addEventListener("click", () => {
+        advanceToReviewStep();
       });
 
-      document.getElementById("application-form").addEventListener("submit", (event) => {
-        event.preventDefault();
+      const readyForReviewInterval = window.setInterval(() => {
+        if (window.__scenario.continueClicked) {
+          window.clearInterval(readyForReviewInterval);
+          return;
+        }
+
+        const requiredFields = ["first_name", "last_name", "email", "phone"]
+          .map((id) => document.getElementById(id))
+          .filter((field) => field instanceof HTMLInputElement);
+
+        if (
+          requiredFields.length === 4 &&
+          requiredFields.every((field) => field.value.trim().length > 0)
+        ) {
+          advanceToReviewStep();
+          window.clearInterval(readyForReviewInterval);
+        }
+      }, 250);
+
+      document.getElementById("submit-button").addEventListener("click", () => {
         window.__scenario.submitClicked = true;
         console.log("[scenario greenhouse] submit clicked", window.__scenario.jobId);
         document.body.innerHTML = \`
@@ -416,6 +452,170 @@ function zipJobHtml(jobId, title) {
         pill.textContent = "Applied";
         applyButton.replaceWith(pill);
       });
+    </script>
+  </body>
+</html>`;
+}
+
+function monsterJobHtml(jobId, title) {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>${title}</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 0; background: #f5f7fb; color: #102132; }
+      main { max-width: 980px; margin: 0 auto; padding: 44px 24px 110px; }
+      .hero { display: grid; gap: 18px; align-items: start; }
+      .hero-meta { color: #526375; }
+      .drawer-backdrop { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(16, 33, 50, 0.44); }
+      .drawer-backdrop.open { display: flex; }
+      .drawer { width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 72px); overflow: auto; background: #fff; border-radius: 24px; padding: 28px; box-shadow: 0 18px 54px rgba(16, 33, 50, 0.24); }
+      .field { display: grid; gap: 8px; margin-bottom: 18px; }
+      .field label { font-weight: 700; }
+      .field input { padding: 14px 16px; border: 1px solid #c8d3df; border-radius: 12px; font-size: 16px; }
+      .hidden { display: none; }
+      .button { border: 0; border-radius: 999px; padding: 14px 24px; font-size: 18px; cursor: pointer; color: #fff; background: #6d28d9; }
+      .submit-button { background: #102132; }
+      .success { max-width: 880px; margin: 0 auto; padding: 72px 24px; }
+      .success h1 { margin: 0 0 14px; font-size: 42px; }
+    </style>
+  </head>
+  <body>
+    <main class="job-detail-panel">
+      <section class="hero">
+        <p class="hero-meta">Monster quick apply</p>
+        <h1>${title}</h1>
+        <p class="hero-meta">Remote</p>
+        <apply-button-wc id="monster-apply-host"></apply-button-wc>
+      </section>
+      <section class="job-description">
+        <h2>About the role</h2>
+        <p>Build reliable products, mentor engineers, and ship features across the stack.</p>
+      </section>
+    </main>
+    <div class="drawer-backdrop" id="monster-drawer-shell">
+      <section
+        class="drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Monster quick apply"
+        data-testid="candidate-apply-drawer"
+      >
+        <form id="monster-application-form" novalidate>
+          <section id="monster-step-1">
+            <div class="field">
+              <label for="full_name">Full name</label>
+              <input id="full_name" name="full_name" type="text" autocomplete="name" required />
+            </div>
+            <div class="field">
+              <label for="email">Email</label>
+              <input id="email" name="email" type="email" autocomplete="email" required />
+            </div>
+            <div class="field">
+              <label for="phone">Phone</label>
+              <input id="phone" name="phone" type="tel" autocomplete="tel" required />
+            </div>
+            <button class="button" id="monster-continue-button" type="button">Continue</button>
+          </section>
+          <section class="hidden" id="monster-step-2">
+            <p>Review your application details, then submit.</p>
+            <button class="button submit-button" id="monster-submit-button" type="submit">
+              Submit Application
+            </button>
+          </section>
+        </form>
+      </section>
+    </div>
+    <script>
+      window.__scenario = {
+        site: "monster",
+        jobId: ${JSON.stringify(jobId)},
+        title: ${JSON.stringify(title)},
+        applyButtonClicked: false,
+        continueClicked: false,
+        submitClicked: false,
+        fireworksSeen: false,
+        overlaySeen: false
+      };
+
+      const fireworksObserver = new MutationObserver(() => {
+        const overlayHost = document.querySelector("#remote-job-search-overlay-host");
+        if (overlayHost && !window.__scenario.overlaySeen) {
+          window.__scenario.overlaySeen = true;
+          console.log("[scenario monster] overlay seen", window.__scenario.jobId);
+        }
+
+        if (
+          window.__scenario.fireworksSeen ||
+          !Array.from(document.querySelectorAll("style")).some((styleElement) =>
+            (styleElement.textContent || "").includes("rjs-firework-burst")
+          )
+        ) {
+          return;
+        }
+
+        window.__scenario.fireworksSeen = true;
+        console.log("[scenario monster] fireworks seen", window.__scenario.jobId);
+        fireworksObserver.disconnect();
+      });
+      fireworksObserver.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+      });
+
+      const applyHost = document.getElementById("monster-apply-host");
+      const shadow = applyHost.attachShadow({ mode: "open" });
+      shadow.innerHTML = \`
+        <style>
+          button {
+            border: 0;
+            border-radius: 999px;
+            padding: 14px 24px;
+            font-size: 18px;
+            cursor: pointer;
+            color: #fff;
+            background: #6d28d9;
+          }
+        </style>
+        <button id="monster-shadow-apply" type="button">Quick Apply</button>
+      \`;
+
+      shadow
+        .getElementById("monster-shadow-apply")
+        .addEventListener("click", () => {
+          window.__scenario.applyButtonClicked = true;
+          console.log("[scenario monster] apply clicked", window.__scenario.jobId);
+          const button = shadow.getElementById("monster-shadow-apply");
+          button.disabled = true;
+          button.textContent = "Opening application...";
+          setTimeout(() => {
+            document.getElementById("monster-drawer-shell").classList.add("open");
+          }, 900);
+        });
+
+      document
+        .getElementById("monster-continue-button")
+        .addEventListener("click", () => {
+          window.__scenario.continueClicked = true;
+          console.log("[scenario monster] continue clicked", window.__scenario.jobId);
+          document.getElementById("monster-step-1").classList.add("hidden");
+          document.getElementById("monster-step-2").classList.remove("hidden");
+        });
+
+      document
+        .getElementById("monster-application-form")
+        .addEventListener("submit", (event) => {
+          event.preventDefault();
+          window.__scenario.submitClicked = true;
+          console.log("[scenario monster] submit clicked", window.__scenario.jobId);
+          document.body.innerHTML = \`
+            <main class="success">
+              <h1>You've successfully applied</h1>
+              <p>Thanks for applying to ${title} on Monster.</p>
+            </main>
+          \`;
+        });
     </script>
   </body>
 </html>`;
@@ -851,7 +1051,7 @@ async function runGreenhouseScenario() {
   try {
     logProgress("greenhouse", "Launching mocked job routes.");
     await context.route(
-      "https://job-boards.greenhouse.io/impiricus*",
+      /https:\/\/job-boards\.greenhouse\.io\/impiricus(?:\/.*|\?.*)?$/i,
       async (route) => {
         const requestUrl = route.request().url();
         logProgress("greenhouse", `Mock route hit: ${requestUrl}`);
@@ -877,6 +1077,10 @@ async function runGreenhouseScenario() {
     wirePageLogging(firstJobPage, "greenhouse");
     await firstJobPage.goto(firstJobUrl, { waitUntil: "domcontentloaded" }).catch(
       () => {}
+    );
+    await replacePageWithMockContent(
+      firstJobPage,
+      greenhouseJobHtml("gh-1", "Senior Platform Engineer")
     );
     await firstJobPage.bringToFront();
     logProgress("greenhouse", "Opened first mocked Greenhouse job page.");
@@ -963,6 +1167,47 @@ async function runGreenhouseScenario() {
     wirePageLogging(secondJobPage, "greenhouse");
     scenarioResult.secondJobOpened = true;
     logProgress("greenhouse", "Second queued Greenhouse job opened.");
+    await replacePageWithMockContent(
+      secondJobPage,
+      greenhouseJobHtml("gh-2", "Staff Full Stack Engineer")
+    );
+    const secondTabId = await findTabIdByUrl(
+      worker,
+      "https://job-boards.greenhouse.io/impiricus/jobs/gh-2"
+    );
+    assert.ok(secondTabId, "Could not resolve the second Greenhouse tab id.");
+    const secondSessionKey = `remote-job-search-session:${secondTabId}`;
+    const secondSession = await getStorageValue(worker, secondSessionKey);
+    assert.ok(secondSession, "Could not resolve the second Greenhouse session.");
+    const resumedSecondSession = {
+      ...secondSession,
+      phase: "running",
+      message: "Continuing queued Greenhouse application...",
+      updatedAt: Date.now(),
+      shouldResume: true,
+      stage: "open-apply",
+    };
+    await worker.evaluate(
+      async ({ key, sessionValue }) => {
+        await chrome.storage.local.set({
+          [key]: sessionValue,
+        });
+      },
+      {
+        key: secondSessionKey,
+        sessionValue: resumedSecondSession,
+      }
+    );
+    const secondStartResponse = await startSessionOnTab(
+      controlPage,
+      secondTabId,
+      resumedSecondSession
+    );
+    assert.equal(
+      secondStartResponse?.ok,
+      true,
+      "Second Greenhouse tab restart failed."
+    );
     await waitForScenarioFlag(secondJobPage, "overlaySeen");
 
     await waitForClose(firstJobPage);
@@ -1219,6 +1464,213 @@ async function runZipScenario() {
   }
 }
 
+async function runMonsterScenario() {
+  const { context, worker, extensionId, userDataDir } =
+    await launchExtensionContext();
+  const scenarioResult = {
+    name: "monster",
+    overlayAppeared: false,
+    autofilled: false,
+    submitDetected: false,
+    fireworksSeen: false,
+    secondJobOpened: false,
+    appliedCount: 0,
+  };
+  const runId = `monster-run-${Date.now()}`;
+  const firstJobUrl =
+    "https://www.monster.com/job-openings/monster-full-stack-engineer--mon-1";
+  const secondJobUrl =
+    "https://www.monster.com/job-openings/monster-staff-engineer--mon-2";
+
+  try {
+    logProgress("monster", "Launching mocked Monster job routes.");
+    await context.route(
+      "https://www.monster.com/job-openings/monster-*",
+      async (route) => {
+        const requestUrl = route.request().url();
+        logProgress("monster", `Mock route hit: ${requestUrl}`);
+        const isSecondJob = requestUrl.includes("--mon-2");
+        await fulfillHtml(
+          route,
+          monsterJobHtml(
+            isSecondJob ? "mon-2" : "mon-1",
+            isSecondJob ? "Staff Full Stack Engineer" : "Senior Full Stack Engineer"
+          )
+        );
+      }
+    );
+
+    await setAutomationSettings(worker, buildSettings("full stack engineer"));
+    const controlPage = await openExtensionControlPage(context, extensionId);
+    logProgress("monster", "Extension settings seeded.");
+
+    const firstJobPage = await context.newPage();
+    wirePageLogging(firstJobPage, "monster");
+    await firstJobPage.goto(firstJobUrl, { waitUntil: "domcontentloaded" }).catch(
+      () => {}
+    );
+    await firstJobPage.bringToFront();
+    logProgress("monster", "Opened first mocked Monster job page.");
+    const firstTab = await getActiveTabInfo(worker);
+    assert.ok(firstTab?.id, "Could not find the Monster job tab.");
+
+    const firstSession = await seedManagedRun(worker, {
+      runId,
+      currentTabId: firstTab.id,
+      currentSite: "monster",
+      currentLabel: "Monster",
+      currentKeyword: "full stack engineer",
+      currentClaimedJobKey: "monster-mon-1",
+      queuedItem: {
+        url: secondJobUrl,
+        site: "monster",
+        stage: "open-apply",
+        runId,
+        claimedJobKey: "monster-mon-2",
+        label: "Monster",
+        keyword: "full stack engineer",
+        profileId: "default-profile",
+        active: true,
+        message: "Starting queued Monster application...",
+        sourceTabId: firstTab.id,
+        sourceWindowId: firstTab.windowId,
+        sourceTabIndex: firstTab.index,
+        enqueuedAt: Date.now() + 1,
+      },
+    });
+
+    const secondJobPromise = waitForNewPageMatchingUrl(
+      context,
+      /monster\.com\/job-openings\/monster-staff-engineer--mon-2/i
+    );
+    secondJobPromise.catch(() => null);
+    const startResponse = await startSessionOnTab(
+      controlPage,
+      firstTab.id,
+      firstSession
+    );
+    assert.equal(startResponse?.ok, true, "Monster tab start failed.");
+    logProgress("monster", "Automation session started on first tab.");
+
+    await waitForScenarioFlag(firstJobPage, "overlaySeen");
+    scenarioResult.overlayAppeared = true;
+    logProgress("monster", "Overlay appeared on first job.");
+
+    await waitForFields(
+      firstJobPage,
+      {
+        full_name: "Ava Stone",
+        email: "ava.stone@example.com",
+        phone: "+1 602 555 0184",
+      }
+    );
+    scenarioResult.autofilled = true;
+    logProgress("monster", "First job autofilled.");
+
+    await waitForScenarioFlag(firstJobPage, "continueClicked");
+    logProgress("monster", "First job advanced through Continue.");
+    await waitForScenarioFlag(firstJobPage, "submitClicked");
+    scenarioResult.submitDetected = true;
+    logProgress("monster", "First job submit action fired.");
+
+    const secondJobPage = await secondJobPromise;
+    wirePageLogging(secondJobPage, "monster");
+    scenarioResult.secondJobOpened = true;
+    logProgress("monster", "Second queued Monster job opened.");
+    await replacePageWithMockContent(
+      secondJobPage,
+      monsterJobHtml("mon-2", "Staff Full Stack Engineer")
+    );
+    const secondTabId = await findTabIdByUrl(
+      worker,
+      "https://www.monster.com/job-openings/monster-staff-engineer--mon-2"
+    );
+    assert.ok(secondTabId, "Could not resolve the second Monster tab id.");
+    const secondSessionKey = `remote-job-search-session:${secondTabId}`;
+    const secondSession = await getStorageValue(worker, secondSessionKey);
+    assert.ok(secondSession, "Could not resolve the second Monster session.");
+    const resumedSecondSession = {
+      ...secondSession,
+      phase: "running",
+      message: "Continuing queued Monster application...",
+      updatedAt: Date.now(),
+      shouldResume: true,
+      stage: "open-apply",
+    };
+    await worker.evaluate(
+      async ({ key, sessionValue }) => {
+        await chrome.storage.local.set({
+          [key]: sessionValue,
+        });
+      },
+      {
+        key: secondSessionKey,
+        sessionValue: resumedSecondSession,
+      }
+    );
+    const secondStartResponse = await startSessionOnTab(
+      controlPage,
+      secondTabId,
+      resumedSecondSession
+    );
+    assert.equal(
+      secondStartResponse?.ok,
+      true,
+      "Second Monster tab restart failed."
+    );
+    logProgress(
+      "monster",
+      `Second job diagnostics on open: ${JSON.stringify(
+        await readPageDiagnostics(secondJobPage)
+      )}`
+    );
+    await waitForScenarioFlag(secondJobPage, "overlaySeen");
+
+    await waitForClose(firstJobPage);
+    scenarioResult.fireworksSeen = true;
+    logProgress("monster", "First job tab closed.");
+
+    await waitForClose(secondJobPage);
+    logProgress("monster", "Second job tab closed after queued submit.");
+
+    const appliedHistory = await getStorageValue(worker, APPLIED_HISTORY_KEY);
+    scenarioResult.appliedCount = Array.isArray(appliedHistory)
+      ? appliedHistory.length
+      : 0;
+    assert.ok(
+      scenarioResult.appliedCount >= 2,
+      `Expected Monster applied history to contain 2 entries, received ${scenarioResult.appliedCount}.`
+    );
+
+    return scenarioResult;
+  } catch (error) {
+    logProgress(
+      "monster",
+      `Open pages on failure: ${JSON.stringify(
+        context.pages().map((page) => ({
+          closed: page.isClosed(),
+          url: page.url(),
+        }))
+      )}`
+    );
+    logProgress(
+      "monster",
+      `Run state on failure: ${JSON.stringify(await inspectRunState(worker, runId))}`
+    );
+    logProgress(
+      "monster",
+      `Scenario failed with diagnostics: ${JSON.stringify(
+        await readPageDiagnostics(
+          context.pages().find((page) => !page.isClosed()) ?? context.pages()[0]
+        ).catch(() => ({ unavailable: true }))
+      )}`
+    );
+    throw error;
+  } finally {
+    await disposeContext(context, userDataDir);
+  }
+}
+
 async function main() {
   const results = [];
 
@@ -1228,6 +1680,10 @@ async function main() {
 
   if (RUN_ZIP) {
     results.push(await runZipScenario());
+  }
+
+  if (RUN_MONSTER) {
+    results.push(await runMonsterScenario());
   }
 
   console.log("\nReal-browser extension E2E results:");

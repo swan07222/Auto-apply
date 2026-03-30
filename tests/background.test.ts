@@ -3161,6 +3161,94 @@ describe("background spawn quota handling", () => {
     expect(chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("does not cooldown a Monster run just because it is waiting for manual verification", async () => {
+    const runId = "run-monster-verification";
+    const runStateKey = `remote-job-search-run:${runId}`;
+
+    const chromeMock = createBackgroundChrome(
+      {
+        [runStateKey]: {
+          id: runId,
+          jobPageLimit: 2,
+          openedJobPages: 2,
+          openedJobKeys: [
+            getJobDedupKey(
+              "https://www.monster.com/job-openings/full-stack-engineer--alpha123"
+            ),
+            getJobDedupKey(
+              "https://www.monster.com/job-openings/staff-engineer--beta456"
+            ),
+          ],
+          successfulJobPages: 0,
+          successfulJobKeys: [],
+          updatedAt: 1,
+        },
+        "remote-job-search-session:101": {
+          tabId: 101,
+          site: "monster",
+          phase: "running",
+          message: "Opening apply flow...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "open-apply",
+          runId,
+        },
+        "remote-job-search-session:102": {
+          tabId: 102,
+          site: "monster",
+          phase: "idle",
+          message:
+            "Queued this Monster job page. It will start automatically when an application slot is available.",
+          updatedAt: 2,
+          shouldResume: false,
+          stage: "open-apply",
+          runId,
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "status-update",
+        status: {
+          site: "monster",
+          phase: "waiting_for_verification",
+          message:
+            "Verification code or captcha required. Complete it and the extension will continue automatically.",
+          updatedAt: 10,
+        },
+        stage: "open-apply",
+      },
+      {
+        tab: {
+          id: 101,
+          url: "https://www.monster.com/job-openings/full-stack-engineer--alpha123",
+        },
+      }
+    );
+
+    expect(response).toEqual({ ok: true });
+    expect(chromeMock.local.state[runStateKey]).not.toHaveProperty(
+      "rateLimitedUntil"
+    );
+    expect(chromeMock.local.state["remote-job-search-session:101"]).toEqual(
+      expect.objectContaining({
+        phase: "waiting_for_verification",
+        shouldResume: true,
+      })
+    );
+    expect(chromeMock.local.state["remote-job-search-session:102"]).toEqual(
+      expect.objectContaining({
+        shouldResume: false,
+        phase: "idle",
+      })
+    );
+  });
+
   it("returns an error when spawn-tabs cannot open any requested tab", async () => {
     const firstUrl = "https://www.indeed.com/viewjob?jk=alpha123";
     const runId = "run-open-none";

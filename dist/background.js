@@ -2110,9 +2110,6 @@
       await markRunRateLimited(nextSession.runId);
       return { ok: true };
     }
-    if (!isFinal && nextSession.runId && nextSession.site === "monster" && nextSession.phase === "waiting_for_verification") {
-      await markRunRateLimited(nextSession.runId);
-    }
     if (isFinal && nextSession.runId && isManagedJobSession(nextSession)) {
       if (isSuccessfulJobCompletion(nextSession, completionKind)) {
         await recordSuccessfulJobCompletion(

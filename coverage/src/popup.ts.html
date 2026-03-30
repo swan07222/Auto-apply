@@ -23,16 +23,16 @@
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">76.91% </span>
+                <span class="strong">76.97% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>1886/2452</span>
+                <span class='fraction'>1892/2458</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">72.76% </span>
+                <span class="strong">73.12% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>326/448</span>
+                <span class='fraction'>332/454</span>
             </div>
         
             
@@ -44,9 +44,9 @@
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">76.91% </span>
+                <span class="strong">76.97% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>1886/2452</span>
+                <span class='fraction'>1892/2458</span>
             </div>
         
             
@@ -2515,7 +2515,15 @@
 <a name='L2450'></a><a href='#L2450'>2450</a>
 <a name='L2451'></a><a href='#L2451'>2451</a>
 <a name='L2452'></a><a href='#L2452'>2452</a>
-<a name='L2453'></a><a href='#L2453'>2453</a></td><td class="line-coverage quiet"><span class="cline-any cline-yes">1x</span>
+<a name='L2453'></a><a href='#L2453'>2453</a>
+<a name='L2454'></a><a href='#L2454'>2454</a>
+<a name='L2455'></a><a href='#L2455'>2455</a>
+<a name='L2456'></a><a href='#L2456'>2456</a>
+<a name='L2457'></a><a href='#L2457'>2457</a>
+<a name='L2458'></a><a href='#L2458'>2458</a>
+<a name='L2459'></a><a href='#L2459'>2459</a></td><td class="line-coverage quiet"><span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
@@ -3569,6 +3577,8 @@
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">99x</span>
+<span class="cline-any cline-yes">99x</span>
 <span class="cline-any cline-yes">99x</span>
 <span class="cline-any cline-yes">99x</span>
 <span class="cline-any cline-yes">99x</span>
@@ -4666,6 +4676,8 @@
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">2x</span>
 <span class="cline-any cline-yes">2x</span>
 <span class="cline-any cline-yes">1x</span>
@@ -4798,13 +4810,13 @@
 <span class="cline-any cline-yes">45x</span>
 <span class="cline-any cline-yes">45x</span>
 <span class="cline-any cline-yes">1x</span>
-<span class="cline-any cline-yes">2184x</span>
-<span class="cline-any cline-yes">2184x</span>
-<span class="cline-any cline-yes">2184x</span>
+<span class="cline-any cline-yes">2268x</span>
+<span class="cline-any cline-yes">2268x</span>
+<span class="cline-any cline-yes">2268x</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-yes">2184x</span>
-<span class="cline-any cline-yes">2184x</span>
+<span class="cline-any cline-yes">2268x</span>
+<span class="cline-any cline-yes">2268x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
 <span class="cline-any cline-yes">1x</span>
@@ -5021,6 +5033,8 @@ const siteName = requireElement&lt;HTMLElement&gt;("#site-name");
 const statusPanel = requireElement&lt;HTMLElement&gt;("#status-panel");
 const statusText = requireElement&lt;HTMLElement&gt;("#status-text");
 const queueCount = requireElement&lt;HTMLElement&gt;("#queue-count");
+const reviewedCount = requireElement&lt;HTMLElement&gt;("#reviewed-count");
+const appliedCount = requireElement&lt;HTMLElement&gt;("#applied-count");
 const settingsStatus = requireElement&lt;HTMLElement&gt;("#settings-status");
 const savedAnswerCount = requireElement&lt;HTMLElement&gt;("#saved-answer-count");
 const savedAnswerList = requireElement&lt;HTMLElement&gt;("#saved-answer-list");
@@ -6026,6 +6040,8 @@ function applyStatus(status: AutomationStatus): void {
   statusPanel.dataset.phase = status.phase;
   statusText.textContent = status.message;
   queueCount.textContent = String(activeRunSummary?.queuedJobCount ?? 0);
+  reviewedCount.textContent = String(activeRunSummary?.reviewedJobCount ?? 0);
+  appliedCount.textContent = String(activeRunSummary?.appliedJobCount ?? 0);
   updateSiteNameDisplay();
 }
 &nbsp;
@@ -7117,6 +7133,8 @@ function isAutomationRunSummary(
   const candidate = value as Partial&lt;AutomationRunSummary&gt;;
   return (
     Number.isFinite(candidate.queuedJobCount) &amp;&amp;
+    Number.isFinite(candidate.reviewedJobCount) &amp;&amp;
+    Number.isFinite(candidate.appliedJobCount) &amp;&amp;
     typeof candidate.stopRequested === "boolean"
   );
 }
@@ -7426,7 +7444,7 @@ function truncateText(value: string, maxLength: number): string {
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2026-03-30T17:49:46.954Z
+                at 2026-03-30T19:25:09.522Z
             </div>
         <script src="../prettify.js"></script>
         <script>

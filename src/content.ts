@@ -892,7 +892,11 @@ function getReadyVisibleManualSubmitAction(
 }
 
 function shouldAutoSubmitReadyManualAction(site: SiteKey): boolean {
-  return site === "ziprecruiter" || site === "greenhouse";
+  return (
+    site === "ziprecruiter" ||
+    site === "greenhouse" ||
+    site === "monster"
+  );
 }
 
 async function tryAutoSubmitReadyManualAction(

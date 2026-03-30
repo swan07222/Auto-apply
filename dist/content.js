@@ -14395,7 +14395,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return shouldTreatManualSubmitActionAsReady(action, fields) ? action : null;
   }
   function shouldAutoSubmitReadyManualAction(site) {
-    return site === "ziprecruiter" || site === "greenhouse";
+    return site === "ziprecruiter" || site === "greenhouse" || site === "monster";
   }
   async function tryAutoSubmitReadyManualAction(site, action) {
     const waitSteps = [250, 250, 300, 300, 400, 400, 500, 500, 700, 700, 900, 900];
