@@ -771,10 +771,14 @@ async function handleMessage(
         setSession
       );
 
+      const decoratedSession =
+        (await getDecoratedSession(tabId)) ?? resolved.session;
+      await mirrorFrameBoundSessionToTopFrame(decoratedSession);
+
       return {
         ok: true,
         shouldResume: resolved.shouldResume,
-        session: (await getDecoratedSession(tabId)) ?? resolved.session,
+        session: decoratedSession,
       };
     }
 
@@ -1040,6 +1044,7 @@ async function updateSessionFromMessage(
   };
 
   await setSession(nextSession);
+  await mirrorFrameBoundSessionToTopFrame(nextSession);
 
   if (isFinal && nextSession.runId && isRateLimitedSession(nextSession)) {
     await markRunRateLimited(nextSession.runId);
@@ -1099,6 +1104,33 @@ async function getDecoratedSession(
         runSummary,
       }
     : session;
+}
+
+async function mirrorFrameBoundSessionToTopFrame(
+  session: AutomationSession | null
+): Promise<void> {
+  if (
+    !session ||
+    session.site === "unsupported" ||
+    session.stage !== "autofill-form" ||
+    typeof session.controllerFrameId !== "number" ||
+    session.controllerFrameId === 0
+  ) {
+    return;
+  }
+
+  try {
+    await chrome.tabs.sendMessage(
+      session.tabId,
+      {
+        type: "start-automation",
+        session: (await getDecoratedSession(session.tabId)) ?? session,
+      },
+      { frameId: 0 }
+    );
+  } catch {
+    // The top frame may not be ready yet or may no longer exist.
+  }
 }
 
 async function getRunSummaryForTab(
@@ -1174,7 +1206,7 @@ async function sendSessionControlMessage(
 
 function scheduleSessionRestartOnTabComplete(
   tabId: number,
-  timeoutMs = 20_000
+  timeoutMs = 45_000
 ): void {
   let settled = false;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -1279,6 +1311,7 @@ async function pauseAutomationSession(
   };
 
   await setSession(nextSession);
+  await mirrorFrameBoundSessionToTopFrame(nextSession);
 
   try {
     await sendSessionControlMessage(nextSession, {
@@ -1312,22 +1345,28 @@ async function resumeAutomationSession(
     };
   }
 
-  if (session.phase !== "paused") {
+  if (
+    session.phase !== "paused" &&
+    session.phase !== "running" &&
+    session.phase !== "waiting_for_verification"
+  ) {
     return {
       ok: false,
-      error: "Resume is only available for paused automation.",
+      error: "Resume is only available for active automation sessions.",
     };
   }
 
   const nextSession: AutomationSession = {
     ...session,
     phase: "running",
-    message: "Resuming automation...",
+    message:
+      session.phase === "paused" ? "Resuming automation..." : session.message,
     updatedAt: Date.now(),
     shouldResume: true,
   };
 
   await setSession(nextSession);
+  await mirrorFrameBoundSessionToTopFrame(nextSession);
 
   try {
     await sendSessionControlMessage(nextSession, {
@@ -1366,6 +1405,7 @@ async function markManualSubmitDetected(
   };
 
   await setSession(nextSession);
+  await mirrorFrameBoundSessionToTopFrame(nextSession);
 
   return {
     ok: true,
@@ -1395,8 +1435,11 @@ async function markJobReviewed(
     tabId,
     fallbackUrl
   );
+  const memoryKeys = await resolveManagedJobMemoryKeys(session, tabId, fallbackUrl);
   if (completionKey) {
-    await rememberReviewedJobKey(completionKey);
+    for (const key of memoryKeys.size > 0 ? memoryKeys : [completionKey]) {
+      await rememberReviewedJobKey(key);
+    }
   }
 
   return {
@@ -1435,6 +1478,7 @@ async function stopAutomationRun(
     };
 
     await setSession(nextSession);
+    await mirrorFrameBoundSessionToTopFrame(nextSession);
 
     try {
       await chrome.tabs.sendMessage(tabId, {
@@ -1476,6 +1520,7 @@ async function stopAutomationRun(
       manualSubmitPending: false,
     };
     await setSession(nextSession);
+    await mirrorFrameBoundSessionToTopFrame(nextSession);
 
     try {
       await chrome.tabs.sendMessage(runSession.tabId, {
@@ -1653,6 +1698,58 @@ async function closeManagedOpenerJobTabForCompletedChild(
   }
 }
 
+function shouldStartGreenhouseApplyStageFromUrl(url: string): boolean {
+  if (!url) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(url);
+    const lowerPath = parsed.pathname.toLowerCase();
+    const lowerPathAndQuery = `${lowerPath}${parsed.search.toLowerCase()}`;
+
+    if (parsed.searchParams.has("gh_jid") || parsed.searchParams.has("job_id")) {
+      return true;
+    }
+
+    if (
+      lowerPathAndQuery.includes("job_application") ||
+      lowerPathAndQuery.includes("job_app")
+    ) {
+      return true;
+    }
+
+    if (lowerPath.includes("/view_job")) {
+      return true;
+    }
+
+    const jobsIndex = lowerPath.indexOf("/jobs/");
+    if (jobsIndex < 0) {
+      return false;
+    }
+
+    const trailing = lowerPath.slice(jobsIndex + "/jobs/".length).replace(/^\/+/, "");
+    return trailing.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function resolveInitialAutomationStageForCurrentTab(
+  site: SiteKey,
+  currentUrl: string
+): AutomationStage {
+  if (site === "other_sites") {
+    return "open-apply";
+  }
+
+  if (site === "greenhouse" && shouldStartGreenhouseApplyStageFromUrl(currentUrl)) {
+    return "open-apply";
+  }
+
+  return "bootstrap";
+}
+
 async function startAutomationForTab(
   tabId: number
 ): Promise<{
@@ -1666,7 +1763,7 @@ async function startAutomationForTab(
     return {
       ok: false,
       error:
-        "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In page and try again.",
+        "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or supported company application page and try again.",
     };
   }
 
@@ -1679,11 +1776,11 @@ async function startAutomationForTab(
   const runId = createRunId();
   const searchKeywords = parseSearchKeywords(settings.searchKeywords);
 
-  if (!isJobBoardSite(site)) {
+  if (!isRunnableCurrentTabSite(site)) {
     return {
       ok: false,
       error:
-        "Open an Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In page first.",
+        "Open an Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or supported company application page first.",
     };
   }
 
@@ -1693,6 +1790,11 @@ async function startAutomationForTab(
       error: "Add at least one search keyword in the extension before starting automation.",
     };
   }
+
+  const initialStage = resolveInitialAutomationStageForCurrentTab(
+    site,
+    getTabUrl(tab)
+  );
 
   await setRunState({
     id: runId,
@@ -1712,9 +1814,11 @@ async function startAutomationForTab(
     resolvedTabId,
     site,
     "running",
-    `Preparing ${getReadableSiteName(site)} automation...`,
+    initialStage === "open-apply"
+      ? `Preparing ${getReadableSiteName(site)} automation on this page...`
+      : `Preparing ${getReadableSiteName(site)} automation...`,
     true,
-    "bootstrap",
+    initialStage,
     runId,
     undefined,
     undefined,
@@ -2581,9 +2685,46 @@ async function recordSuccessfulJobCompletion(
       updatedAt: Date.now(),
     });
 
-    await rememberReviewedJobKey(completionKey);
+    const memoryKeys = await resolveManagedJobMemoryKeys(
+      session,
+      tabId,
+      fallbackUrl
+    );
+    for (const key of memoryKeys.size > 0 ? memoryKeys : [completionKey]) {
+      await rememberReviewedJobKey(key);
+    }
     await rememberAppliedJobKey(completionKey);
   });
+}
+
+async function resolveManagedJobMemoryKeys(
+  session: AutomationSession | null,
+  tabId: number,
+  fallbackUrl?: string
+): Promise<Set<string>> {
+  const keys = new Set<string>();
+
+  const claimedJobKey = session?.claimedJobKey?.trim();
+  if (claimedJobKey) {
+    keys.add(claimedJobKey);
+  }
+
+  const fallbackKey = fallbackUrl ? getJobDedupKey(fallbackUrl) : "";
+  if (fallbackKey) {
+    keys.add(fallbackKey);
+  }
+
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const liveTabKey = getJobDedupKey(getTabUrl(tab));
+    if (liveTabKey) {
+      keys.add(liveTabKey);
+    }
+  } catch {
+    // Ignore transient tab lookup failures and keep the stronger keys we already have.
+  }
+
+  return keys;
 }
 
 async function releaseManagedJobOpening(
@@ -3415,6 +3556,9 @@ async function resolvePreferredTab(
     if (preferredTab?.id !== undefined) {
       seenTabIds.add(preferredTab.id);
       candidates.push(preferredTab);
+      if (isWebPageTab(preferredTab)) {
+        return preferredTab;
+      }
     }
   }
 
@@ -3497,7 +3641,7 @@ function getTabUrl(tab: BackgroundSourceTab | null | undefined): string {
 function isJobBoardTab(tab: BackgroundSourceTab): boolean {
   return (
     isWebPageTab(tab) &&
-    isJobBoardSite(detectSiteFromUrl(getTabUrl(tab)))
+    isRunnableCurrentTabSite(detectSiteFromUrl(getTabUrl(tab)))
   );
 }
 
@@ -3619,7 +3763,7 @@ async function detectJobBoardSiteForTab(
   tabUrl: string
 ): Promise<SiteKey | null> {
   const detectedFromUrl = detectSiteFromUrl(tabUrl);
-  if (isJobBoardSite(detectedFromUrl)) {
+  if (isRunnableCurrentTabSite(detectedFromUrl)) {
     return detectedFromUrl;
   }
 
@@ -3628,10 +3772,16 @@ async function detectJobBoardSiteForTab(
       type: "get-status",
     });
     const contentSite = response?.status?.site;
-    return isJobBoardSite(contentSite) ? contentSite : null;
+    return isRunnableCurrentTabSite(contentSite) ? contentSite : null;
   } catch {
     return null;
   }
+}
+
+function isRunnableCurrentTabSite(
+  site: SiteKey | null | "unsupported"
+): site is SiteKey {
+  return isJobBoardSite(site) || site === "other_sites";
 }
 
 async function reloadTabAndWait(tabId: number): Promise<void> {

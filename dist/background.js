@@ -141,7 +141,7 @@
     {
       label: "Berlin Startup Jobs",
       regions: ["eu"],
-      buildUrl: (keyword) => `https://berlinstartupjobs.com/?s=${encodeURIComponent(keyword)}`
+      buildUrl: (keyword) => buildBerlinStartupJobsUrl(keyword)
     }
   ];
   var SEARCH_OPEN_DELAY_MS = 900;
@@ -179,6 +179,117 @@
   }
   function encodeSearchQueryForPath(query) {
     return query.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+  function buildBerlinStartupJobsUrl(keyword) {
+    const normalizedKeyword = ` ${normalizeCuratedKeyword(keyword)} `;
+    if (includesAnyNormalizedKeywordToken(normalizedKeyword, [
+      "engineer",
+      "engineering",
+      "developer",
+      "software",
+      "frontend",
+      "front end",
+      "front-end",
+      "backend",
+      "back end",
+      "back-end",
+      "fullstack",
+      "full stack",
+      "full-stack",
+      "devops",
+      "platform",
+      "site reliability",
+      "sre",
+      "qa",
+      "automation",
+      "security",
+      "mobile",
+      "android",
+      "ios",
+      "data",
+      "machine learning",
+      "ml",
+      "ai",
+      "cloud",
+      "infrastructure",
+      "infra",
+      "python",
+      "java",
+      "javascript",
+      "typescript",
+      "react",
+      "node",
+      "php",
+      "go",
+      "rust",
+      "ruby"
+    ])) {
+      return "https://berlinstartupjobs.com/engineering/";
+    }
+    const categoryRoutes = [
+      {
+        path: "/product-management/",
+        tokens: ["product manager", "product owner", "product management"]
+      },
+      {
+        path: "/design-ux/",
+        tokens: ["designer", "design", "ux", "ui", "researcher"]
+      },
+      {
+        path: "/marketing/",
+        tokens: ["marketing", "growth", "seo", "content", "brand", "communications"]
+      },
+      {
+        path: "/sales/",
+        tokens: [
+          "sales",
+          "account executive",
+          "business development",
+          "sdr",
+          "bdr",
+          "partnerships"
+        ]
+      },
+      {
+        path: "/hr-recruiting/",
+        tokens: ["recruit", "recruiter", "talent", "human resources", "people ops", "hr"]
+      },
+      {
+        path: "/finance/",
+        tokens: ["finance", "financial", "accounting", "controller", "bookkeeper", "fp a"]
+      },
+      {
+        path: "/operations/",
+        tokens: ["operations", "support", "customer support", "office manager", "logistics"]
+      },
+      {
+        path: "/internships/",
+        tokens: ["intern", "internship", "working student"]
+      },
+      {
+        path: "/contracting-positions/",
+        tokens: ["contract", "contractor", "freelance", "freelancer", "consultant"]
+      },
+      {
+        path: "/seeking-co-founders/",
+        tokens: ["cofounder", "co founder", "co-founder", "founder"]
+      }
+    ];
+    for (const category of categoryRoutes) {
+      if (includesAnyNormalizedKeywordToken(normalizedKeyword, category.tokens)) {
+        return `https://berlinstartupjobs.com${category.path}`;
+      }
+    }
+    return "https://berlinstartupjobs.com/engineering/";
+  }
+  function normalizeCuratedKeyword(value) {
+    return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ");
+  }
+  function includesAnyNormalizedKeywordToken(normalizedKeyword, tokens) {
+    return tokens.some((token) => {
+      const normalizedToken = normalizeCuratedKeyword(token);
+      return normalizedToken ? normalizedKeyword.includes(` ${normalizedToken} `) : false;
+    });
   }
   function isDatePostedWindow(value) {
     return value === "any" || value === "24h" || value === "2d" || value === "3d" || value === "5d" || value === "1w" || value === "10d" || value === "14d" || value === "30d";
@@ -229,6 +340,10 @@
     if (bare === "dice.com" || bare.endsWith(".dice.com")) return "dice";
     if (bare === "builtin.com" || bare.endsWith(".builtin.com")) return "builtin";
     if (bare === "greenhouse.io" || bare.endsWith(".greenhouse.io")) return "greenhouse";
+    if (bare === "ashbyhq.com" || bare.endsWith(".ashbyhq.com")) return "other_sites";
+    if (bare === "workdayjobs.com" || bare.endsWith(".workdayjobs.com") || bare === "myworkdayjobs.com" || bare.endsWith(".myworkdayjobs.com")) {
+      return "other_sites";
+    }
     const hostParts = bare.split(".");
     for (let index = 0; index < hostParts.length; index += 1) {
       if (hostParts[index] === "monster" && index < hostParts.length - 1) {
@@ -268,7 +383,7 @@
     return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor" || site === "greenhouse" || site === "builtin";
   }
   function shouldKeepManagedJobPageOpen(site) {
-    return site === "ziprecruiter" || site === "dice";
+    return site === "dice";
   }
 
   // src/shared/storage.ts
@@ -1644,10 +1759,12 @@
           Boolean(message.looksLikeApplicationSurface),
           setSession
         );
+        const decoratedSession = await getDecoratedSession(tabId) ?? resolved.session;
+        await mirrorFrameBoundSessionToTopFrame(decoratedSession);
         return {
           ok: true,
           shouldResume: resolved.shouldResume,
-          session: await getDecoratedSession(tabId) ?? resolved.session
+          session: decoratedSession
         };
       }
       case "status-update":
@@ -1838,6 +1955,7 @@
       openedUrlKey: existingSession?.openedUrlKey
     };
     await setSession(nextSession);
+    await mirrorFrameBoundSessionToTopFrame(nextSession);
     if (isFinal && nextSession.runId && isRateLimitedSession(nextSession)) {
       await markRunRateLimited(nextSession.runId);
       return { ok: true };
@@ -1862,6 +1980,8 @@
         await closeManagedOpenerJobTabForCompletedChild(nextSession, sender.tab);
       }
       await resumePendingJobSessionsForRunId(nextSession.runId);
+      await maybeOpenNextQueuedJobForRunId(nextSession.runId, sender.tab ?? null);
+      await maybeFinalizeExhaustedRun(nextSession.runId);
     }
     return { ok: true };
   }
@@ -1875,6 +1995,22 @@
       ...session,
       runSummary
     } : session;
+  }
+  async function mirrorFrameBoundSessionToTopFrame(session) {
+    if (!session || session.site === "unsupported" || session.stage !== "autofill-form" || typeof session.controllerFrameId !== "number" || session.controllerFrameId === 0) {
+      return;
+    }
+    try {
+      await chrome.tabs.sendMessage(
+        session.tabId,
+        {
+          type: "start-automation",
+          session: await getDecoratedSession(session.tabId) ?? session
+        },
+        { frameId: 0 }
+      );
+    } catch {
+    }
   }
   async function getRunSummaryForTab(tabId) {
     const session = await getSession(tabId);
@@ -1921,7 +2057,7 @@
     }
     await chrome.tabs.sendMessage(session.tabId, payload);
   }
-  function scheduleSessionRestartOnTabComplete(tabId, timeoutMs = 2e4) {
+  function scheduleSessionRestartOnTabComplete(tabId, timeoutMs = 45e3) {
     let settled = false;
     let timeoutId = null;
     const cleanup = () => {
@@ -1990,6 +2126,7 @@
       shouldResume: false
     };
     await setSession(nextSession);
+    await mirrorFrameBoundSessionToTopFrame(nextSession);
     try {
       await sendSessionControlMessage(nextSession, {
         type: "pause-automation",
@@ -2010,20 +2147,21 @@
         error: "No paused automation session was found on this tab."
       };
     }
-    if (session.phase !== "paused") {
+    if (session.phase !== "paused" && session.phase !== "running" && session.phase !== "waiting_for_verification") {
       return {
         ok: false,
-        error: "Resume is only available for paused automation."
+        error: "Resume is only available for active automation sessions."
       };
     }
     const nextSession = {
       ...session,
       phase: "running",
-      message: "Resuming automation...",
+      message: session.phase === "paused" ? "Resuming automation..." : session.message,
       updatedAt: Date.now(),
       shouldResume: true
     };
     await setSession(nextSession);
+    await mirrorFrameBoundSessionToTopFrame(nextSession);
     try {
       await sendSessionControlMessage(nextSession, {
         type: "start-automation",
@@ -2049,6 +2187,7 @@
       manualSubmitPending: true
     };
     await setSession(nextSession);
+    await mirrorFrameBoundSessionToTopFrame(nextSession);
     return {
       ok: true,
       session: await getDecoratedSession(tabId) ?? nextSession
@@ -2067,8 +2206,11 @@
       tabId,
       fallbackUrl
     );
+    const memoryKeys = await resolveManagedJobMemoryKeys(session, tabId, fallbackUrl);
     if (completionKey) {
-      await rememberReviewedJobKey(completionKey);
+      for (const key of memoryKeys.size > 0 ? memoryKeys : [completionKey]) {
+        await rememberReviewedJobKey(key);
+      }
     }
     return {
       ok: true,
@@ -2093,6 +2235,7 @@
         shouldResume: false
       };
       await setSession(nextSession);
+      await mirrorFrameBoundSessionToTopFrame(nextSession);
       try {
         await chrome.tabs.sendMessage(tabId, {
           type: "stop-automation",
@@ -2128,6 +2271,7 @@
         manualSubmitPending: false
       };
       await setSession(nextSession);
+      await mirrorFrameBoundSessionToTopFrame(nextSession);
       try {
         await chrome.tabs.sendMessage(runSession.tabId, {
           type: "stop-automation",
@@ -2241,12 +2385,48 @@
     } catch {
     }
   }
+  function shouldStartGreenhouseApplyStageFromUrl(url) {
+    if (!url) {
+      return false;
+    }
+    try {
+      const parsed = new URL(url);
+      const lowerPath = parsed.pathname.toLowerCase();
+      const lowerPathAndQuery = `${lowerPath}${parsed.search.toLowerCase()}`;
+      if (parsed.searchParams.has("gh_jid") || parsed.searchParams.has("job_id")) {
+        return true;
+      }
+      if (lowerPathAndQuery.includes("job_application") || lowerPathAndQuery.includes("job_app")) {
+        return true;
+      }
+      if (lowerPath.includes("/view_job")) {
+        return true;
+      }
+      const jobsIndex = lowerPath.indexOf("/jobs/");
+      if (jobsIndex < 0) {
+        return false;
+      }
+      const trailing = lowerPath.slice(jobsIndex + "/jobs/".length).replace(/^\/+/, "");
+      return trailing.length > 0;
+    } catch {
+      return false;
+    }
+  }
+  function resolveInitialAutomationStageForCurrentTab(site, currentUrl) {
+    if (site === "other_sites") {
+      return "open-apply";
+    }
+    if (site === "greenhouse" && shouldStartGreenhouseApplyStageFromUrl(currentUrl)) {
+      return "open-apply";
+    }
+    return "bootstrap";
+  }
   async function startAutomationForTab(tabId) {
     const tab = await resolvePreferredTab(tabId, "job_board");
     if (!tab || tab.id === void 0) {
       return {
         ok: false,
-        error: "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In page and try again."
+        error: "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or supported company application page and try again."
       };
     }
     const resolvedTabId = tab.id;
@@ -2257,10 +2437,10 @@
     const settings = await readAutomationSettings();
     const runId = createRunId();
     const searchKeywords = parseSearchKeywords(settings.searchKeywords);
-    if (!isJobBoardSite(site)) {
+    if (!isRunnableCurrentTabSite(site)) {
       return {
         ok: false,
-        error: "Open an Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In page first."
+        error: "Open an Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or supported company application page first."
       };
     }
     if (searchKeywords.length === 0) {
@@ -2269,6 +2449,10 @@
         error: "Add at least one search keyword in the extension before starting automation."
       };
     }
+    const initialStage = resolveInitialAutomationStageForCurrentTab(
+      site,
+      getTabUrl(tab)
+    );
     await setRunState({
       id: runId,
       jobPageLimit: settings.jobPageLimit,
@@ -2285,9 +2469,9 @@
       resolvedTabId,
       site,
       "running",
-      `Preparing ${getReadableSiteName(site)} automation...`,
+      initialStage === "open-apply" ? `Preparing ${getReadableSiteName(site)} automation on this page...` : `Preparing ${getReadableSiteName(site)} automation...`,
       true,
-      "bootstrap",
+      initialStage,
       runId,
       void 0,
       void 0,
@@ -2919,9 +3103,36 @@
         successfulJobKeys: Array.from(successfulKeys),
         updatedAt: Date.now()
       });
-      await rememberReviewedJobKey(completionKey);
+      const memoryKeys = await resolveManagedJobMemoryKeys(
+        session,
+        tabId,
+        fallbackUrl
+      );
+      for (const key of memoryKeys.size > 0 ? memoryKeys : [completionKey]) {
+        await rememberReviewedJobKey(key);
+      }
       await rememberAppliedJobKey(completionKey);
     });
+  }
+  async function resolveManagedJobMemoryKeys(session, tabId, fallbackUrl) {
+    const keys = /* @__PURE__ */ new Set();
+    const claimedJobKey = session?.claimedJobKey?.trim();
+    if (claimedJobKey) {
+      keys.add(claimedJobKey);
+    }
+    const fallbackKey = fallbackUrl ? getJobDedupKey(fallbackUrl) : "";
+    if (fallbackKey) {
+      keys.add(fallbackKey);
+    }
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      const liveTabKey = getJobDedupKey(getTabUrl(tab));
+      if (liveTabKey) {
+        keys.add(liveTabKey);
+      }
+    } catch {
+    }
+    return keys;
   }
   async function releaseManagedJobOpening(runId, tabId, fallbackUrl) {
     const session = await getSession(tabId);
@@ -3475,6 +3686,9 @@
       if (preferredTab2?.id !== void 0) {
         seenTabIds.add(preferredTab2.id);
         candidates.push(preferredTab2);
+        if (isWebPageTab(preferredTab2)) {
+          return preferredTab2;
+        }
       }
     }
     const queryResults = await Promise.allSettled([
@@ -3533,7 +3747,7 @@
     return currentUrl;
   }
   function isJobBoardTab(tab) {
-    return isWebPageTab(tab) && isJobBoardSite(detectSiteFromUrl(getTabUrl(tab)));
+    return isWebPageTab(tab) && isRunnableCurrentTabSite(detectSiteFromUrl(getTabUrl(tab)));
   }
   function isTabUsableForPreference(tab, preferredKind) {
     if (preferredKind === "job_board") {
@@ -3629,7 +3843,7 @@
   }
   async function detectJobBoardSiteForTab(tabId, tabUrl) {
     const detectedFromUrl = detectSiteFromUrl(tabUrl);
-    if (isJobBoardSite(detectedFromUrl)) {
+    if (isRunnableCurrentTabSite(detectedFromUrl)) {
       return detectedFromUrl;
     }
     try {
@@ -3637,10 +3851,13 @@
         type: "get-status"
       });
       const contentSite = response?.status?.site;
-      return isJobBoardSite(contentSite) ? contentSite : null;
+      return isRunnableCurrentTabSite(contentSite) ? contentSite : null;
     } catch {
       return null;
     }
+  }
+  function isRunnableCurrentTabSite(site) {
+    return isJobBoardSite(site) || site === "other_sites";
   }
   async function reloadTabAndWait(tabId) {
     await new Promise((resolve, reject) => {

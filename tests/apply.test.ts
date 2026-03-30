@@ -9,6 +9,7 @@ import {
   findMonsterApplyAction,
   findProgressionAction,
   findZipRecruiterApplyAction,
+  getVisibleZipRecruiterApplyModals,
   hasIndeedApplyIframe,
   hasZipRecruiterApplyModal,
   isAlreadyOnApplyPage,
@@ -67,6 +68,23 @@ describe("application progression actions", () => {
     expect(action).not.toBeNull();
     expect(action?.type).toBe("click");
     expect(action?.text).toBe("Review details");
+  });
+
+  it("does not treat framework labels like Next.js as progression buttons", () => {
+    document.body.innerHTML = `
+      <main>
+        <button type="button" class="framework-pill">Next.js</button>
+        <form>
+          <button type="button" data-testid="continue-button">Continue</button>
+        </form>
+      </main>
+    `;
+
+    const action = findProgressionAction("indeed");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.text).toBe("Continue");
   });
 
   it("treats internal Indeed continuation form-actions as click progression", () => {
@@ -197,6 +215,35 @@ describe("application progression actions", () => {
     if (action?.type === "navigate") {
       expect(action.url).toBe("https://company.example.com/careers/apply");
     }
+  });
+
+  it("ignores framework reference links when looking for a company-site apply action", () => {
+    document.body.innerHTML = `
+      <section>
+        <p>You will be redirected to the company website to apply.</p>
+        <a href="https://nextjs.org/">Next.js</a>
+        <a href="https://company.example.com/careers/apply">Apply on company site</a>
+      </section>
+    `;
+
+    const action = findCompanySiteAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe("https://company.example.com/careers/apply");
+    }
+  });
+
+  it("does not treat standalone framework links as company-site apply actions", () => {
+    document.body.innerHTML = `
+      <section>
+        <p>You will be redirected to the company website to apply.</p>
+        <a href="https://nextjs.org/">Next.js</a>
+      </section>
+    `;
+
+    expect(findCompanySiteAction()).toBeNull();
   });
 
   it("prefers explicit company-site links over unrelated ATS URLs buried in inline scripts", () => {
@@ -1549,6 +1596,26 @@ describe("application progression actions", () => {
     expect(action).toBeNull();
   });
 
+  it("does not treat ZipRecruiter submitted-state promo dialogs as live apply surfaces", () => {
+    document.body.innerHTML = `
+      <main data-testid="job-details">
+        <h1>Full Stack Developer</h1>
+      </main>
+      <section role="dialog" aria-modal="true">
+        <h2>You've successfully applied</h2>
+        <p>Application received.</p>
+        <button type="button">Tell us more</button>
+        <a href="https://support.ziprecruiter.com/hc/en-us">Support</a>
+      </section>
+    `;
+
+    expect(hasZipRecruiterApplyModal()).toBe(false);
+    expect(getVisibleZipRecruiterApplyModals()).toHaveLength(0);
+    expect(findZipRecruiterApplyAction()).toBeNull();
+    expect(findApplyAction("ziprecruiter", "job-page")).toBeNull();
+    expect(findProgressionAction("ziprecruiter")).toBeNull();
+  });
+
   it("finds Glassdoor employer-site apply links", () => {
     document.body.innerHTML = `
       <main>
@@ -1658,6 +1725,21 @@ describe("application progression actions", () => {
     document.body.appendChild(host);
 
     expect(hasZipRecruiterApplyModal()).toBe(true);
+  });
+
+  it("returns the live ZipRecruiter apply modal roots for scoped autofill", () => {
+    document.body.innerHTML = `
+      <section role="dialog" aria-modal="true" style="display:none">
+        <div>Apply now</div>
+        <input type="text" />
+      </section>
+      <section role="dialog" aria-modal="true">
+        <div>Upload your resume and continue your application</div>
+        <input type="text" />
+      </section>
+    `;
+
+    expect(getVisibleZipRecruiterApplyModals()).toHaveLength(1);
   });
 
   it("scopes ZipRecruiter follow-up apply detection to the live apply modal", () => {
@@ -1917,6 +1999,87 @@ describe("application progression actions", () => {
     expect(genericAction?.description).toBe("Apply");
   });
 
+  it("finds sticky Greenhouse apply buttons exposed through data-testid metadata", () => {
+    document.body.innerHTML = `
+      <main class="job-post">
+        <section>
+          <h1>Senior Software Engineer</h1>
+        </section>
+        <div class="sticky-apply-bar">
+          <button type="button" data-testid="job-apply-button">Apply now</button>
+        </div>
+      </main>
+    `;
+
+    const action = findGreenhouseApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply now");
+  });
+
+  it("finds plain Greenhouse apply buttons inside the current job surface", () => {
+    document.body.innerHTML = `
+      <main class="job-post">
+        <section class="job-hero">
+          <h1>Full Stack Developer Intern</h1>
+          <a href="/apply" class="cta-primary">Apply</a>
+        </section>
+      </main>
+    `;
+
+    const action = findGreenhouseApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    expect(action?.description).toBe("the apply page");
+  });
+
+  it("finds company-hosted Greenhouse apply buttons on gh_jid job pages", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/careers?gh_jid=5083376007&gh_src=my.greenhouse.search"
+    );
+    document.body.innerHTML = `
+      <div class="career-page">
+        <a href="/careers">Back to jobs</a>
+        <section class="job-hero">
+          <h1>Full-Stack Engineer</h1>
+          <button type="button" class="cta-primary">Apply</button>
+        </section>
+      </div>
+    `;
+
+    const action = findGreenhouseApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply");
+  });
+
+  it("finds MyGreenhouse apply buttons on job_application landing pages", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/job_application?token=abc123"
+    );
+    document.body.innerHTML = `
+      <main class="job-post">
+        <section class="job-hero">
+          <h1>Engineer, App Platform</h1>
+          <button type="button" class="cta-primary">Apply</button>
+        </section>
+      </main>
+    `;
+
+    const action = findGreenhouseApplyAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("click");
+    expect(action?.description).toBe("Apply");
+  });
+
   it("detects embedded Indeed and ZipRecruiter application surfaces", () => {
     document.body.innerHTML = `
       <iframe src="https://smartapply.indeed.com/apply/start"></iframe>
@@ -1974,6 +2137,12 @@ describe("application progression actions", () => {
     ).toBe(false);
     expect(
       isLikelyApplyUrl(
+        "https://my.greenhouse.io/job_application?token=abc123",
+        "greenhouse"
+      )
+    ).toBe(true);
+    expect(
+      isLikelyApplyUrl(
         "https://www.dice.com/job-applications/d32a5e6b-4beb-4314-9830-a5b0c943d59c/start-apply",
         "dice"
       )
@@ -1997,6 +2166,28 @@ describe("application progression actions", () => {
     expect(shouldPreferApplyNavigation("https://example.com/jobs/123", "Apply", "other_sites")).toBe(
       false
     );
+  });
+
+  it("treats Ashby application-tab links as apply navigation on career pages", () => {
+    document.body.innerHTML = `
+      <main>
+        <nav>
+          <a href="https://jobs.ashbyhq.com/example/12345678-1234-1234-1234-1234567890ab/application">
+            Application
+          </a>
+        </nav>
+      </main>
+    `;
+
+    const action = findApplyAction("other_sites", "job-page");
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe(
+        "https://jobs.ashbyhq.com/example/12345678-1234-1234-1234-1234567890ab/application"
+      );
+    }
   });
 
   it("prefers Built In's real external apply link over sticky helper buttons", () => {

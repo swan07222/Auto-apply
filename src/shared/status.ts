@@ -27,6 +27,15 @@ export function detectSiteFromUrl(url: string): SiteKey | null {
   if (bare === "dice.com" || bare.endsWith(".dice.com")) return "dice";
   if (bare === "builtin.com" || bare.endsWith(".builtin.com")) return "builtin";
   if (bare === "greenhouse.io" || bare.endsWith(".greenhouse.io")) return "greenhouse";
+  if (bare === "ashbyhq.com" || bare.endsWith(".ashbyhq.com")) return "other_sites";
+  if (
+    bare === "workdayjobs.com" ||
+    bare.endsWith(".workdayjobs.com") ||
+    bare === "myworkdayjobs.com" ||
+    bare.endsWith(".myworkdayjobs.com")
+  ) {
+    return "other_sites";
+  }
 
   const hostParts = bare.split(".");
   for (let index = 0; index < hostParts.length; index += 1) {
@@ -115,7 +124,7 @@ export function isJobBoardSite(
 export function shouldKeepManagedJobPageOpen(
   site: SiteKey | "unsupported"
 ): boolean {
-  return site === "ziprecruiter" || site === "dice";
+  return site === "dice";
 }
 
 export function getResumeKindLabel(resumeKind: ResumeKind): string {

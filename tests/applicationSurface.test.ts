@@ -187,6 +187,45 @@ describe("application surface helpers", () => {
     expect(hasLikelyApplicationSurface("builtin", collectors)).toBe(true);
   });
 
+  it("recognizes Greenhouse launch surfaces before the embedded form fully renders", () => {
+    document.body.innerHTML = `
+      <main class="job-post">
+        <button>Apply</button>
+      </main>
+      <section
+        role="dialog"
+        aria-modal="true"
+        class="greenhouse-application-drawer"
+        data-testid="greenhouse-application-shell"
+      >
+        <h2>Apply for this job</h2>
+        <p>Powered by Greenhouse</p>
+        <p>Upload resume and cover letter to continue application.</p>
+        <button>Continue</button>
+      </section>
+    `;
+
+    expect(hasLikelyApplicationSurface("greenhouse", collectors)).toBe(true);
+  });
+
+  it("does not treat a plain Greenhouse job page with only the primary apply CTA as an application surface", () => {
+    document.body.innerHTML = `
+      <main class="main font-secondary job-post">
+        <div class="job__header">
+          <a href="/jobs">Back to jobs</a>
+          <button type="button" class="btn btn--pill" aria-label="Apply">Apply</button>
+        </div>
+        <section>
+          <h1>Senior Full-Stack Software Engineer</h1>
+          <p>Powered by Greenhouse</p>
+          <p>Applications reviewed on a rolling basis.</p>
+        </section>
+      </main>
+    `;
+
+    expect(hasLikelyApplicationSurface("greenhouse", collectors)).toBe(false);
+  });
+
   it("waits for a likely application surface to appear after delayed rendering", async () => {
     vi.useFakeTimers();
     document.body.innerHTML = `<main><h1>Job details</h1></main>`;
@@ -211,6 +250,63 @@ describe("application surface helpers", () => {
     await vi.advanceTimersByTimeAsync(2_100);
 
     await expect(promise).resolves.toBe(true);
+  });
+
+  it("scrolls deeper on Greenhouse pages while waiting for an inline application form", async () => {
+    vi.useFakeTimers();
+    document.body.innerHTML = `<main><h1>Job details</h1></main>`;
+
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 900,
+    });
+    Object.defineProperty(document.body, "scrollHeight", {
+      configurable: true,
+      value: 3200,
+    });
+    Object.defineProperty(document.documentElement, "scrollHeight", {
+      configurable: true,
+      value: 3200,
+    });
+
+    const scrollSpy = vi.spyOn(window, "scrollTo").mockImplementation((value) => {
+      const top =
+        typeof value === "object" && value !== null && "top" in value
+          ? Number(value.top ?? 0)
+          : 0;
+
+      if (top >= 1400 && !document.querySelector("#greenhouse-email")) {
+        document.body.innerHTML = `
+          <main>
+            <form>
+              <label>
+                Full name
+                <input type="text" autocomplete="name" />
+              </label>
+              <label>
+                Email
+                <input id="greenhouse-email" type="email" autocomplete="email" />
+              </label>
+            </form>
+          </main>
+        `;
+      }
+    });
+
+    const promise = waitForLikelyApplicationSurface("greenhouse", collectors);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    await expect(promise).resolves.toBe(true);
+    expect(scrollSpy).toHaveBeenCalled();
+    expect(
+      scrollSpy.mock.calls.some(([value]) =>
+        typeof value === "object" &&
+        value !== null &&
+        "top" in value &&
+        Number(value.top ?? 0) >= 1400
+      )
+    ).toBe(true);
   });
 
   it("does not scroll the page while waiting for Monster apply surfaces", async () => {

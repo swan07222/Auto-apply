@@ -45,6 +45,21 @@ describe("popup state helpers", () => {
     expect(preview.startDisabled).toBe(false);
   });
 
+  it("allows job-board mode on supported direct application pages", () => {
+    const preview = derivePopupIdlePreview({
+      searchMode: "job_board",
+      activeSite: "other_sites",
+      activeTabId: 17,
+      hasKeywords: true,
+      regionLabel: "US",
+      supportedJobBoardPrompt: "Open a supported site.",
+    });
+
+    expect(preview.status.site).toBe("other_sites");
+    expect(preview.status.message).toBe("Ready on Other Job Sites.");
+    expect(preview.startDisabled).toBe(false);
+  });
+
   it("parses select values defensively and returns button labels", () => {
     expect(getSelectedSearchMode("startup_careers")).toBe("startup_careers");
     expect(getSelectedSearchMode("other_job_sites")).toBe("other_job_sites");

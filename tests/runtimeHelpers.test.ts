@@ -7,6 +7,7 @@ import {
   mergeAutofillResult,
   shouldKeepTopFrameSessionSyncAlive,
   shouldMirrorControllerBoundSessionInTopFrame,
+  shouldMirrorPendingAutofillSessionInTopFrame,
   shouldRenderAutomationFeedbackInCurrentFrame,
   shouldAvoidApplyClickFocus,
   resolveGreenhouseSearchContextUrl,
@@ -81,6 +82,68 @@ describe("content runtime helpers", () => {
     expect(
       resolveGreenhouseSearchContextUrl("https://www.figma.com/careers/", document)
     ).toBe("https://boards.greenhouse.io/figma");
+  });
+
+  it("detects redirected Greenhouse career pages from board root links", () => {
+    document.body.innerHTML = `
+      <main>
+        <a href="https://job-boards.greenhouse.io/figma">View all jobs</a>
+      </main>
+    `;
+
+    expect(
+      detectSupportedSiteFromPage("https://www.figma.com/careers/", document)
+    ).toBe("greenhouse");
+    expect(
+      resolveGreenhouseSearchContextUrl("https://www.figma.com/careers/", document)
+    ).toBe("https://job-boards.greenhouse.io/figma");
+  });
+
+  it("detects redirected Greenhouse career pages from embedded job-board iframes", () => {
+    document.body.innerHTML = `
+      <main>
+        <iframe src="https://boards.greenhouse.io/embed/job_board?for=figma"></iframe>
+      </main>
+    `;
+
+    expect(
+      detectSupportedSiteFromPage("https://www.figma.com/careers/", document)
+    ).toBe("greenhouse");
+    expect(
+      resolveGreenhouseSearchContextUrl("https://www.figma.com/careers/", document)
+    ).toBe("https://boards.greenhouse.io/figma");
+  });
+
+  it("detects custom-domain Greenhouse career pages from gh_jid job links", () => {
+    document.body.innerHTML = `
+      <main>
+        <a href="/careers?gh_jid=5083376007&gh_src=my.greenhouse.search">
+          Senior Software Engineer
+        </a>
+      </main>
+    `;
+
+    expect(
+      detectSupportedSiteFromPage("https://jobs.example.com/careers", document)
+    ).toBe("greenhouse");
+    expect(
+      resolveGreenhouseSearchContextUrl("https://jobs.example.com/careers", document)
+    ).toBe("https://jobs.example.com/careers");
+  });
+
+  it("detects custom-domain Greenhouse job pages from the current gh_jid URL", () => {
+    expect(
+      detectSupportedSiteFromPage(
+        "https://jobs.example.com/careers?gh_jid=5083376007&gh_src=my.greenhouse.search",
+        document
+      )
+    ).toBe("greenhouse");
+    expect(
+      resolveGreenhouseSearchContextUrl(
+        "https://jobs.example.com/careers?gh_jid=5083376007&gh_src=my.greenhouse.search",
+        document
+      )
+    ).toBe("https://jobs.example.com/careers");
   });
 
   it("detects redirected Greenhouse career pages from inline script board data", () => {
@@ -176,12 +239,38 @@ describe("content runtime helpers", () => {
     ).toBe(true);
   });
 
-  it("keeps the top frame subscribed to controller-bound autofill sessions for overlay updates", () => {
+  it("keeps applied confirmation pages attached to the active automation session", () => {
+    expect(
+      looksLikeCurrentFrameApplicationSurface("ziprecruiter", {
+        currentUrl: "https://www.ziprecruiter.com/candidateexperience/apply/abc123/confirmation",
+        hasLikelyApplicationForm: () => false,
+        hasLikelyApplicationFrame: () => false,
+        hasLikelyApplicationPageContent: () => false,
+        hasLikelyApplyContinuationAction: () => false,
+        isCurrentPageAppliedJob: () => true,
+        isLikelyApplyUrl: () => false,
+        isTopFrame: true,
+        resumeFileInputCount: 0,
+      })
+    ).toBe(true);
+  });
+
+  it("keeps the top frame subscribed during active apply and autofill phases for overlay updates", () => {
     expect(
       shouldMirrorControllerBoundSessionInTopFrame(
         {
           stage: "autofill-form",
           controllerFrameId: 7,
+        },
+        true
+      )
+    ).toBe(true);
+    expect(
+      shouldKeepTopFrameSessionSyncAlive(
+        {
+          stage: "open-apply",
+          phase: "running",
+          controllerFrameId: undefined,
         },
         true
       )
@@ -207,6 +296,16 @@ describe("content runtime helpers", () => {
       )
     ).toBe(false);
     expect(
+      shouldKeepTopFrameSessionSyncAlive(
+        {
+          stage: "collect-results",
+          phase: "running",
+          controllerFrameId: undefined,
+        },
+        true
+      )
+    ).toBe(false);
+    expect(
       shouldMirrorControllerBoundSessionInTopFrame(
         {
           stage: "autofill-form",
@@ -215,9 +314,29 @@ describe("content runtime helpers", () => {
         true
       )
     ).toBe(false);
+    expect(
+      shouldMirrorPendingAutofillSessionInTopFrame(
+        {
+          stage: "autofill-form",
+          phase: "running",
+          controllerFrameId: undefined,
+        },
+        true
+      )
+    ).toBe(true);
+    expect(
+      shouldMirrorPendingAutofillSessionInTopFrame(
+        {
+          stage: "autofill-form",
+          phase: "completed",
+          controllerFrameId: undefined,
+        },
+        true
+      )
+    ).toBe(false);
   });
 
-  it("renders overlay feedback in the controlling frame for embedded autofill sessions", () => {
+  it("renders overlay feedback in the top page for embedded autofill sessions", () => {
     const embeddedSession = {
       stage: "autofill-form" as const,
       phase: "running" as const,
@@ -226,10 +345,10 @@ describe("content runtime helpers", () => {
 
     expect(
       shouldRenderAutomationFeedbackInCurrentFrame(embeddedSession, true)
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldRenderAutomationFeedbackInCurrentFrame(embeddedSession, false)
-    ).toBe(true);
+    ).toBe(false);
     expect(
       shouldRenderAutomationFeedbackInCurrentFrame(
         {

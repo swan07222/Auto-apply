@@ -239,7 +239,13 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
     siteName: requireElement<HTMLElement>("#site-name"),
     modePreview: requireElement<HTMLElement>("#mode-preview"),
     savedAnswerCount: requireElement<HTMLElement>("#saved-answer-count"),
+    savedAnswerSearchInput: requireElement<HTMLInputElement>(
+      "#saved-answer-search"
+    ),
     savedAnswerList: requireElement<HTMLElement>("#saved-answer-list"),
+    savedAnswerEmptyState: requireElement<HTMLElement>(
+      "#saved-answer-empty-state"
+    ),
     setActiveTabs(nextTabs: MockTab[]) {
       activeTabs.splice(0, activeTabs.length, ...nextTabs);
     },
@@ -506,7 +512,7 @@ describe("popup workflow", () => {
 
     expect(popup.siteName.textContent).toBe("No supported site");
     expect(popup.statusText.textContent).toBe(
-      "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In in the active tab to start."
+      "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or a supported company application page in the active tab to start."
     );
     expect(popup.startButton.disabled).toBe(true);
   });
@@ -683,10 +689,86 @@ describe("popup workflow", () => {
         return null;
       },
     });
+    await flushAsyncWork(16);
 
     expect(popup.siteName.textContent).toBe("Greenhouse");
     expect(popup.statusText.textContent).toBe("Ready on Greenhouse.");
     expect(popup.startButton.disabled).toBe(false);
+  });
+
+  it("starts automation on redirected Greenhouse career pages after resolving the site from the page", async () => {
+    const popup = await createPopupHarness({
+      activeTabs: [
+        {
+          id: 77,
+          url: "https://www.figma.com/careers/",
+        },
+      ],
+      tabsSendMessage: async (_tabId, message) => {
+        if (message.type === "get-status") {
+          return {
+            status: {
+              site: "greenhouse",
+              phase: "idle",
+              message: "Ready on Greenhouse.",
+              updatedAt: Date.now(),
+            },
+          };
+        }
+
+        return null;
+      },
+    });
+    await flushAsyncWork(16);
+
+    popup.startButton.click();
+    await flushAsyncWork(20);
+
+    expect(popup.runtimeSendMessage).toHaveBeenCalledWith({
+      type: "start-automation",
+      tabId: 77,
+    });
+    expect([
+      "Starting on Greenhouse...",
+      "Ready on Greenhouse.",
+    ]).toContain(popup.statusText.textContent);
+  });
+
+  it("keeps the current redirected Greenhouse tab selected even when another active job-board tab exists", async () => {
+    const popup = await createPopupHarness({
+      activeTabs: [
+        {
+          id: 77,
+          url: "https://www.figma.com/careers/",
+        },
+        {
+          id: 91,
+          url: "https://www.indeed.com/jobs?q=platform+engineer",
+        },
+      ],
+      tabsSendMessage: async (tabId, message) => {
+        if (tabId === 77 && message.type === "get-status") {
+          return {
+            status: {
+              site: "greenhouse",
+              phase: "idle",
+              message: "Ready on Greenhouse.",
+              updatedAt: Date.now(),
+            },
+          };
+        }
+
+        return null;
+      },
+    });
+    await flushAsyncWork(16);
+
+    expect(popup.siteName.textContent).toBe("Greenhouse");
+    expect(popup.statusText.textContent).toBe("Ready on Greenhouse.");
+    expect(popup.runtimeSendMessage).toHaveBeenCalledWith({
+      type: "get-tab-session",
+      tabId: 77,
+    });
   });
 
   it("uses the pending job-board URL when the active tab is still loading", async () => {
@@ -1352,6 +1434,93 @@ describe("popup workflow", () => {
     expect(popup.savedAnswerList.textContent).toContain("Why do you want this role?");
     expect(popup.savedAnswerList.textContent).not.toContain("__RequestVerificationToken");
     expect(popup.savedAnswerList.textContent).not.toContain("search");
+  });
+
+  it("filters saved answers by question key and answer text", async () => {
+    const popup = await createPopupHarness({
+      settings: createSettings({
+        searchKeywords: "software engineer",
+        answers: {
+          "why this company": {
+            question: "Why do you want this company?",
+            value: "Mission fit.",
+            updatedAt: 2,
+          },
+        },
+        preferenceAnswers: {
+          availability: {
+            question: "Preferred schedule?",
+            value: "Available for weekends when needed.",
+            updatedAt: 1,
+          },
+        },
+      }),
+    });
+
+    popup.savedAnswerSearchInput.value = "availability";
+    popup.savedAnswerSearchInput.dispatchEvent(
+      new Event("input", { bubbles: true })
+    );
+    await flushAsyncWork();
+
+    expect(popup.savedAnswerCount.textContent).toBe("1/2");
+    expect(popup.savedAnswerList.textContent).toContain("Preferred schedule?");
+    expect(popup.savedAnswerList.textContent).not.toContain(
+      "Why do you want this company?"
+    );
+
+    popup.savedAnswerSearchInput.value = "mission fit";
+    popup.savedAnswerSearchInput.dispatchEvent(
+      new Event("input", { bubbles: true })
+    );
+    await flushAsyncWork();
+
+    expect(popup.savedAnswerCount.textContent).toBe("1/2");
+    expect(popup.savedAnswerList.textContent).toContain(
+      "Why do you want this company?"
+    );
+    expect(popup.savedAnswerList.textContent).not.toContain(
+      "Preferred schedule?"
+    );
+  });
+
+  it("shows a no-match message when the saved answer search has no results", async () => {
+    const popup = await createPopupHarness({
+      settings: createSettings({
+        searchKeywords: "software engineer",
+        answers: {
+          first: {
+            question: "Why do you want this role?",
+            value: "Impact.",
+            updatedAt: 1,
+          },
+        },
+      }),
+    });
+
+    popup.savedAnswerSearchInput.value = "relocation";
+    popup.savedAnswerSearchInput.dispatchEvent(
+      new Event("input", { bubbles: true })
+    );
+    await flushAsyncWork();
+
+    expect(popup.savedAnswerCount.textContent).toBe("0/1");
+    expect(popup.savedAnswerList.childElementCount).toBe(0);
+    expect(popup.savedAnswerEmptyState.hidden).toBe(false);
+    expect(popup.savedAnswerEmptyState.textContent).toContain(
+      'match "relocation"'
+    );
+
+    popup.savedAnswerSearchInput.value = "";
+    popup.savedAnswerSearchInput.dispatchEvent(
+      new Event("input", { bubbles: true })
+    );
+    await flushAsyncWork();
+
+    expect(popup.savedAnswerCount.textContent).toBe("1");
+    expect(popup.savedAnswerList.textContent).toContain(
+      "Why do you want this role?"
+    );
   });
 
   it("normalizes whitespace when editing remembered answers", async () => {

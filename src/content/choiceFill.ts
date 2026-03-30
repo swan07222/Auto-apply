@@ -26,10 +26,7 @@ export function applyAnswerToRadioGroup(
     return false;
   }
 
-  best.checked = true;
-  best.dispatchEvent(new Event("input", { bubbles: true }));
-  best.dispatchEvent(new Event("change", { bubbles: true }));
-  return true;
+  return applyChoiceInputState(best, true);
 }
 
 export function applyAnswerToCheckbox(
@@ -55,10 +52,7 @@ export function applyAnswerToCheckbox(
         values.some((value) => optionText.includes(value) || value.includes(optionText)) &&
         !box.checked
       ) {
-        box.checked = true;
-        box.dispatchEvent(new Event("input", { bubbles: true }));
-        box.dispatchEvent(new Event("change", { bubbles: true }));
-        changed = true;
+        changed = applyChoiceInputState(box, true) || changed;
       }
     }
     return changed;
@@ -73,10 +67,7 @@ export function applyAnswerToCheckbox(
     return false;
   }
 
-  field.checked = bool;
-  field.dispatchEvent(new Event("input", { bubbles: true }));
-  field.dispatchEvent(new Event("change", { bubbles: true }));
-  return true;
+  return applyChoiceInputState(field, bool);
 }
 
 export function selectOptionByAnswer(
@@ -147,4 +138,38 @@ function getGroupedInputs(
   } catch {
     return [field];
   }
+}
+
+function applyChoiceInputState(
+  input: HTMLInputElement,
+  desiredChecked: boolean
+): boolean {
+  if (input.checked === desiredChecked) {
+    return false;
+  }
+
+  const descriptor = Object.getOwnPropertyDescriptor(
+    Object.getPrototypeOf(input),
+    "checked"
+  );
+  if (descriptor?.set) {
+    descriptor.set.call(input, desiredChecked);
+  } else {
+    input.checked = desiredChecked;
+  }
+
+  try {
+    input.dispatchEvent(
+      new Event("click", {
+        bubbles: true,
+        cancelable: true,
+      })
+    );
+  } catch {
+    // Ignore click-dispatch issues and still emit the standard change events.
+  }
+
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  return input.checked === desiredChecked;
 }

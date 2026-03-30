@@ -19,6 +19,7 @@ const STABLE_PROFILE_FIELD_TOKENS = [
   "personal site",
   "github",
   "city",
+  "location",
   "state",
   "province",
   "region",
@@ -75,6 +76,42 @@ const BLOCKED_REMEMBER_IDENTIFIER_PATTERNS = [
   /viewstate/i,
   /eventvalidation/i,
 ] as const;
+
+const QUESTION_TEXT_CONTAINER_SELECTOR = [
+  "label",
+  "fieldset",
+  "[role='group']",
+  "[role='radiogroup']",
+  "[role='dialog']",
+  ".field",
+  ".form-field",
+  ".question",
+  ".application-question",
+  "[class*='form-group']",
+  "[class*='field-wrapper']",
+  "[class*='field']",
+  "[class*='question']",
+  "[data-testid*='question']",
+  "[data-test*='question']",
+].join(", ");
+
+const QUESTION_TEXT_NODE_SELECTOR = [
+  "legend",
+  "label",
+  ".label",
+  ".question",
+  ".prompt",
+  ".title",
+  "[data-testid*='question']",
+  "[data-test*='question']",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "p",
+  "span",
+  "div",
+].join(", ");
 
 export function shouldAutofillField(
   field: AutofillField,
@@ -209,19 +246,17 @@ export function getQuestionText(field: AutofillField | HTMLInputElement): string
   const legend = cleanText(field.closest("fieldset")?.querySelector("legend")?.textContent);
   if (legend) return legend;
 
-  const labelledBy = field.getAttribute("aria-labelledby");
-  if (labelledBy) {
-    const text = cleanText(
-      labelledBy
-        .split(/\s+/)
-        .map((id) => findByIdNearField(field, id)?.textContent ?? "")
-        .join(" ")
-    );
-    if (text) return text;
-  }
+  const labelledBy = readFieldReferenceText(field, "aria-labelledby");
+  if (labelledBy) return labelledBy;
+
+  const describedBy = readFieldReferenceText(field, "aria-describedby");
+  if (describedBy) return describedBy;
 
   const label = getAssociatedLabelText(field);
   if (label) return label;
+
+  const promptText = getPromptQuestionText(field);
+  if (promptText) return promptText;
 
   const wrapper = cleanText(
     field
@@ -257,6 +292,84 @@ export function getAssociatedLabelText(field: Element): string {
   }
 
   return cleanText(field.closest("label")?.textContent);
+}
+
+function readFieldReferenceText(
+  field: AutofillField | HTMLInputElement,
+  attributeName: "aria-labelledby" | "aria-describedby"
+): string {
+  const referenceIds = field.getAttribute(attributeName);
+  if (!referenceIds) {
+    return "";
+  }
+
+  return cleanText(
+    referenceIds
+      .split(/\s+/)
+      .map((id) => findByIdNearField(field, id)?.textContent ?? "")
+      .join(" ")
+  );
+}
+
+function getPromptQuestionText(field: AutofillField | HTMLInputElement): string {
+  const container = field.closest(QUESTION_TEXT_CONTAINER_SELECTOR);
+  if (!container) {
+    return "";
+  }
+
+  const candidates = Array.from(
+    container.querySelectorAll<HTMLElement>(QUESTION_TEXT_NODE_SELECTOR)
+  );
+
+  for (const candidate of candidates) {
+    if (
+      candidate === field ||
+      candidate.contains(field) ||
+      candidate.closest(
+        "button, a[href], [role='button'], [role='option'], [role='radio'], [role='checkbox']"
+      )
+    ) {
+      continue;
+    }
+
+    if (
+      candidate.tagName === "DIV" &&
+      candidate.querySelector("input, textarea, select, button, a[href]")
+    ) {
+      continue;
+    }
+
+    const text = cleanText(candidate.textContent || "");
+    if (!isUsableQuestionPrompt(text)) {
+      continue;
+    }
+
+    return text;
+  }
+
+  return "";
+}
+
+function isUsableQuestionPrompt(text: string): boolean {
+  if (!text) {
+    return false;
+  }
+
+  const normalized = normalizeChoiceText(text);
+  if (!normalized) {
+    return false;
+  }
+
+  if (
+    text.length > 180 ||
+    normalized.split(/\s+/).length > 24 ||
+    normalized === "required" ||
+    normalized === "optional"
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 export function getOptionLabelText(field: HTMLInputElement): string {

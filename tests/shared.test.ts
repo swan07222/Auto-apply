@@ -48,6 +48,16 @@ describe("shared automation target logic", () => {
     expect(
       detectSiteFromUrl("https://builtin.com/job/software-engineer/3985663")
     ).toBe("builtin");
+    expect(
+      detectSiteFromUrl(
+        "https://crowdstrike.wd5.myworkdayjobs.com/en-US/crowdstrikecareers/job/example"
+      )
+    ).toBe("other_sites");
+    expect(
+      detectSiteFromUrl(
+        "https://jobs.ashbyhq.com/assured/93705759-398f-4d3b-bed3-436610902632/application"
+      )
+    ).toBe("other_sites");
   });
 
   it("builds remote Monster search targets with the current form-based search URL", () => {
@@ -283,7 +293,7 @@ describe("shared automation target logic", () => {
     expect(firstUrl.searchParams.get("filters.postedDate")).toBeNull();
   });
 
-  it("builds Greenhouse search targets from the current board path using a remote keyword hint", () => {
+  it("keeps Greenhouse board search targets on the public board root", () => {
     const targets = buildSearchTargets(
       "greenhouse",
       "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
@@ -295,11 +305,10 @@ describe("shared automation target logic", () => {
 
     expect(firstUrl.origin).toBe("https://job-boards.greenhouse.io");
     expect(firstUrl.pathname).toBe("/vercel");
-    expect(firstUrl.searchParams.get("keyword")).toBe("site engineer remote");
-    expect(firstUrl.searchParams.get("location")).toBe("Remote");
+    expect(firstUrl.search).toBe("");
   });
 
-  it("normalizes Greenhouse board index URLs before building search targets", () => {
+  it("normalizes Greenhouse board index URLs before building public board targets", () => {
     const targets = buildSearchTargets(
       "greenhouse",
       "https://job-boards.greenhouse.io/vercel/jobs?department=engineering",
@@ -311,11 +320,10 @@ describe("shared automation target logic", () => {
 
     expect(firstUrl.origin).toBe("https://job-boards.greenhouse.io");
     expect(firstUrl.pathname).toBe("/vercel");
-    expect(firstUrl.searchParams.get("keyword")).toBe("site engineer remote");
-    expect(firstUrl.searchParams.get("location")).toBe("Remote");
+    expect(firstUrl.search).toBe("");
   });
 
-  it("uses the candidate country when building Greenhouse search targets", () => {
+  it("does not append browser-breaking query params to public Greenhouse boards", () => {
     const targets = buildSearchTargets(
       "greenhouse",
       "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
@@ -326,22 +334,9 @@ describe("shared automation target logic", () => {
     expect(targets).toHaveLength(1);
     const firstUrl = new URL(targets[0].url);
 
-    expect(firstUrl.searchParams.get("keyword")).toBe("site engineer remote");
-    expect(firstUrl.searchParams.get("location")).toBe("United States");
-  });
-
-  it("normalizes US-style candidate country aliases for Greenhouse search targets", () => {
-    const targets = buildSearchTargets(
-      "greenhouse",
-      "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
-      "site engineer",
-      "USA"
-    );
-
-    expect(targets).toHaveLength(1);
-    const firstUrl = new URL(targets[0].url);
-
-    expect(firstUrl.searchParams.get("location")).toBe("United States");
+    expect(firstUrl.origin).toBe("https://job-boards.greenhouse.io");
+    expect(firstUrl.pathname).toBe("/vercel");
+    expect(firstUrl.search).toBe("");
   });
 
   it("builds Greenhouse keywords with an explicit remote hint only once", () => {
@@ -556,9 +551,9 @@ describe("shared automation target logic", () => {
     expect(firstUrl.searchParams.get("daysSinceUpdated")).toBeNull();
   });
 
-  it("keeps Dice and ZipRecruiter job pages open when the apply flow moves to a new tab", () => {
+  it("keeps Dice job pages open, but lets other job pages close, when the apply flow moves to a new tab", () => {
     expect(shouldKeepManagedJobPageOpen("dice")).toBe(true);
-    expect(shouldKeepManagedJobPageOpen("ziprecruiter")).toBe(true);
+    expect(shouldKeepManagedJobPageOpen("ziprecruiter")).toBe(false);
     expect(shouldKeepManagedJobPageOpen("indeed")).toBe(false);
   });
 
@@ -730,6 +725,35 @@ describe("shared automation target logic", () => {
     expect(urls).toContain(
       "https://www.workatastartup.com/jobs?query=software%20engineer"
     );
+  });
+
+  it("maps Berlin Startup Jobs keywords onto working category pages", () => {
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      startupRegion: "eu" as const,
+      searchKeywords: "software engineer\nmarketing manager",
+      candidate: {
+        ...DEFAULT_SETTINGS.candidate,
+        country: "Germany",
+      },
+    };
+
+    const berlinTargets = buildOtherJobSiteTargets(settings).filter((target) =>
+      target.label.startsWith("Berlin Startup Jobs:")
+    );
+
+    expect(berlinTargets).toEqual([
+      {
+        label: "Berlin Startup Jobs: software engineer",
+        keyword: "software engineer",
+        url: "https://berlinstartupjobs.com/engineering/",
+      },
+      {
+        label: "Berlin Startup Jobs: marketing manager",
+        keyword: "marketing manager",
+        url: "https://berlinstartupjobs.com/marketing/",
+      },
+    ]);
   });
 
   it("dedupes equivalent other-site keyword variants before building search targets", () => {
@@ -1227,6 +1251,24 @@ describe("shared automation target logic", () => {
     `;
 
     expect(hasLikelyApplicationSuccessSignals(document)).toBe(true);
+  });
+
+  it("treats Ashby-style success pages with reCAPTCHA footer copy as submitted instead of verification", () => {
+    window.history.replaceState({}, "", "/company/job/example/application?utm_source=foo");
+    document.title = "Application";
+    document.body.innerHTML = `
+      <main>
+        <div>Success</div>
+        <h1>Your application was successfully submitted.</h1>
+        <p>We'll contact you if there are next steps.</p>
+        <footer>
+          This site is protected by reCAPTCHA and the Google Privacy Policy and Terms of Service apply.
+        </footer>
+      </main>
+    `;
+
+    expect(hasLikelyApplicationSuccessSignals(document)).toBe(true);
+    expect(isProbablyHumanVerificationPage(document)).toBe(false);
   });
 
   it("sanitizes automation settings and stored answers", () => {

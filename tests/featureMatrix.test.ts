@@ -76,7 +76,7 @@ const JOB_BOARD_CASES: Array<{
     assertRemoteTarget: (url) => {
       expect(url.origin).toBe("https://job-boards.greenhouse.io");
       expect(url.pathname).toBe("/vercel");
-      expect(url.searchParams.get("location")).toBe("Remote");
+      expect(url.search).toBe("");
     },
   },
   {

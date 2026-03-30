@@ -27,6 +27,7 @@ const SETTLE_DELAY_MS = 3_500;
 const US_SETTINGS = {
   ...DEFAULT_SETTINGS,
   startupRegion: "us" as const,
+  searchKeywords: "software engineer",
   candidate: {
     ...DEFAULT_SETTINGS.candidate,
     country: "United States",
@@ -36,6 +37,7 @@ const US_SETTINGS = {
 const UK_SETTINGS = {
   ...DEFAULT_SETTINGS,
   startupRegion: "uk" as const,
+  searchKeywords: "software engineer",
   candidate: {
     ...DEFAULT_SETTINGS.candidate,
     country: "United Kingdom",
@@ -45,6 +47,7 @@ const UK_SETTINGS = {
 const EU_SETTINGS = {
   ...DEFAULT_SETTINGS,
   startupRegion: "eu" as const,
+  searchKeywords: "software engineer",
   candidate: {
     ...DEFAULT_SETTINGS.candidate,
     country: "Germany",

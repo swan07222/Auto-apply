@@ -11,6 +11,7 @@ import {
   ResumeAsset,
   SavedAnswer,
   SearchMode,
+  SiteKey,
   applyAutomationSettingsUpdate,
   coerceDatePostedWindowToSupported,
   createAutomationProfile,
@@ -39,9 +40,9 @@ import {
 
 const MAX_RESUME_TEXT_CHARS = 24_000;
 const SUPPORTED_JOB_BOARD_PROMPT =
-  "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In in the active tab to start.";
+  "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or a supported company application page in the active tab to start.";
 const SUPPORTED_JOB_BOARD_MODE_PROMPT =
-  "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In in the active tab to use Job Board mode.";
+  "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or a supported company application page in the active tab to use Job Board mode.";
 const AUTO_SAVE_DELAY_MS = 220;
 
 const startButton = requireElement<HTMLButtonElement>("#start-button");
@@ -57,6 +58,8 @@ const savedAnswerList = requireElement<HTMLElement>("#saved-answer-list");
 const savedAnswerEmptyState = requireElement<HTMLElement>(
   "#saved-answer-empty-state"
 );
+const savedAnswerSearchInput =
+  requireElement<HTMLInputElement>("#saved-answer-search");
 const modePreview = requireElement<HTMLElement>("#mode-preview");
 const profileSelect = requireElement<HTMLSelectElement>("#profile-select");
 const createProfileButton = requireElement<HTMLButtonElement>(
@@ -158,6 +161,7 @@ let settingsWriteQueue: Promise<void> = Promise.resolve();
 let settings = createEmptySettings();
 let preferredDatePostedWindow: DatePostedWindow = settings.datePostedWindow;
 let chromeTabListenersRegistered = false;
+let savedAnswerEntries: SavedAnswerListEntry[] = [];
 const popupDialog = createPopupDialogController({
   root: dialogRoot,
   backdrop: dialogBackdrop,
@@ -176,6 +180,12 @@ const popupDialog = createPopupDialogController({
   cancelButton: dialogCancelButton,
   submitButton: dialogSubmitButton,
 });
+
+type SavedAnswerListEntry = {
+  key: string;
+  answer: SavedAnswer;
+  source: "remembered" | "custom";
+};
 
 void initialize();
 
@@ -236,6 +246,10 @@ savedAnswerList.addEventListener("click", (event) => {
   void (source === "remembered"
     ? removeRememberedAnswer(key)
     : removePreferenceAnswer(key));
+});
+
+savedAnswerSearchInput.addEventListener("input", () => {
+  updateSavedAnswerSearchResults();
 });
 
 searchModeInput.addEventListener("change", () => {
@@ -513,7 +527,8 @@ async function startAutomation(): Promise<void> {
     return;
   }
 
-  if (!isJobBoardSite(activeSite)) {
+  const resolvedActiveSite = await resolveRunnableSiteForTab(activeTabId);
+  if (!resolvedActiveSite) {
     applyStatus(
       createStatus(
         "unsupported",
@@ -527,9 +542,9 @@ async function startAutomation(): Promise<void> {
 
   applyStatus(
     createStatus(
-      activeSite,
+      resolvedActiveSite,
       "running",
-      `Starting on ${getSiteLabel(activeSite)}...`
+      `Starting on ${getSiteLabel(resolvedActiveSite)}...`
     )
   );
 
@@ -542,14 +557,14 @@ async function startAutomation(): Promise<void> {
       tabId: activeTabId,
     });
 
-    if (!response?.ok) {
-      applyStatus(
-        createStatus(
-          activeSite,
-          "error",
-          response?.error ??
-            "The extension could not start on this tab."
-        )
+      if (!response?.ok) {
+        applyStatus(
+          createStatus(
+            resolvedActiveSite,
+            "error",
+            response?.error ??
+              "The extension could not start on this tab."
+          )
       );
       setStartButtonDisabled(false);
       return;
@@ -557,7 +572,7 @@ async function startAutomation(): Promise<void> {
   } catch (error: unknown) {
     applyStatus(
       createStatus(
-        activeSite,
+        resolvedActiveSite,
         "error",
         error instanceof Error
           ? error.message
@@ -628,7 +643,9 @@ async function performRefreshStatus(): Promise<void> {
   await refreshActiveTabContext();
 
   const searchMode = getSelectedSearchMode();
-  let activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
+  let activeJobBoardSite = isRunnableCurrentTabSite(activeSite)
+    ? activeSite
+    : null;
   const hasKeywords = getConfiguredKeywords().length > 0;
   activeSession = null;
   activeRunSummary = null;
@@ -809,7 +826,7 @@ async function performRefreshStatus(): Promise<void> {
       (!activeJobBoardSite && bgSession.phase !== "idle")
     )
   ) {
-    if (!activeJobBoardSite && isJobBoardSite(bgSession.site)) {
+    if (!activeJobBoardSite && isRunnableCurrentTabSite(bgSession.site)) {
       activeSite = bgSession.site;
       activeJobBoardSite = bgSession.site;
       updateSiteNameDisplay();
@@ -845,7 +862,7 @@ async function performRefreshStatus(): Promise<void> {
       (!activeJobBoardSite && contentStatus.site !== "unsupported")
     )
   ) {
-    if (!activeJobBoardSite && isJobBoardSite(contentStatus.site)) {
+    if (!activeJobBoardSite && isRunnableCurrentTabSite(contentStatus.site)) {
       activeSite = contentStatus.site;
       activeJobBoardSite = contentStatus.site;
       updateSiteNameDisplay();
@@ -959,11 +976,11 @@ function updateSiteNameDisplay(): void {
     const sessionSite =
       activeSession?.site && activeSession.site !== "unsupported"
         ? activeSession.site
-        : isJobBoardSite(currentStatusSnapshot.site)
+        : isRunnableCurrentTabSite(currentStatusSnapshot.site)
           ? currentStatusSnapshot.site
           : null;
 
-    siteName.textContent = isJobBoardSite(activeSite)
+    siteName.textContent = isRunnableCurrentTabSite(activeSite)
       ? getSiteLabel(activeSite)
       : sessionSite
         ? getSiteLabel(sessionSite)
@@ -1142,6 +1159,30 @@ function cancelScheduledAutoSave(): void {
     window.clearTimeout(autoSaveTimerId);
     autoSaveTimerId = null;
   }
+}
+
+async function resolveRunnableSiteForTab(tabId: number): Promise<SiteKey | null> {
+  if (isRunnableCurrentTabSite(activeSite)) {
+    return activeSite;
+  }
+
+  if (
+    activeSession?.tabId === tabId &&
+    isRunnableCurrentTabSite(activeSession.site)
+  ) {
+    activeSite = activeSession.site;
+    updateSiteNameDisplay();
+    return activeSession.site;
+  }
+
+  const contentStatus = await getContentStatus(tabId);
+  if (!contentStatus || !isRunnableCurrentTabSite(contentStatus.site)) {
+    return null;
+  }
+
+  activeSite = contentStatus.site;
+  updateSiteNameDisplay();
+  return contentStatus.site;
 }
 
 async function flushPendingAutoSave(): Promise<void> {
@@ -1703,7 +1744,7 @@ function renderSavedAnswers(
   rememberedAnswers: Record<string, SavedAnswer>,
   customAnswers: Record<string, SavedAnswer>
 ): void {
-  const entries = [
+  savedAnswerEntries = [
     ...Object.entries(rememberedAnswers).map(([key, answer]) => ({
       key,
       answer,
@@ -1715,28 +1756,59 @@ function renderSavedAnswers(
       source: "custom" as const,
     })),
   ].sort((left, right) => right.answer.updatedAt - left.answer.updatedAt);
-
-  savedAnswerCount.textContent = String(entries.length);
   clearAnswersButton.disabled = Object.keys(rememberedAnswers).length === 0;
+  savedAnswerSearchInput.disabled = savedAnswerEntries.length === 0;
+  updateSavedAnswerSearchResults();
+}
+
+function updateSavedAnswerSearchResults(): void {
+  const rawQuery = savedAnswerSearchInput.value.replace(/\s+/g, " ").trim();
+  const normalizedQuery = normalizeSavedAnswerSearchQuery(rawQuery);
+  const filteredEntries = savedAnswerEntries.filter((entry) =>
+    !normalizedQuery || getSavedAnswerSearchHaystack(entry).includes(normalizedQuery)
+  );
+
+  savedAnswerCount.textContent =
+    savedAnswerEntries.length === 0
+      ? "0"
+      : normalizedQuery
+        ? `${filteredEntries.length}/${savedAnswerEntries.length}`
+        : String(savedAnswerEntries.length);
+
   renderSavedAnswerList({
     container: savedAnswerList,
     emptyState: savedAnswerEmptyState,
-    entries,
+    entries: filteredEntries,
+    hasSavedAnswers: savedAnswerEntries.length > 0,
+    searchQuery: rawQuery,
   });
+}
+
+function normalizeSavedAnswerSearchQuery(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLocaleLowerCase();
+}
+
+function getSavedAnswerSearchHaystack(entry: SavedAnswerListEntry): string {
+  return normalizeSavedAnswerSearchQuery(
+    [entry.key, entry.answer.question, entry.answer.value].join(" ")
+  );
 }
 
 function renderSavedAnswerList(options: {
   container: HTMLElement;
   emptyState: HTMLElement;
-  entries: Array<{
-    key: string;
-    answer: SavedAnswer;
-    source: "remembered" | "custom";
-  }>;
+  entries: SavedAnswerListEntry[];
+  hasSavedAnswers: boolean;
+  searchQuery: string;
 }): void {
-  const { container, emptyState, entries } = options;
+  const { container, emptyState, entries, hasSavedAnswers, searchQuery } =
+    options;
 
   emptyState.hidden = entries.length > 0;
+  emptyState.textContent =
+    hasSavedAnswers && searchQuery
+      ? `No saved questions or answers match "${truncateText(searchQuery, 44)}".`
+      : "No saved questions or answers yet.";
   container.replaceChildren();
 
   for (const { key, answer, source } of entries) {
@@ -2089,6 +2161,12 @@ function getSelectedSearchMode(): SearchMode {
   return parseSelectedSearchMode(searchModeInput.value);
 }
 
+function isRunnableCurrentTabSite(
+  site: SiteKey | null | "unsupported"
+): site is SiteKey {
+  return isJobBoardSite(site) || site === "other_sites";
+}
+
 function getSelectedDatePostedWindow(): DatePostedWindow {
   const value = datePostedWindowInput.value;
   if (isDatePostedWindow(value)) {
@@ -2299,16 +2377,28 @@ async function findBestActiveTab(): Promise<ActiveContextTab | null> {
     return null;
   }
 
-  // Prefer an active supported job-board tab when multiple candidates exist.
-  const jobBoardTab = candidates.find((tab) => {
+  const primaryWebPageTab = candidates.find((tab) => isWebPageTab(tab));
+  if (primaryWebPageTab?.id !== undefined) {
+    const url = getTabUrl(primaryWebPageTab);
+    if (isRunnableCurrentTabSite(detectSiteFromUrl(url))) {
+      return primaryWebPageTab;
+    }
+
+    const contentStatus = await getContentStatus(primaryWebPageTab.id);
+    if (contentStatus && isRunnableCurrentTabSite(contentStatus.site)) {
+      return primaryWebPageTab;
+    }
+  }
+
+  // Prefer an active supported site when multiple candidates exist.
+  const supportedSiteTab = candidates.find((tab) => {
     const url = getTabUrl(tab);
-    return isWebPageTab(tab) && isJobBoardSite(detectSiteFromUrl(url));
+    return isWebPageTab(tab) && isRunnableCurrentTabSite(detectSiteFromUrl(url));
   });
-  if (jobBoardTab) return jobBoardTab;
+  if (supportedSiteTab) return supportedSiteTab;
 
   // Otherwise prefer any web page
-  const webPageTab = candidates.find((tab) => isWebPageTab(tab));
-  return webPageTab ?? candidates[0] ?? null;
+  return primaryWebPageTab ?? candidates[0] ?? null;
 }
 
 function getTabUrl(tab: ActiveContextTab | null | undefined): string {

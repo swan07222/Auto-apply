@@ -171,6 +171,27 @@ describe("dom helpers", () => {
     expect(clickSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("does not trigger native form submission for non-submit tab buttons inside forms", () => {
+    document.body.innerHTML = `
+      <form id="application-form">
+        <input id="email" type="email" required style="display:none" />
+        <button id="tab-button" type="submit">Application</button>
+      </form>
+    `;
+
+    const form = document.querySelector("#application-form") as HTMLFormElement;
+    const button = document.querySelector("#tab-button") as HTMLButtonElement;
+    const clickSpy = vi.fn();
+    const submitSpy = vi.fn((event: Event) => event.preventDefault());
+    button.addEventListener("click", clickSpy);
+    form.addEventListener("submit", submitSpy);
+
+    performClickAction(button);
+
+    expect(clickSpy).toHaveBeenCalled();
+    expect(submitSpy).not.toHaveBeenCalled();
+  });
+
   it("can skip focus before dispatching a click", () => {
     document.body.innerHTML = `<button id="apply">Apply</button>`;
 

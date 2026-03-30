@@ -49,6 +49,7 @@ import {
   isTextLikeInput,
   matchesDescriptor,
   readFieldAnswerForMemory,
+  scoreChoiceMatch,
   setFieldValue,
   shouldAutofillField,
   shouldOverwriteAutofillValue,
@@ -100,6 +101,7 @@ import {
   collectDeepMatches,
   getActionText,
   getNavigationUrl,
+  isElementVisible,
   isExternalUrl,
   normalizeUrl,
   performClickAction,
@@ -133,6 +135,7 @@ import {
   findMonsterApplyAction,
   findProgressionAction,
   findZipRecruiterApplyAction,
+  getVisibleZipRecruiterApplyModals,
   hasIndeedApplyIframe,
   hasZipRecruiterApplyModal,
   isAlreadyOnApplyPage,
@@ -168,7 +171,9 @@ import { hasPendingResumeUploadSurface } from "./content/resumeStep";
 import {
   findVisibleManualSubmitAction,
   resolveManualSubmitActionElement,
+  resolveReadyManualSubmitActionForFormEvent,
   hasPendingRequiredAutofillFields,
+  isLikelyManualProgressionActionTarget,
   isManualSubmitActionTarget,
   hasVisibleManualSubmitAction,
   isLikelyManualSubmitReviewPage,
@@ -189,6 +194,7 @@ import {
   shouldBlockApplicationTargetProbeFailure,
   shouldKeepTopFrameSessionSyncAlive,
   shouldMirrorControllerBoundSessionInTopFrame,
+  shouldMirrorPendingAutofillSessionInTopFrame,
   shouldPreferMonsterClickContinuation,
   shouldRenderAutomationFeedbackInCurrentFrame,
   shouldRetryAlternateApplyTargets,
@@ -231,10 +237,10 @@ const OVERLAY_DRAG_PADDING = 12;
 const OVERLAY_POSITION_STORAGE_KEY = "remote-job-search-overlay-position";
 const MAX_STAGE_DEPTH = 10;
 const IS_TOP_FRAME = window.top === window;
-const CONTENT_READY_POLL_MS = 150;
-const TOP_FRAME_SESSION_SYNC_POLL_MS = 1_000;
-const TOP_FRAME_SESSION_SYNC_MAX_ATTEMPTS = 180;
-const RESPONSIVE_WAIT_SLICE_MS = 150;
+const CONTENT_READY_POLL_MS = 80;
+const TOP_FRAME_SESSION_SYNC_POLL_MS = 250;
+const TOP_FRAME_SESSION_SYNC_MAX_ATTEMPTS = 360;
+const RESPONSIVE_WAIT_SLICE_MS = 100;
 const EXTENSION_RELOAD_REQUIRED_MESSAGE =
   "The extension was reloaded. Refresh this page and start automation again.";
 
@@ -256,6 +262,7 @@ let currentControllerFrameId: number | undefined;
 let activeRun: Promise<void> | null = null;
 let answerFlushPromise: Promise<void> = Promise.resolve();
 let overlayHideTimerId: number | null = null;
+let manualResumeRequestTimerId: number | null = null;
 let childApplicationTabOpened = false;
 let stageRetryState = createStageRetryState();
 let manualReviewPauseUntil = 0;
@@ -503,6 +510,138 @@ async function waitForLikelyApplicationSurface(site: SiteKey): Promise<boolean> 
   return waitForApplicationSurface(site, applicationSurfaceCollectors);
 }
 
+async function waitForApplyEntrySignals(site: SiteKey): Promise<void> {
+  const delays =
+    site === "indeed" ||
+    site === "dice" ||
+    site === "monster" ||
+    site === "glassdoor"
+      ? [150, 200, 250, 300]
+      : [150, 200];
+
+  for (const delayMs of delays) {
+    const foundConcreteApplicationSurface =
+      hasLikelyApplicationSurface(site) ||
+      hasLikelyApplicationForm() ||
+      hasLikelyApplicationFrame();
+    const onApplyLikeUrl = isAlreadyOnApplyPage(site, window.location.href);
+
+    if (
+      foundConcreteApplicationSurface ||
+      (onApplyLikeUrl && !isPageStillLoadingForAutomation())
+    ) {
+      return;
+    }
+
+    if (isPageStillLoadingForAutomation()) {
+      await sleepWithAutomationChecks(delayMs);
+      continue;
+    }
+
+    await sleepWithAutomationChecks(delayMs);
+  }
+}
+
+async function waitForApplyTransitionSignals(
+  site: SiteKey,
+  previousUrl: string
+): Promise<void> {
+  const delays = [150, 200, 250, 300, 400, 500];
+
+  for (const delayMs of delays) {
+    const urlChanged = window.location.href !== previousUrl;
+    const foundConcreteApplicationSurface =
+      hasLikelyApplicationSurface(site) ||
+      hasLikelyApplicationForm() ||
+      hasLikelyApplicationFrame();
+    const onApplyLikeUrl = isAlreadyOnApplyPage(site, window.location.href);
+
+    if (
+      foundConcreteApplicationSurface ||
+      (onApplyLikeUrl && !isPageStillLoadingForAutomation())
+    ) {
+      return;
+    }
+
+    if (isPageStillLoadingForAutomation()) {
+      await sleepWithAutomationChecks(delayMs);
+      continue;
+    }
+
+    if (urlChanged && document.readyState !== "loading") {
+      return;
+    }
+
+    await sleepWithAutomationChecks(delayMs);
+  }
+}
+
+function isSameDocumentApplySectionNavigation(
+  previousUrl: string,
+  nextUrl: string
+): boolean {
+  if (previousUrl === nextUrl) {
+    return false;
+  }
+
+  const normalizedPreviousUrl = normalizeUrl(previousUrl);
+  const normalizedNextUrl = normalizeUrl(nextUrl);
+  if (
+    !normalizedPreviousUrl ||
+    !normalizedNextUrl ||
+    normalizedPreviousUrl !== normalizedNextUrl
+  ) {
+    return false;
+  }
+
+  try {
+    const previousHash = new URL(previousUrl, window.location.href).hash.toLowerCase();
+    const nextHash = new URL(nextUrl, window.location.href).hash.toLowerCase();
+
+    return (
+      Boolean(nextHash) &&
+      nextHash !== previousHash &&
+      /apply|application|job-application|job_application/.test(nextHash)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isPageStillLoadingForAutomation(): boolean {
+  if (document.readyState === "loading") {
+    return true;
+  }
+
+  return !document.body || document.body.childElementCount === 0;
+}
+
+async function waitForCurrentPageToFinishLoading(
+  stage: AutomationStage,
+  timeoutMs = 20_000
+): Promise<void> {
+  const start = Date.now();
+  let reported = false;
+
+  while (Date.now() - start < timeoutMs) {
+    if (!isPageStillLoadingForAutomation()) {
+      return;
+    }
+
+    if (!reported && status.site !== "unsupported") {
+      reported = true;
+      updateStatus(
+        "running",
+        "Page is still loading. Waiting before continuing...",
+        true,
+        stage
+      );
+    }
+
+    await sleepWithAutomationChecks(150);
+  }
+}
+
 function shouldKeepJobPageOpen(site: SiteKey | "unsupported"): boolean {
   return shouldKeepManagedJobPageOpen(site);
 }
@@ -575,6 +714,7 @@ async function openApplicationTargetInNewTab(
   }
 
   const keepJobPageOpen = shouldKeepJobPageOpen(site);
+  await markCurrentJobReviewedIfManaged();
   updateStatus(
     "completed",
     keepJobPageOpen
@@ -641,6 +781,19 @@ function shouldTreatCurrentPageAsAppliedSafely(site: SiteKey): boolean {
   });
 }
 
+function shouldPreferGreenhouseApplyEntryBeforeAutofill(site: SiteKey): boolean {
+  if (
+    site !== "greenhouse" ||
+    hasLikelyApplicationForm() ||
+    hasLikelyApplicationFrame() ||
+    hasLikelyApplicationSurface(site)
+  ) {
+    return false;
+  }
+
+  return Boolean(findGreenhouseApplyAction() ?? findApplyAction(site, "job-page"));
+}
+
 function getReadyVisibleManualSubmitAction(
   fields: AutofillField[],
   root: ParentNode = document
@@ -655,6 +808,68 @@ function getReadyVisibleManualSubmitAction(
     : null;
 }
 
+function shouldAutoSubmitReadyManualAction(site: SiteKey): boolean {
+  return site === "ziprecruiter";
+}
+
+async function tryAutoSubmitReadyManualAction(
+  site: SiteKey,
+  action: HTMLElement
+): Promise<"completed" | "advanced" | "stalled"> {
+  const waitSteps = [250, 250, 300, 300, 400, 400, 500, 500, 700, 700, 900, 900];
+  const previousUrl = window.location.href;
+
+  updateStatus("running", "Submitting application...", true, currentStage);
+
+  if (shouldScrollElementIntoViewBeforeClick(action)) {
+    action.scrollIntoView({ behavior: "smooth", block: "center" });
+    await sleepWithAutomationChecks(400);
+  }
+
+  performClickAction(action);
+
+  for (const delayMs of waitSteps) {
+    await sleepWithAutomationChecks(delayMs);
+
+    if (shouldBlockManualSubmitSuccessDetection()) {
+      await waitForHumanVerificationToClear();
+    }
+
+    if (
+      hasLikelyApplicationSuccessSignals(document) ||
+      shouldTreatCurrentPageAsAppliedSafely(site)
+    ) {
+      await finalizeSuccessfulApplication("Application submitted successfully.");
+      return "completed";
+    }
+
+    if (window.location.href !== previousUrl) {
+      await waitForLikelyApplicationSurface(site);
+
+      if (
+        hasLikelyApplicationSuccessSignals(document) ||
+        shouldTreatCurrentPageAsAppliedSafely(site)
+      ) {
+        await finalizeSuccessfulApplication("Application submitted successfully.");
+        return "completed";
+      }
+
+      return "advanced";
+    }
+
+    if (
+      !hasVisibleManualSubmitAction() &&
+      (hasLikelyApplicationSurface(site) ||
+        hasLikelyApplicationForm() ||
+        hasLikelyApplicationFrame())
+    ) {
+      return "advanced";
+    }
+  }
+
+  return "stalled";
+}
+
 function resolveReadyManualSubmitActionFromEvent(
   event: Event,
   fields: AutofillField[]
@@ -664,18 +879,11 @@ function resolveReadyManualSubmitActionFromEvent(
       event instanceof SubmitEvent && event.submitter instanceof HTMLElement
         ? event.submitter
         : null;
-
-    const submitCandidate =
-      submitter && resolveManualSubmitActionElement(submitter)
-        ? submitter
-        : getReadyVisibleManualSubmitAction(fields, event.target);
-    if (!submitCandidate) {
-      return null;
-    }
-
-    return shouldTreatManualSubmitActionAsReady(submitCandidate, fields)
-      ? submitCandidate
-      : null;
+    return resolveReadyManualSubmitActionForFormEvent(
+      event.target,
+      submitter,
+      fields
+    );
   }
 
   const actionElement = resolveManualSubmitActionElement(event.target);
@@ -697,6 +905,10 @@ function hasConfirmedManualSubmitSuccess(site: SiteKey): boolean {
     return true;
   }
 
+  if (shouldTreatCurrentPageAsAppliedSafely(site)) {
+    return true;
+  }
+
   if (!manualSubmitRequested) {
     return false;
   }
@@ -705,7 +917,7 @@ function hasConfirmedManualSubmitSuccess(site: SiteKey): boolean {
     return false;
   }
 
-  return shouldTreatCurrentPageAsAppliedSafely(site);
+  return false;
 }
 
 async function waitForManualSubmitOutcome(
@@ -736,7 +948,7 @@ async function waitForManualSubmitOutcome(
       updateStatus("running", nextMessage, true, currentStage);
     }
 
-    await sleepWithAutomationChecks(manualSubmitRequested ? 900 : 250);
+    await sleepWithAutomationChecks(manualSubmitRequested ? 150 : 200);
   }
 }
 
@@ -819,6 +1031,7 @@ async function navigateToApplicationTarget(
     return false;
   }
 
+  await markCurrentJobReviewedIfManaged();
   navigateCurrentTab(url);
   return true;
 }
@@ -1281,6 +1494,17 @@ async function requestAutomationResumeFromPage(): Promise<void> {
   }
 }
 
+function scheduleImmediateManualResume(): void {
+  if (manualResumeRequestTimerId !== null) {
+    window.clearTimeout(manualResumeRequestTimerId);
+  }
+
+  manualResumeRequestTimerId = window.setTimeout(() => {
+    manualResumeRequestTimerId = null;
+    void requestAutomationResumeFromPage();
+  }, 40);
+}
+
 async function readCurrentRunSummary(): Promise<AutomationRunSummary | null> {
   try {
     const response = await sendRuntimeMessage<{
@@ -1378,7 +1602,16 @@ chrome.runtime.onMessage.addListener(
         if (!shouldHandleAutomationInCurrentFrame(message.session, detectedSite)) {
           if (
             IS_TOP_FRAME &&
-            shouldMirrorControllerBoundSessionInTopFrame(message.session, IS_TOP_FRAME)
+            (
+              shouldMirrorControllerBoundSessionInTopFrame(
+                message.session,
+                IS_TOP_FRAME
+              ) ||
+              shouldMirrorPendingAutofillSessionInTopFrame(
+                message.session,
+                IS_TOP_FRAME
+              )
+            )
           ) {
             applyOverlaySessionSnapshot({
               ...message.session,
@@ -1466,6 +1699,7 @@ function initializeEventListeners(): void {
   document.addEventListener("focusout", handlePotentialAnswerMemory, true);
   document.addEventListener("click", handlePotentialChoiceAnswerMemory, true);
   document.addEventListener("click", handlePotentialManualReviewPause, true);
+  document.addEventListener("click", handlePotentialManualProgression, true);
   document.addEventListener("click", handlePotentialManualSubmit, true);
   document.addEventListener("submit", handlePotentialManualSubmit, true);
   window.addEventListener("pagehide", flushPendingAnswersOnPageHide);
@@ -1518,6 +1752,7 @@ async function resumeAutomationIfNeeded(): Promise<void> {
             hasLikelyApplicationPageContent,
             hasLikelyApplyContinuationAction: () =>
               hasLikelyApplyContinuationAction(detectedSite),
+            isCurrentPageAppliedJob,
             isLikelyApplyUrl,
             isTopFrame: IS_TOP_FRAME,
             resumeFileInputCount: collectResumeFileInputs().length,
@@ -1538,7 +1773,10 @@ async function resumeAutomationIfNeeded(): Promise<void> {
       if (!shouldHandleAutomationInCurrentFrame(s, detectedSite)) {
         if (
           IS_TOP_FRAME &&
-          shouldMirrorControllerBoundSessionInTopFrame(s, IS_TOP_FRAME)
+          (
+            shouldMirrorControllerBoundSessionInTopFrame(s, IS_TOP_FRAME) ||
+            shouldMirrorPendingAutofillSessionInTopFrame(s, IS_TOP_FRAME)
+          )
         ) {
           applyOverlaySessionSnapshot({
             ...s,
@@ -1613,8 +1851,7 @@ async function resumeAutomationIfNeeded(): Promise<void> {
       }
 
       if (
-        s.stage === "autofill-form" &&
-        typeof s.controllerFrameId !== "number" &&
+        shouldKeepTopFrameSessionSyncAlive(s, IS_TOP_FRAME) &&
         attempt < maxAttempts - 1
       ) {
         await sleepWithAutomationChecks(CONTENT_READY_POLL_MS);
@@ -2076,7 +2313,9 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   }
 
   await waitForAutomationResumeIfPaused();
+  await waitForCurrentPageToFinishLoading("open-apply");
   const urlAtStart = window.location.href;
+  await markCurrentJobReviewedIfManaged();
 
   if (
     shouldTreatCurrentPageAsAppliedSafely(site)
@@ -2127,8 +2366,10 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   }
 
   if (
-    isAlreadyOnApplyPage(site, window.location.href) ||
-    hasLikelyApplicationForm()
+    (isAlreadyOnApplyPage(site, window.location.href) &&
+      !shouldPreferGreenhouseApplyEntryBeforeAutofill(site)) ||
+    hasLikelyApplicationForm() ||
+    hasLikelyApplicationSurface(site)
   ) {
     currentStage = "autofill-form";
     updateStatus(
@@ -2156,15 +2397,8 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     isProbablyRateLimitPage,
   });
 
-  // Dice apply surfaces may appear after their custom elements finish booting.
-  await sleepWithAutomationChecks(
-    site === "indeed" ||
-      site === "dice" ||
-      site === "monster" ||
-      site === "glassdoor"
-      ? 4000
-      : 2500
-  );
+  // Give dynamic apply widgets a brief chance to mount without blocking for seconds.
+  await waitForApplyEntrySignals(site);
   await waitForAutomationResumeIfPaused();
   throwIfRateLimited(site, {
     detectBrokenPageReason,
@@ -2218,23 +2452,95 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       await waitForAutomationResumeIfPaused();
 
       // Check both direct URL comparison and MutationObserver detection
-      const hasNavigated = window.location.href !== urlAtStart || navigationDetected;
+      const currentUrl = window.location.href;
+      const hasNavigated = currentUrl !== urlAtStart || navigationDetected;
+      const movedToInlineApplySection = isSameDocumentApplySectionNavigation(
+        urlAtStart,
+        currentUrl
+      );
 
-    if (hasNavigated) {
-      cleanupObserver();
-      await sleepWithAutomationChecks(2500);
-      await waitForHumanVerificationToClear();
-      throwIfRateLimited(site, {
-        detectBrokenPageReason,
-        document,
-        isProbablyRateLimitPage,
-      });
+      if (hasNavigated) {
+        cleanupObserver();
+        await waitForApplyTransitionSignals(site, urlAtStart);
+        await waitForHumanVerificationToClear();
+        throwIfRateLimited(site, {
+          detectBrokenPageReason,
+          document,
+          isProbablyRateLimitPage,
+        });
 
-      if (hasLikelyApplicationForm() || hasLikelyApplicationSurface(site)) {
+        if (movedToInlineApplySection) {
+          await waitForLikelyApplicationSurface(site);
+        }
+
+        if (hasLikelyApplicationForm() || hasLikelyApplicationSurface(site)) {
+          currentStage = "autofill-form";
+          updateStatus(
+            "running",
+            "Application form found after navigation. Autofilling...",
+            true,
+            "autofill-form"
+          );
+          await waitForLikelyApplicationSurface(site);
+          await runAutofillStage(site);
+          return;
+        }
+
+        updateStatus(
+          "running",
+          movedToInlineApplySection
+            ? "Moved to the application section. Looking for the form..."
+            : "Navigated to new page. Looking for apply button...",
+          true,
+          "open-apply"
+        );
+        await runOpenApplyStage(site);
+        return;
+      }
+
+      // Prefer site-owned apply finders before falling back to generic heuristics.
+      if (site === "monster") {
+        action = findMonsterApplyAction();
+        if (action) break;
+      }
+
+      if (site === "greenhouse") {
+        action = findGreenhouseApplyAction() ?? findApplyAction(site, "job-page");
+        if (action) break;
+      }
+
+      if (site === "ziprecruiter") {
+        action = findZipRecruiterApplyAction();
+        if (action) break;
+      }
+
+      if (site === "glassdoor") {
+        action = findGlassdoorApplyAction();
+        if (action) break;
+      }
+
+      // Prefer Dice's inline start-apply route or dedicated button finder
+      // before falling back to the generic scorer.
+      if (site === "dice") {
+        action = findDiceApplyAction() ?? findApplyAction(site, "job-page");
+        if (action) break;
+      }
+
+      if (site !== "dice" && site !== "greenhouse") {
+        action = findApplyAction(site, "job-page");
+        if (action) break;
+      }
+
+      if (site !== "ziprecruiter") {
+        action = findCompanySiteAction();
+        if (action) break;
+      }
+
+      if (hasLikelyApplicationForm()) {
         currentStage = "autofill-form";
         updateStatus(
           "running",
-          "Application form found after navigation. Autofilling...",
+          "Application form found. Autofilling...",
           true,
           "autofill-form"
         );
@@ -2243,98 +2549,37 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
         return;
       }
 
-      updateStatus(
-        "running",
-        "Navigated to new page. Looking for apply button...",
-        true,
-        "open-apply"
-      );
-      await runOpenApplyStage(site);
-      return;
-    }
-
-    // Prefer site-owned apply finders before falling back to generic heuristics.
-    if (site === "monster") {
-      action = findMonsterApplyAction();
-      if (action) break;
-    }
-
-    if (site === "greenhouse") {
-      action = findGreenhouseApplyAction() ?? findApplyAction(site, "job-page");
-      if (action) break;
-    }
-
-    if (site === "ziprecruiter") {
-      action = findZipRecruiterApplyAction();
-      if (action) break;
-    }
-
-    if (site === "glassdoor") {
-      action = findGlassdoorApplyAction();
-      if (action) break;
-    }
-
-    // Prefer Dice's inline start-apply route or dedicated button finder
-    // before falling back to the generic scorer.
-    if (site === "dice") {
-      action = findDiceApplyAction() ?? findApplyAction(site, "job-page");
-      if (action) break;
-    }
-
-    if (site !== "dice" && site !== "greenhouse") {
-      action = findApplyAction(site, "job-page");
-      if (action) break;
-    }
-
-    if (site !== "ziprecruiter") {
-      action = findCompanySiteAction();
-      if (action) break;
-    }
-
-    if (hasLikelyApplicationForm()) {
-      currentStage = "autofill-form";
-      updateStatus(
-        "running",
-        "Application form found. Autofilling...",
-        true,
-        "autofill-form"
-      );
-      await waitForLikelyApplicationSurface(site);
-      await runAutofillStage(site);
-      return;
-    }
-
-    if (!shouldAvoidApplyScroll(site)) {
-      if (attempt < SCROLL_POSITIONS.length) {
-        const pos = SCROLL_POSITIONS[attempt];
-        switch (pos) {
-          case SCROLL_HALF_PAGE:
-            window.scrollTo({
-              top: document.body.scrollHeight / 2,
-              behavior: "smooth",
-            });
-            break;
-          case SCROLL_RESET:
-            window.scrollTo({ top: 0, behavior: "smooth" });
-            break;
-          case SCROLL_BOTTOM:
-            window.scrollTo({
-              top: document.body.scrollHeight,
-              behavior: "smooth",
-            });
-            break;
-          default:
-            window.scrollTo({ top: pos, behavior: "smooth" });
+      if (!shouldAvoidApplyScroll(site)) {
+        if (attempt < SCROLL_POSITIONS.length) {
+          const pos = SCROLL_POSITIONS[attempt];
+          switch (pos) {
+            case SCROLL_HALF_PAGE:
+              window.scrollTo({
+                top: document.body.scrollHeight / 2,
+                behavior: "smooth",
+              });
+              break;
+            case SCROLL_RESET:
+              window.scrollTo({ top: 0, behavior: "smooth" });
+              break;
+            case SCROLL_BOTTOM:
+              window.scrollTo({
+                top: document.body.scrollHeight,
+                behavior: "smooth",
+              });
+              break;
+            default:
+              window.scrollTo({ top: pos, behavior: "smooth" });
+          }
+        } else if (attempt % 4 === 0) {
+          window.scrollTo({
+            top: document.body.scrollHeight * Math.random(),
+            behavior: "smooth",
+          });
         }
-      } else if (attempt % 4 === 0) {
-        window.scrollTo({
-          top: document.body.scrollHeight * Math.random(),
-          behavior: "smooth",
-        });
       }
-    }
 
-    await sleepWithAutomationChecks(700);
+      await sleepWithAutomationChecks(700);
     }
   } finally {
     // Disconnect the observer if nothing navigated before timeout.
@@ -2366,7 +2611,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
   }
 
   await waitForAutomationResumeIfPaused();
-  currentStage = "autofill-form";
+  currentStage = "open-apply";
 
   if (action.type === "navigate") {
     if (shouldKeepJobPageOpen(site)) {
@@ -2394,7 +2639,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     "running",
     `Clicking ${action.description}...`,
     true,
-    "autofill-form"
+    "open-apply"
   );
 
   if (
@@ -2516,7 +2761,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     if (childApplicationTabOpened) return;
 
     if (window.location.href !== urlBeforeClick) {
-      await sleepWithAutomationChecks(2500);
+      await waitForApplyTransitionSignals(site, urlBeforeClick);
       await waitForHumanVerificationToClear();
 
       if (hasLikelyApplicationSurface(site)) {
@@ -2553,7 +2798,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
         true,
         "autofill-form"
       );
-      await sleepWithAutomationChecks(1500);
+      await waitForApplyTransitionSignals(site, urlBeforeClick);
       await runAutofillStage(site);
       return;
     }
@@ -2630,6 +2875,11 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     return;
   }
 
+  if (site === "greenhouse" && (await waitForLikelyApplicationSurface(site))) {
+    await runAutofillStage(site);
+    return;
+  }
+
   if (childApplicationTabOpened) return;
 
   let retryAction: ApplyAction | null = null;
@@ -2661,7 +2911,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
       "running",
       `Retrying: clicking ${retryAction.description}...`,
       true,
-      "autofill-form"
+      "open-apply"
     );
     if (
       !shouldAvoidApplyScroll(site) &&
@@ -2676,7 +2926,7 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
     performClickAction(retryAction.element, {
       skipFocus: skipApplyClickFocus,
     });
-    await sleepWithAutomationChecks(3000);
+    await waitForApplyTransitionSignals(site, urlBeforeClick);
 
     if (
       window.location.href !== urlBeforeClick ||
@@ -2793,6 +3043,8 @@ async function runOpenApplyStage(site: SiteKey): Promise<void> {
 async function runAutofillStage(site: SiteKey): Promise<void> {
   if (childApplicationTabOpened) return;
   await waitForAutomationResumeIfPaused();
+  await waitForCurrentPageToFinishLoading("autofill-form");
+  await markCurrentJobReviewedIfManaged();
 
   if (enterStageRetryScope("autofill-form") > MAX_STAGE_DEPTH) {
     updateStatus(
@@ -2808,18 +3060,19 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
   if (
     shouldTreatCurrentPageAsAppliedSafely(site)
   ) {
-    if (manualSubmitRequested) {
-      await finalizeSuccessfulApplication("Application submitted successfully.");
-    } else {
-      updateStatus(
-        "completed",
-        "Skipped - already applied.",
-        false,
-        "autofill-form",
-        "released"
-      );
-      await closeCurrentTab();
-    }
+    await finalizeSuccessfulApplication("Application submitted successfully.");
+    return;
+  }
+
+  if (shouldPreferGreenhouseApplyEntryBeforeAutofill(site)) {
+    currentStage = "open-apply";
+    updateStatus(
+      "running",
+      "Greenhouse still needs its Apply button before the form opens. Continuing...",
+      true,
+      "open-apply"
+    );
+    await runOpenApplyStage(site);
     return;
   }
 
@@ -2852,8 +3105,25 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     document,
     isProbablyRateLimitPage,
   });
-  await waitForLikelyApplicationSurface(site);
+  const foundLikelyApplicationSurface =
+    await waitForLikelyApplicationSurface(site);
   await waitForAutomationResumeIfPaused();
+
+  if (
+    site === "greenhouse" &&
+    !foundLikelyApplicationSurface &&
+    shouldPreferGreenhouseApplyEntryBeforeAutofill(site)
+  ) {
+    currentStage = "open-apply";
+    updateStatus(
+      "running",
+      "Greenhouse form is still closed on the job page. Reopening the Apply step...",
+      true,
+      "open-apply"
+    );
+    await runOpenApplyStage(site);
+    return;
+  }
 
   const standaloneFrameUrl = findStandaloneApplicationFrameUrl();
   if (standaloneFrameUrl) {
@@ -2930,6 +3200,26 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       continue;
     }
 
+    const readyManualSubmitAction = getReadyVisibleManualSubmitAction(
+      currentFields
+    );
+    if (
+      readyManualSubmitAction &&
+      shouldAutoSubmitReadyManualAction(site)
+    ) {
+      noProgressCount = 0;
+      const submitResult = await tryAutoSubmitReadyManualAction(
+        site,
+        readyManualSubmitAction
+      );
+      if (submitResult === "completed") {
+        return;
+      }
+      if (submitResult === "advanced") {
+        continue;
+      }
+    }
+
     const onManualSubmitReviewPage =
       hasVisibleManualSubmitAction() &&
       isLikelyManualSubmitReviewPage(document);
@@ -2951,7 +3241,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       continue;
     }
 
-    if (getReadyVisibleManualSubmitAction(currentFields)) {
+    if (readyManualSubmitAction) {
       noProgressCount = 0;
       await waitForManualSubmitOutcome(
         site,
@@ -3010,19 +3300,6 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
         continue;
       }
       return;
-    }
-
-    if (site === "ziprecruiter" && hasZipRecruiterApplyModal()) {
-      noProgressCount += 1;
-      if (noProgressCount >= 4) {
-        noProgressCount = 0;
-        await pauseAutomationAndWait(
-          "ZipRecruiter application opened. Review it, then press Resume when you are ready."
-        );
-      } else {
-        await sleepWithAutomationChecks(1_200);
-      }
-      continue;
     }
 
     const followUp = findApplyAction(site, "follow-up");
@@ -3158,6 +3435,10 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     }
 
     noProgressCount += 1;
+    if (site === "ziprecruiter" && hasZipRecruiterApplyModal()) {
+      await sleepWithAutomationChecks(noProgressCount >= 3 ? 1_600 : 1_000);
+      continue;
+    }
     if (noProgressCount >= 4) break;
 
     await sleepWithAutomationChecks(1200);
@@ -3233,6 +3514,11 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       "Waiting for your submit to continue...",
       "Submit detected. Waiting for confirmation page..."
     );
+    return;
+  }
+
+  if (shouldTreatCurrentPageAsAppliedSafely(site)) {
+    await finalizeSuccessfulApplication("Application submitted successfully.");
     return;
   }
 
@@ -3316,15 +3602,126 @@ async function waitForHumanVerificationToClear(): Promise<void> {
 // ─── AUTOFILL HELPERS ────────────────────────────────────────────────────────
 
 function collectAutofillFields(): AutofillField[] {
-  return collectDeepMatches<AutofillField>(
-    "input, textarea, select"
-  );
+  const currentSite = detectSiteFromUrl(window.location.href);
+  if (currentSite === "ziprecruiter") {
+    const scopedFields = collectZipRecruiterAutofillMatches<AutofillField>(
+      "input, textarea, select"
+    );
+    if (scopedFields.length > 0) {
+      return scopedFields;
+    }
+  }
+
+  return collectDeepMatches<AutofillField>("input, textarea, select");
 }
 
 function collectResumeFileInputs(): HTMLInputElement[] {
-  return collectDeepMatches<HTMLInputElement>(
-    "input[type='file']"
+  const currentSite = detectSiteFromUrl(window.location.href);
+  if (currentSite === "ziprecruiter") {
+    const scopedInputs = collectZipRecruiterAutofillMatches<HTMLInputElement>(
+      "input[type='file']"
+    );
+    if (scopedInputs.length > 0) {
+      return scopedInputs;
+    }
+  }
+
+  return collectDeepMatches<HTMLInputElement>("input[type='file']");
+}
+
+function collectZipRecruiterAutofillMatches<T extends HTMLElement>(
+  selector: string
+): T[] {
+  const matches: T[] = [];
+  const seen = new Set<T>();
+  const roots = collectZipRecruiterAutofillRoots();
+
+  for (const root of roots) {
+    let scopedMatches: T[];
+    try {
+      scopedMatches = Array.from(root.querySelectorAll<T>(selector));
+    } catch {
+      continue;
+    }
+
+    for (const match of scopedMatches) {
+      if (seen.has(match)) {
+        continue;
+      }
+
+      seen.add(match);
+      matches.push(match);
+    }
+  }
+
+  return matches;
+}
+
+function collectZipRecruiterAutofillRoots(): HTMLElement[] {
+  const modalRoots = getVisibleZipRecruiterApplyModals();
+  if (modalRoots.length > 0) {
+    return modalRoots;
+  }
+
+  const candidateRoots = collectDeepMatches<HTMLElement>(
+    [
+      "form",
+      "[data-testid*='apply' i]",
+      "[data-testid*='application' i]",
+      "[data-qa*='apply' i]",
+      "[data-qa*='application' i]",
+      "[class*='application']",
+      "[class*='Application']",
+      "[class*='candidate']",
+      "[class*='resume']",
+      "[class*='upload']",
+      "[role='main']",
+      "main",
+      "article",
+    ].join(", ")
   );
+  const scoredRoots: Array<{
+    root: HTMLElement;
+    score: number;
+  }> = [];
+
+  for (const root of candidateRoots) {
+    if (!isElementVisible(root) || root.closest("header, nav, footer, aside")) {
+      continue;
+    }
+
+    const relevantFields = Array.from(
+      root.querySelectorAll<AutofillField>("input, textarea, select")
+    ).filter((field) => shouldAutofillField(field, true, true));
+    const relevantFileInputs = Array.from(
+      root.querySelectorAll<HTMLInputElement>("input[type='file']")
+    ).filter((input) => shouldAutofillField(input, true, true));
+    const text = cleanText(root.innerText || root.textContent || "")
+      .toLowerCase()
+      .slice(0, 1600);
+
+    let score = 0;
+    if (root.matches("form")) score += 24;
+    if (relevantFields.length >= 2) score += Math.min(54, relevantFields.length * 12);
+    if (relevantFileInputs.length > 0) score += 28;
+    if (
+      /\b(application|apply|resume|cover letter|work authorization|experience|education)\b/.test(
+        text
+      )
+    ) {
+      score += 24;
+    }
+    if (root.matches("[role='main'], main, article")) score += 10;
+
+    if (score >= 36) {
+      scoredRoots.push({ root, score });
+    }
+  }
+
+  return scoredRoots
+    .sort((left, right) => right.score - left.score)
+    .map((entry) => entry.root)
+    .slice(0, 4);
 }
 
 async function autofillVisibleApplication(
@@ -3361,7 +3758,11 @@ async function autofillVisibleApplication(
     const answer = getAnswerForField(field, settings);
     if (
       !answer ||
-      !applyAnswerToField(field, answer.value, answer.allowOverwrite ?? false)
+      !(await applyAnswerToFieldWithChoiceSupport(
+        field,
+        answer.value,
+        answer.allowOverwrite ?? false
+      ))
     )
       continue;
 
@@ -3797,6 +4198,7 @@ function deriveProfileAnswer(
 ): string | null {
   const p = settings.candidate;
   const d = getFieldDescriptor(field, question);
+  const locationAnswer = formatCandidateLocationAnswer(p, field);
   const parts = p.fullName
     .trim()
     .split(/\s+/)
@@ -3875,6 +4277,18 @@ function deriveProfileAnswer(
     return p.country || null;
   if (
     matchesDescriptor(d, [
+      "location",
+      "current location",
+      "your location",
+      "where are you located",
+      "where do you live",
+      "currently based",
+      "based in",
+    ])
+  )
+    return locationAnswer;
+  if (
+    matchesDescriptor(d, [
       "current company",
       "current employer",
       "employer",
@@ -3941,6 +4355,34 @@ function deriveProfileAnswer(
   return null;
 }
 
+function formatCandidateLocationAnswer(
+  candidate: AutomationSettings["candidate"],
+  field: AutofillField
+): string | null {
+  const combinedLocation = [candidate.city, candidate.state]
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(", ");
+
+  if (!(field instanceof HTMLSelectElement)) {
+    return combinedLocation || candidate.country || candidate.city || candidate.state || null;
+  }
+
+  return candidate.city || candidate.state || candidate.country || combinedLocation || null;
+}
+
+async function applyAnswerToFieldWithChoiceSupport(
+  field: AutofillField,
+  answer: string,
+  allowOverwrite = false
+): Promise<boolean> {
+  if (isAutocompleteChoiceInput(field)) {
+    return applyAnswerToAutocompleteChoiceField(field, answer, allowOverwrite);
+  }
+
+  return applyAnswerToField(field, answer, allowOverwrite);
+}
+
 function applyAnswerToField(
   field: AutofillField,
   answer: string,
@@ -3987,6 +4429,182 @@ function applyAnswerToField(
     return true;
   }
   return false;
+}
+
+function isAutocompleteChoiceInput(
+  field: AutofillField
+): field is HTMLInputElement {
+  if (!(field instanceof HTMLInputElement) || !isTextLikeInput(field)) {
+    return false;
+  }
+
+  const role = (field.getAttribute("role") || "").toLowerCase().trim();
+  const ariaAutocomplete = (
+    field.getAttribute("aria-autocomplete") || ""
+  ).toLowerCase().trim();
+  const ariaHaspopup = (field.getAttribute("aria-haspopup") || "")
+    .toLowerCase()
+    .trim();
+  const attrs = cleanText(
+    [
+      field.className,
+      field.id,
+      field.getAttribute("name"),
+      field.getAttribute("data-testid"),
+      field.getAttribute("data-test"),
+    ]
+      .filter(Boolean)
+      .join(" ")
+  ).toLowerCase();
+
+  return (
+    role === "combobox" ||
+    ariaAutocomplete === "list" ||
+    ariaHaspopup === "listbox" ||
+    attrs.includes("select__input") ||
+    attrs.includes("react select") ||
+    attrs.includes("combobox")
+  );
+}
+
+async function applyAnswerToAutocompleteChoiceField(
+  field: HTMLInputElement,
+  answer: string,
+  allowOverwrite = false
+): Promise<boolean> {
+  if (!answer.trim()) {
+    return false;
+  }
+
+  if (
+    field.value.trim() &&
+    (!allowOverwrite || !shouldOverwriteAutofillValue(field, answer))
+  ) {
+    return false;
+  }
+
+  try {
+    field.focus();
+    field.select();
+  } catch {
+    // Ignore focus/select failures for virtualized controls.
+  }
+
+  setTextControlValue(field, "");
+  await sleepWithAutomationChecks(60);
+  setTextControlValue(field, answer);
+  await sleepWithAutomationChecks(120);
+
+  let option = findBestAutocompleteChoiceOption(field, answer);
+  if (!option) {
+    dispatchMyGreenhouseKeyboardEvent(field, "keydown", "ArrowDown");
+    dispatchMyGreenhouseKeyboardEvent(field, "keyup", "ArrowDown");
+    await sleepWithAutomationChecks(120);
+    option = findBestAutocompleteChoiceOption(field, answer);
+  }
+
+  if (option) {
+    performClickAction(option);
+    await sleepWithAutomationChecks(180);
+    return true;
+  }
+
+  dispatchMyGreenhouseKeyboardEvent(field, "keydown", "Enter");
+  dispatchMyGreenhouseKeyboardEvent(field, "keyup", "Enter");
+  await sleepWithAutomationChecks(120);
+  return true;
+}
+
+function findBestAutocompleteChoiceOption(
+  field: HTMLInputElement,
+  answer: string
+): HTMLElement | null {
+  const scopes = new Set<ParentNode>();
+  scopes.add(document);
+
+  for (const id of [
+    field.getAttribute("aria-controls"),
+    field.getAttribute("aria-owns"),
+  ]) {
+    const trimmed = id?.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    try {
+      const selector = `#${cssEscape(trimmed)}`;
+      const controlled = document.querySelector<HTMLElement>(selector);
+      if (controlled) {
+        scopes.add(controlled);
+      }
+    } catch {
+      // Ignore invalid ids and continue with broader scopes.
+    }
+  }
+
+  const localContainer = field.closest(
+    "[role='group'], [role='listbox'], [role='dialog'], .field, .form-field, .question, .application-question, [class*='field'], [class*='question']"
+  );
+  if (localContainer) {
+    scopes.add(localContainer);
+  }
+
+  let best:
+    | {
+        element: HTMLElement;
+        score: number;
+      }
+    | null = null;
+
+  for (const scope of scopes) {
+    let candidates: HTMLElement[] = [];
+    try {
+      candidates = Array.from(
+        scope.querySelectorAll<HTMLElement>(
+          "[role='option'], [role='listbox'] *, [class*='option'], [id*='option' i]"
+        )
+      );
+    } catch {
+      continue;
+    }
+
+    for (const candidate of candidates) {
+      if (
+        candidate === field ||
+        candidate.contains(field) ||
+        !isElementVisible(candidate)
+      ) {
+        continue;
+      }
+
+      const text = cleanText(
+        [
+          candidate.innerText || candidate.textContent || "",
+          candidate.getAttribute("aria-label"),
+          candidate.getAttribute("title"),
+        ]
+          .filter(Boolean)
+          .join(" ")
+      );
+      if (!text) {
+        continue;
+      }
+
+      const score = scoreChoiceMatch(answer, text);
+      if (score <= 0) {
+        continue;
+      }
+
+      if (!best || score > best.score) {
+        best = {
+          element: candidate,
+          score,
+        };
+      }
+    }
+  }
+
+  return best?.element ?? null;
 }
 
 async function spawnTabs(
@@ -4138,6 +4756,7 @@ function shouldPreferInFrameProgressionClick(url: string): boolean {
       hasLikelyApplicationPageContent,
       hasLikelyApplyContinuationAction: () =>
         hasLikelyApplyContinuationAction(status.site),
+      isCurrentPageAppliedJob,
       isLikelyApplyUrl,
       isTopFrame: IS_TOP_FRAME,
       resumeFileInputCount: collectResumeFileInputs().length,
@@ -4640,7 +5259,30 @@ function createInitialStatus(): AutomationStatus {
 
 function ensureOverlay(): void {
   if (!shouldRenderAutomationFeedbackHere()) return;
-  if (overlay.host || !document.documentElement) return;
+  if (!document.documentElement) return;
+  if (overlay.host) {
+    if (!overlay.host.isConnected) {
+      try {
+        document.documentElement.append(overlay.host);
+      } catch {
+        overlay.host = null;
+        overlay.panel = null;
+        overlay.dragHandle = null;
+        overlay.title = null;
+        overlay.meta = null;
+        overlay.spinner = null;
+        overlay.count = null;
+        overlay.text = null;
+        overlay.actionButton = null;
+        overlay.stopButton = null;
+      }
+    }
+
+    if (overlay.host?.isConnected) {
+      return;
+    }
+  }
+
   const host = document.createElement("div");
   host.id = "remote-job-search-overlay-host";
   const shadow = host.attachShadow({ mode: "open" });
@@ -4846,6 +5488,21 @@ function shouldRenderAutomationFeedbackHere(): boolean {
   );
 }
 
+function getAutomationCelebrationDocument(): Document | null {
+  if (!IS_TOP_FRAME) {
+    try {
+      const topDocument = window.top?.document;
+      if (topDocument?.body) {
+        return topDocument;
+      }
+    } catch {
+      // Cross-origin frames cannot render in the top document.
+    }
+  }
+
+  return document.body ? document : null;
+}
+
 function renderOverlay(): void {
   if (overlayHideTimerId !== null) {
     window.clearTimeout(overlayHideTimerId);
@@ -4982,17 +5639,18 @@ function captureVisibleRememberableAnswers(): void {
 }
 
 async function showSuccessFireworks(): Promise<void> {
-  if (!shouldRenderAutomationFeedbackHere() || !document.body) {
+  const hostDocument = getAutomationCelebrationDocument();
+  if (!hostDocument?.body) {
     return;
   }
 
-  const container = document.createElement("div");
+  const container = hostDocument.createElement("div");
   container.setAttribute(
     "style",
     "position:fixed;inset:0;pointer-events:none;z-index:2147483646;overflow:hidden"
   );
 
-  const style = document.createElement("style");
+  const style = hostDocument.createElement("style");
   style.textContent = `
     @keyframes rjs-firework-burst {
       0% { opacity: 0; transform: translate(-50%, -50%) rotate(var(--rotation, 0deg)) translate(0, 0) scale(.2); }
@@ -5014,56 +5672,58 @@ async function showSuccessFireworks(): Promise<void> {
 
   const palette = [12, 24, 40, 54, 188, 204, 332];
   const burstOrigins = [
-    { left: 18, top: 30, delay: 0 },
-    { left: 34, top: 18, delay: 90 },
-    { left: 50, top: 28, delay: 170 },
-    { left: 66, top: 20, delay: 250 },
-    { left: 78, top: 34, delay: 340 },
-    { left: 48, top: 14, delay: 430 },
+    { left: 14, top: 26, delay: 0 },
+    { left: 24, top: 56, delay: 80 },
+    { left: 38, top: 18, delay: 150 },
+    { left: 50, top: 64, delay: 230 },
+    { left: 62, top: 22, delay: 310 },
+    { left: 74, top: 54, delay: 390 },
+    { left: 86, top: 30, delay: 470 },
+    { left: 52, top: 12, delay: 560 },
   ];
 
   for (const [burstIndex, burst] of burstOrigins.entries()) {
-    const halo = document.createElement("span");
+    const halo = hostDocument.createElement("span");
     const haloHue = palette[burstIndex % palette.length];
     halo.setAttribute(
       "style",
-      `position:absolute;left:${burst.left}%;top:${burst.top}%;width:26px;height:26px;border-radius:999px;background:radial-gradient(circle, hsla(${haloHue} 100% 84% /.95) 0%, hsla(${haloHue} 100% 64% /.28) 48%, transparent 72%);animation:rjs-firework-halo 1050ms ease-out ${burst.delay}ms forwards`
+      `position:absolute;left:${burst.left}%;top:${burst.top}%;width:34px;height:34px;border-radius:999px;background:radial-gradient(circle, hsla(${haloHue} 100% 84% /.98) 0%, hsla(${haloHue} 100% 64% /.34) 48%, transparent 74%);animation:rjs-firework-halo 1180ms ease-out ${burst.delay}ms forwards`
     );
     container.append(halo);
 
-    for (let particleIndex = 0; particleIndex < 18; particleIndex += 1) {
-      const angle = (Math.PI * 2 * particleIndex) / 18 + Math.random() * 0.18;
-      const distance = 82 + Math.random() * 120;
+    for (let particleIndex = 0; particleIndex < 24; particleIndex += 1) {
+      const angle = (Math.PI * 2 * particleIndex) / 24 + Math.random() * 0.2;
+      const distance = 96 + Math.random() * 150;
       const x = Math.cos(angle) * distance;
       const y = Math.sin(angle) * distance;
-      const width = 4 + Math.random() * 4;
-      const height = 12 + Math.random() * 16;
+      const width = 4 + Math.random() * 5;
+      const height = 14 + Math.random() * 18;
       const hue =
         palette[(burstIndex * 3 + particleIndex) % palette.length];
       const rotation = Math.round(Math.random() * 360);
-      const particle = document.createElement("span");
+      const particle = hostDocument.createElement("span");
       particle.setAttribute(
         "style",
-        `--x:${x.toFixed(1)}px;--y:${y.toFixed(1)}px;--rotation:${rotation}deg;position:absolute;left:${burst.left}%;top:${burst.top}%;width:${width.toFixed(1)}px;height:${height.toFixed(1)}px;border-radius:999px;background:linear-gradient(180deg, hsla(${hue} 100% 88% / .98), hsla(${hue} 92% 58% / .92));box-shadow:0 0 18px hsla(${hue} 95% 62% / .45);animation:rjs-firework-burst ${1150 + Math.round(Math.random() * 260)}ms cubic-bezier(.18,.84,.18,1) ${burst.delay}ms forwards`
+        `--x:${x.toFixed(1)}px;--y:${y.toFixed(1)}px;--rotation:${rotation}deg;position:absolute;left:${burst.left}%;top:${burst.top}%;width:${width.toFixed(1)}px;height:${height.toFixed(1)}px;border-radius:999px;background:linear-gradient(180deg, hsla(${hue} 100% 90% / .99), hsla(${hue} 92% 58% / .95));box-shadow:0 0 20px hsla(${hue} 95% 62% / .5);animation:rjs-firework-burst ${1250 + Math.round(Math.random() * 300)}ms cubic-bezier(.18,.84,.18,1) ${burst.delay}ms forwards`
       );
       container.append(particle);
     }
 
-    for (let sparkleIndex = 0; sparkleIndex < 10; sparkleIndex += 1) {
-      const sparkle = document.createElement("span");
+    for (let sparkleIndex = 0; sparkleIndex < 14; sparkleIndex += 1) {
+      const sparkle = hostDocument.createElement("span");
       const sparkleAngle = Math.random() * Math.PI * 2;
-      const sparkleDistance = 30 + Math.random() * 55;
+      const sparkleDistance = 34 + Math.random() * 68;
       const sparkleHue =
         palette[(burstIndex + sparkleIndex + 2) % palette.length];
       sparkle.setAttribute(
         "style",
-        `--x:${(Math.cos(sparkleAngle) * sparkleDistance).toFixed(1)}px;--y:${(Math.sin(sparkleAngle) * sparkleDistance).toFixed(1)}px;position:absolute;left:${burst.left}%;top:${burst.top}%;width:6px;height:6px;border-radius:999px;background:hsl(${sparkleHue} 100% 92%);box-shadow:0 0 16px hsla(${sparkleHue} 100% 80% / .78);animation:rjs-firework-sparkle 760ms ease-out ${burst.delay + 80}ms forwards`
+        `--x:${(Math.cos(sparkleAngle) * sparkleDistance).toFixed(1)}px;--y:${(Math.sin(sparkleAngle) * sparkleDistance).toFixed(1)}px;position:absolute;left:${burst.left}%;top:${burst.top}%;width:7px;height:7px;border-radius:999px;background:hsl(${sparkleHue} 100% 94%);box-shadow:0 0 18px hsla(${sparkleHue} 100% 82% / .82);animation:rjs-firework-sparkle 860ms ease-out ${burst.delay + 80}ms forwards`
       );
       container.append(sparkle);
     }
   }
 
-  document.body.append(container);
+  hostDocument.body.append(container);
   await sleep(2100);
   container.remove();
 }
@@ -5138,6 +5798,31 @@ function handlePotentialManualReviewPause(event: Event): void {
   manualReviewPauseUntil = Date.now() + 15_000;
 }
 
+function handlePotentialManualProgression(event: Event): void {
+  if (
+    status.site === "unsupported" ||
+    currentStage !== "autofill-form" ||
+    !event.isTrusted
+  ) {
+    return;
+  }
+
+  if (!isLikelyManualProgressionActionTarget(event.target)) {
+    return;
+  }
+
+  if (
+    status.phase !== "paused" &&
+    !manualSubmitRequested &&
+    manualReviewPauseUntil <= Date.now()
+  ) {
+    return;
+  }
+
+  manualReviewPauseUntil = 0;
+  scheduleImmediateManualResume();
+}
+
 function handlePotentialManualSubmit(event: Event): void {
   if (
     status.site === "unsupported" ||
@@ -5166,8 +5851,16 @@ function handlePotentialManualSubmit(event: Event): void {
   }
 
   manualSubmitRequested = true;
+  manualReviewPauseUntil = 0;
   captureVisibleRememberableAnswers();
+  updateStatus(
+    "running",
+    "Submit detected. Waiting for confirmation page...",
+    true,
+    currentStage
+  );
   void flushPendingAnswers();
+  scheduleImmediateManualResume();
   void persistManualSubmitAndResumeIfNeeded();
 }
 
@@ -5368,6 +6061,7 @@ function shouldHandleAutomationInCurrentFrame(
       hasLikelyApplicationPageContent,
       hasLikelyApplyContinuationAction: () =>
         hasLikelyApplyContinuationAction(resolvedSite),
+      isCurrentPageAppliedJob,
       isLikelyApplyUrl,
       isTopFrame: IS_TOP_FRAME,
       resumeFileInputCount: collectResumeFileInputs().length,

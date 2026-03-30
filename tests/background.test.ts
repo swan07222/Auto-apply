@@ -354,6 +354,150 @@ describe("background spawn quota handling", () => {
     );
   });
 
+  it("starts direct Greenhouse job pages in open-apply instead of bootstrap", async () => {
+    const greenhouseJobTab = {
+      id: 42,
+      index: 0,
+      windowId: 7,
+      url: "https://job-boards.greenhouse.io/impiricus/jobs/5160382008?gh_src=my.greenhouse.search",
+    };
+    const chromeMock = createBackgroundChrome(
+      {
+        "remote-job-search-settings": {
+          ...DEFAULT_SETTINGS,
+          searchKeywords: "software engineer",
+        },
+      },
+      vi.fn()
+    );
+
+    chrome.tabs.get = vi.fn().mockResolvedValue(greenhouseJobTab);
+    chrome.tabs.query = vi.fn().mockResolvedValue([greenhouseJobTab]);
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "start-automation",
+        tabId: 42,
+      },
+      {
+        tab: greenhouseJobTab,
+      }
+    );
+
+    expect(response).toEqual(
+      expect.objectContaining({
+        ok: true,
+        session: expect.objectContaining({
+          tabId: 42,
+          site: "greenhouse",
+          phase: "running",
+          stage: "open-apply",
+          shouldResume: true,
+          profileId: DEFAULT_SETTINGS.activeProfileId,
+        }),
+      })
+    );
+    expect(chrome.tabs.reload).toHaveBeenCalledWith(42);
+    expect(chromeMock.local.state["remote-job-search-session:42"]).toEqual(
+      expect.objectContaining({
+        tabId: 42,
+        site: "greenhouse",
+        stage: "open-apply",
+        profileId: DEFAULT_SETTINGS.activeProfileId,
+      })
+    );
+  });
+
+  it("keeps the requested redirected Greenhouse tab instead of switching to another supported active tab", async () => {
+    const redirectedTab = {
+      id: 42,
+      index: 0,
+      windowId: 7,
+      url: "https://www.figma.com/careers/",
+    };
+    const indeedTab = {
+      id: 91,
+      index: 1,
+      windowId: 8,
+      url: "https://www.indeed.com/jobs?q=platform+engineer",
+    };
+    const chromeMock = createBackgroundChrome(
+      {
+        "remote-job-search-settings": {
+          ...DEFAULT_SETTINGS,
+          searchKeywords: "software engineer",
+        },
+      },
+      vi.fn()
+    );
+
+    chrome.tabs.get = vi.fn().mockImplementation(async (tabId: number) => {
+      if (tabId === 42) {
+        return redirectedTab;
+      }
+      if (tabId === 91) {
+        return indeedTab;
+      }
+      return null;
+    });
+    chrome.tabs.query = vi
+      .fn()
+      .mockResolvedValue([redirectedTab, indeedTab]);
+    chrome.tabs.sendMessage = vi.fn(async (tabId: number, message: { type?: string }) => {
+      if (tabId === 42 && message.type === "get-status") {
+        return {
+          status: {
+            site: "greenhouse",
+            phase: "idle",
+            message: "Ready on Greenhouse.",
+            updatedAt: Date.now(),
+          },
+        };
+      }
+
+      if (tabId === 91 && message.type === "get-status") {
+        return {
+          status: {
+            site: "indeed",
+            phase: "idle",
+            message: "Ready on Indeed.",
+            updatedAt: Date.now(),
+          },
+        };
+      }
+
+      return { ok: true };
+    });
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "start-automation",
+        tabId: 42,
+      },
+      {
+        tab: redirectedTab,
+      }
+    );
+
+    expect(response).toEqual(
+      expect.objectContaining({
+        ok: true,
+        session: expect.objectContaining({
+          tabId: 42,
+          site: "greenhouse",
+        }),
+      })
+    );
+    expect(chrome.tabs.reload).toHaveBeenCalledWith(42);
+    expect(chrome.tabs.reload).not.toHaveBeenCalledWith(91);
+  });
+
   it("pauses an active autofill session and forwards the pause message to the controller frame", async () => {
     const sessionKey = "remote-job-search-session:42";
     const chromeMock = createBackgroundChrome(
@@ -555,6 +699,9 @@ describe("background spawn quota handling", () => {
   it("remembers a managed job as reviewed before the tab is finalized", async () => {
     const jobUrl = "https://www.indeed.com/viewjob?jk=alpha123";
     const claimedJobKey = getJobDedupKey(jobUrl)!;
+    const applyPageKey = getJobDedupKey(
+      "https://boards.greenhouse.io/example/jobs/123/apply"
+    )!;
     const sessionKey = "remote-job-search-session:42";
     const chromeMock = createBackgroundChrome(
       {
@@ -600,7 +747,10 @@ describe("background spawn quota handling", () => {
       })
     );
     expect(chromeMock.local.state["remote-job-search-reviewed-job-history"]).toEqual(
-      [[claimedJobKey, expect.any(Number)]]
+      expect.arrayContaining([
+        [claimedJobKey, expect.any(Number)],
+        [applyPageKey, expect.any(Number)],
+      ])
     );
   });
 
@@ -1749,6 +1899,86 @@ describe("background spawn quota handling", () => {
       expect.objectContaining({
         controllerFrameId: 7,
       })
+    );
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({
+        type: "start-automation",
+        session: expect.objectContaining({
+          tabId: 42,
+          stage: "autofill-form",
+          controllerFrameId: 7,
+        }),
+      }),
+      { frameId: 0 }
+    );
+  });
+
+  it("mirrors controller-frame status updates to the top frame so embedded apply overlays stay visible", async () => {
+    const sessionKey = "remote-job-search-session:42";
+    const chromeMock = createBackgroundChrome(
+      {
+        [sessionKey]: {
+          tabId: 42,
+          site: "greenhouse",
+          phase: "running",
+          message: "Autofilling Greenhouse application...",
+          updatedAt: 1,
+          shouldResume: true,
+          stage: "autofill-form",
+          controllerFrameId: 7,
+          runId: "run-greenhouse-overlay",
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    const response = await dispatchBackgroundMessage(
+      chromeMock.getMessageListener(),
+      {
+        type: "status-update",
+        status: {
+          site: "greenhouse",
+          phase: "running",
+          message: "Filling Greenhouse application fields...",
+          updatedAt: 2,
+        },
+        shouldResume: true,
+        stage: "autofill-form",
+      },
+      {
+        tab: {
+          id: 42,
+          url: "https://job-boards.greenhouse.io/example/jobs/1234567",
+        },
+        frameId: 7,
+      }
+    );
+
+    expect(response).toEqual({ ok: true });
+    expect(chromeMock.local.state[sessionKey]).toEqual(
+      expect.objectContaining({
+        phase: "running",
+        stage: "autofill-form",
+        controllerFrameId: 7,
+        message: "Filling Greenhouse application fields...",
+      })
+    );
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({
+        type: "start-automation",
+        session: expect.objectContaining({
+          tabId: 42,
+          site: "greenhouse",
+          stage: "autofill-form",
+          controllerFrameId: 7,
+          message: "Filling Greenhouse application fields...",
+        }),
+      }),
+      { frameId: 0 }
     );
   });
 
@@ -3741,6 +3971,62 @@ describe("background spawn quota handling", () => {
           runId,
           claimedJobKey,
         }),
+      })
+    );
+    expect(
+      chromeMock.local.state[`remote-job-search-session:${openerTabId}`]
+    ).toBeUndefined();
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(openerTabId, {
+      type: "automation-child-tab-opened",
+    });
+    expect(chrome.tabs.remove).toHaveBeenCalledWith(openerTabId);
+  });
+
+  it("closes the ZipRecruiter opener tab after handing off to a site-opened child tab", async () => {
+    const openerTabId = 42;
+    const childTabId = 202;
+    const runId = "run-ziprecruiter-child-close";
+    const claimedJobKey = getJobDedupKey(
+      "https://www.ziprecruiter.com/jobs/full-stack-engineer?jid=alpha123"
+    );
+
+    const chromeMock = createBackgroundChrome(
+      {
+        [`remote-job-search-session:${openerTabId}`]: {
+          tabId: openerTabId,
+          site: "ziprecruiter",
+          phase: "running",
+          message: "Opening ZipRecruiter job page...",
+          shouldResume: true,
+          stage: "open-apply",
+          runId,
+          claimedJobKey,
+          updatedAt: 1,
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    chromeMock.dispatchTabCreated({
+      id: childTabId,
+      openerTabId,
+      url: "https://company.example.com/apply",
+    });
+
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    expect(
+      chromeMock.local.state[`remote-job-search-session:${childTabId}`]
+    ).toEqual(
+      expect.objectContaining({
+        tabId: childTabId,
+        site: "ziprecruiter",
+        stage: "open-apply",
+        runId,
+        claimedJobKey,
       })
     );
     expect(

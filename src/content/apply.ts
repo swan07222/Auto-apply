@@ -4,8 +4,9 @@ import { SiteKey } from "../shared";
 import { ApplyAction, ProgressionAction } from "./types";
 import { cleanText } from "./text";
 import {
-  collectShadowHosts,
   collectDeepMatches,
+  collectDeepMatchesForSelectors,
+  collectShadowHosts,
   getActionText,
   getClickableApplyElement,
   getNavigationUrl,
@@ -80,6 +81,10 @@ const MAX_APPLY_URL_MARKUP_SNIPPET_COUNT = 6;
 const APPLY_URL_MARKUP_SNIPPET_LENGTH = Math.floor(
   MAX_APPLY_URL_MARKUP_LENGTH / MAX_APPLY_URL_MARKUP_SNIPPET_COUNT
 );
+const NON_ACTION_TECH_LABEL_PATTERN =
+  /^(?:next\.?js|react(?:\.js)?|node\.?js|vue(?:\.js)?|nuxt\.?js|nestjs|typescript|javascript|python|java|golang|go|aws|gcp|azure|docker|kubernetes|graphql|tailwind(?:css)?|postgres(?:ql)?|mysql|mongodb)$/i;
+const NON_ACTION_TECH_URL_PATTERN =
+  /(?:nextjs\.org|react(?:js)?\.(?:org|dev)|nodejs\.org|vuejs\.org|angular\.dev|typescriptlang\.org|python\.org|golang\.org|go\.dev|tailwindcss\.com|npmjs\.com|docs?\.)/i;
 const APPLY_URL_DISCOVERY_TOKENS = [
   "apply",
   "application",
@@ -111,6 +116,31 @@ const MAX_MONSTER_TITLE_REGION_GAP_ABOVE = 140;
 const MONSTER_TITLE_REGION_BELOW_MULTIPLIER = 4;
 const MONSTER_TITLE_REGION_ABOVE_MULTIPLIER = 1.5;
 const MONSTER_TITLE_REGION_HORIZONTAL_ALLOWANCE = 520;
+const ZIP_RECRUITER_DIALOG_SELECTOR =
+  "[role='dialog'], [aria-modal='true'], [class*='modal'], [class*='overlay'], [class*='popup'], [data-testid*='modal'], [data-testid*='apply']";
+const ZIP_RECRUITER_ACTIVE_MODAL_TEXT_TOKENS = [
+  "apply",
+  "application",
+  "resume",
+  "upload",
+  "experience",
+  "education",
+  "work authorization",
+  "cover letter",
+];
+const ZIP_RECRUITER_APPLIED_STATE_PATTERNS = [
+  /^\s*applied\s*$/i,
+  /\balready applied\b/i,
+  /\byou already applied\b/i,
+  /\byou(?:'ve| have)? applied\b/i,
+  /\byou(?:'ve| have)? successfully applied\b/i,
+  /\balready submitted\b/i,
+  /\bapplication submitted\b/i,
+  /\bapplication complete\b/i,
+  /\bapplication received\b/i,
+  /\bthank(?:s| you) for applying\b/i,
+  /\byour application (?:has been|was) submitted\b/i,
+];
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -143,21 +173,7 @@ function isLegalOrPolicyText(text: string): boolean {
 function collectDeepMatchesFromSelectors(
   selectors: string[]
 ): HTMLElement[] {
-  const results: HTMLElement[] = [];
-  const seen = new Set<HTMLElement>();
-
-  for (const selector of selectors) {
-    for (const element of collectDeepMatches<HTMLElement>(selector)) {
-      if (seen.has(element)) {
-        continue;
-      }
-
-      seen.add(element);
-      results.push(element);
-    }
-  }
-
-  return results;
+  return collectDeepMatchesForSelectors<HTMLElement>(selectors);
 }
 
 function isKnownBrokenApplyUrl(url: string | null | undefined): boolean {
@@ -346,6 +362,10 @@ export function findCompanySiteAction(): ApplyAction | null {
       ].some((blocked) => lower.includes(blocked)) ||
       isLegalOrPolicyText(lower)
     ) {
+      continue;
+    }
+
+    if (isLikelyTechnologyReferenceAction(text, url)) {
       continue;
     }
 
@@ -1480,6 +1500,10 @@ function scoreMonsterApplyCandidate(
 }
 
 export function findZipRecruiterApplyAction(): ApplyAction | null {
+  if (hasZipRecruiterAppliedConfirmation()) {
+    return null;
+  }
+
   const selectors = [
     "a[data-testid*='apply' i]",
     "button[data-testid='apply-button']",
@@ -1787,7 +1811,7 @@ export function findZipRecruiterApplyAction(): ApplyAction | null {
 }
 
 function collectZipRecruiterApplyCandidates(selectors: string[]): HTMLElement[] {
-  const modalRoots = collectVisibleZipRecruiterApplyModals();
+  const modalRoots = getVisibleZipRecruiterApplyModals();
   const roots =
     modalRoots.length > 0
       ? modalRoots
@@ -2026,16 +2050,39 @@ export function findGlassdoorApplyAction(): ApplyAction | null {
 }
 
 export function findGreenhouseApplyAction(): ApplyAction | null {
+  const currentUrl = window.location.href.toLowerCase();
+  const isCompanyHostedGreenhousePage =
+    currentUrl.includes("gh_jid=") ||
+    currentUrl.includes("gh_src=") ||
+    currentUrl.includes("job_application") ||
+    currentUrl.includes("job-application") ||
+    currentUrl.includes("job_app");
   const selectors = [
     "button[aria-label='Apply']",
     "button[aria-label*='apply' i]",
     "button[title*='apply' i]",
+    "button[data-testid*='apply' i]",
+    "a[data-testid*='apply' i]",
+    "button[data-qa*='apply' i]",
+    "a[data-qa*='apply' i]",
+    "button[data-automation*='apply' i]",
+    "a[data-automation*='apply' i]",
+    "button[id*='apply' i]",
+    "a[id*='apply' i]",
+    "[class*='apply-button']",
+    "[class*='ApplyButton']",
     ".job__header button",
     ".job__header [role='button']",
     ".job__header a[href]",
+    "[class*='sticky'] button",
+    "[class*='sticky'] [role='button']",
+    "[class*='sticky'] a[href]",
     "main.job-post button",
     "main.job-post [role='button']",
     "main.job-post a[href]",
+    "button",
+    "a[href]",
+    "[role='button']",
     ...getSiteApplyCandidateSelectors("greenhouse"),
   ];
   const scopedElements = collectGreenhouseApplyCandidates(selectors);
@@ -2089,6 +2136,9 @@ export function findGreenhouseApplyAction(): ApplyAction | null {
       continue;
     }
 
+    if (isCompanyHostedGreenhousePage && (lower === "apply" || lower === "apply now")) {
+      score += 28;
+    }
     if (lower === "apply") score += 72;
     if (lower === "apply now") score += 64;
     if (lower.includes("apply for this")) score += 40;
@@ -2115,7 +2165,23 @@ export function findGreenhouseApplyAction(): ApplyAction | null {
       .join(" ")
       .toLowerCase();
     if (attrs.includes("btn--pill")) score += 14;
+    if (
+      actionElement.hasAttribute("data-testid") ||
+      actionElement.hasAttribute("data-qa") ||
+      actionElement.hasAttribute("data-automation") ||
+      element.hasAttribute("data-testid") ||
+      element.hasAttribute("data-qa") ||
+      element.hasAttribute("data-automation")
+    ) {
+      score += 10;
+    }
+    if (attrs.includes("apply-button") || attrs.includes("applybutton")) {
+      score += 18;
+    }
     if (url && /greenhouse|job_app|\/apply\b/i.test(url)) score += 22;
+    if (actionElement.closest("[class*='sticky'], [class*='floating']")) {
+      score += 18;
+    }
 
     if (
       actionElement.closest("header, nav, footer, aside") &&
@@ -2142,6 +2208,85 @@ export function findGreenhouseApplyAction(): ApplyAction | null {
   }
 
   best = choosePreferredJobPageAction(best, bestDirect);
+
+  if (!best) {
+    return findGreenhouseExactApplyFallback(isCompanyHostedGreenhousePage);
+  }
+
+  if (best.url && shouldPreferApplyNavigation(best.url, best.text, "greenhouse")) {
+    return {
+      type: "navigate",
+      url: best.url,
+      description: describeApplyTarget(best.url, best.text || "Greenhouse apply"),
+    };
+  }
+
+  return {
+    type: "click",
+    element: best.element,
+    description: best.text || "Greenhouse apply",
+  };
+}
+
+function findGreenhouseExactApplyFallback(
+  isCompanyHostedGreenhousePage: boolean
+): ApplyAction | null {
+  let best:
+    | {
+        element: HTMLElement;
+        text: string;
+        url: string | null;
+        score: number;
+      }
+    | undefined;
+
+  for (const candidate of collectDeepMatchesFromSelectors([
+    "button",
+    "a[href]",
+    "[role='button']",
+    "input[type='button']",
+    "input[type='submit']",
+  ])) {
+    const actionElement = getClickableApplyElement(candidate);
+    if (!isElementVisible(actionElement)) {
+      continue;
+    }
+
+    const text = cleanText(
+      getActionText(actionElement) ||
+        getActionText(candidate) ||
+        actionElement.getAttribute("aria-label") ||
+        actionElement.getAttribute("title") ||
+        candidate.getAttribute("aria-label") ||
+        candidate.getAttribute("title") ||
+        ""
+    );
+    const lower = text.toLowerCase();
+    if (
+      !/^(apply|apply now|apply for this job|start application|start your application)$/i.test(
+        lower
+      )
+    ) {
+      continue;
+    }
+
+    const url = getNavigationUrl(actionElement) ?? getNavigationUrl(candidate);
+    let score = 100;
+    if (actionElement.tagName === "BUTTON") score += 16;
+    if (isCompanyHostedGreenhousePage) score += 24;
+    if (url && shouldPreferApplyNavigation(url, text, "greenhouse")) score += 20;
+    if (actionElement.closest("main, article, section, [role='main']")) score += 14;
+    if (actionElement.closest("header, nav, footer, aside")) score -= 18;
+
+    if (!best || score > best.score) {
+      best = {
+        element: actionElement,
+        text,
+        url,
+        score,
+      };
+    }
+  }
 
   if (!best) {
     return null;
@@ -2341,6 +2486,8 @@ function collectGreenhouseApplyCandidates(selectors: string[]): HTMLElement[] {
     "main[class*='job-post']",
     "[class*='job-post']",
     "[class*='opening']",
+    "[class*='sticky']",
+    "[class*='floating']",
     "[role='main']",
     "main",
     "article",
@@ -2529,31 +2676,23 @@ export function hasIndeedApplyIframe(): boolean {
 }
 
 export function hasZipRecruiterApplyModal(): boolean {
-  return collectVisibleZipRecruiterApplyModals().length > 0;
+  return getVisibleZipRecruiterApplyModals().length > 0;
 }
 
-function collectVisibleZipRecruiterApplyModals(): HTMLElement[] {
-  const matches: HTMLElement[] = [];
-  const modals = collectDeepMatches<HTMLElement>(
-    "[role='dialog'], [aria-modal='true'], [class*='modal'], [class*='overlay'], [class*='popup'], [data-testid*='modal'], [data-testid*='apply']"
+export function hasZipRecruiterAppliedConfirmation(): boolean {
+  return collectVisibleZipRecruiterDialogRoots().some((modal) =>
+    isZipRecruiterAppliedStateText(
+      cleanText(modal.innerText || modal.textContent || "")
+        .toLowerCase()
+        .slice(0, 2500)
+    )
   );
+}
 
-  for (const modal of Array.from(modals)) {
-    if (!isElementVisible(modal)) {
-      continue;
-    }
-
-    const text = (modal.innerText || "").toLowerCase().slice(0, 2000);
-    if (
-      (
-        text.includes("apply") ||
-        text.includes("resume") ||
-        text.includes("upload") ||
-        text.includes("experience") ||
-        text.includes("work authorization")
-      ) &&
-      modal.querySelector("input, textarea, select, button")
-    ) {
+export function getVisibleZipRecruiterApplyModals(): HTMLElement[] {
+  const matches: HTMLElement[] = [];
+  for (const modal of collectVisibleZipRecruiterDialogRoots()) {
+    if (isActiveZipRecruiterApplyModal(modal)) {
       matches.push(modal);
     }
   }
@@ -2561,9 +2700,126 @@ function collectVisibleZipRecruiterApplyModals(): HTMLElement[] {
   return matches;
 }
 
+function collectVisibleZipRecruiterDialogRoots(): HTMLElement[] {
+  return collectDeepMatches<HTMLElement>(ZIP_RECRUITER_DIALOG_SELECTOR).filter(
+    (modal) => isElementVisible(modal)
+  );
+}
+
+function isActiveZipRecruiterApplyModal(modal: HTMLElement): boolean {
+  const text = cleanText(modal.innerText || modal.textContent || "")
+    .toLowerCase()
+    .slice(0, 2500);
+
+  if (!text || isZipRecruiterAppliedStateText(text)) {
+    return false;
+  }
+
+  if (!ZIP_RECRUITER_ACTIVE_MODAL_TEXT_TOKENS.some((token) => text.includes(token))) {
+    return false;
+  }
+
+  if (hasVisibleZipRecruiterEditableField(modal)) {
+    return true;
+  }
+
+  return hasVisibleZipRecruiterApplyControl(modal);
+}
+
+function hasVisibleZipRecruiterEditableField(modal: HTMLElement): boolean {
+  const fields = Array.from(
+    modal.querySelectorAll<HTMLElement>("input, textarea, select")
+  );
+
+  return fields.some((field) => {
+    if (!isElementVisible(field)) {
+      return false;
+    }
+
+    if (field instanceof HTMLInputElement) {
+      const type = field.type.toLowerCase();
+      return !["hidden", "submit", "button", "reset", "image"].includes(type);
+    }
+
+    return true;
+  });
+}
+
+function hasVisibleZipRecruiterApplyControl(modal: HTMLElement): boolean {
+  const controls = Array.from(
+    modal.querySelectorAll<HTMLElement>(
+      "button, a[href], [role='button'], input[type='submit'], input[type='button']"
+    )
+  );
+
+  return controls.some((control) => {
+    if (!isElementVisible(control)) {
+      return false;
+    }
+
+    const text = cleanText(
+      [
+        getActionText(control),
+        control.getAttribute("aria-label"),
+        control.getAttribute("title"),
+        control.getAttribute("value"),
+        control.getAttribute("data-testid"),
+        control.getAttribute("data-qa"),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    ).toLowerCase();
+
+    if (
+      !text ||
+      isZipRecruiterAppliedStateText(text) ||
+      [
+        "tell us more",
+        "support",
+        "help",
+        "close",
+        "dismiss",
+        "cancel",
+        "back",
+        "my jobs",
+        "save",
+        "share",
+      ].some((token) => text.includes(token))
+    ) {
+      return false;
+    }
+
+    return /\b(apply|continue|next|review|start|proceed|resume|upload)\b/.test(
+      text
+    );
+  });
+}
+
+function isZipRecruiterAppliedStateText(text: string): boolean {
+  if (!text) {
+    return false;
+  }
+
+  if (
+    /\b(not applied|apply now|ready to apply|after you apply|before you apply|by pressing apply)\b/.test(
+      text
+    )
+  ) {
+    return false;
+  }
+
+  return ZIP_RECRUITER_APPLIED_STATE_PATTERNS.some((pattern) =>
+    pattern.test(text)
+  );
+}
+
 export function findProgressionAction(
   site?: SiteKey | null
 ): ProgressionAction | null {
+  if (site === "ziprecruiter" && hasZipRecruiterAppliedConfirmation()) {
+    return null;
+  }
+
   const candidates = collectProgressionCandidates(site);
 
   let best:
@@ -2594,7 +2850,13 @@ export function findProgressionAction(
     const displayText = text || metadata;
     const lower = metadata.toLowerCase();
     const lowerText = text.toLowerCase();
+    const hasNextInText = hasProgressionKeyword(lowerText, "next");
+    const hasContinueInText = hasProgressionKeyword(lowerText, "continue");
     if (!lower) {
+      continue;
+    }
+
+    if (isLikelyTechnologyReferenceAction(displayText, getMeaningfulProgressionUrl(element))) {
       continue;
     }
 
@@ -2607,23 +2869,7 @@ export function findProgressionAction(
       continue;
     }
 
-    if (
-      [
-        "back",
-        "cancel",
-        "close",
-        "save for later",
-        "share",
-        "sign in",
-        "sign up",
-        "log in",
-        "register",
-        "dismiss",
-        "delete",
-        "remove",
-        "previous",
-      ].some((word) => lower.includes(word))
-    ) {
+    if (isBlockedProgressionCandidate(lower)) {
       continue;
     }
 
@@ -2688,25 +2934,25 @@ export function findProgressionAction(
       lowerText.includes("continue applying")
     ) {
       score = 73;
-    } else if (lowerText.includes("next") && !lowerText.includes("submit")) {
+    } else if (hasNextInText && !lowerText.includes("submit")) {
       score = 70;
-    } else if (lowerText.includes("continue") && !lowerText.includes("submit")) {
+    } else if (hasContinueInText && !lowerText.includes("submit")) {
       score = 65;
     }
 
     if (!lowerText) {
-      if (/\bnext\b/.test(lower)) {
+      if (hasProgressionKeyword(lower, "next")) {
         score = Math.max(score, 88);
-      } else if (/\bcontinue\b/.test(lower)) {
+      } else if (hasProgressionKeyword(lower, "continue")) {
         score = Math.max(score, 84);
       } else if (
         lower.includes("start my application") ||
         lower.includes("start application")
       ) {
         score = Math.max(score, 90);
-      } else if (/\breview\b/.test(lower)) {
+      } else if (hasProgressionKeyword(lower, "review")) {
         score = Math.max(score, 74);
-      } else if (/\bproceed\b/.test(lower)) {
+      } else if (hasProgressionKeyword(lower, "proceed")) {
         score = Math.max(score, 72);
       }
     }
@@ -2722,11 +2968,13 @@ export function findProgressionAction(
       .toLowerCase();
 
     if (
-      attrs.includes("next") ||
-      attrs.includes("continue") ||
-      attrs.includes("proceed") ||
-      attrs.includes("company") ||
-      attrs.includes("review")
+      hasAnyProgressionKeyword(attrs, [
+        "next",
+        "continue",
+        "proceed",
+        "company",
+        "review",
+      ])
     ) {
       score += 15;
     }
@@ -2816,7 +3064,7 @@ function collectProgressionCandidates(
   const selectors = getProgressionCandidateSelectors(site);
 
   if (site === "ziprecruiter") {
-    const modalRoots = collectVisibleZipRecruiterApplyModals();
+    const modalRoots = getVisibleZipRecruiterApplyModals();
     if (modalRoots.length > 0) {
       return collectActionCandidatesFromRoots(modalRoots, selectors);
     }
@@ -2836,126 +3084,168 @@ function getProgressionCandidateSelectors(
     "a[role='button']",
     "[role='button']",
   ];
+  const progressionKeywords = ["continue", "next", "review"];
+  const progressionStartKeywords = ["continue", "next", "review", "start", "apply"];
+  const monsterKeywords = [
+    "continue",
+    "next",
+    "start",
+    "review",
+    "apply",
+    "resume",
+    "candidate",
+  ];
 
   switch (site) {
     case "indeed":
       return [
-        "button[data-testid*='continue']",
-        "button[data-testid*='next']",
-        "button[data-testid*='review']",
-        "[aria-label*='continue' i]",
-        "[aria-label*='next' i]",
-        "[aria-label*='review' i]",
-        "[id*='continue']",
-        "[id*='next']",
-        "[id*='review']",
-        "[class*='continue']",
-        "[class*='next']",
-        "[class*='review']",
+        ...buildProgressionKeywordSelectors({
+          dataTestIdKeywords: progressionKeywords,
+          ariaLabelKeywords: progressionKeywords,
+          idKeywords: progressionKeywords,
+          classKeywords: progressionKeywords,
+        }),
         ...generic,
       ];
     case "ziprecruiter":
       return [
-        "button[data-testid*='continue']",
-        "button[data-testid*='next']",
-        "button[data-testid*='review']",
-        "[data-testid*='continue']",
-        "[data-testid*='next']",
-        "[data-testid*='review']",
-        "[aria-label*='continue' i]",
-        "[aria-label*='next' i]",
-        "[aria-label*='review' i]",
-        "[id*='continue']",
-        "[id*='next']",
-        "[class*='continue']",
-        "[class*='next']",
-        "[class*='review']",
+        ...buildProgressionKeywordSelectors({
+          dataTestIdKeywords: progressionKeywords,
+          ariaLabelKeywords: progressionKeywords,
+          idKeywords: ["continue", "next"],
+          classKeywords: progressionKeywords,
+        }),
         ...generic,
       ];
     case "glassdoor":
       return [
-        "button[data-test*='start' i]",
-        "button[data-test*='continue' i]",
-        "button[data-test*='next' i]",
-        "button[data-test*='review' i]",
-        "button[data-test*='apply' i]",
-        "[data-test*='start' i]",
-        "[data-test*='continue' i]",
-        "[data-test*='next' i]",
-        "[data-test*='review' i]",
-        "[data-test*='apply' i]",
-        "[aria-label*='start' i]",
-        "[aria-label*='continue' i]",
-        "[aria-label*='next' i]",
-        "[aria-label*='review' i]",
-        "[class*='start']",
-        "[class*='continue']",
-        "[class*='next']",
-        "[class*='review']",
+        ...buildProgressionKeywordSelectors({
+          dataTestKeywords: progressionStartKeywords,
+          ariaLabelKeywords: ["start", "continue", "next", "review"],
+          classKeywords: ["start", "continue", "next", "review"],
+        }),
         ...generic,
       ];
     case "dice":
       return [
-        "button[data-testid*='continue']",
-        "button[data-testid*='next']",
-        "button[data-testid*='review']",
-        "button[data-testid*='apply']",
-        "[data-testid*='continue']",
-        "[data-testid*='next']",
-        "[data-testid*='review']",
-        "[data-testid*='apply']",
-        "[data-cy*='continue']",
-        "[data-cy*='next']",
-        "[data-cy*='review']",
-        "[data-cy*='apply']",
-        "[aria-label*='continue' i]",
-        "[aria-label*='next' i]",
-        "[aria-label*='review' i]",
-        "[aria-label*='apply' i]",
-        "[class*='continue']",
-        "[class*='next']",
-        "[class*='review']",
-        "[class*='apply']",
+        ...buildProgressionKeywordSelectors({
+          dataTestIdKeywords: progressionStartKeywords,
+          dataCyKeywords: progressionStartKeywords,
+          ariaLabelKeywords: progressionStartKeywords,
+          classKeywords: progressionStartKeywords,
+        }),
         ...generic,
       ];
     case "monster":
       return [
-        "button[data-testid*='continue' i]",
-        "button[data-testid*='next' i]",
-        "button[data-testid*='start' i]",
-        "button[data-testid*='review' i]",
-        "button[data-testid*='apply' i]",
-        "button[data-testid*='resume' i]",
-        "[data-testid*='continue' i]",
-        "[data-testid*='next' i]",
-        "[data-testid*='start' i]",
-        "[data-testid*='review' i]",
-        "[data-testid*='apply' i]",
-        "[data-testid*='resume' i]",
-        "[data-test*='continue' i]",
-        "[data-test*='next' i]",
-        "[data-test*='start' i]",
-        "[data-test*='review' i]",
-        "[data-test*='apply' i]",
-        "[data-test*='resume' i]",
-        "[aria-label*='continue' i]",
-        "[aria-label*='next' i]",
-        "[aria-label*='start' i]",
-        "[aria-label*='review' i]",
-        "[aria-label*='apply' i]",
-        "[aria-label*='resume' i]",
-        "[class*='continue']",
-        "[class*='next']",
-        "[class*='start']",
-        "[class*='review']",
-        "[class*='resume']",
-        "[class*='candidate']",
-        "[class*='apply']",
+        ...buildProgressionKeywordSelectors({
+          dataTestIdKeywords: monsterKeywords,
+          dataTestKeywords: monsterKeywords,
+          ariaLabelKeywords: monsterKeywords,
+          classKeywords: monsterKeywords,
+        }),
         ...generic,
       ];
     default:
       return generic;
   }
+}
+
+function buildProgressionKeywordSelectors(options: {
+  dataTestKeywords?: string[];
+  dataTestIdKeywords?: string[];
+  dataCyKeywords?: string[];
+  ariaLabelKeywords?: string[];
+  idKeywords?: string[];
+  classKeywords?: string[];
+}): string[] {
+  return [
+    ...buildProgressionAttributeSelectors("data-test", options.dataTestKeywords, true),
+    ...buildProgressionAttributeSelectors(
+      "data-testid",
+      options.dataTestIdKeywords,
+      true
+    ),
+    ...buildProgressionAttributeSelectors("data-cy", options.dataCyKeywords, true),
+    ...buildProgressionAttributeSelectors(
+      "aria-label",
+      options.ariaLabelKeywords,
+      true
+    ),
+    ...buildProgressionAttributeSelectors("id", options.idKeywords),
+    ...buildProgressionAttributeSelectors("class", options.classKeywords),
+  ];
+}
+
+function buildProgressionAttributeSelectors(
+  attribute: string,
+  keywords: string[] | undefined,
+  caseInsensitive = false
+): string[] {
+  if (!keywords?.length) {
+    return [];
+  }
+
+  const suffix = caseInsensitive ? " i" : "";
+  const interactiveBases = [
+    "button",
+    "input[type='submit']",
+    "input[type='button']",
+    "a[href]",
+    "a[role='button']",
+    "[role='button']",
+  ];
+
+  return keywords.flatMap((keyword) =>
+    interactiveBases.map(
+      (base) => `${base}[${attribute}*='${keyword}'${suffix}]`
+    )
+  );
+}
+
+function hasAnyProgressionKeyword(
+  value: string,
+  keywords: string[]
+): boolean {
+  return keywords.some((keyword) => hasProgressionKeyword(value, keyword));
+}
+
+function hasProgressionKeyword(value: string, keyword: string): boolean {
+  if (!value || !keyword) {
+    return false;
+  }
+
+  const normalizedValue = value
+    .toLowerCase()
+    .replace(/\bnext\s*\.?\s*js\b/g, "nextjs");
+  const escapedKeyword = escapeRegExp(keyword.toLowerCase());
+  return new RegExp(`(?:^|[^a-z0-9])${escapedKeyword}(?:$|[^a-z0-9])`).test(
+    normalizedValue
+  );
+}
+
+function isBlockedProgressionCandidate(value: string): boolean {
+  return (
+    [
+      "save for later",
+      "sign in",
+      "sign up",
+      "log in",
+      "back to jobs",
+      "back to search",
+    ].some((phrase) => value.includes(phrase)) ||
+    hasAnyProgressionKeyword(value, [
+      "back",
+      "cancel",
+      "close",
+      "share",
+      "register",
+      "dismiss",
+      "delete",
+      "remove",
+      "previous",
+    ])
+  );
 }
 
 function getMeaningfulProgressionUrl(
@@ -3058,19 +3348,32 @@ function extractActionSemanticTokens(value: string): string {
     return "";
   }
 
-  const tokenPattern =
-    /(apply|application|continue|next|review|proceed|start|begin|resume|candidate|company|employer|external|zipapply|jobapply)/;
+  const allowedTokens = new Set([
+    "apply",
+    "application",
+    "continue",
+    "next",
+    "review",
+    "proceed",
+    "start",
+    "begin",
+    "resume",
+    "candidate",
+    "company",
+    "employer",
+    "external",
+    "zipapply",
+    "jobapply",
+  ]);
+  const tokens = value
+    .replace(/\bnext\s*\.?\s*js\b/gi, "nextjs")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[^a-z0-9]+/i)
+    .map((token) => token.trim().toLowerCase())
+    .filter(Boolean);
 
-  return value
-    .split(/\s+/)
-    .map((token) => cleanText(token).toLowerCase())
-    .filter((token) => {
-      if (!token || token.includes(":")) {
-        return false;
-      }
-
-      return tokenPattern.test(token);
-    })
+  return tokens
+    .filter((token) => allowedTokens.has(token))
     .join(" ");
 }
 
@@ -3099,6 +3402,14 @@ export function findApplyAction(
   site: SiteKey | null,
   context: "job-page" | "follow-up"
 ): ApplyAction | null {
+  if (site === "ziprecruiter" && hasZipRecruiterAppliedConfirmation()) {
+    return null;
+  }
+
+  if (site === "ziprecruiter" && context === "job-page") {
+    return findZipRecruiterApplyAction();
+  }
+
   const selectors = getApplyCandidateSelectors(site);
   const scopedZipRecruiterElements =
     site === "ziprecruiter"
@@ -3370,6 +3681,9 @@ function isGreenhouseApplicationUrl(pathAndQuery: string): boolean {
 
   if (
     pathAndQuery.includes("/apply") ||
+    pathAndQuery.includes("/application") ||
+    pathAndQuery.includes("job_application") ||
+    pathAndQuery.includes("job-application") ||
     pathAndQuery.includes("job_app") ||
     pathAndQuery.includes("application_confirmation") ||
     pathAndQuery.includes("application_confirmation_token")
@@ -3378,6 +3692,33 @@ function isGreenhouseApplicationUrl(pathAndQuery: string): boolean {
   }
 
   return false;
+}
+
+function isLikelyTechnologyReferenceAction(
+  text: string,
+  url: string | null | undefined
+): boolean {
+  const lower = cleanText(text).toLowerCase().trim();
+  if (!lower) {
+    return false;
+  }
+
+  if (
+    /\b(apply|application|continue|next step|review|submit|start|proceed|company|employer|career|job|site)\b/.test(
+      lower
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    NON_ACTION_TECH_LABEL_PATTERN.test(lower) ||
+    (lower.endsWith(".js") && lower.split(/\s+/).length <= 2)
+  ) {
+    return true;
+  }
+
+  return Boolean(url && NON_ACTION_TECH_URL_PATTERN.test(url.toLowerCase()));
 }
 
 export function isAlreadyOnApplyPage(site: SiteKey, url: string): boolean {
@@ -3720,6 +4061,10 @@ function scoreApplyElement(
     return -1;
   }
 
+  if (isLikelyTechnologyReferenceAction(text, url)) {
+    return -1;
+  }
+
   if (isLikelyInformationalPageUrl(url)) {
     return -1;
   }
@@ -3772,7 +4117,11 @@ function scoreApplyElement(
   if (blocked.some((value) => lower.includes(value)) || isLegalOrPolicyText(lower)) {
     return -1;
   }
-  if (isLikelyNavigationChrome(element) && !lower.includes("apply")) {
+  if (
+    isLikelyNavigationChrome(element) &&
+    !lower.includes("apply") &&
+    !lower.includes("application")
+  ) {
     return -1;
   }
 
@@ -3797,6 +4146,9 @@ function scoreApplyElement(
   if (lowerUrl.includes("smartapply.indeed.com")) score += 100;
   if (lowerUrl.includes("indeedapply")) score += 95;
   if (lowerUrl.includes("zipapply")) score += 90;
+  if (lower === "application" && /\/application(?:[/?#]|$)/.test(lowerUrl)) {
+    score += 84;
+  }
 
   if (lower === "apply now") score += 92;
   if (lower === "apply") score += 86;
@@ -3818,12 +4170,16 @@ function scoreApplyElement(
   if (lower.includes("apply now")) score += 80;
   if (lower.includes("start application")) score += 72;
   if (lower.includes("begin application")) score += 72;
+  if (lower.includes("view application")) score += 70;
   if (lower.includes("continue to application")) score += 68;
   if (lower.includes("continue application")) score += 65;
   if (lower.includes("apply for this")) score += 75;
   if (lower.includes("apply to this")) score += 75;
 
   if (score === 0 && lower.includes("apply")) score += 50;
+  if (score === 0 && lower === "application" && lowerUrl.includes("/application")) {
+    score += 48;
+  }
 
   if (context === "follow-up") {
     if (lower.includes("continue") && !lower.includes("submit")) score += 40;

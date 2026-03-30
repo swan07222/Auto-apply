@@ -950,4 +950,78 @@ describe("search result collection", () => {
       value: originalLocation,
     });
   });
+
+  it("does not follow Greenhouse job-alert links while collecting public board results", async () => {
+    const originalLocation = window.location;
+    const boardLocation = new URL(
+      "https://job-boards.greenhouse.io/vercel"
+    ) as unknown as Location;
+    const assignSpy = vi.fn();
+    Object.defineProperty(boardLocation, "assign", {
+      configurable: true,
+      value: assignSpy,
+    });
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: boardLocation,
+    });
+
+    document.body.innerHTML = `
+      <main class="main font-secondary">
+        <div class="job-alert">
+          <a href="https://my.greenhouse.io/users/sign_in?job_board=vercel&source=job_alert_board">
+            Create alert
+          </a>
+        </div>
+        <div class="job-posts">
+          <div class="job-posts--table--department">
+            <div class="job-posts--table">
+              <table>
+                <tbody>
+                  <tr class="job-post">
+                    <td class="cell">
+                      <a href="https://job-boards.greenhouse.io/vercel/jobs/5732855004">
+                        <p>Site Engineer</p>
+                        <p>Remote - United States</p>
+                      </a>
+                    </td>
+                  </tr>
+                  <tr class="job-post">
+                    <td class="cell">
+                      <a href="https://job-boards.greenhouse.io/vercel/jobs/5818258004">
+                        <p>Senior Customer Support Engineer</p>
+                        <p>Remote - United Kingdom, Germany</p>
+                      </a>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </main>
+    `;
+
+    const promise = waitForJobDetailUrls({
+      site: "greenhouse",
+      datePostedWindow: "any",
+      targetCount: 30,
+      detectedSite: "greenhouse",
+      searchKeywords: ["site engineer"],
+    });
+
+    await vi.runAllTimersAsync();
+    const urls = await promise;
+
+    expect(urls).toEqual([
+      "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5818258004",
+    ]);
+    expect(assignSpy).not.toHaveBeenCalled();
+
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: originalLocation,
+    });
+  });
 });

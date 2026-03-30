@@ -463,10 +463,12 @@ function buildGreenhouseSearchUrl(
     }
   }
 
-  const url = new URL(resolveGreenhouseBoardBaseUrl(currentUrl, fallbackOrigin));
-  url.searchParams.set("keyword", buildGreenhouseKeywordQuery(query));
-  url.searchParams.set("location", normalizeGreenhouseSearchLocation(candidateCountry));
-  return url.toString();
+  // Public Greenhouse boards expose visible job lists directly. Keeping the
+  // board-root URL avoids client-side redirects into MyGreenhouse sign-in flows
+  // that can happen when query params are appended in a real browser.
+  return new URL(
+    resolveGreenhouseBoardBaseUrl(currentUrl, fallbackOrigin)
+  ).toString();
 }
 
 function buildMyGreenhousePortalQuery(query: string): string {

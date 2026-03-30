@@ -120,6 +120,8 @@ export async function waitForJobDetailUrls({
     site === "other_sites" ||
     site === "greenhouse" ||
     site === "builtin";
+  const shouldTryCareerSurfaceRecovery =
+    isCareerSite && site !== "greenhouse" && !isMyGreenhousePortal;
   const needsAggressiveScan =
     isCareerSite ||
     site === "monster" ||
@@ -200,7 +202,7 @@ export async function waitForJobDetailUrls({
 
     if (isCareerSite) {
       if (
-        !isMyGreenhousePortal &&
+        shouldTryCareerSurfaceRecovery &&
         careerSurfaceAttempts < 2 &&
         (attempt === 8 || attempt === 18)
       ) {
@@ -1171,9 +1173,11 @@ function collectCareerListingActions(): Array<{
     }
 
     if (
-      ["sign in", "job alert", "talent network", "saved jobs"].some(
-        (token) => text.includes(token) || lowerNavUrl.includes(token)
-      )
+      ["sign in", "create alert", "job alert", "talent network", "saved jobs"].some(
+        (token) => text.includes(token)
+      ) ||
+      lowerNavUrl.includes("/users/sign_in") ||
+      lowerNavUrl.includes("job_alert")
     ) {
       continue;
     }

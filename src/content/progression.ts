@@ -4,6 +4,11 @@ import { findProgressionAction } from "./apply";
 import { performClickAction } from "./dom";
 import { AutofillField, ProgressionAction } from "./types";
 
+const PROGRESSION_POLL_MS = 125;
+const IN_PLACE_FORM_CHANGE_DELAYS_MS = [
+  200, 200, 250, 250, 300, 300, 400, 400, 500, 500,
+];
+
 type HandleProgressionActionOptions = {
   site: SiteKey;
   progression: ProgressionAction;
@@ -29,7 +34,7 @@ export async function waitForReadyProgressionAction(
       return progression;
     }
 
-    await sleep(250);
+    await sleep(PROGRESSION_POLL_MS);
   }
 
   return null;
@@ -67,7 +72,11 @@ export async function handleProgressionAction({
   performClickAction(progression.element, {
     skipFocus: site === "monster",
   });
-  await sleep(site === "indeed" || site === "ziprecruiter" ? 3_400 : 2_800);
+  await waitForProgressionTransition({
+    previousUrl,
+    site,
+    hasLikelyApplicationSurface,
+  });
 
   if (window.location.href !== previousUrl) {
     await waitForHumanVerificationToClear();
@@ -98,8 +107,8 @@ async function waitForFormContentChange(
   collectAutofillFields: () => AutofillField[]
 ): Promise<void> {
   const initial = collectAutofillFields().length;
-  for (let i = 0; i < 12; i += 1) {
-    await sleep(500);
+  for (const delayMs of IN_PLACE_FORM_CHANGE_DELAYS_MS) {
+    await sleep(delayMs);
     const current = collectAutofillFields().length;
     if (current !== initial) {
       return;
@@ -111,6 +120,30 @@ async function waitForFormContentChange(
     if (blanks.length > 0) {
       return;
     }
+  }
+}
+
+async function waitForProgressionTransition({
+  previousUrl,
+  site,
+  hasLikelyApplicationSurface,
+}: {
+  previousUrl: string;
+  site: SiteKey;
+  hasLikelyApplicationSurface: (site: SiteKey) => boolean;
+}): Promise<void> {
+  const deadline =
+    Date.now() + (site === "indeed" || site === "ziprecruiter" ? 2_200 : 1_600);
+
+  while (Date.now() < deadline) {
+    if (
+      window.location.href !== previousUrl ||
+      hasLikelyApplicationSurface(site)
+    ) {
+      return;
+    }
+
+    await sleep(PROGRESSION_POLL_MS);
   }
 }
 

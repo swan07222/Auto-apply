@@ -22,15 +22,46 @@ describe("choice fill helpers", () => {
     const yes = document.querySelector("#auth-yes") as HTMLInputElement;
     const inputSpy = vi.fn();
     const changeSpy = vi.fn();
+    const clickSpy = vi.fn();
 
     yes.addEventListener("input", inputSpy);
     yes.addEventListener("change", changeSpy);
+    yes.addEventListener("click", clickSpy);
 
     expect(applyAnswerToRadioGroup(no, "Yes", true)).toBe(true);
     expect(yes.checked).toBe(true);
     expect(no.checked).toBe(false);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
     expect(inputSpy).toHaveBeenCalledTimes(1);
     expect(changeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("fires click-aware radio updates so controlled forms can enable progression", () => {
+    document.body.innerHTML = `
+      <form>
+        <fieldset>
+          <legend>Do you have a completed Bachelor's degree?</legend>
+          <label for="degree-yes">Yes</label>
+          <input id="degree-yes" name="degree" type="radio" value="yes" />
+          <label for="degree-no">No</label>
+          <input id="degree-no" name="degree" type="radio" value="no" />
+        </fieldset>
+        <button id="continue" type="button" disabled>Continue</button>
+      </form>
+    `;
+
+    const yes = document.querySelector("#degree-yes") as HTMLInputElement;
+    const no = document.querySelector("#degree-no") as HTMLInputElement;
+    const continueButton = document.querySelector("#continue") as HTMLButtonElement;
+
+    yes.addEventListener("click", () => {
+      continueButton.disabled = !yes.checked;
+    });
+
+    expect(continueButton.disabled).toBe(true);
+    expect(applyAnswerToRadioGroup(no, "Yes", true)).toBe(true);
+    expect(yes.checked).toBe(true);
+    expect(continueButton.disabled).toBe(false);
   });
 
   it("keeps an existing radio choice when overwrite is not allowed", () => {

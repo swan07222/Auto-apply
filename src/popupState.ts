@@ -46,13 +46,15 @@ export function derivePopupIdlePreview(
     searchMode,
     supportedJobBoardPrompt,
   } = options;
-  const activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
+  const activeRunnableSite = isRunnableCurrentTabSite(activeSite)
+    ? activeSite
+    : null;
 
   if (!hasKeywords) {
     return {
       status: createStatus(
         searchMode === "job_board"
-          ? activeJobBoardSite ?? "unsupported"
+          ? activeRunnableSite ?? "unsupported"
           : searchMode === "startup_careers"
             ? "startup"
             : "other_sites",
@@ -92,7 +94,7 @@ export function derivePopupIdlePreview(
     };
   }
 
-  if (!activeJobBoardSite) {
+  if (!activeRunnableSite) {
     return {
       status: createStatus("unsupported", "error", supportedJobBoardPrompt),
       startDisabled: true,
@@ -101,9 +103,9 @@ export function derivePopupIdlePreview(
 
   return {
     status: createStatus(
-      activeJobBoardSite,
+      activeRunnableSite,
       "idle",
-      `Ready on ${getSiteLabel(activeJobBoardSite)}.`
+      `Ready on ${getSiteLabel(activeRunnableSite)}.`
     ),
     startDisabled: false,
   };
@@ -121,7 +123,7 @@ export function shouldDisableStartButtonForSession(
     session?.phase === "waiting_for_verification";
 
   if (searchMode === "job_board") {
-    return !isJobBoardSite(activeSite) || sessionIsActive;
+    return !isRunnableCurrentTabSite(activeSite) || sessionIsActive;
   }
 
   return sessionIsActive;
@@ -137,4 +139,8 @@ function isJobBoardSite(site: SiteKey | null): boolean {
     site === "greenhouse" ||
     site === "builtin"
   );
+}
+
+function isRunnableCurrentTabSite(site: SiteKey | null): boolean {
+  return isJobBoardSite(site) || site === "other_sites";
 }

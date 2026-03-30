@@ -49,6 +49,28 @@ describe("autofill helpers", () => {
     );
   });
 
+  it("reads question text from described-by prompts and prompt-style containers", () => {
+    document.body.innerHTML = `
+      <form>
+        <div class="application-question">
+          <h3 id="full-name-question">What is your full name?</h3>
+          <input id="full-name" type="text" aria-describedby="full-name-question" />
+        </div>
+        <div class="application-question">
+          <p>What is your current location?</p>
+          <input id="current-location" type="text" />
+        </div>
+      </form>
+    `;
+
+    expect(getQuestionText(document.querySelector("#full-name") as HTMLInputElement)).toBe(
+      "What is your full name?"
+    );
+    expect(
+      getQuestionText(document.querySelector("#current-location") as HTMLInputElement)
+    ).toBe("What is your current location?");
+  });
+
   it("builds descriptors and label text from surrounding markup", () => {
     document.body.innerHTML = `
       <label for="portfolio">Portfolio URL</label>
@@ -187,6 +209,9 @@ describe("autofill helpers", () => {
           <option value="us">United States</option>
         </select>
 
+        <label for="location">Current location</label>
+        <input id="location" type="text" value="Old location" />
+
         <label for="motivation">Why do you want this role?</label>
         <textarea id="motivation">Old answer</textarea>
       </form>
@@ -202,6 +227,12 @@ describe("autofill helpers", () => {
       shouldOverwriteAutofillValue(
         document.querySelector("#country") as HTMLSelectElement,
         "United States"
+      )
+    ).toBe(true);
+    expect(
+      shouldOverwriteAutofillValue(
+        document.querySelector("#location") as HTMLInputElement,
+        "Phoenix, Arizona"
       )
     ).toBe(true);
     expect(

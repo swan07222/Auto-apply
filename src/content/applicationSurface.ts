@@ -26,30 +26,119 @@ const APPLICATION_FRAME_SELECTOR =
   "iframe[src*='apply'], iframe[src*='application'], iframe[id*='apply'], iframe[class*='apply'], iframe[src*='greenhouse'], iframe[src*='lever'], iframe[src*='workday'], iframe[data-src*='apply'], iframe[data-src*='application'], iframe[data-src*='greenhouse'], iframe[data-src*='lever'], iframe[data-src*='workday']";
 const MONSTER_APPLICATION_SHELL_SELECTOR =
   "[role='dialog'], [aria-modal='true'], [class*='modal'], [class*='drawer'], [class*='overlay'], [class*='sheet'], [class*='popup'], [data-testid*='apply'], [data-testid*='application'], [data-testid*='candidate'], [data-testid*='resume'], [data-test*='apply'], [data-test*='application'], [data-test*='candidate'], [data-test*='resume'], [class*='application'], [class*='candidate'], [class*='resume'], [class*='upload'], [id*='application'], [id*='candidate'], [id*='resume']";
+const GREENHOUSE_LAUNCH_SHELL_SELECTOR =
+  "[role='dialog'], [aria-modal='true'], [class*='modal'], [class*='drawer'], [class*='overlay'], [class*='sheet'], [class*='popup'], [data-testid*='apply'], [data-testid*='application'], [data-testid*='greenhouse'], [data-test*='apply'], [data-test*='application'], [data-test*='greenhouse'], [class*='application'], [class*='candidate'], [class*='resume'], [class*='greenhouse'], [id*='application'], [id*='candidate'], [id*='resume'], [id*='greenhouse']";
+const APPLICATION_SURFACE_WAIT_DELAYS_MS = [
+  150, 150, 200, 200, 250, 250, 300, 300, 350, 350, 450, 450, 600, 600, 750,
+  750, 900, 900, 1_000, 1_000,
+];
+const APPLICATION_SURFACE_SCROLL_ATTEMPTS = new Set([2, 4, 8, 12, 16]);
 
 export async function waitForLikelyApplicationSurface(
   site: SiteKey,
   collectors: ApplicationSurfaceCollectors
 ): Promise<boolean> {
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (
+    let attempt = 0;
+    attempt < APPLICATION_SURFACE_WAIT_DELAYS_MS.length;
+    attempt += 1
+  ) {
     if (hasLikelyApplicationSurface(site, collectors)) {
       return true;
     }
 
     if (
       site !== "monster" &&
-      (attempt === 5 || attempt === 10 || attempt === 15 || attempt === 20)
+      APPLICATION_SURFACE_SCROLL_ATTEMPTS.has(attempt)
     ) {
-      window.scrollTo({
-        top: document.body.scrollHeight / 2,
-        behavior: "smooth",
-      });
+      revealLikelyApplicationRegion(site, attempt);
     }
 
-    await sleep(700);
+    await sleep(APPLICATION_SURFACE_WAIT_DELAYS_MS[attempt]);
   }
 
   return false;
+}
+
+function revealLikelyApplicationRegion(site: SiteKey, attempt: number): void {
+  if (scrollLikelyApplicationAnchorIntoView()) {
+    return;
+  }
+
+  const totalHeight = Math.max(
+    document.body?.scrollHeight ?? 0,
+    document.documentElement?.scrollHeight ?? 0
+  );
+  const viewportHeight = Math.max(window.innerHeight, 1);
+  const maxScrollTop = Math.max(0, totalHeight - viewportHeight);
+
+  if (maxScrollTop <= 0) {
+    return;
+  }
+
+  const waypoints =
+    site === "greenhouse"
+      ? [0.22, 0.48, 0.72, 0.92, 1]
+      : [0.25, 0.5, 0.78, 1];
+  const waypointIndex =
+    attempt <= 2
+      ? 0
+      : attempt <= 4
+        ? 1
+        : attempt <= 8
+          ? 2
+          : attempt <= 12
+            ? Math.min(3, waypoints.length - 1)
+            : waypoints.length - 1;
+  const targetTop = Math.round(maxScrollTop * waypoints[waypointIndex]);
+
+  window.scrollTo({
+    top: targetTop,
+    behavior: "smooth",
+  });
+}
+
+function scrollLikelyApplicationAnchorIntoView(): boolean {
+  const hashTarget = decodeHashTarget(window.location.hash);
+  const candidateIds = [
+    hashTarget,
+    "application",
+    "apply",
+    "job-application",
+    "job_application",
+  ].filter(Boolean) as string[];
+
+  for (const id of candidateIds) {
+    const target = document.getElementById(id);
+    if (!target) {
+      continue;
+    }
+
+    try {
+      target.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
+}
+
+function decodeHashTarget(hash: string): string {
+  const trimmed = hash.trim().replace(/^#/, "");
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    return decodeURIComponent(trimmed);
+  } catch {
+    return trimmed;
+  }
 }
 
 export function hasLikelyApplicationForm(
@@ -189,6 +278,10 @@ export function hasLikelyApplicationSurface(
     return true;
   }
 
+  if (site === "greenhouse" && hasLikelyGreenhouseLaunchSurface()) {
+    return true;
+  }
+
   if (
     (site === "builtin" || site === "other_sites" || site === "startup") &&
     hasLikelyAtsLaunchModalSurface()
@@ -318,6 +411,136 @@ function hasMonsterInlineApplySurface(
     }
 
     if (applyLike && hasActionControl && hasAccountField && signalCount >= 3) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasLikelyGreenhouseLaunchSurface(): boolean {
+  for (const shell of collectDeepMatches<HTMLElement>(
+    GREENHOUSE_LAUNCH_SHELL_SELECTOR
+  )) {
+    if (!isElementVisible(shell)) {
+      continue;
+    }
+
+    const text = cleanText(shell.innerText || shell.textContent || "")
+      .toLowerCase()
+      .slice(0, 2000);
+    if (!text) {
+      continue;
+    }
+
+    const metadata = cleanText(
+      [
+        shell.id,
+        typeof shell.className === "string" ? shell.className : "",
+        shell.getAttribute("data-testid"),
+        shell.getAttribute("data-test"),
+        shell.getAttribute("aria-label"),
+        shell.getAttribute("title"),
+        shell.getAttribute("role"),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    ).toLowerCase();
+    const modalLike =
+      shell.matches("[role='dialog'], [aria-modal='true']") ||
+      /\b(modal|drawer|overlay|sheet|popup)\b/.test(metadata);
+    const hasLaunchMetadata = /\b(apply|application|candidate|resume|greenhouse)\b/.test(
+      metadata
+    );
+    const actionCount = shell.querySelectorAll(
+      "button, a[href], [role='button'], input[type='submit'], input[type='button']"
+    ).length;
+    const hasResumeUpload = Boolean(
+      shell.querySelector(
+        "input[type='file'], input[name*='resume' i], input[id*='resume' i], input[aria-label*='resume' i]"
+      )
+    );
+    const hasIdentityField = Boolean(
+      shell.querySelector(
+        "input[type='email'], input[type='tel'], input[name*='first' i], input[name*='last' i], textarea"
+      )
+    );
+    const hasGreenhouseFrame = Boolean(
+      shell.querySelector(
+        "iframe[src*='greenhouse.io'], iframe[data-src*='greenhouse.io']"
+      )
+    );
+    const hasProgressionControl = Array.from(
+      shell.querySelectorAll<HTMLElement>(
+        "button, a[href], [role='button'], input[type='submit'], input[type='button']"
+      )
+    ).some((control) => {
+      if (!isElementVisible(control)) {
+        return false;
+      }
+
+      const controlText = cleanText(
+        [
+          control.innerText,
+          control.textContent,
+          control.getAttribute("aria-label"),
+          control.getAttribute("title"),
+          control.getAttribute("value"),
+          control.getAttribute("data-testid"),
+          control.getAttribute("data-test"),
+        ]
+          .filter(Boolean)
+          .join(" ")
+      ).toLowerCase();
+
+      return (
+        /\bcontinue\b/.test(controlText) ||
+        /\bnext\b/.test(controlText) ||
+        /\breview\b/.test(controlText) ||
+        /\bautofill with resume\b/.test(controlText) ||
+        /\bauto[- ]?fill with resume\b/.test(controlText) ||
+        /\bapply manually\b/.test(controlText) ||
+        /\buse my last application\b/.test(controlText) ||
+        /\bstart (?:my |your )?application\b/.test(controlText) ||
+        /\bcontinue application\b/.test(controlText)
+      );
+    });
+    const signalCount = [
+      "apply for this job",
+      "start application",
+      "continue application",
+      "submit application",
+      "powered by greenhouse",
+      "upload resume",
+      "upload cv",
+      "cover letter",
+      "autofill",
+      "candidate",
+      "resume",
+      "application",
+      "greenhouse",
+    ].filter((signal) => text.includes(signal) || metadata.includes(signal)).length;
+
+    if (!modalLike && !hasLaunchMetadata && signalCount < 3) {
+      continue;
+    }
+
+    if (hasGreenhouseFrame) {
+      return true;
+    }
+
+    if (hasResumeUpload && hasIdentityField) {
+      return true;
+    }
+
+    if (
+      hasProgressionControl &&
+      (signalCount >= 3 || hasResumeUpload || hasIdentityField || modalLike)
+    ) {
+      return true;
+    }
+
+    if (signalCount >= 4 && actionCount >= 1 && (hasResumeUpload || modalLike)) {
       return true;
     }
   }

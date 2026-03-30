@@ -277,6 +277,10 @@ function detectSiteFromUrl(url) {
   if (bare === "dice.com" || bare.endsWith(".dice.com")) return "dice";
   if (bare === "builtin.com" || bare.endsWith(".builtin.com")) return "builtin";
   if (bare === "greenhouse.io" || bare.endsWith(".greenhouse.io")) return "greenhouse";
+  if (bare === "ashbyhq.com" || bare.endsWith(".ashbyhq.com")) return "other_sites";
+  if (bare === "workdayjobs.com" || bare.endsWith(".workdayjobs.com") || bare === "myworkdayjobs.com" || bare.endsWith(".myworkdayjobs.com")) {
+    return "other_sites";
+  }
   const hostParts = bare.split(".");
   for (let index = 0; index < hostParts.length; index += 1) {
     if (hostParts[index] === "monster" && index < hostParts.length - 1) {
@@ -907,11 +911,11 @@ function derivePopupIdlePreview(options) {
     searchMode,
     supportedJobBoardPrompt
   } = options;
-  const activeJobBoardSite = isJobBoardSite2(activeSite2) ? activeSite2 : null;
+  const activeRunnableSite = isRunnableCurrentTabSite(activeSite2) ? activeSite2 : null;
   if (!hasKeywords) {
     return {
       status: createStatus(
-        searchMode === "job_board" ? activeJobBoardSite ?? "unsupported" : searchMode === "startup_careers" ? "startup" : "other_sites",
+        searchMode === "job_board" ? activeRunnableSite ?? "unsupported" : searchMode === "startup_careers" ? "startup" : "other_sites",
         "error",
         "Add at least one search keyword before starting automation."
       ),
@@ -944,7 +948,7 @@ function derivePopupIdlePreview(options) {
       startDisabled: true
     };
   }
-  if (!activeJobBoardSite) {
+  if (!activeRunnableSite) {
     return {
       status: createStatus("unsupported", "error", supportedJobBoardPrompt),
       startDisabled: true
@@ -952,9 +956,9 @@ function derivePopupIdlePreview(options) {
   }
   return {
     status: createStatus(
-      activeJobBoardSite,
+      activeRunnableSite,
       "idle",
-      `Ready on ${getSiteLabel(activeJobBoardSite)}.`
+      `Ready on ${getSiteLabel(activeRunnableSite)}.`
     ),
     startDisabled: false
   };
@@ -962,18 +966,21 @@ function derivePopupIdlePreview(options) {
 function shouldDisableStartButtonForSession(searchMode, activeSite2, session) {
   const sessionIsActive = session?.phase === "running" || session?.phase === "queued" || session?.phase === "paused" || session?.phase === "waiting_for_verification";
   if (searchMode === "job_board") {
-    return !isJobBoardSite2(activeSite2) || sessionIsActive;
+    return !isRunnableCurrentTabSite(activeSite2) || sessionIsActive;
   }
   return sessionIsActive;
 }
 function isJobBoardSite2(site) {
   return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor" || site === "greenhouse" || site === "builtin";
 }
+function isRunnableCurrentTabSite(site) {
+  return isJobBoardSite2(site) || site === "other_sites";
+}
 
 // src/popup.ts
 var MAX_RESUME_TEXT_CHARS = 24e3;
-var SUPPORTED_JOB_BOARD_PROMPT = "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In in the active tab to start.";
-var SUPPORTED_JOB_BOARD_MODE_PROMPT = "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, or Built In in the active tab to use Job Board mode.";
+var SUPPORTED_JOB_BOARD_PROMPT = "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or a supported company application page in the active tab to start.";
+var SUPPORTED_JOB_BOARD_MODE_PROMPT = "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or a supported company application page in the active tab to use Job Board mode.";
 var AUTO_SAVE_DELAY_MS = 220;
 var startButton = requireElement("#start-button");
 var clearAnswersButton = requireElement("#clear-answers-button");
@@ -987,6 +994,7 @@ var savedAnswerList = requireElement("#saved-answer-list");
 var savedAnswerEmptyState = requireElement(
   "#saved-answer-empty-state"
 );
+var savedAnswerSearchInput = requireElement("#saved-answer-search");
 var modePreview = requireElement("#mode-preview");
 var profileSelect = requireElement("#profile-select");
 var createProfileButton = requireElement(
@@ -1000,6 +1008,12 @@ var deleteProfileButton = requireElement(
 );
 var searchModeInput = requireElement("#search-mode");
 var datePostedWindowInput = requireElement("#date-posted-window");
+var datePostedWindowBaseLabels = new Map(
+  Array.from(datePostedWindowInput.options).map((option) => [
+    option.value,
+    option.textContent || option.label || option.value
+  ])
+);
 var searchKeywordsInput = requireElement("#search-keywords");
 var fullNameInput = requireElement("#full-name");
 var emailInput = requireElement("#email");
@@ -1074,6 +1088,7 @@ var settingsWriteQueue = Promise.resolve();
 var settings = createEmptySettings();
 var preferredDatePostedWindow = settings.datePostedWindow;
 var chromeTabListenersRegistered = false;
+var savedAnswerEntries = [];
 var popupDialog = createPopupDialogController({
   root: dialogRoot,
   backdrop: dialogBackdrop,
@@ -1134,6 +1149,9 @@ savedAnswerList.addEventListener("click", (event) => {
     return;
   }
   void (source === "remembered" ? removeRememberedAnswer(key) : removePreferenceAnswer(key));
+});
+savedAnswerSearchInput.addEventListener("input", () => {
+  updateSavedAnswerSearchResults();
 });
 searchModeInput.addEventListener("change", () => {
   updateModeUi();
@@ -1357,7 +1375,8 @@ async function startAutomation() {
     setStartButtonDisabled(false);
     return;
   }
-  if (!isJobBoardSite(activeSite)) {
+  const resolvedActiveSite = await resolveRunnableSiteForTab(activeTabId);
+  if (!resolvedActiveSite) {
     applyStatus(
       createStatus(
         "unsupported",
@@ -1370,9 +1389,9 @@ async function startAutomation() {
   }
   applyStatus(
     createStatus(
-      activeSite,
+      resolvedActiveSite,
       "running",
-      `Starting on ${getSiteLabel(activeSite)}...`
+      `Starting on ${getSiteLabel(resolvedActiveSite)}...`
     )
   );
   try {
@@ -1383,7 +1402,7 @@ async function startAutomation() {
     if (!response?.ok) {
       applyStatus(
         createStatus(
-          activeSite,
+          resolvedActiveSite,
           "error",
           response?.error ?? "The extension could not start on this tab."
         )
@@ -1394,7 +1413,7 @@ async function startAutomation() {
   } catch (error) {
     applyStatus(
       createStatus(
-        activeSite,
+        resolvedActiveSite,
         "error",
         error instanceof Error ? error.message : "Failed to start automation."
       )
@@ -1446,7 +1465,7 @@ function schedulePeriodicRefresh(delayMs = 900) {
 async function performRefreshStatus() {
   await refreshActiveTabContext();
   const searchMode = getSelectedSearchMode2();
-  let activeJobBoardSite = isJobBoardSite(activeSite) ? activeSite : null;
+  let activeJobBoardSite = isRunnableCurrentTabSite2(activeSite) ? activeSite : null;
   const hasKeywords = getConfiguredKeywords().length > 0;
   activeSession = null;
   activeRunSummary = null;
@@ -1579,7 +1598,7 @@ async function performRefreshStatus() {
   } catch {
   }
   if (bgSession && (bgSession.site === activeJobBoardSite || !activeJobBoardSite && bgSession.phase !== "idle")) {
-    if (!activeJobBoardSite && isJobBoardSite(bgSession.site)) {
+    if (!activeJobBoardSite && isRunnableCurrentTabSite2(bgSession.site)) {
       activeSite = bgSession.site;
       activeJobBoardSite = bgSession.site;
       updateSiteNameDisplay();
@@ -1600,7 +1619,7 @@ async function performRefreshStatus() {
   }
   const contentStatus = await getContentStatus(activeTabId);
   if (contentStatus && (contentStatus.site === activeJobBoardSite || !activeJobBoardSite && contentStatus.site !== "unsupported")) {
-    if (!activeJobBoardSite && isJobBoardSite(contentStatus.site)) {
+    if (!activeJobBoardSite && isRunnableCurrentTabSite2(contentStatus.site)) {
       activeSite = contentStatus.site;
       activeJobBoardSite = contentStatus.site;
       updateSiteNameDisplay();
@@ -1688,8 +1707,8 @@ function updateSiteNameDisplay() {
   } else if (searchMode === "other_job_sites") {
     siteName.textContent = "Other Job Sites";
   } else {
-    const sessionSite = activeSession?.site && activeSession.site !== "unsupported" ? activeSession.site : isJobBoardSite(currentStatusSnapshot.site) ? currentStatusSnapshot.site : null;
-    siteName.textContent = isJobBoardSite(activeSite) ? getSiteLabel(activeSite) : sessionSite ? getSiteLabel(sessionSite) : "No supported site";
+    const sessionSite = activeSession?.site && activeSession.site !== "unsupported" ? activeSession.site : isRunnableCurrentTabSite2(currentStatusSnapshot.site) ? currentStatusSnapshot.site : null;
+    siteName.textContent = isRunnableCurrentTabSite2(activeSite) ? getSiteLabel(activeSite) : sessionSite ? getSiteLabel(sessionSite) : "No supported site";
   }
   updateDatePostedWindowInputState();
 }
@@ -1812,6 +1831,23 @@ function cancelScheduledAutoSave() {
     window.clearTimeout(autoSaveTimerId);
     autoSaveTimerId = null;
   }
+}
+async function resolveRunnableSiteForTab(tabId) {
+  if (isRunnableCurrentTabSite2(activeSite)) {
+    return activeSite;
+  }
+  if (activeSession?.tabId === tabId && isRunnableCurrentTabSite2(activeSession.site)) {
+    activeSite = activeSession.site;
+    updateSiteNameDisplay();
+    return activeSession.site;
+  }
+  const contentStatus = await getContentStatus(tabId);
+  if (!contentStatus || !isRunnableCurrentTabSite2(contentStatus.site)) {
+    return null;
+  }
+  activeSite = contentStatus.site;
+  updateSiteNameDisplay();
+  return contentStatus.site;
 }
 async function flushPendingAutoSave() {
   cancelScheduledAutoSave();
@@ -2269,7 +2305,7 @@ function renderProfileOptions(profiles, activeProfileId) {
   }
 }
 function renderSavedAnswers(rememberedAnswers, customAnswers) {
-  const entries = [
+  savedAnswerEntries = [
     ...Object.entries(rememberedAnswers).map(([key, answer]) => ({
       key,
       answer,
@@ -2281,17 +2317,37 @@ function renderSavedAnswers(rememberedAnswers, customAnswers) {
       source: "custom"
     }))
   ].sort((left, right) => right.answer.updatedAt - left.answer.updatedAt);
-  savedAnswerCount.textContent = String(entries.length);
   clearAnswersButton.disabled = Object.keys(rememberedAnswers).length === 0;
+  savedAnswerSearchInput.disabled = savedAnswerEntries.length === 0;
+  updateSavedAnswerSearchResults();
+}
+function updateSavedAnswerSearchResults() {
+  const rawQuery = savedAnswerSearchInput.value.replace(/\s+/g, " ").trim();
+  const normalizedQuery = normalizeSavedAnswerSearchQuery(rawQuery);
+  const filteredEntries = savedAnswerEntries.filter(
+    (entry) => !normalizedQuery || getSavedAnswerSearchHaystack(entry).includes(normalizedQuery)
+  );
+  savedAnswerCount.textContent = savedAnswerEntries.length === 0 ? "0" : normalizedQuery ? `${filteredEntries.length}/${savedAnswerEntries.length}` : String(savedAnswerEntries.length);
   renderSavedAnswerList({
     container: savedAnswerList,
     emptyState: savedAnswerEmptyState,
-    entries
+    entries: filteredEntries,
+    hasSavedAnswers: savedAnswerEntries.length > 0,
+    searchQuery: rawQuery
   });
 }
+function normalizeSavedAnswerSearchQuery(value) {
+  return value.replace(/\s+/g, " ").trim().toLocaleLowerCase();
+}
+function getSavedAnswerSearchHaystack(entry) {
+  return normalizeSavedAnswerSearchQuery(
+    [entry.key, entry.answer.question, entry.answer.value].join(" ")
+  );
+}
 function renderSavedAnswerList(options) {
-  const { container, emptyState, entries } = options;
+  const { container, emptyState, entries, hasSavedAnswers, searchQuery } = options;
   emptyState.hidden = entries.length > 0;
+  emptyState.textContent = hasSavedAnswers && searchQuery ? `No saved questions or answers match "${truncateText(searchQuery, 44)}".` : "No saved questions or answers yet.";
   container.replaceChildren();
   for (const { key, answer, source } of entries) {
     const row = document.createElement("article");
@@ -2521,6 +2577,9 @@ function updateOverviewPreview() {
 function getSelectedSearchMode2() {
   return getSelectedSearchMode(searchModeInput.value);
 }
+function isRunnableCurrentTabSite2(site) {
+  return isJobBoardSite(site) || site === "other_sites";
+}
 function getSelectedDatePostedWindow() {
   const value = datePostedWindowInput.value;
   if (isDatePostedWindow(value)) {
@@ -2645,11 +2704,15 @@ function updateDatePostedWindowInputState() {
     const optionValue = option.value;
     if (!isDatePostedWindow(optionValue)) {
       option.disabled = false;
+      option.textContent = datePostedWindowBaseLabels.get(optionValue) ?? option.textContent;
       continue;
     }
-    option.disabled = !supportedWindows.includes(optionValue);
+    const supported = supportedWindows.includes(optionValue);
+    option.disabled = !supported;
+    option.textContent = supported ? datePostedWindowBaseLabels.get(optionValue) ?? option.textContent : `${datePostedWindowBaseLabels.get(optionValue) ?? optionValue} (Unavailable here)`;
   }
   datePostedWindowInput.value = nextValue;
+  datePostedWindowInput.title = "Unsupported date windows are marked as unavailable for the active site.";
 }
 async function findBestActiveTab() {
   const queryResults = await Promise.allSettled([
@@ -2682,13 +2745,23 @@ async function findBestActiveTab() {
   if (candidates.length === 0) {
     return null;
   }
-  const jobBoardTab = candidates.find((tab) => {
+  const primaryWebPageTab = candidates.find((tab) => isWebPageTab(tab));
+  if (primaryWebPageTab?.id !== void 0) {
+    const url = getTabUrl(primaryWebPageTab);
+    if (isRunnableCurrentTabSite2(detectSiteFromUrl(url))) {
+      return primaryWebPageTab;
+    }
+    const contentStatus = await getContentStatus(primaryWebPageTab.id);
+    if (contentStatus && isRunnableCurrentTabSite2(contentStatus.site)) {
+      return primaryWebPageTab;
+    }
+  }
+  const supportedSiteTab = candidates.find((tab) => {
     const url = getTabUrl(tab);
-    return isWebPageTab(tab) && isJobBoardSite(detectSiteFromUrl(url));
+    return isWebPageTab(tab) && isRunnableCurrentTabSite2(detectSiteFromUrl(url));
   });
-  if (jobBoardTab) return jobBoardTab;
-  const webPageTab = candidates.find((tab) => isWebPageTab(tab));
-  return webPageTab ?? candidates[0] ?? null;
+  if (supportedSiteTab) return supportedSiteTab;
+  return primaryWebPageTab ?? candidates[0] ?? null;
 }
 function getTabUrl(tab) {
   const currentUrl = tab?.url ?? "";

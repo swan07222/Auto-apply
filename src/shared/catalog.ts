@@ -166,8 +166,7 @@ export const OTHER_JOB_SITE_DEFINITIONS: CuratedJobSiteDefinition[] = [
   {
     label: "Berlin Startup Jobs",
     regions: ["eu"],
-    buildUrl: (keyword) =>
-      `https://berlinstartupjobs.com/?s=${encodeURIComponent(keyword)}`,
+    buildUrl: (keyword) => buildBerlinStartupJobsUrl(keyword),
   },
 ];
 
@@ -369,6 +368,135 @@ function encodeSearchQueryForPath(query: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function buildBerlinStartupJobsUrl(keyword: string): string {
+  const normalizedKeyword = ` ${normalizeCuratedKeyword(keyword)} `;
+
+  if (
+    includesAnyNormalizedKeywordToken(normalizedKeyword, [
+      "engineer",
+      "engineering",
+      "developer",
+      "software",
+      "frontend",
+      "front end",
+      "front-end",
+      "backend",
+      "back end",
+      "back-end",
+      "fullstack",
+      "full stack",
+      "full-stack",
+      "devops",
+      "platform",
+      "site reliability",
+      "sre",
+      "qa",
+      "automation",
+      "security",
+      "mobile",
+      "android",
+      "ios",
+      "data",
+      "machine learning",
+      "ml",
+      "ai",
+      "cloud",
+      "infrastructure",
+      "infra",
+      "python",
+      "java",
+      "javascript",
+      "typescript",
+      "react",
+      "node",
+      "php",
+      "go",
+      "rust",
+      "ruby",
+    ])
+  ) {
+    return "https://berlinstartupjobs.com/engineering/";
+  }
+
+  const categoryRoutes: Array<{ path: string; tokens: string[] }> = [
+    {
+      path: "/product-management/",
+      tokens: ["product manager", "product owner", "product management"],
+    },
+    {
+      path: "/design-ux/",
+      tokens: ["designer", "design", "ux", "ui", "researcher"],
+    },
+    {
+      path: "/marketing/",
+      tokens: ["marketing", "growth", "seo", "content", "brand", "communications"],
+    },
+    {
+      path: "/sales/",
+      tokens: [
+        "sales",
+        "account executive",
+        "business development",
+        "sdr",
+        "bdr",
+        "partnerships",
+      ],
+    },
+    {
+      path: "/hr-recruiting/",
+      tokens: ["recruit", "recruiter", "talent", "human resources", "people ops", "hr"],
+    },
+    {
+      path: "/finance/",
+      tokens: ["finance", "financial", "accounting", "controller", "bookkeeper", "fp a"],
+    },
+    {
+      path: "/operations/",
+      tokens: ["operations", "support", "customer support", "office manager", "logistics"],
+    },
+    {
+      path: "/internships/",
+      tokens: ["intern", "internship", "working student"],
+    },
+    {
+      path: "/contracting-positions/",
+      tokens: ["contract", "contractor", "freelance", "freelancer", "consultant"],
+    },
+    {
+      path: "/seeking-co-founders/",
+      tokens: ["cofounder", "co founder", "co-founder", "founder"],
+    },
+  ];
+
+  for (const category of categoryRoutes) {
+    if (includesAnyNormalizedKeywordToken(normalizedKeyword, category.tokens)) {
+      return `https://berlinstartupjobs.com${category.path}`;
+    }
+  }
+
+  return "https://berlinstartupjobs.com/engineering/";
+}
+
+function normalizeCuratedKeyword(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+function includesAnyNormalizedKeywordToken(
+  normalizedKeyword: string,
+  tokens: readonly string[]
+): boolean {
+  return tokens.some((token) => {
+    const normalizedToken = normalizeCuratedKeyword(token);
+    return normalizedToken
+      ? normalizedKeyword.includes(` ${normalizedToken} `)
+      : false;
+  });
 }
 
 export function isDatePostedWindow(value: unknown): value is DatePostedWindow {

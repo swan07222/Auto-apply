@@ -41,6 +41,25 @@ const MANUAL_SUBMIT_REVIEW_PATTERNS = [
   "review before submitting",
 ];
 
+const MANUAL_PROGRESS_ACTION_PATTERNS = [
+  /\bcontinue\b/,
+  /\bnext\b/,
+  /\breview\b/,
+  /\bproceed\b/,
+  /\bstart\b/,
+  /\bsave\s*(?:and|&)\s*(?:continue|next)\b/,
+];
+
+const MANUAL_PROGRESS_BLOCK_PATTERNS = [
+  "next.js",
+  "nextjs",
+  "react.js",
+  "node.js",
+  "vue.js",
+  "back to search",
+  "back to results",
+];
+
 export function shouldStartManualReviewPause(
   target: EventTarget | null
 ): boolean {
@@ -70,6 +89,41 @@ export function shouldStartManualReviewPause(
   }
 
   return MANUAL_REVIEW_ACTION_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+export function isLikelyManualProgressionActionTarget(
+  target: EventTarget | null
+): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  const actionElement = target.closest<HTMLElement>(
+    "button, a[href], [role='button'], input[type='button'], input[type='submit']"
+  );
+  if (!actionElement || !isElementVisible(actionElement)) {
+    return false;
+  }
+
+  const text = cleanText(
+    getActionText(actionElement) ||
+      actionElement.getAttribute("aria-label") ||
+      actionElement.getAttribute("title") ||
+      ""
+  ).toLowerCase();
+  if (!text) {
+    return false;
+  }
+
+  if (
+    MANUAL_PROGRESS_BLOCK_PATTERNS.some((pattern) => text.includes(pattern)) ||
+    MANUAL_REVIEW_BLOCK_PATTERNS.some((pattern) => text.includes(pattern)) ||
+    MANUAL_SUBMIT_ACTION_PATTERNS.some((pattern) => pattern.test(text))
+  ) {
+    return false;
+  }
+
+  return MANUAL_PROGRESS_ACTION_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 export function hasEditableAutofillFields(fields: AutofillField[]): boolean {
@@ -298,6 +352,32 @@ export function shouldTreatManualSubmitActionAsReady(
   }
 
   return !hasVisibleInvalidAutofillFields(relevantFields);
+}
+
+export function resolveReadyManualSubmitActionForFormEvent(
+  form: HTMLFormElement,
+  submitter: EventTarget | null,
+  fields: AutofillField[]
+): HTMLElement | null {
+  if (submitter) {
+    const explicitSubmitAction = resolveManualSubmitActionElement(submitter);
+    if (!explicitSubmitAction) {
+      return null;
+    }
+
+    return shouldTreatManualSubmitActionAsReady(explicitSubmitAction, fields)
+      ? explicitSubmitAction
+      : null;
+  }
+
+  const fallbackAction = findVisibleManualSubmitAction(form);
+  if (!fallbackAction) {
+    return null;
+  }
+
+  return shouldTreatManualSubmitActionAsReady(fallbackAction, fields)
+    ? fallbackAction
+    : null;
 }
 
 export function isLikelyManualSubmitReviewPage(

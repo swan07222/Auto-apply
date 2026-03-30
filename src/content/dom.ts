@@ -58,6 +58,68 @@ export function collectDeepMatches<T extends Element>(
   return results;
 }
 
+export function collectDeepMatchesForSelectors<T extends Element>(
+  selectors: string[]
+): T[] {
+  const normalizedSelectors = selectors
+    .map((selector) => selector.trim())
+    .filter((selector) => selector.length > 0);
+
+  if (normalizedSelectors.length === 0) {
+    return [];
+  }
+
+  const results: T[] = [];
+  const seen = new Set<Element>();
+  const roots: Array<Document | ShadowRoot> = [document];
+  let rootIndex = 0;
+  const combinedSelector = normalizedSelectors.join(", ");
+
+  while (rootIndex < roots.length) {
+    const root = roots[rootIndex];
+    rootIndex += 1;
+    if (!root) {
+      continue;
+    }
+
+    let rootMatches: T[] = [];
+
+    try {
+      rootMatches = Array.from(root.querySelectorAll<T>(combinedSelector));
+    } catch {
+      for (const selector of normalizedSelectors) {
+        try {
+          rootMatches.push(...Array.from(root.querySelectorAll<T>(selector)));
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    for (const element of rootMatches) {
+      if (seen.has(element)) {
+        continue;
+      }
+
+      seen.add(element);
+      results.push(element);
+    }
+
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    let current = walker.nextNode();
+
+    while (current) {
+      const element = current as HTMLElement;
+      if (element.shadowRoot) {
+        roots.push(element.shadowRoot);
+      }
+      current = walker.nextNode();
+    }
+  }
+
+  return results;
+}
+
 export function collectShadowHosts(root: ParentNode): HTMLElement[] {
   const hosts: HTMLElement[] = [];
   const seen = new Set<HTMLElement>();
@@ -415,11 +477,14 @@ export function performClickAction(
   element: HTMLElement,
   options?: { skipFocus?: boolean }
 ): void {
+  const actionText = getActionText(element).toLowerCase();
   const isNativeSubmitControl =
     (element instanceof HTMLButtonElement &&
       element.type.toLowerCase() === "submit") ||
     (element instanceof HTMLInputElement &&
       element.type.toLowerCase() === "submit");
+  const shouldUseNativeSubmitClick =
+    isNativeSubmitControl && isLikelyNativeSubmitActionText(actionText);
   const isNativeInteractiveElement =
     element instanceof HTMLButtonElement ||
     element instanceof HTMLAnchorElement ||
@@ -441,7 +506,7 @@ export function performClickAction(
     }
   }
 
-  if (isNativeSubmitControl) {
+  if (shouldUseNativeSubmitClick) {
     try {
       element.click();
       return;
@@ -495,11 +560,28 @@ export function performClickAction(
   let clickedNatively = false;
 
   // Prefer a single native click once the pointer sequence has run.
-  try {
-    element.click();
-    clickedNatively = true;
-  } catch {
-    // Some elements may throw on click()
+  if (isNativeSubmitControl && !shouldUseNativeSubmitClick) {
+    try {
+      const originalType = element.type;
+      element.type = "button";
+      element.click();
+      element.type = originalType;
+      clickedNatively = true;
+    } catch {
+      try {
+        element.click();
+        clickedNatively = true;
+      } catch {
+        // Some elements may throw on click()
+      }
+    }
+  } else if (!isNativeSubmitControl || shouldUseNativeSubmitClick) {
+    try {
+      element.click();
+      clickedNatively = true;
+    } catch {
+      // Some elements may throw on click()
+    }
   }
 
   if (!clickedNatively) {
@@ -541,6 +623,24 @@ export function performClickAction(
       }
     }
   }
+}
+
+function isLikelyNativeSubmitActionText(text: string): boolean {
+  const lower = cleanText(text).toLowerCase();
+  if (!lower) {
+    return false;
+  }
+
+  return (
+    /\bsubmit\b/.test(lower) ||
+    /\bapply\b/.test(lower) ||
+    /\bcontinue\b/.test(lower) ||
+    /\bnext\b/.test(lower) ||
+    /\breview\b/.test(lower) ||
+    /\bproceed\b/.test(lower) ||
+    /\bsave\s*(?:and|&)\s*(?:continue|next)\b/.test(lower) ||
+    /\bstart\s+(?:my|your)?\s*application\b/.test(lower)
+  );
 }
 
 // Check whether an element is still interactive before clicking it.

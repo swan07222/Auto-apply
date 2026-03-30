@@ -602,6 +602,8 @@ export function hasLikelyApplicationSuccessSignals(doc: Document): boolean {
     "application has been submitted",
     "your application was submitted",
     "application was submitted",
+    "your application was successfully submitted",
+    "application was successfully submitted",
     "application submitted",
     "application successfully submitted",
     "your application is on its way",
@@ -620,6 +622,8 @@ export function hasLikelyApplicationSuccessSignals(doc: Document): boolean {
     "email confirmation",
     "return to job search",
     "keep track of your applications",
+    "we'll contact you if there are next steps",
+    "we will contact you if there are next steps",
   ];
   const successSignalCount = successPhrases.filter((phrase) =>
     combinedText.includes(phrase)
@@ -628,6 +632,8 @@ export function hasLikelyApplicationSuccessSignals(doc: Document): boolean {
     pageUrl.includes("indeedapply/form/") ||
     pageUrl.includes("/apply/") ||
     pageUrl.includes("/application/") ||
+    pageUrl.includes("/application?") ||
+    pageUrl.endsWith("/application") ||
     pageUrl.includes("application_confirmation") ||
     pageUrl.includes("/job-applications/") ||
     pageUrl.includes("/wizard/success") ||

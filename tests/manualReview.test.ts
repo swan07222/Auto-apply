@@ -5,7 +5,9 @@ import {
   hasEditableAutofillFields,
   hasPendingRequiredAutofillFields,
   hasVisibleManualSubmitAction,
+  isLikelyManualProgressionActionTarget,
   isLikelyManualSubmitReviewPage,
+  resolveReadyManualSubmitActionForFormEvent,
   shouldTreatManualSubmitActionAsReady,
   shouldPauseAutomationForManualReview,
   shouldStartManualReviewPause,
@@ -29,6 +31,22 @@ describe("manual review helpers", () => {
     );
     expect(
       shouldStartManualReviewPause(document.querySelector("#results"))
+    ).toBe(false);
+  });
+
+  it("treats continue-style controls as manual progression but ignores framework labels", () => {
+    document.body.innerHTML = `
+      <main>
+        <button id="continue">Continue</button>
+        <a id="framework" href="https://nextjs.org/">Next.js</a>
+      </main>
+    `;
+
+    expect(
+      isLikelyManualProgressionActionTarget(document.querySelector("#continue"))
+    ).toBe(true);
+    expect(
+      isLikelyManualProgressionActionTarget(document.querySelector("#framework"))
     ).toBe(false);
   });
 
@@ -194,5 +212,43 @@ describe("manual review helpers", () => {
     expect(
       shouldTreatManualSubmitActionAsReady(submit, [fullName])
     ).toBe(true);
+  });
+
+  it("does not fall back to a visible final submit button when a non-submit continue button triggered the form submit", () => {
+    document.body.innerHTML = `
+      <form id="application-form">
+        <label for="full-name">Full name *</label>
+        <input id="full-name" type="text" required value="Ada Lovelace" />
+        <button id="continue" type="submit">Continue</button>
+        <button id="submit" type="submit">Submit application</button>
+      </form>
+    `;
+
+    const form = document.querySelector("#application-form") as HTMLFormElement;
+    const fullName = document.querySelector("#full-name") as HTMLInputElement;
+    const continueButton = document.querySelector(
+      "#continue"
+    ) as HTMLButtonElement;
+
+    expect(
+      resolveReadyManualSubmitActionForFormEvent(form, continueButton, [fullName])
+    ).toBeNull();
+  });
+
+  it("uses the visible manual submit button when the form submit event has no explicit submitter", () => {
+    document.body.innerHTML = `
+      <form id="application-form">
+        <label for="full-name">Full name *</label>
+        <input id="full-name" type="text" required value="Ada Lovelace" />
+        <button id="submit" type="submit">Submit application</button>
+      </form>
+    `;
+
+    const form = document.querySelector("#application-form") as HTMLFormElement;
+    const fullName = document.querySelector("#full-name") as HTMLInputElement;
+
+    expect(
+      resolveReadyManualSubmitActionForFormEvent(form, null, [fullName])?.id
+    ).toBe("submit");
   });
 });

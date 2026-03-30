@@ -83,16 +83,19 @@ export function getGreenhousePortalSearchKeyword(
 type QueryableDocument = Pick<Document, "querySelector" | "querySelectorAll">;
 
 const GREENHOUSE_BOARD_LINK_SELECTORS = [
-  "a[href*='boards.greenhouse.io/'][href*='/jobs/']",
-  "a[href*='job-boards.greenhouse.io/'][href*='/jobs/']",
-  "a[href*='greenhouse.io'][href*='gh_jid=']",
+  "a[href*='boards.greenhouse.io/']",
+  "a[href*='job-boards.greenhouse.io/']",
+  "a[href*='gh_jid=']",
   "a[href*='my.greenhouse.io/view_job']",
+  "a[href*='my.greenhouse.io/jobs']",
   "a[href*='my.greenhouse.io'][href*='job_id=']",
 ] as const;
 
 const GREENHOUSE_APPLICATION_FRAME_SELECTORS = [
   "iframe[src*='greenhouse.io/embed/job_app']",
+  "iframe[src*='greenhouse.io/embed/job_board']",
   "iframe[data-src*='greenhouse.io/embed/job_app']",
+  "iframe[data-src*='greenhouse.io/embed/job_board']",
 ] as const;
 
 const GREENHOUSE_INLINE_SCRIPT_SELECTOR = "script:not([src])";
@@ -110,6 +113,14 @@ export function detectSupportedSiteFromPage(
     return detectedFromUrl;
   }
 
+  if (isLikelyCustomHostedGreenhouseUrl(currentUrl, currentUrl)) {
+    return "greenhouse";
+  }
+
+  if (hasGreenhousePageReference(doc, currentUrl)) {
+    return "greenhouse";
+  }
+
   if (resolveGreenhouseSearchContextUrl(currentUrl, doc) !== currentUrl) {
     return "greenhouse";
   }
@@ -123,6 +134,13 @@ export function resolveGreenhouseSearchContextUrl(
 ): string {
   if (detectSiteFromUrl(currentUrl) === "greenhouse") {
     return currentUrl;
+  }
+
+  if (isLikelyCustomHostedGreenhouseUrl(currentUrl, currentUrl)) {
+    const resolvedCurrentUrl = deriveGreenhouseBoardBaseUrl(currentUrl, currentUrl);
+    if (resolvedCurrentUrl) {
+      return resolvedCurrentUrl;
+    }
   }
 
   for (const selector of GREENHOUSE_BOARD_LINK_SELECTORS) {
@@ -211,6 +229,71 @@ function readGreenhouseUrlsFromInlineScripts(
   }
 }
 
+function hasGreenhousePageReference(
+  doc: QueryableDocument,
+  currentUrl: string
+): boolean {
+  for (const selector of GREENHOUSE_BOARD_LINK_SELECTORS) {
+    for (const href of readMatchingAttributes(doc, selector, "href")) {
+      if (isGreenhousePageReference(href, currentUrl)) {
+        return true;
+      }
+    }
+  }
+
+  for (const selector of GREENHOUSE_APPLICATION_FRAME_SELECTORS) {
+    for (const src of [
+      ...readMatchingAttributes(doc, selector, "src"),
+      ...readMatchingAttributes(doc, selector, "data-src"),
+    ]) {
+      if (isGreenhousePageReference(src, currentUrl)) {
+        return true;
+      }
+    }
+  }
+
+  return readGreenhouseUrlsFromInlineScripts(doc).some((scriptUrl) =>
+    isGreenhousePageReference(scriptUrl, currentUrl)
+  );
+}
+
+function isGreenhousePageReference(
+  rawUrl: string | null | undefined,
+  currentUrl: string
+): boolean {
+  return (
+    Boolean(deriveGreenhouseBoardBaseUrl(rawUrl, currentUrl)) ||
+    isLikelyCustomHostedGreenhouseUrl(rawUrl, currentUrl)
+  );
+}
+
+function isLikelyCustomHostedGreenhouseUrl(
+  rawUrl: string | null | undefined,
+  currentUrl: string
+): boolean {
+  if (!rawUrl) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(rawUrl, currentUrl);
+    const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (hostname.endsWith("greenhouse.io")) {
+      return false;
+    }
+
+    const lowerPathAndQuery = `${parsed.pathname}${parsed.search}`.toLowerCase();
+    return (
+      parsed.searchParams.has("gh_jid") ||
+      lowerPathAndQuery.includes("job_application") ||
+      lowerPathAndQuery.includes("job-application") ||
+      lowerPathAndQuery.includes("job_app")
+    );
+  } catch {
+    return false;
+  }
+}
+
 function deriveGreenhouseBoardBaseUrl(
   rawUrl: string | null | undefined,
   currentUrl: string
@@ -222,7 +305,10 @@ function deriveGreenhouseBoardBaseUrl(
   try {
     const parsed = new URL(rawUrl, currentUrl);
     const hostname = parsed.hostname.toLowerCase().replace(/^www\./, "");
-    if (!hostname.endsWith("greenhouse.io")) {
+    const isGreenhouseHost = hostname.endsWith("greenhouse.io");
+    const isCompanyHostedGreenhouseJobUrl = parsed.searchParams.has("gh_jid");
+
+    if (!isGreenhouseHost && !isCompanyHostedGreenhouseJobUrl) {
       return null;
     }
 
@@ -234,7 +320,7 @@ function deriveGreenhouseBoardBaseUrl(
       return `${origin}/`;
     }
 
-    if (lowerPath.includes("/embed/job_app")) {
+    if (lowerPath.includes("/embed/job_app") || lowerPath.includes("/embed/job_board")) {
       const boardSlug = parsed.searchParams.get("for")?.trim();
       if (!boardSlug) {
         return null;
@@ -259,7 +345,7 @@ function deriveGreenhouseBoardBaseUrl(
       return new URL(`/${pathSegments[0]}`, origin).toString();
     }
 
-    if (parsed.searchParams.get("gh_jid") && normalizedPath) {
+    if (isCompanyHostedGreenhouseJobUrl && normalizedPath) {
       return new URL(normalizedPath || "/", origin).toString();
     }
 
@@ -358,6 +444,7 @@ export function looksLikeCurrentFrameApplicationSurface(
     hasLikelyApplicationFrame: () => boolean;
     hasLikelyApplicationPageContent: () => boolean;
     hasLikelyApplyContinuationAction?: () => boolean;
+    isCurrentPageAppliedJob?: (site: SiteKey) => boolean;
     isLikelyApplyUrl: (url: string, site: SiteKey) => boolean;
     isTopFrame: boolean;
     resumeFileInputCount: number;
@@ -383,9 +470,17 @@ export function looksLikeCurrentFrameApplicationSurface(
     Boolean(site) &&
     site !== "unsupported" &&
     Boolean(dependencies.hasLikelyApplyContinuationAction?.());
+  const resolvedSite =
+    site && site !== "unsupported" ? site : null;
+  const hasAppliedState =
+    dependencies.isTopFrame &&
+    (resolvedSite
+      ? Boolean(dependencies.isCurrentPageAppliedJob?.(resolvedSite))
+      : false);
 
   if (dependencies.isTopFrame) {
     return (
+      hasAppliedState ||
       hasContinuationAction ||
       (dependencies.hasLikelyApplicationPageContent() &&
         !dependencies.hasLikelyApplicationFrame())
@@ -436,11 +531,15 @@ export function shouldMirrorControllerBoundSessionInTopFrame(
   );
 }
 
-export function shouldKeepTopFrameSessionSyncAlive(
+export function shouldMirrorPendingAutofillSessionInTopFrame(
   session: Pick<AutomationSession, "stage" | "phase" | "controllerFrameId">,
   isTopFrame: boolean
 ): boolean {
-  if (!shouldMirrorControllerBoundSessionInTopFrame(session, isTopFrame)) {
+  if (!isTopFrame || session.stage !== "autofill-form") {
+    return false;
+  }
+
+  if (typeof session.controllerFrameId === "number") {
     return false;
   }
 
@@ -449,6 +548,25 @@ export function shouldKeepTopFrameSessionSyncAlive(
     session.phase === "paused" ||
     session.phase === "waiting_for_verification"
   );
+}
+
+export function shouldKeepTopFrameSessionSyncAlive(
+  session: Pick<AutomationSession, "stage" | "phase" | "controllerFrameId">,
+  isTopFrame: boolean
+): boolean {
+  if (!isTopFrame) {
+    return false;
+  }
+
+  const activePhase =
+    session.phase === "running" ||
+    session.phase === "paused" ||
+    session.phase === "waiting_for_verification";
+  if (!activePhase) {
+    return false;
+  }
+
+  return session.stage === "open-apply" || session.stage === "autofill-form";
 }
 
 export function shouldRenderAutomationFeedbackInCurrentFrame(
@@ -460,7 +578,7 @@ export function shouldRenderAutomationFeedbackInCurrentFrame(
     typeof session.controllerFrameId === "number" &&
     session.controllerFrameId !== 0
   ) {
-    return !isTopFrame;
+    return isTopFrame;
   }
 
   return isTopFrame || session.phase !== "idle";

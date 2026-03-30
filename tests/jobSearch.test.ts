@@ -1,5 +1,7 @@
 // Note: describe, expect, it are provided globally by vitest (globals: true)
 
+import { vi } from "vitest";
+
 import {
   collectJobDetailCandidates,
   collectMonsterEmbeddedCandidates,
@@ -120,22 +122,29 @@ describe("job search candidate filtering", () => {
   });
 
   it("filters candidates when career-site cards expose absolute calendar dates", () => {
-    const candidates: JobCandidate[] = [
-      {
-        url: "https://example.com/jobs/frontend-engineer-1",
-        title: "Frontend Engineer",
-        contextText: "Remote role. Posted Mar 26, 2026.",
-      },
-      {
-        url: "https://example.com/jobs/platform-engineer-2",
-        title: "Platform Engineer",
-        contextText: "Remote role. Posted Mar 10, 2026.",
-      },
-    ];
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 2, 26, 12, 0, 0));
 
-    expect(
-      pickRelevantJobUrls(candidates, "other_sites", undefined, "24h")
-    ).toEqual(["https://example.com/jobs/frontend-engineer-1"]);
+    try {
+      const candidates: JobCandidate[] = [
+        {
+          url: "https://example.com/jobs/frontend-engineer-1",
+          title: "Frontend Engineer",
+          contextText: "Remote role. Posted Mar 26, 2026.",
+        },
+        {
+          url: "https://example.com/jobs/platform-engineer-2",
+          title: "Platform Engineer",
+          contextText: "Remote role. Posted Mar 10, 2026.",
+        },
+      ];
+
+      expect(
+        pickRelevantJobUrls(candidates, "other_sites", undefined, "24h")
+      ).toEqual(["https://example.com/jobs/frontend-engineer-1"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("filters compact posted-age chips that appear without an explicit posted label", () => {
@@ -1368,7 +1377,36 @@ describe("job search candidate filtering", () => {
     expect(urls).toEqual(["https://example.com/careers/jobs/platform-engineer-123"]);
   });
 
-  it("keeps Greenhouse board extraction focused on the matching job row instead of the whole department block", () => {
+  it("collects Berlin Startup Jobs detail links from category pages on other job sites", () => {
+    window.history.replaceState({}, "", "/engineering/");
+
+    document.body.innerHTML = `
+      <section class="jobs-list">
+        <a href="/engineering/">IT / Software Development (32)</a>
+        <article class="job-result">
+          <h2>Senior Product Engineer</h2>
+          <a href="/engineering/senior-product-engineer-techminers-gmbh/">
+            Senior Product Engineer
+          </a>
+        </article>
+        <article class="job-result">
+          <h2>Cloud and DevOps Engineer</h2>
+          <a href="/engineering/cloud-and-devops-engineer-kubernetes-datatroniq/">
+            Cloud and DevOps Engineer (Kubernetes)
+          </a>
+        </article>
+      </section>
+    `;
+
+    const urls = pickRelevantJobUrls(collectJobDetailCandidates("other_sites"), "other_sites");
+
+    expect(urls).toEqual([
+      "https://example.com/engineering/senior-product-engineer-techminers-gmbh/",
+      "https://example.com/engineering/cloud-and-devops-engineer-kubernetes-datatroniq/",
+    ]);
+  });
+
+  it("keeps Greenhouse board extraction focused on separate job rows without re-filtering the visible results", () => {
     document.body.innerHTML = `
       <section class="department">
         <h2>Engineering</h2>
@@ -1395,10 +1433,13 @@ describe("job search candidate filtering", () => {
         "any",
         ["software engineer"]
       )
-    ).toEqual(["https://job-boards.greenhouse.io/vercel/jobs/5431123004"]);
+    ).toEqual([
+      "https://job-boards.greenhouse.io/vercel/jobs/5431123004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5798406004",
+    ]);
   });
 
-  it("collects technical Greenhouse board jobs from the current live table layout", () => {
+  it("collects all visible Greenhouse board jobs from the current live table layout", () => {
     document.body.innerHTML = `
       <main class="main font-secondary">
         <div class="padding">
@@ -1436,6 +1477,7 @@ describe("job search candidate filtering", () => {
     expect(pickRelevantJobUrls(collectJobDetailCandidates("greenhouse"), "greenhouse")).toEqual([
       "https://job-boards.greenhouse.io/vercel/jobs/5788954004",
       "https://job-boards.greenhouse.io/vercel/jobs/5430088004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5624231004",
     ]);
   });
 
@@ -1479,7 +1521,7 @@ describe("job search candidate filtering", () => {
     ).toEqual(["https://job-boards.greenhouse.io/vercel/jobs/5430088004"]);
   });
 
-  it("keeps visible technical Greenhouse roles when the board keyword search is fuzzy", () => {
+  it("keeps all visible Greenhouse roles when the board keyword search is fuzzy", () => {
     document.body.innerHTML = `
       <main class="main font-secondary">
         <div class="padding">
@@ -1543,10 +1585,12 @@ describe("job search candidate filtering", () => {
     ).toEqual([
       "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
       "https://job-boards.greenhouse.io/vercel/jobs/5551619004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5808590004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5624231004",
     ]);
   });
 
-  it("keeps visible Greenhouse frontend-adjacent roles when the board query uses description matches", () => {
+  it("keeps all visible Greenhouse roles when the board query uses description matches", () => {
     document.body.innerHTML = `
       <main class="main font-secondary">
         <div class="padding">
@@ -1609,13 +1653,14 @@ describe("job search candidate filtering", () => {
         "United States"
       )
     ).toEqual([
+      "https://job-boards.greenhouse.io/vercel/jobs/5818258004",
       "https://job-boards.greenhouse.io/vercel/jobs/5709080004",
       "https://job-boards.greenhouse.io/vercel/jobs/5808568004",
       "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
     ]);
   });
 
-  it("keeps visible Greenhouse backend-adjacent roles when the board query uses infrastructure titles", () => {
+  it("keeps all visible Greenhouse roles when the board query uses infrastructure titles", () => {
     document.body.innerHTML = `
       <main class="main font-secondary">
         <div class="padding">
@@ -1681,10 +1726,11 @@ describe("job search candidate filtering", () => {
       "https://job-boards.greenhouse.io/vercel/jobs/5813134004",
       "https://job-boards.greenhouse.io/vercel/jobs/5661583004",
       "https://job-boards.greenhouse.io/vercel/jobs/5787232004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5199830004",
     ]);
   });
 
-  it("keeps the visible US Greenhouse result instead of zeroing the page out on an exact-keyword miss", () => {
+  it("keeps all visible Greenhouse results instead of zeroing the page out on an exact-keyword miss", () => {
     document.body.innerHTML = `
       <main class="main font-secondary">
         <div class="padding">
@@ -1730,10 +1776,13 @@ describe("job search candidate filtering", () => {
         "https://job-boards.greenhouse.io/vercel?keyword=frontend%20engineer&location=Remote",
         "United States"
       )
-    ).toEqual(["https://job-boards.greenhouse.io/vercel/jobs/5732855004"]);
+    ).toEqual([
+      "https://job-boards.greenhouse.io/vercel/jobs/5818258004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
+    ]);
   });
 
-  it("keeps visible technical Greenhouse roles on redirected careers pages even when the board keyword params are stripped", () => {
+  it("keeps all visible Greenhouse roles on redirected careers pages even when the board keyword params are stripped", () => {
     document.body.innerHTML = `
       <main class="main font-secondary">
         <div class="padding">
@@ -1797,10 +1846,12 @@ describe("job search candidate filtering", () => {
     ).toEqual([
       "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
       "https://job-boards.greenhouse.io/vercel/jobs/5551619004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5808590004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5624231004",
     ]);
   });
 
-  it("drops hybrid Greenhouse engineering roles even when the board URL says Remote", () => {
+  it("keeps visible Greenhouse hybrid roles even when the board URL says Remote", () => {
     document.body.innerHTML = `
       <main class="main font-secondary">
         <div class="padding">
@@ -1854,10 +1905,14 @@ describe("job search candidate filtering", () => {
         "https://job-boards.greenhouse.io/vercel?keyword=software%20engineer&location=Remote",
         "United States"
       )
-    ).toEqual(["https://job-boards.greenhouse.io/vercel/jobs/5430088004"]);
+    ).toEqual([
+      "https://job-boards.greenhouse.io/vercel/jobs/5430088004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5624231004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5798406004",
+    ]);
   });
 
-  it("drops foreign Greenhouse remote rows during a United States remote run", () => {
+  it("keeps visible foreign Greenhouse remote rows during a United States remote run", () => {
     document.body.innerHTML = `
       <main class="main font-secondary">
         <div class="padding">
@@ -1911,10 +1966,14 @@ describe("job search candidate filtering", () => {
         "https://job-boards.greenhouse.io/vercel?keyword=engineer%20remote&location=United%20States",
         "United States"
       )
-    ).toEqual(["https://job-boards.greenhouse.io/vercel/jobs/5732855004"]);
+    ).toEqual([
+      "https://job-boards.greenhouse.io/vercel/jobs/5818258004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5817808004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
+    ]);
   });
 
-  it("falls back to technical Greenhouse roles for broad software-engineer searches on plain boards", () => {
+  it("keeps all visible Greenhouse roles on plain boards instead of falling back to technical-only roles", () => {
     document.body.innerHTML = `
       <main class="main font-secondary">
         <div class="padding">
@@ -1959,10 +2018,13 @@ describe("job search candidate filtering", () => {
         ["software engineer"],
         "https://job-boards.greenhouse.io/vercel"
       )
-    ).toEqual(["https://job-boards.greenhouse.io/vercel/jobs/5430088004"]);
+    ).toEqual([
+      "https://job-boards.greenhouse.io/vercel/jobs/5430088004",
+      "https://job-boards.greenhouse.io/vercel/jobs/5624231004",
+    ]);
   });
 
-  it("collects MyGreenhouse view-job cards and opens the matching technical roles", () => {
+  it("collects MyGreenhouse view-job cards without re-filtering the returned roles", () => {
     document.body.innerHTML = `
       <section class="results-grid">
         <article class="job-card">
@@ -1986,10 +2048,13 @@ describe("job search candidate filtering", () => {
         "any",
         ["full stack"]
       )
-    ).toEqual(["https://my.greenhouse.io/view_job?job_id=5431123004"]);
+    ).toEqual([
+      "https://my.greenhouse.io/view_job?job_id=5431123004",
+      "https://my.greenhouse.io/view_job?job_id=5798406004",
+    ]);
   });
 
-  it("drops non-US MyGreenhouse results during a United States remote run", () => {
+  it("keeps MyGreenhouse results during a United States remote run without local country re-filtering", () => {
     document.body.innerHTML = `
       <section class="results-grid">
         <article class="job-card">
@@ -2016,10 +2081,13 @@ describe("job search candidate filtering", () => {
         "https://my.greenhouse.io/jobs?query=full%20stack&location=United%20States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type[]=remote",
         "United States"
       )
-    ).toEqual(["https://my.greenhouse.io/view_job?job_id=5431123004"]);
+    ).toEqual([
+      "https://my.greenhouse.io/view_job?job_id=5431123004",
+      "https://my.greenhouse.io/view_job?job_id=999888777",
+    ]);
   });
 
-  it("prefers explicit remote MyGreenhouse cards when a remote search page also shows neutral local cards", () => {
+  it("keeps MyGreenhouse cards when a remote search page also shows neutral local cards", () => {
     const candidates: JobCandidate[] = [
       {
         url: "https://my.greenhouse.io/view_job?job_id=5431123004",
@@ -2048,10 +2116,14 @@ describe("job search candidate filtering", () => {
         "https://my.greenhouse.io/jobs?query=full%20stack&location=United%20States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type[]=remote",
         "United States"
       )
-    ).toEqual(["https://my.greenhouse.io/view_job?job_id=5431123004"]);
+    ).toEqual([
+      "https://my.greenhouse.io/view_job?job_id=5431123004",
+      "https://my.greenhouse.io/view_job?job_id=888777666",
+      "https://my.greenhouse.io/view_job?job_id=999888777",
+    ]);
   });
 
-  it("keeps neutral US MyGreenhouse cards on work-type remote pages when hybrid cards are also present", () => {
+  it("keeps MyGreenhouse cards on work-type remote pages even when hybrid cards are also present", () => {
     const candidates: JobCandidate[] = [
       {
         url: "https://my.greenhouse.io/view_job?job_id=5431123004",
@@ -2075,10 +2147,13 @@ describe("job search candidate filtering", () => {
         "https://my.greenhouse.io/jobs?query=full%20stack&location=United%20States&lat=39.71614&lon=-96.999246&location_type=country&country_short_name=US&work_type[]=remote",
         "United States"
       )
-    ).toEqual(["https://my.greenhouse.io/view_job?job_id=5431123004"]);
+    ).toEqual([
+      "https://my.greenhouse.io/view_job?job_id=5431123004",
+      "https://my.greenhouse.io/view_job?job_id=888777666",
+    ]);
   });
 
-  it("collects MyGreenhouse cards when the action label changes but the Greenhouse job URL is still present", () => {
+  it("collects all MyGreenhouse cards when the action label changes but the Greenhouse job URL is still present", () => {
     document.body.innerHTML = `
       <section class="results-grid">
         <article class="job-card">
@@ -2102,7 +2177,10 @@ describe("job search candidate filtering", () => {
         "any",
         ["backend engineer"]
       )
-    ).toEqual(["https://example.com/view_job?job_id=111222333"]);
+    ).toEqual([
+      "https://example.com/view_job?job_id=111222333",
+      "https://example.com/view_job?job_id=444555666",
+    ]);
   });
 
   it("collects MyGreenhouse job cards rendered inside a shadow root", () => {
@@ -2152,7 +2230,7 @@ describe("job search candidate filtering", () => {
     ]);
   });
 
-  it("keeps only explicit remote Greenhouse and Built In results when hybrid or onsite signals are present", () => {
+  it("keeps all visible Greenhouse results even when hybrid or onsite signals are present", () => {
     const greenhouseCandidates: JobCandidate[] = [
       {
         url: "https://my.greenhouse.io/view_job?job_id=5431123004",
@@ -2185,6 +2263,7 @@ describe("job search candidate filtering", () => {
 
     expect(pickRelevantJobUrls(greenhouseCandidates, "greenhouse")).toEqual([
       "https://my.greenhouse.io/view_job?job_id=5431123004",
+      "https://my.greenhouse.io/view_job?job_id=5798406004",
     ]);
     expect(pickRelevantJobUrls(builtInCandidates, "builtin")).toEqual([
       "https://builtin.com/job/software-engineer/8472985",
@@ -2384,6 +2463,22 @@ describe("job search candidate filtering", () => {
         <h1>You've successfully applied</h1>
         <p>Application received.</p>
       </main>
+    `;
+
+    expect(isCurrentPageAppliedJob("ziprecruiter")).toBe(true);
+  });
+
+  it("treats ZipRecruiter submitted dialogs on the job page as already applied", () => {
+    document.body.innerHTML = `
+      <main data-testid="job-details">
+        <h1>Front End Engineer</h1>
+      </main>
+      <section role="dialog" aria-modal="true">
+        <h2>You've successfully applied</h2>
+        <p>Application received.</p>
+        <button type="button">Tell us more</button>
+        <a href="https://support.ziprecruiter.com/hc/en-us">Support</a>
+      </section>
     `;
 
     expect(isCurrentPageAppliedJob("ziprecruiter")).toBe(true);
