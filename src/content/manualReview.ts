@@ -6,6 +6,7 @@ import {
   shouldAutofillField,
 } from "./autofill";
 import { getActionText, isElementVisible } from "./dom";
+import { hasAcceptedFileUploadState } from "./resumeUpload";
 import { cleanText } from "./text";
 import { AutofillField } from "./types";
 
@@ -202,7 +203,7 @@ export function hasPendingRequiredAutofillFields(
       }
 
       if (type === "file") {
-        if (!field.files?.length) {
+        if (!hasAcceptedFileUploadState(field)) {
           return true;
         }
         continue;
@@ -332,16 +333,6 @@ export function shouldTreatManualSubmitActionAsReady(
   }
 
   const associatedForm = resolveAssociatedSubmitForm(actionElement);
-  if (associatedForm && !shouldSkipNativeSubmitValidation(actionElement)) {
-    try {
-      if (!associatedForm.checkValidity()) {
-        return false;
-      }
-    } catch {
-      // Ignore form validity errors and continue with field-based checks.
-    }
-  }
-
   const relevantFields = collectRelevantManualSubmitFields(
     actionElement,
     fields,
@@ -351,7 +342,25 @@ export function shouldTreatManualSubmitActionAsReady(
     return false;
   }
 
-  return !hasVisibleInvalidAutofillFields(relevantFields);
+  if (hasVisibleInvalidAutofillFields(relevantFields)) {
+    return false;
+  }
+
+  if (
+    associatedForm &&
+    !shouldSkipNativeSubmitValidation(actionElement) &&
+    !shouldIgnoreNativeFileValidationFailure(relevantFields)
+  ) {
+    try {
+      if (!associatedForm.checkValidity()) {
+        return false;
+      }
+    } catch {
+      // Ignore form validity errors and continue with field-based checks.
+    }
+  }
+
+  return true;
 }
 
 export function resolveReadyManualSubmitActionForFormEvent(
@@ -439,6 +448,18 @@ function shouldSkipNativeSubmitValidation(actionElement: HTMLElement): boolean {
   );
 }
 
+function shouldIgnoreNativeFileValidationFailure(
+  fields: AutofillField[]
+): boolean {
+  return fields.some(
+    (field) =>
+      field instanceof HTMLInputElement &&
+      field.type.toLowerCase() === "file" &&
+      isFieldRequired(field) &&
+      hasAcceptedFileUploadState(field)
+  );
+}
+
 function collectRelevantManualSubmitFields(
   actionElement: HTMLElement,
   fields: AutofillField[],
@@ -472,6 +493,15 @@ function collectRelevantManualSubmitFields(
 function hasVisibleInvalidAutofillFields(fields: AutofillField[]): boolean {
   return fields.some((field) => {
     if (!isFieldContextVisible(field)) {
+      return false;
+    }
+
+    if (
+      field instanceof HTMLInputElement &&
+      field.type.toLowerCase() === "file" &&
+      isFieldRequired(field) &&
+      hasAcceptedFileUploadState(field)
+    ) {
       return false;
     }
 

@@ -742,8 +742,21 @@ function preferCanonicalBuiltInHostedCandidates(
 function isBuiltInHostedPage(currentUrl: string): boolean {
   try {
     const parsedUrl = new URL(currentUrl);
-    const hostname = parsedUrl.hostname.toLowerCase().replace(/^www\./, "");
-    return hostname === "builtin.com" || hostname.endsWith(".builtin.com");
+    return isBuiltInHostname(parsedUrl.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isBuiltInHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^www\./, "");
+  return normalized === "builtin.com" || normalized.endsWith(".builtin.com");
+}
+
+function isBuiltInHostedUrl(url: string): boolean {
+  try {
+    const parsedUrl = new URL(url, window.location.href);
+    return isBuiltInHostname(parsedUrl.hostname);
   } catch {
     return false;
   }
@@ -752,9 +765,8 @@ function isBuiltInHostedPage(currentUrl: string): boolean {
 function isBuiltInCanonicalJobDetailUrl(url: string): boolean {
   try {
     const parsedUrl = new URL(url, window.location.href);
-    const hostname = parsedUrl.hostname.toLowerCase().replace(/^www\./, "");
     return (
-      (hostname === "builtin.com" || hostname.endsWith(".builtin.com")) &&
+      isBuiltInHostname(parsedUrl.hostname) &&
       parsedUrl.pathname.toLowerCase().includes("/job/")
     );
   } catch {
@@ -1096,6 +1108,10 @@ export function isLikelyJobDetailUrl(
     case "other_sites":
     case "greenhouse":
     case "builtin": {
+      if (site === "builtin" && isBuiltInHostedUrl(url)) {
+        return isBuiltInCanonicalJobDetailUrl(url);
+      }
+
       try {
         const parsed = new URL(url, window.location.href);
         if (hasJobIdentifyingSearchParam(parsed)) {

@@ -1,6 +1,6 @@
 import { shouldAutofillField } from "./autofill";
 import { isLikelyApplicationField } from "./applicationSurface";
-import { getSelectedFileName } from "./resumeUpload";
+import { hasAcceptedFileUploadState } from "./resumeUpload";
 import { AutofillField } from "./types";
 
 type ResumeStepCollectors = {
@@ -9,7 +9,7 @@ type ResumeStepCollectors = {
 };
 
 export function hasSelectedResumeUpload(input: HTMLInputElement): boolean {
-  return Boolean(input.files?.length) || Boolean(getSelectedFileName(input));
+  return hasAcceptedFileUploadState(input);
 }
 
 export function hasPendingResumeUploadSurface(

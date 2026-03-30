@@ -1,6 +1,7 @@
 // Note: describe, expect, it are provided globally by vitest (globals: true)
 
 import {
+  hasAcceptedFileUploadState,
   hasAcceptedResumeUpload,
   findDiceUploadPanel,
   findDiceResumePanel,
@@ -283,6 +284,25 @@ describe("resume upload helpers", () => {
 
     expect(hasAcceptedResumeUpload(resumeInput, "frontend-resume.pdf")).toBe(true);
     expect(hasAcceptedResumeUpload(resumeInput, "backend-resume.pdf")).toBe(false);
+  });
+
+  it("accepts Ashby-style resume widgets that expose replace and remove controls without keeping input.files", () => {
+    document.body.innerHTML = `
+      <section class="resume-panel">
+        <label for="resume-input">Resume/CV *</label>
+        <div class="ashby-upload-widget">
+          <input id="resume-input" type="file" required />
+          <span>Resume/CV</span>
+          <button type="button">Replace file</button>
+          <button type="button">Remove file</button>
+        </div>
+      </section>
+    `;
+
+    const resumeInput = document.querySelector("#resume-input") as HTMLInputElement;
+
+    expect(hasAcceptedFileUploadState(resumeInput)).toBe(true);
+    expect(hasAcceptedResumeUpload(resumeInput, "backend-resume.pdf")).toBe(true);
   });
 
   it("never treats the cover-letter uploader as a resume target", () => {

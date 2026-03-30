@@ -68,15 +68,79 @@ export function hasAcceptedResumeUpload(
   input: HTMLInputElement,
   assetName: string
 ): boolean {
-  if (hasSelectedMatchingFile(input, assetName) || Boolean(input.files?.length)) {
+  return hasAcceptedFileUploadState(input, assetName);
+}
+
+export function hasAcceptedFileUploadState(
+  input: HTMLInputElement,
+  assetName?: string
+): boolean {
+  if (Boolean(input.files?.length) || Boolean(getSelectedFileName(input))) {
     return true;
   }
 
-  const normalizedAssetName = normalizeChoiceText(cleanText(assetName));
+  const normalizedAssetName = normalizeChoiceText(cleanText(assetName || ""));
   const normalizedAssetStem = normalizedAssetName.replace(
     /\.[a-z0-9]{1,6}\b/g,
     ""
   );
+
+  for (const container of collectRelevantUploadContainers(input)) {
+    const rawText = cleanText(
+      container.innerText || container.textContent || ""
+    ).slice(0, 1200);
+    const text = normalizeChoiceText(rawText);
+    if (!text) {
+      continue;
+    }
+
+    const mentionsAssetName =
+      normalizedAssetName.length >= 6 && text.includes(normalizedAssetName);
+    const mentionsAssetStem =
+      normalizedAssetStem.length >= 8 && text.includes(normalizedAssetStem);
+    const hasUploadSignal =
+      /\b(upload(?:ed)?|attach(?:ed|ment)?|selected|added|replace|resume|cv|application)\b/.test(
+        text
+      );
+    const showsDifferentFileName =
+      Boolean(assetName) &&
+      /\b[\w(). -]+\.(pdf|docx?|rtf|txt|odt|pages)\b/i.test(rawText) &&
+      !mentionsAssetName &&
+      !mentionsAssetStem;
+
+    if ((mentionsAssetName || mentionsAssetStem) && hasUploadSignal) {
+      return true;
+    }
+
+    if (showsDifferentFileName) {
+      continue;
+    }
+
+    if (hasGenericAcceptedFileState(text)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function getResumeAssetUploadKey(
+  asset: Pick<ResumeAsset, "name" | "size" | "updatedAt">
+): string {
+  return [
+    normalizeFileName(asset.name),
+    String(Math.max(0, Math.round(asset.size))),
+    String(Math.max(0, Math.round(asset.updatedAt))),
+  ].join(":");
+}
+
+function normalizeFileName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function collectRelevantUploadContainers(
+  input: HTMLInputElement
+): HTMLElement[] {
   const containers = new Set<HTMLElement>();
 
   const addContainer = (element: Element | null | undefined): void => {
@@ -98,43 +162,40 @@ export function hasAcceptedResumeUpload(
   addContainer(input.closest("article"));
   addContainer(input.closest("fieldset"));
 
-  for (const container of containers) {
-    const text = normalizeChoiceText(
-      cleanText(container.innerText || container.textContent || "").slice(0, 1200)
-    );
-    if (!text) {
-      continue;
-    }
+  return Array.from(containers);
+}
 
-    const mentionsAssetName =
-      normalizedAssetName.length >= 6 && text.includes(normalizedAssetName);
-    const mentionsAssetStem =
-      normalizedAssetStem.length >= 8 && text.includes(normalizedAssetStem);
-    const hasUploadSignal =
-      /\b(upload(?:ed)?|attach(?:ed|ment)?|selected|added|replace|resume|cv|application)\b/.test(
-        text
-      );
-
-    if ((mentionsAssetName || mentionsAssetStem) && hasUploadSignal) {
-      return true;
-    }
+function hasGenericAcceptedFileState(text: string): boolean {
+  if (!text) {
+    return false;
   }
 
-  return false;
-}
+  const hasFileContext =
+    /\b(resume|cv|attachment|file|document)\b/.test(text);
+  if (!hasFileContext) {
+    return false;
+  }
 
-export function getResumeAssetUploadKey(
-  asset: Pick<ResumeAsset, "name" | "size" | "updatedAt">
-): string {
-  return [
-    normalizeFileName(asset.name),
-    String(Math.max(0, Math.round(asset.size))),
-    String(Math.max(0, Math.round(asset.updatedAt))),
-  ].join(":");
-}
+  const hasCompletionSignal =
+    /\b(uploaded|attached|selected|added|replace|remove|delete|preview|download|view)\b/.test(
+      text
+    );
+  if (!hasCompletionSignal) {
+    return false;
+  }
 
-function normalizeFileName(value: string): string {
-  return value.trim().toLowerCase();
+  const hasFileNameSignal =
+    /\b[\w(). -]+\.(pdf|docx?|rtf|txt|odt|pages)\b/.test(text);
+  const looksLikeChooserOnlyPrompt =
+    /\b(upload your (?:resume|cv)|upload resume|upload cv|choose file|drag and drop|drop files here)\b/.test(
+      text
+    );
+
+  if (hasFileNameSignal) {
+    return true;
+  }
+
+  return !looksLikeChooserOnlyPrompt;
 }
 
 export function scoreResumeFileInputPreference(

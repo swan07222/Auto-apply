@@ -88,6 +88,7 @@ import {
 import {
   findDiceResumePanel,
   findScopedResumeUploadContainer,
+  hasAcceptedFileUploadState,
   getResumeAssetUploadKey,
   getSelectedFileName,
   hasAcceptedResumeUpload,
@@ -4040,6 +4041,9 @@ async function setFileInputValue(
   asset: ResumeAsset
 ): Promise<boolean> {
   if (input.disabled) return false;
+  const isAshbyUploadSurface = window.location.hostname
+    .toLowerCase()
+    .includes("ashbyhq.com");
   
   // Some pages disable the DataTransfer API entirely.
   const hasDataTransferSupport = typeof DataTransfer === "function";
@@ -4161,20 +4165,22 @@ async function setFileInputValue(
       }
     }
 
-    // Give the page time to accept or clear the selected file.
-    await sleepWithAutomationChecks(500);
+    const uploadVerificationDelays = isAshbyUploadSurface
+      ? [500, 900, 1_400, 1_800, 2_400]
+      : [500, 900];
+    let success = false;
 
-    let success =
-      Boolean(input.files?.length) ||
-      getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase() ||
-      hasAcceptedResumeUpload(input, asset.name);
-
-    if (success) {
-      await sleepWithAutomationChecks(900);
+    for (const delayMs of uploadVerificationDelays) {
+      await sleepWithAutomationChecks(delayMs);
       success =
         Boolean(input.files?.length) ||
-        getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase() ||
-        hasAcceptedResumeUpload(input, asset.name);
+        getSelectedFileName(input).toLowerCase() ===
+          asset.name.trim().toLowerCase() ||
+        hasAcceptedResumeUpload(input, asset.name) ||
+        hasAcceptedFileUploadState(input);
+      if (success) {
+        break;
+      }
     }
 
     if (!success) {

@@ -2351,6 +2351,32 @@ describe("job search candidate filtering", () => {
     ]);
   });
 
+  it("ignores Built In editorial pages even when the title looks like an engineering role", () => {
+    const candidates: JobCandidate[] = [
+      {
+        url: "https://builtin.com/articles/software-engineer-career-guide",
+        title: "Software Engineer Career Guide",
+        contextText: "Advice for engineers exploring their next move.",
+      },
+      {
+        url: "https://builtin.com/job/software-engineer/8472985",
+        title: "Software Engineer",
+        contextText: "Remote - United States",
+      },
+    ];
+
+    expect(
+      isLikelyJobDetailUrl(
+        "builtin",
+        "https://builtin.com/articles/software-engineer-career-guide",
+        "Software Engineer Career Guide"
+      )
+    ).toBe(false);
+    expect(pickRelevantJobUrls(candidates, "builtin")).toEqual([
+      "https://builtin.com/job/software-engineer/8472985",
+    ]);
+  });
+
   it("keeps startup and other-site fallback scans focused on technical roles even without a selected track", () => {
     const candidates: JobCandidate[] = [
       {

@@ -214,6 +214,29 @@ describe("manual review helpers", () => {
     ).toBe(true);
   });
 
+  it("treats accepted Ashby-style resume widgets as ready for manual submit", () => {
+    document.body.innerHTML = `
+      <form>
+        <label for="resume">Resume/CV *</label>
+        <input id="resume" type="file" required />
+        <div class="ashby-upload-widget">
+          <span>Resume/CV</span>
+          <button type="button">Replace file</button>
+          <button type="button">Remove file</button>
+        </div>
+        <button id="submit" type="submit">Submit application</button>
+      </form>
+    `;
+
+    const resume = document.querySelector("#resume") as HTMLInputElement;
+    const submit = document.querySelector("#submit") as HTMLButtonElement;
+
+    expect(hasPendingRequiredAutofillFields([resume])).toBe(false);
+    expect(
+      shouldTreatManualSubmitActionAsReady(submit, [resume])
+    ).toBe(true);
+  });
+
   it("does not fall back to a visible final submit button when a non-submit continue button triggered the form submit", () => {
     document.body.innerHTML = `
       <form id="application-form">

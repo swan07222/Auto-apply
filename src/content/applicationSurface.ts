@@ -33,6 +33,9 @@ const APPLICATION_SURFACE_WAIT_DELAYS_MS = [
   750, 900, 900, 1_000, 1_000,
 ];
 const APPLICATION_SURFACE_SCROLL_ATTEMPTS = new Set([2, 4, 8, 12, 16]);
+const GREENHOUSE_APPLICATION_SURFACE_SCROLL_ATTEMPTS = new Set([
+  0, 1, 2, 4, 6, 8, 10, 12, 14, 16, 18,
+]);
 
 export async function waitForLikelyApplicationSurface(
   site: SiteKey,
@@ -44,12 +47,15 @@ export async function waitForLikelyApplicationSurface(
     attempt += 1
   ) {
     if (hasLikelyApplicationSurface(site, collectors)) {
+      if (site === "greenhouse") {
+        revealLikelyApplicationRegion(site, attempt, collectors);
+      }
       return true;
     }
 
     if (
       site !== "monster" &&
-      APPLICATION_SURFACE_SCROLL_ATTEMPTS.has(attempt)
+      getApplicationSurfaceScrollAttempts(site).has(attempt)
     ) {
       revealLikelyApplicationRegion(site, attempt, collectors);
     }
@@ -60,12 +66,18 @@ export async function waitForLikelyApplicationSurface(
   return false;
 }
 
+function getApplicationSurfaceScrollAttempts(site: SiteKey): Set<number> {
+  return site === "greenhouse"
+    ? GREENHOUSE_APPLICATION_SURFACE_SCROLL_ATTEMPTS
+    : APPLICATION_SURFACE_SCROLL_ATTEMPTS;
+}
+
 function revealLikelyApplicationRegion(
   site: SiteKey,
   attempt: number,
   collectors: ApplicationSurfaceCollectors
 ): void {
-  if (scrollLikelyApplicationAnchorIntoView(collectors)) {
+  if (scrollLikelyApplicationAnchorIntoView(site, collectors)) {
     return;
   }
 
@@ -82,10 +94,10 @@ function revealLikelyApplicationRegion(
 
   const waypoints =
     site === "greenhouse"
-      ? [0.22, 0.48, 0.72, 0.92, 1]
+      ? [0.38, 0.66, 0.86, 1]
       : [0.25, 0.5, 0.78, 1];
   const waypointIndex =
-    attempt <= 2
+    attempt <= 1
       ? 0
       : attempt <= 4
         ? 1
@@ -103,6 +115,7 @@ function revealLikelyApplicationRegion(
 }
 
 function scrollLikelyApplicationAnchorIntoView(
+  site: SiteKey,
   collectors: ApplicationSurfaceCollectors
 ): boolean {
   const hashTarget = decodeHashTarget(window.location.hash);
@@ -125,7 +138,7 @@ function scrollLikelyApplicationAnchorIntoView(
     }
   }
 
-  const revealTarget = findLikelyApplicationRevealTarget(collectors);
+  const revealTarget = findLikelyApplicationRevealTarget(site, collectors);
   if (revealTarget) {
     return scrollElementNearTop(revealTarget);
   }
@@ -134,6 +147,7 @@ function scrollLikelyApplicationAnchorIntoView(
 }
 
 function findLikelyApplicationRevealTarget(
+  site: SiteKey,
   collectors: ApplicationSurfaceCollectors
 ): HTMLElement | null {
   const candidates: HTMLElement[] = [];
@@ -165,6 +179,16 @@ function findLikelyApplicationRevealTarget(
     pushCandidate(input);
   }
 
+  if (site === "greenhouse") {
+    for (const shell of collectDeepMatches<HTMLElement>(
+      GREENHOUSE_LAUNCH_SHELL_SELECTOR
+    )) {
+      if (isLikelyGreenhouseRevealSurface(shell)) {
+        pushCandidate(shell);
+      }
+    }
+  }
+
   let best: { element: HTMLElement; top: number; priority: number } | null = null;
   const currentScrollTop =
     window.scrollY ||
@@ -192,6 +216,48 @@ function findLikelyApplicationRevealTarget(
   }
 
   return best?.element ?? null;
+}
+
+function isLikelyGreenhouseRevealSurface(element: HTMLElement): boolean {
+  if (!isRevealableElement(element)) {
+    return false;
+  }
+
+  const text = cleanText(element.innerText || element.textContent || "")
+    .toLowerCase()
+    .slice(0, 1500);
+  const metadata = cleanText(
+    [
+      element.id,
+      typeof element.className === "string" ? element.className : "",
+      element.getAttribute("data-testid"),
+      element.getAttribute("data-test"),
+      element.getAttribute("aria-label"),
+      element.getAttribute("title"),
+      element.getAttribute("role"),
+    ]
+      .filter(Boolean)
+      .join(" ")
+  ).toLowerCase();
+
+  if (!text && !metadata) {
+    return false;
+  }
+
+  return [
+    "autofill with resume",
+    "auto fill with resume",
+    "apply manually",
+    "use my last application",
+    "continue application",
+    "submit application",
+    "upload resume",
+    "upload cv",
+    "powered by greenhouse",
+    "greenhouse",
+    "application",
+    "resume",
+  ].some((signal) => text.includes(signal) || metadata.includes(signal));
 }
 
 function getApplicationRevealContainer(element: HTMLElement): HTMLElement | null {

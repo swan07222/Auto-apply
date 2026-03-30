@@ -49,6 +49,27 @@ describe("resume step helpers", () => {
     expect(hasPendingResumeUploadSurface(collectors)).toBe(true);
   });
 
+  it("recognizes accepted Ashby-style resume widgets even when the native file input is blank", () => {
+    document.body.innerHTML = `
+      <form>
+        <section class="resume-panel">
+          <label for="resume">Resume/CV *</label>
+          <input id="resume" type="file" required />
+          <div class="ashby-upload-widget">
+            <span>Resume/CV</span>
+            <button type="button">Replace file</button>
+            <button type="button">Remove file</button>
+          </div>
+        </section>
+      </form>
+    `;
+
+    const input = document.querySelector<HTMLInputElement>("#resume");
+    expect(input).not.toBeNull();
+
+    expect(hasSelectedResumeUpload(input as HTMLInputElement)).toBe(true);
+  });
+
   it("does not treat a populated application form as a pending resume-only step", () => {
     document.body.innerHTML = `
       <form>

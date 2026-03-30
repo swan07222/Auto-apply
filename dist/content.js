@@ -3292,14 +3292,54 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return Boolean(selected && desired && selected === desired);
   }
   function hasAcceptedResumeUpload(input, assetName) {
-    if (hasSelectedMatchingFile(input, assetName) || Boolean(input.files?.length)) {
+    return hasAcceptedFileUploadState(input, assetName);
+  }
+  function hasAcceptedFileUploadState(input, assetName) {
+    if (Boolean(input.files?.length) || Boolean(getSelectedFileName(input))) {
       return true;
     }
-    const normalizedAssetName = normalizeChoiceText(cleanText(assetName));
+    const normalizedAssetName = normalizeChoiceText(cleanText(assetName || ""));
     const normalizedAssetStem = normalizedAssetName.replace(
       /\.[a-z0-9]{1,6}\b/g,
       ""
     );
+    for (const container of collectRelevantUploadContainers(input)) {
+      const rawText = cleanText(
+        container.innerText || container.textContent || ""
+      ).slice(0, 1200);
+      const text = normalizeChoiceText(rawText);
+      if (!text) {
+        continue;
+      }
+      const mentionsAssetName = normalizedAssetName.length >= 6 && text.includes(normalizedAssetName);
+      const mentionsAssetStem = normalizedAssetStem.length >= 8 && text.includes(normalizedAssetStem);
+      const hasUploadSignal = /\b(upload(?:ed)?|attach(?:ed|ment)?|selected|added|replace|resume|cv|application)\b/.test(
+        text
+      );
+      const showsDifferentFileName = Boolean(assetName) && /\b[\w(). -]+\.(pdf|docx?|rtf|txt|odt|pages)\b/i.test(rawText) && !mentionsAssetName && !mentionsAssetStem;
+      if ((mentionsAssetName || mentionsAssetStem) && hasUploadSignal) {
+        return true;
+      }
+      if (showsDifferentFileName) {
+        continue;
+      }
+      if (hasGenericAcceptedFileState(text)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  function getResumeAssetUploadKey(asset) {
+    return [
+      normalizeFileName(asset.name),
+      String(Math.max(0, Math.round(asset.size))),
+      String(Math.max(0, Math.round(asset.updatedAt)))
+    ].join(":");
+  }
+  function normalizeFileName(value) {
+    return value.trim().toLowerCase();
+  }
+  function collectRelevantUploadContainers(input) {
     const containers = /* @__PURE__ */ new Set();
     const addContainer = (element) => {
       if (element instanceof HTMLElement) {
@@ -3318,33 +3358,30 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     addContainer(input.closest("section"));
     addContainer(input.closest("article"));
     addContainer(input.closest("fieldset"));
-    for (const container of containers) {
-      const text = normalizeChoiceText(
-        cleanText(container.innerText || container.textContent || "").slice(0, 1200)
-      );
-      if (!text) {
-        continue;
-      }
-      const mentionsAssetName = normalizedAssetName.length >= 6 && text.includes(normalizedAssetName);
-      const mentionsAssetStem = normalizedAssetStem.length >= 8 && text.includes(normalizedAssetStem);
-      const hasUploadSignal = /\b(upload(?:ed)?|attach(?:ed|ment)?|selected|added|replace|resume|cv|application)\b/.test(
-        text
-      );
-      if ((mentionsAssetName || mentionsAssetStem) && hasUploadSignal) {
-        return true;
-      }
+    return Array.from(containers);
+  }
+  function hasGenericAcceptedFileState(text) {
+    if (!text) {
+      return false;
     }
-    return false;
-  }
-  function getResumeAssetUploadKey(asset) {
-    return [
-      normalizeFileName(asset.name),
-      String(Math.max(0, Math.round(asset.size))),
-      String(Math.max(0, Math.round(asset.updatedAt)))
-    ].join(":");
-  }
-  function normalizeFileName(value) {
-    return value.trim().toLowerCase();
+    const hasFileContext = /\b(resume|cv|attachment|file|document)\b/.test(text);
+    if (!hasFileContext) {
+      return false;
+    }
+    const hasCompletionSignal = /\b(uploaded|attached|selected|added|replace|remove|delete|preview|download|view)\b/.test(
+      text
+    );
+    if (!hasCompletionSignal) {
+      return false;
+    }
+    const hasFileNameSignal = /\b[\w(). -]+\.(pdf|docx?|rtf|txt|odt|pages)\b/.test(text);
+    const looksLikeChooserOnlyPrompt = /\b(upload your (?:resume|cv)|upload resume|upload cv|choose file|drag and drop|drop files here)\b/.test(
+      text
+    );
+    if (hasFileNameSignal) {
+      return true;
+    }
+    return !looksLikeChooserOnlyPrompt;
   }
   function scoreResumeFileInputPreference(input, count) {
     const descriptor = normalizeChoiceText(
@@ -8662,8 +8699,19 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   function isBuiltInHostedPage(currentUrl) {
     try {
       const parsedUrl = new URL(currentUrl);
-      const hostname = parsedUrl.hostname.toLowerCase().replace(/^www\./, "");
-      return hostname === "builtin.com" || hostname.endsWith(".builtin.com");
+      return isBuiltInHostname(parsedUrl.hostname);
+    } catch {
+      return false;
+    }
+  }
+  function isBuiltInHostname(hostname) {
+    const normalized = hostname.toLowerCase().replace(/^www\./, "");
+    return normalized === "builtin.com" || normalized.endsWith(".builtin.com");
+  }
+  function isBuiltInHostedUrl(url) {
+    try {
+      const parsedUrl = new URL(url, window.location.href);
+      return isBuiltInHostname(parsedUrl.hostname);
     } catch {
       return false;
     }
@@ -8671,8 +8719,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   function isBuiltInCanonicalJobDetailUrl(url) {
     try {
       const parsedUrl = new URL(url, window.location.href);
-      const hostname = parsedUrl.hostname.toLowerCase().replace(/^www\./, "");
-      return (hostname === "builtin.com" || hostname.endsWith(".builtin.com")) && parsedUrl.pathname.toLowerCase().includes("/job/");
+      return isBuiltInHostname(parsedUrl.hostname) && parsedUrl.pathname.toLowerCase().includes("/job/");
     } catch {
       return false;
     }
@@ -8870,6 +8917,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       case "other_sites":
       case "greenhouse":
       case "builtin": {
+        if (site === "builtin" && isBuiltInHostedUrl(url)) {
+          return isBuiltInCanonicalJobDetailUrl(url);
+        }
         try {
           const parsed = new URL(url, window.location.href);
           if (hasJobIdentifyingSearchParam(parsed)) {
@@ -10657,20 +10707,39 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     1e3
   ];
   var APPLICATION_SURFACE_SCROLL_ATTEMPTS = /* @__PURE__ */ new Set([2, 4, 8, 12, 16]);
+  var GREENHOUSE_APPLICATION_SURFACE_SCROLL_ATTEMPTS = /* @__PURE__ */ new Set([
+    0,
+    1,
+    2,
+    4,
+    6,
+    8,
+    10,
+    12,
+    14,
+    16,
+    18
+  ]);
   async function waitForLikelyApplicationSurface(site, collectors) {
     for (let attempt = 0; attempt < APPLICATION_SURFACE_WAIT_DELAYS_MS.length; attempt += 1) {
       if (hasLikelyApplicationSurface(site, collectors)) {
+        if (site === "greenhouse") {
+          revealLikelyApplicationRegion(site, attempt, collectors);
+        }
         return true;
       }
-      if (site !== "monster" && APPLICATION_SURFACE_SCROLL_ATTEMPTS.has(attempt)) {
+      if (site !== "monster" && getApplicationSurfaceScrollAttempts(site).has(attempt)) {
         revealLikelyApplicationRegion(site, attempt, collectors);
       }
       await sleep(APPLICATION_SURFACE_WAIT_DELAYS_MS[attempt]);
     }
     return false;
   }
+  function getApplicationSurfaceScrollAttempts(site) {
+    return site === "greenhouse" ? GREENHOUSE_APPLICATION_SURFACE_SCROLL_ATTEMPTS : APPLICATION_SURFACE_SCROLL_ATTEMPTS;
+  }
   function revealLikelyApplicationRegion(site, attempt, collectors) {
-    if (scrollLikelyApplicationAnchorIntoView(collectors)) {
+    if (scrollLikelyApplicationAnchorIntoView(site, collectors)) {
       return;
     }
     const totalHeight = Math.max(
@@ -10682,15 +10751,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (maxScrollTop <= 0) {
       return;
     }
-    const waypoints = site === "greenhouse" ? [0.22, 0.48, 0.72, 0.92, 1] : [0.25, 0.5, 0.78, 1];
-    const waypointIndex = attempt <= 2 ? 0 : attempt <= 4 ? 1 : attempt <= 8 ? 2 : attempt <= 12 ? Math.min(3, waypoints.length - 1) : waypoints.length - 1;
+    const waypoints = site === "greenhouse" ? [0.38, 0.66, 0.86, 1] : [0.25, 0.5, 0.78, 1];
+    const waypointIndex = attempt <= 1 ? 0 : attempt <= 4 ? 1 : attempt <= 8 ? 2 : attempt <= 12 ? Math.min(3, waypoints.length - 1) : waypoints.length - 1;
     const targetTop = Math.round(maxScrollTop * waypoints[waypointIndex]);
     window.scrollTo({
       top: targetTop,
       behavior: "auto"
     });
   }
-  function scrollLikelyApplicationAnchorIntoView(collectors) {
+  function scrollLikelyApplicationAnchorIntoView(site, collectors) {
     const hashTarget = decodeHashTarget(window.location.hash);
     const candidateIds = [
       hashTarget,
@@ -10708,13 +10777,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         return true;
       }
     }
-    const revealTarget = findLikelyApplicationRevealTarget(collectors);
+    const revealTarget = findLikelyApplicationRevealTarget(site, collectors);
     if (revealTarget) {
       return scrollElementNearTop(revealTarget);
     }
     return false;
   }
-  function findLikelyApplicationRevealTarget(collectors) {
+  function findLikelyApplicationRevealTarget(site, collectors) {
     const candidates = [];
     const seen = /* @__PURE__ */ new Set();
     const pushCandidate = (element) => {
@@ -10738,6 +10807,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       pushCandidate(getApplicationRevealContainer(input));
       pushCandidate(input);
     }
+    if (site === "greenhouse") {
+      for (const shell of collectDeepMatches(
+        GREENHOUSE_LAUNCH_SHELL_SELECTOR
+      )) {
+        if (isLikelyGreenhouseRevealSurface(shell)) {
+          pushCandidate(shell);
+        }
+      }
+    }
     let best = null;
     const currentScrollTop = window.scrollY || window.pageYOffset || document.documentElement?.scrollTop || document.body?.scrollTop || 0;
     for (const candidate of candidates) {
@@ -10753,6 +10831,40 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
     }
     return best?.element ?? null;
+  }
+  function isLikelyGreenhouseRevealSurface(element) {
+    if (!isRevealableElement(element)) {
+      return false;
+    }
+    const text = cleanText(element.innerText || element.textContent || "").toLowerCase().slice(0, 1500);
+    const metadata = cleanText(
+      [
+        element.id,
+        typeof element.className === "string" ? element.className : "",
+        element.getAttribute("data-testid"),
+        element.getAttribute("data-test"),
+        element.getAttribute("aria-label"),
+        element.getAttribute("title"),
+        element.getAttribute("role")
+      ].filter(Boolean).join(" ")
+    ).toLowerCase();
+    if (!text && !metadata) {
+      return false;
+    }
+    return [
+      "autofill with resume",
+      "auto fill with resume",
+      "apply manually",
+      "use my last application",
+      "continue application",
+      "submit application",
+      "upload resume",
+      "upload cv",
+      "powered by greenhouse",
+      "greenhouse",
+      "application",
+      "resume"
+    ].some((signal) => text.includes(signal) || metadata.includes(signal));
   }
   function getApplicationRevealContainer(element) {
     return element.closest(
@@ -11509,9 +11621,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }) {
     const isMyGreenhousePortal = site === "greenhouse" && isMyGreenhousePortalHost();
     const isCareerSite = site === "startup" || site === "other_sites" || site === "greenhouse" || site === "builtin";
-    const shouldTryCareerSurfaceRecovery = isCareerSite && site !== "greenhouse" && !isMyGreenhousePortal;
+    const shouldTryCareerSurfaceRecovery = isCareerSite && site !== "greenhouse" && site !== "builtin" && !isMyGreenhousePortal;
     const needsAggressiveScan = isCareerSite || site === "monster" || site === "indeed" || site === "dice" || site === "ziprecruiter" || site === "glassdoor";
     let careerSurfaceAttempts = 0;
+    let builtInSearchRecoveryAttempts = 0;
     const desiredCount = Math.max(1, Math.floor(targetCount));
     let bestUrls = [];
     let previousSignature = "";
@@ -11519,6 +11632,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     let monsterEmbeddedAttempts = 0;
     const maxAttempts = needsAggressiveScan ? 50 : 35;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (site === "builtin" && builtInSearchRecoveryAttempts < 2 && (attempt === 0 || attempt === 8 || attempt === 18)) {
+        const restoredBuiltInSearch = await tryRestoreBuiltInKeywordSearch({
+          datePostedWindow,
+          searchKeywords,
+          label,
+          onOpenListingsSurface
+        });
+        if (restoredBuiltInSearch) {
+          builtInSearchRecoveryAttempts += 1;
+          await waitForDomSettle(2400, 500);
+        }
+      }
       const candidates = collectJobDetailCandidates(site);
       const urls = Array.from(
         new Set(
@@ -12217,6 +12342,53 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const label = DATE_POSTED_WINDOW_LABELS[datePostedWindow].toLowerCase();
     return ` posted within ${label.replace(/^past /, "the last ")}`;
   }
+  async function tryRestoreBuiltInKeywordSearch({
+    datePostedWindow,
+    searchKeywords = [],
+    label,
+    onOpenListingsSurface
+  }) {
+    const desiredKeyword = getPrimaryBuiltInSearchKeyword(searchKeywords);
+    if (!desiredKeyword || !shouldRestoreBuiltInKeywordSearch(desiredKeyword)) {
+      return false;
+    }
+    const labelPrefix = label ? `${label} ` : "";
+    onOpenListingsSurface?.(
+      `Restoring ${labelPrefix}Built In search for ${desiredKeyword}...`
+    );
+    const input = findBuiltInKeywordInput();
+    if (input && applyTextInputValue(input, desiredKeyword)) {
+      const searchAction = findBuiltInSearchAction(input);
+      if (searchAction && isElementInteractive(searchAction)) {
+        performClickAction(searchAction);
+        await sleep(1800);
+        return true;
+      }
+      const form = input.form;
+      if (form) {
+        try {
+          form.requestSubmit();
+        } catch {
+          try {
+            form.submit();
+          } catch {
+          }
+        }
+        await sleep(1800);
+        return true;
+      }
+    }
+    const targetUrl = buildBuiltInSearchRecoveryUrl(
+      desiredKeyword,
+      datePostedWindow
+    );
+    const currentUrl = normalizeUrl(window.location.href);
+    if (targetUrl && normalizeUrl(targetUrl) !== currentUrl) {
+      window.location.assign(targetUrl);
+      return true;
+    }
+    return false;
+  }
   async function tryOpenCareerListingsSurface({
     site,
     datePostedWindow,
@@ -12337,6 +12509,143 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       });
     }
     return actions.sort((a, b) => b.score - a.score);
+  }
+  function getPrimaryBuiltInSearchKeyword(searchKeywords) {
+    for (const keyword of searchKeywords) {
+      const trimmed = cleanText(keyword);
+      if (trimmed) {
+        return trimmed;
+      }
+    }
+    return "";
+  }
+  function shouldRestoreBuiltInKeywordSearch(desiredKeyword) {
+    const normalizedDesiredKeyword = normalizeBuiltInKeyword(desiredKeyword);
+    if (!normalizedDesiredKeyword) {
+      return false;
+    }
+    try {
+      const currentUrl = new URL(window.location.href);
+      const currentPath = currentUrl.pathname.toLowerCase().replace(/\/+$/, "");
+      const currentSearchKeyword = normalizeBuiltInKeyword(
+        currentUrl.searchParams.get("search") || ""
+      );
+      if (currentSearchKeyword === normalizedDesiredKeyword && currentPath.startsWith("/jobs/remote")) {
+        return false;
+      }
+    } catch {
+    }
+    const input = findBuiltInKeywordInput();
+    if (!input) {
+      return true;
+    }
+    return normalizeBuiltInKeyword(input.value || "") !== normalizedDesiredKeyword;
+  }
+  function buildBuiltInSearchRecoveryUrl(keyword, datePostedWindow) {
+    const url = new URL("/jobs/remote", window.location.origin || "https://builtin.com");
+    url.searchParams.set("search", keyword);
+    const daysSinceUpdated = getBuiltInDaysSinceUpdatedValue(datePostedWindow);
+    if (daysSinceUpdated) {
+      url.searchParams.set("daysSinceUpdated", daysSinceUpdated);
+    }
+    return url.toString();
+  }
+  function findBuiltInKeywordInput() {
+    const candidates = [];
+    for (const element of collectDeepMatches("input, textarea")) {
+      if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) || !element.isConnected || element.disabled) {
+        continue;
+      }
+      const type = element instanceof HTMLInputElement ? element.type.toLowerCase() : "textarea";
+      if (element instanceof HTMLInputElement && type && !["", "search", "text"].includes(type)) {
+        continue;
+      }
+      const attrs = cleanText(
+        [
+          element.id,
+          element.name,
+          element.placeholder,
+          element.getAttribute("aria-label")
+        ].filter(Boolean).join(" ")
+      ).toLowerCase();
+      if (!(attrs.includes("keyword") || attrs.includes("job title") || attrs.includes("company")) || attrs.includes("location")) {
+        continue;
+      }
+      let score = 0;
+      if (element.id === "searchJobsInput") score += 120;
+      if (attrs.includes("keyword")) score += 40;
+      if (attrs.includes("job title")) score += 35;
+      if (attrs.includes("company")) score += 10;
+      if (element.form) score += 8;
+      candidates.push({ element, score });
+    }
+    return candidates.sort((left, right) => right.score - left.score)[0]?.element ?? null;
+  }
+  function findBuiltInSearchAction(input) {
+    const candidates = [];
+    const scopes = /* @__PURE__ */ new Set([
+      document,
+      input.form ?? document,
+      input.parentElement ?? document,
+      input.closest("form, section, article, main, div") ?? document
+    ]);
+    for (const scope of scopes) {
+      const elements = scope instanceof Document ? collectDeepMatches(
+        "button, [role='button'], input[type='submit'], input[type='button']"
+      ) : Array.from(
+        scope.querySelectorAll(
+          "button, [role='button'], input[type='submit'], input[type='button']"
+        )
+      );
+      for (const element of elements) {
+        if (!isElementVisible(element)) {
+          continue;
+        }
+        const text = cleanText(
+          [
+            getActionText(element),
+            element.getAttribute("aria-label"),
+            element.getAttribute("title"),
+            element.getAttribute("data-testid")
+          ].filter(Boolean).join(" ")
+        ).toLowerCase();
+        const isSearchAction = text.includes("search jobs") || text === "search" || text.startsWith("search ");
+        if (!isSearchAction) {
+          continue;
+        }
+        let score = 0;
+        if (text.includes("search jobs")) score += 100;
+        if (element.getAttribute("aria-label")?.toLowerCase().includes("search")) {
+          score += 35;
+        }
+        if (input.form && element.closest("form") === input.form) score += 25;
+        if (input.parentElement && input.parentElement.contains(element)) score += 12;
+        if (scope !== document) score += 8;
+        candidates.push({ element, score });
+      }
+    }
+    return candidates.sort((left, right) => right.score - left.score)[0]?.element ?? null;
+  }
+  function applyTextInputValue(input, value) {
+    const nextValue = value.trim();
+    if (!nextValue) {
+      return false;
+    }
+    if (input.value !== nextValue) {
+      const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
+      try {
+        descriptor?.set?.call(input, nextValue);
+      } catch {
+        input.value = nextValue;
+      }
+    }
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  }
+  function normalizeBuiltInKeyword(value) {
+    return cleanText(value).toLowerCase();
   }
   function tryClickLoadMoreButton() {
     for (const el of collectDeepMatches(
@@ -12777,7 +13086,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
 
   // src/content/resumeStep.ts
   function hasSelectedResumeUpload(input) {
-    return Boolean(input.files?.length) || Boolean(getSelectedFileName(input));
+    return hasAcceptedFileUploadState(input);
   }
   function hasPendingResumeUploadSurface(collectors) {
     const resumeInputs = collectLikelyResumeInputs(collectors);
@@ -12948,7 +13257,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           continue;
         }
         if (type === "file") {
-          if (!field.files?.length) {
+          if (!hasAcceptedFileUploadState(field)) {
             return true;
           }
           continue;
@@ -13030,14 +13339,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return false;
     }
     const associatedForm = resolveAssociatedSubmitForm(actionElement);
-    if (associatedForm && !shouldSkipNativeSubmitValidation(actionElement)) {
-      try {
-        if (!associatedForm.checkValidity()) {
-          return false;
-        }
-      } catch {
-      }
-    }
     const relevantFields = collectRelevantManualSubmitFields(
       actionElement,
       fields,
@@ -13046,7 +13347,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (hasPendingRequiredAutofillFields(relevantFields)) {
       return false;
     }
-    return !hasVisibleInvalidAutofillFields(relevantFields);
+    if (hasVisibleInvalidAutofillFields(relevantFields)) {
+      return false;
+    }
+    if (associatedForm && !shouldSkipNativeSubmitValidation(actionElement) && !shouldIgnoreNativeFileValidationFailure(relevantFields)) {
+      try {
+        if (!associatedForm.checkValidity()) {
+          return false;
+        }
+      } catch {
+      }
+    }
+    return true;
   }
   function resolveReadyManualSubmitActionForFormEvent(form, submitter, fields) {
     if (submitter) {
@@ -13093,6 +13405,11 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   function shouldSkipNativeSubmitValidation(actionElement) {
     return (actionElement instanceof HTMLButtonElement || actionElement instanceof HTMLInputElement) && actionElement.formNoValidate;
   }
+  function shouldIgnoreNativeFileValidationFailure(fields) {
+    return fields.some(
+      (field) => field instanceof HTMLInputElement && field.type.toLowerCase() === "file" && isFieldRequired(field) && hasAcceptedFileUploadState(field)
+    );
+  }
   function collectRelevantManualSubmitFields(actionElement, fields, associatedForm) {
     if (associatedForm) {
       const formId = associatedForm.id.trim();
@@ -13119,6 +13436,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   function hasVisibleInvalidAutofillFields(fields) {
     return fields.some((field) => {
       if (!isFieldContextVisible(field)) {
+        return false;
+      }
+      if (field instanceof HTMLInputElement && field.type.toLowerCase() === "file" && isFieldRequired(field) && hasAcceptedFileUploadState(field)) {
         return false;
       }
       if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement || field instanceof HTMLSelectElement) {
@@ -16344,6 +16664,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   async function setFileInputValue(input, asset) {
     if (input.disabled) return false;
+    const isAshbyUploadSurface = window.location.hostname.toLowerCase().includes("ashbyhq.com");
     const hasDataTransferSupport = typeof DataTransfer === "function";
     const hasFileApiSupport = typeof File === "function";
     if (!hasDataTransferSupport || !hasFileApiSupport) {
@@ -16444,11 +16765,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         } catch {
         }
       }
-      await sleepWithAutomationChecks(500);
-      let success = Boolean(input.files?.length) || getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase() || hasAcceptedResumeUpload(input, asset.name);
-      if (success) {
-        await sleepWithAutomationChecks(900);
-        success = Boolean(input.files?.length) || getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase() || hasAcceptedResumeUpload(input, asset.name);
+      const uploadVerificationDelays = isAshbyUploadSurface ? [500, 900, 1400, 1800, 2400] : [500, 900];
+      let success = false;
+      for (const delayMs of uploadVerificationDelays) {
+        await sleepWithAutomationChecks(delayMs);
+        success = Boolean(input.files?.length) || getSelectedFileName(input).toLowerCase() === asset.name.trim().toLowerCase() || hasAcceptedResumeUpload(input, asset.name) || hasAcceptedFileUploadState(input);
+        if (success) {
+          break;
+        }
       }
       if (!success) {
         updateStatus(

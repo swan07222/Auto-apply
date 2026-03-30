@@ -951,6 +951,155 @@ describe("search result collection", () => {
     });
   });
 
+  it("restores the intended Built In keyword search before collecting results", async () => {
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: new URL("https://builtin.com/") as unknown as Location,
+    });
+
+    document.body.innerHTML = `
+      <main>
+        <section class="hero-search">
+          <input
+            id="searchJobsInput"
+            type="text"
+            placeholder="Job Title, Company or Keyword"
+            value=""
+          />
+          <button id="builtin-search-button" type="button" aria-label="Search Jobs"></button>
+        </section>
+      </main>
+    `;
+
+    const searchButton = document.getElementById(
+      "builtin-search-button"
+    ) as HTMLButtonElement;
+    Object.defineProperty(searchButton, "getBoundingClientRect", {
+      configurable: true,
+      value: () =>
+        ({
+          width: 48,
+          height: 48,
+          top: 12,
+          left: 420,
+          right: 468,
+          bottom: 60,
+          x: 420,
+          y: 12,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    });
+
+    searchButton.addEventListener("click", () => {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: new URL(
+          "https://builtin.com/jobs/remote?search=back%20end"
+        ) as unknown as Location,
+      });
+
+      document.body.innerHTML = `
+        <main>
+          <section class="search-results">
+            <article class="job-card">
+              <h2>Back End Engineer</h2>
+              <a href="https://builtin.com/job/back-end-engineer/8472985">
+                Back End Engineer
+              </a>
+              <span>Remote</span>
+            </article>
+          </section>
+        </main>
+      `;
+    });
+
+    const promise = waitForJobDetailUrls({
+      site: "builtin",
+      datePostedWindow: "any",
+      targetCount: 1,
+      detectedSite: "builtin",
+      searchKeywords: ["back end"],
+    });
+
+    await vi.runAllTimersAsync();
+    const urls = await promise;
+
+    expect(urls).toEqual([
+      "https://builtin.com/job/back-end-engineer/8472985",
+    ]);
+    expect(window.location.href).toContain(
+      "https://builtin.com/jobs/remote?search=back%20end"
+    );
+
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: originalLocation,
+    });
+  });
+
+  it("does not jump to the generic Built In jobs shell while waiting on a slow filtered results page", async () => {
+    const originalLocation = window.location;
+    const builtInLocation = new URL(
+      "https://builtin.com/jobs/remote?search=back%20end"
+    ) as unknown as Location;
+    const assignSpy = vi.fn();
+    Object.defineProperty(builtInLocation, "assign", {
+      configurable: true,
+      value: assignSpy,
+    });
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: builtInLocation,
+    });
+
+    document.body.innerHTML = `
+      <main>
+        <header>
+          <a href="https://builtin.com/jobs">Jobs</a>
+        </header>
+        <section id="builtin-results"></section>
+      </main>
+    `;
+
+    setTimeout(() => {
+      const results = document.getElementById("builtin-results");
+      results?.insertAdjacentHTML(
+        "beforeend",
+        `
+          <article class="job-card">
+            <h2>Back End Engineer</h2>
+            <a href="https://builtin.com/job/back-end-engineer/8472985">
+              Back End Engineer
+            </a>
+            <span>Remote</span>
+          </article>
+        `
+      );
+    }, 14_000);
+
+    const promise = waitForJobDetailUrls({
+      site: "builtin",
+      datePostedWindow: "any",
+      targetCount: 1,
+      detectedSite: "builtin",
+      searchKeywords: ["back end"],
+    });
+
+    await vi.runAllTimersAsync();
+    const urls = await promise;
+
+    expect(urls).toEqual([
+      "https://builtin.com/job/back-end-engineer/8472985",
+    ]);
+    expect(assignSpy).not.toHaveBeenCalled();
+
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: originalLocation,
+    });
+  });
+
   it("does not follow Greenhouse job-alert links while collecting public board results", async () => {
     const originalLocation = window.location;
     const boardLocation = new URL(

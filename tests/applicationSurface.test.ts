@@ -452,6 +452,86 @@ describe("application surface helpers", () => {
     ).toBe(true);
   });
 
+  it("scrolls to an offscreen Greenhouse launch shell before treating it as ready", async () => {
+    document.body.innerHTML = `
+      <main>
+        <section style="height: 2400px">
+          <h1>Job details</h1>
+        </section>
+        <section
+          id="greenhouse-launch-shell"
+          role="dialog"
+          aria-modal="true"
+          class="greenhouse-application-drawer"
+          data-testid="greenhouse-application-shell"
+        >
+          <p>Powered by Greenhouse</p>
+          <button type="button">Autofill with Resume</button>
+        </section>
+      </main>
+    `;
+
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 900,
+    });
+    Object.defineProperty(document.body, "scrollHeight", {
+      configurable: true,
+      value: 4200,
+    });
+    Object.defineProperty(document.documentElement, "scrollHeight", {
+      configurable: true,
+      value: 4200,
+    });
+
+    let appliedScrollTop = 0;
+    const shell = document.querySelector<HTMLElement>("#greenhouse-launch-shell");
+
+    expect(shell).not.toBeNull();
+
+    const shellRect = () => {
+      const top = appliedScrollTop >= 2800 ? 300 : 3150;
+      return {
+        x: 0,
+        y: top,
+        top,
+        left: 0,
+        bottom: top + 260,
+        right: 720,
+        width: 720,
+        height: 260,
+        toJSON() {
+          return this;
+        },
+      };
+    };
+
+    Object.defineProperty(shell as HTMLElement, "getBoundingClientRect", {
+      configurable: true,
+      value: shellRect,
+    });
+
+    const scrollSpy = vi.spyOn(window, "scrollTo").mockImplementation((value) => {
+      if (typeof value === "object" && value !== null && "top" in value) {
+        appliedScrollTop = Number(value.top ?? 0);
+      }
+    });
+
+    await expect(
+      waitForLikelyApplicationSurface("greenhouse", collectors)
+    ).resolves.toBe(true);
+
+    expect(scrollSpy).toHaveBeenCalled();
+    expect(
+      scrollSpy.mock.calls.some(([value]) =>
+        typeof value === "object" &&
+        value !== null &&
+        "top" in value &&
+        Number(value.top ?? 0) >= 2800
+      )
+    ).toBe(true);
+  });
+
   it("does not scroll the page while waiting for Monster apply surfaces", async () => {
     vi.useFakeTimers();
     document.body.innerHTML = `<main><h1>Job details</h1></main>`;

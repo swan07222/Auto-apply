@@ -3,6 +3,7 @@ import {
   DatePostedWindow,
   ResumeKind,
   SiteKey,
+  getBuiltInDaysSinceUpdatedValue,
   getJobDedupKey,
   getNearestSupportedDatePostedDays,
   getSiteLabel,
@@ -121,7 +122,10 @@ export async function waitForJobDetailUrls({
     site === "greenhouse" ||
     site === "builtin";
   const shouldTryCareerSurfaceRecovery =
-    isCareerSite && site !== "greenhouse" && !isMyGreenhousePortal;
+    isCareerSite &&
+    site !== "greenhouse" &&
+    site !== "builtin" &&
+    !isMyGreenhousePortal;
   const needsAggressiveScan =
     isCareerSite ||
     site === "monster" ||
@@ -130,6 +134,7 @@ export async function waitForJobDetailUrls({
     site === "ziprecruiter" ||
     site === "glassdoor";
   let careerSurfaceAttempts = 0;
+  let builtInSearchRecoveryAttempts = 0;
   const desiredCount = Math.max(1, Math.floor(targetCount));
   let bestUrls: string[] = [];
   let previousSignature = "";
@@ -139,6 +144,23 @@ export async function waitForJobDetailUrls({
   const maxAttempts = needsAggressiveScan ? 50 : 35;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (
+      site === "builtin" &&
+      builtInSearchRecoveryAttempts < 2 &&
+      (attempt === 0 || attempt === 8 || attempt === 18)
+    ) {
+      const restoredBuiltInSearch = await tryRestoreBuiltInKeywordSearch({
+        datePostedWindow,
+        searchKeywords,
+        label,
+        onOpenListingsSurface,
+      });
+      if (restoredBuiltInSearch) {
+        builtInSearchRecoveryAttempts += 1;
+        await waitForDomSettle(2_400, 500);
+      }
+    }
+
     const candidates = collectJobDetailCandidates(site);
     const urls = Array.from(
       new Set(
@@ -1051,6 +1073,63 @@ export function getPostedWindowDescription(
   return ` posted within ${label.replace(/^past /, "the last ")}`;
 }
 
+async function tryRestoreBuiltInKeywordSearch({
+  datePostedWindow,
+  searchKeywords = [],
+  label,
+  onOpenListingsSurface,
+}: Pick<
+  WaitForJobDetailUrlsOptions,
+  "datePostedWindow" | "searchKeywords" | "label" | "onOpenListingsSurface"
+>): Promise<boolean> {
+  const desiredKeyword = getPrimaryBuiltInSearchKeyword(searchKeywords);
+  if (!desiredKeyword || !shouldRestoreBuiltInKeywordSearch(desiredKeyword)) {
+    return false;
+  }
+
+  const labelPrefix = label ? `${label} ` : "";
+  onOpenListingsSurface?.(
+    `Restoring ${labelPrefix}Built In search for ${desiredKeyword}...`
+  );
+
+  const input = findBuiltInKeywordInput();
+  if (input && applyTextInputValue(input, desiredKeyword)) {
+    const searchAction = findBuiltInSearchAction(input);
+    if (searchAction && isElementInteractive(searchAction)) {
+      performClickAction(searchAction);
+      await sleep(1_800);
+      return true;
+    }
+
+    const form = input.form;
+    if (form) {
+      try {
+        form.requestSubmit();
+      } catch {
+        try {
+          form.submit();
+        } catch {
+          // Fall back to navigation below if the surface blocks submission.
+        }
+      }
+      await sleep(1_800);
+      return true;
+    }
+  }
+
+  const targetUrl = buildBuiltInSearchRecoveryUrl(
+    desiredKeyword,
+    datePostedWindow
+  );
+  const currentUrl = normalizeUrl(window.location.href);
+  if (targetUrl && normalizeUrl(targetUrl) !== currentUrl) {
+    window.location.assign(targetUrl);
+    return true;
+  }
+
+  return false;
+}
+
 async function tryOpenCareerListingsSurface({
   site,
   datePostedWindow,
@@ -1206,6 +1285,221 @@ function collectCareerListingActions(): Array<{
   }
 
   return actions.sort((a, b) => b.score - a.score);
+}
+
+function getPrimaryBuiltInSearchKeyword(searchKeywords: string[]): string {
+  for (const keyword of searchKeywords) {
+    const trimmed = cleanText(keyword);
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+
+  return "";
+}
+
+function shouldRestoreBuiltInKeywordSearch(desiredKeyword: string): boolean {
+  const normalizedDesiredKeyword = normalizeBuiltInKeyword(desiredKeyword);
+  if (!normalizedDesiredKeyword) {
+    return false;
+  }
+
+  try {
+    const currentUrl = new URL(window.location.href);
+    const currentPath = currentUrl.pathname.toLowerCase().replace(/\/+$/, "");
+    const currentSearchKeyword = normalizeBuiltInKeyword(
+      currentUrl.searchParams.get("search") || ""
+    );
+
+    if (
+      currentSearchKeyword === normalizedDesiredKeyword &&
+      currentPath.startsWith("/jobs/remote")
+    ) {
+      return false;
+    }
+  } catch {
+    // Fall through to DOM-based recovery when the current URL is malformed.
+  }
+
+  const input = findBuiltInKeywordInput();
+  if (!input) {
+    return true;
+  }
+
+  return normalizeBuiltInKeyword(input.value || "") !== normalizedDesiredKeyword;
+}
+
+function buildBuiltInSearchRecoveryUrl(
+  keyword: string,
+  datePostedWindow: DatePostedWindow
+): string {
+  const url = new URL("/jobs/remote", window.location.origin || "https://builtin.com");
+  url.searchParams.set("search", keyword);
+  const daysSinceUpdated = getBuiltInDaysSinceUpdatedValue(datePostedWindow);
+  if (daysSinceUpdated) {
+    url.searchParams.set("daysSinceUpdated", daysSinceUpdated);
+  }
+  return url.toString();
+}
+
+function findBuiltInKeywordInput():
+  | HTMLInputElement
+  | HTMLTextAreaElement
+  | null {
+  const candidates: Array<{
+    element: HTMLInputElement | HTMLTextAreaElement;
+    score: number;
+  }> = [];
+
+  for (const element of collectDeepMatches<
+    HTMLInputElement | HTMLTextAreaElement
+  >("input, textarea")) {
+    if (
+      !(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) ||
+      !element.isConnected ||
+      element.disabled
+    ) {
+      continue;
+    }
+
+    const type =
+      element instanceof HTMLInputElement ? element.type.toLowerCase() : "textarea";
+    if (
+      element instanceof HTMLInputElement &&
+      type &&
+      !["", "search", "text"].includes(type)
+    ) {
+      continue;
+    }
+
+    const attrs = cleanText(
+      [
+        element.id,
+        element.name,
+        element.placeholder,
+        element.getAttribute("aria-label"),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    ).toLowerCase();
+
+    if (
+      !(
+        attrs.includes("keyword") ||
+        attrs.includes("job title") ||
+        attrs.includes("company")
+      ) ||
+      attrs.includes("location")
+    ) {
+      continue;
+    }
+
+    let score = 0;
+    if (element.id === "searchJobsInput") score += 120;
+    if (attrs.includes("keyword")) score += 40;
+    if (attrs.includes("job title")) score += 35;
+    if (attrs.includes("company")) score += 10;
+    if (element.form) score += 8;
+
+    candidates.push({ element, score });
+  }
+
+  return candidates.sort((left, right) => right.score - left.score)[0]?.element ?? null;
+}
+
+function findBuiltInSearchAction(
+  input: HTMLInputElement | HTMLTextAreaElement
+): HTMLElement | null {
+  const candidates: Array<{ element: HTMLElement; score: number }> = [];
+  const scopes = new Set<ParentNode>([
+    document,
+    input.form ?? document,
+    input.parentElement ?? document,
+    input.closest("form, section, article, main, div") ?? document,
+  ]);
+
+  for (const scope of scopes) {
+    const elements =
+      scope instanceof Document
+        ? collectDeepMatches<HTMLElement>(
+            "button, [role='button'], input[type='submit'], input[type='button']"
+          )
+        : Array.from(
+            scope.querySelectorAll<HTMLElement>(
+              "button, [role='button'], input[type='submit'], input[type='button']"
+            )
+          );
+
+    for (const element of elements) {
+      if (!isElementVisible(element)) {
+        continue;
+      }
+
+      const text = cleanText(
+        [
+          getActionText(element),
+          element.getAttribute("aria-label"),
+          element.getAttribute("title"),
+          element.getAttribute("data-testid"),
+        ]
+          .filter(Boolean)
+          .join(" ")
+      ).toLowerCase();
+
+      const isSearchAction =
+        text.includes("search jobs") ||
+        text === "search" ||
+        text.startsWith("search ");
+      if (!isSearchAction) {
+        continue;
+      }
+
+      let score = 0;
+      if (text.includes("search jobs")) score += 100;
+      if (element.getAttribute("aria-label")?.toLowerCase().includes("search")) {
+        score += 35;
+      }
+      if (input.form && element.closest("form") === input.form) score += 25;
+      if (input.parentElement && input.parentElement.contains(element)) score += 12;
+      if (scope !== document) score += 8;
+
+      candidates.push({ element, score });
+    }
+  }
+
+  return candidates.sort((left, right) => right.score - left.score)[0]?.element ?? null;
+}
+
+function applyTextInputValue(
+  input: HTMLInputElement | HTMLTextAreaElement,
+  value: string
+): boolean {
+  const nextValue = value.trim();
+  if (!nextValue) {
+    return false;
+  }
+
+  if (input.value !== nextValue) {
+    const prototype =
+      input instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
+
+    try {
+      descriptor?.set?.call(input, nextValue);
+    } catch {
+      input.value = nextValue;
+    }
+  }
+
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+}
+
+function normalizeBuiltInKeyword(value: string): string {
+  return cleanText(value).toLowerCase();
 }
 
 function tryClickLoadMoreButton(): void {
