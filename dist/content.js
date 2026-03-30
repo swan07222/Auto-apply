@@ -242,6 +242,9 @@
   function resolveSessionSite(sessionSite, detectedSite) {
     return detectedSite ?? sessionSite;
   }
+  function resolveAutomationTargetSite(fallbackSite, targetUrl) {
+    return resolveSessionSite(fallbackSite, detectSiteFromUrl(targetUrl));
+  }
   function isJobBoardSite(site) {
     return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor" || site === "greenhouse" || site === "builtin";
   }
@@ -3341,12 +3344,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function collectRelevantUploadContainers(input) {
     const containers = /* @__PURE__ */ new Set();
+    const scopedContainer = findScopedResumeUploadContainer(input);
     const addContainer = (element) => {
       if (element instanceof HTMLElement) {
         containers.add(element);
       }
     };
-    addContainer(findScopedResumeUploadContainer(input));
+    addContainer(scopedContainer);
     addContainer(input.closest("label"));
     addContainer(input.parentElement);
     addContainer(input.closest("[class*='upload']"));
@@ -3358,7 +3362,71 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     addContainer(input.closest("section"));
     addContainer(input.closest("article"));
     addContainer(input.closest("fieldset"));
+    for (const referenced of collectReferencedUploadElements(input)) {
+      addContainer(referenced);
+      addContainer(referenced.closest("section"));
+      addContainer(referenced.closest("article"));
+      addContainer(referenced.closest("fieldset"));
+      addContainer(referenced.closest("div"));
+    }
+    for (const sibling of collectNearbyUploadElements(input.parentElement, input)) {
+      addContainer(sibling);
+    }
+    if (scopedContainer && scopedContainer !== input.parentElement) {
+      for (const sibling of collectNearbyUploadElements(scopedContainer, input)) {
+        addContainer(sibling);
+      }
+    }
     return Array.from(containers);
+  }
+  function collectReferencedUploadElements(input) {
+    const elements = /* @__PURE__ */ new Set();
+    for (const attribute of ["aria-describedby", "aria-controls", "aria-owns"]) {
+      const value = input.getAttribute(attribute)?.trim();
+      if (!value) {
+        continue;
+      }
+      for (const id of value.split(/\s+/).map((token) => token.trim()).filter(Boolean)) {
+        const element = document.getElementById(id);
+        if (element instanceof HTMLElement) {
+          elements.add(element);
+        }
+      }
+    }
+    return Array.from(elements);
+  }
+  function collectNearbyUploadElements(root, input) {
+    if (!(root instanceof HTMLElement)) {
+      return [];
+    }
+    return Array.from(root.children).filter(
+      (element) => element instanceof HTMLElement && element !== input && isLikelyUploadStateElement(element)
+    );
+  }
+  function isLikelyUploadStateElement(element) {
+    if (element.matches(
+      "[role='status'], [aria-live], button, [role='button'], label, [class*='upload'], [class*='resume'], [class*='file'], [class*='dropzone'], [data-upload], [data-testid*='upload'], [data-testid*='resume'], [data-test*='upload'], [data-test*='resume']"
+    )) {
+      return true;
+    }
+    const context = normalizeChoiceText(
+      cleanText(
+        [
+          element.getAttribute("aria-label"),
+          element.getAttribute("title"),
+          element.getAttribute("data-testid"),
+          element.getAttribute("data-test"),
+          element.className,
+          element.textContent
+        ].filter(Boolean).join(" ")
+      ).slice(0, 600)
+    );
+    if (!context) {
+      return false;
+    }
+    return /\b(upload|uploaded|resume|cv|attachment|file|document|replace|remove|selected|added|drag and drop|drop files|drop file)\b/.test(
+      context
+    );
   }
   function hasGenericAcceptedFileState(text) {
     if (!text) {
@@ -3635,6 +3703,55 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
     }
     return best && best.score > 0 ? best.element : null;
+  }
+  function collectResumeUploadInteractionTargets(input) {
+    const targets = /* @__PURE__ */ new Set();
+    const scopedContainer = findScopedResumeUploadContainer(input);
+    const addTarget = (element) => {
+      if (element instanceof HTMLElement && element !== input) {
+        targets.add(element);
+      }
+    };
+    for (const label of Array.from(input.labels ?? [])) {
+      addTarget(label);
+    }
+    for (const candidate of [
+      input.parentElement,
+      input.parentElement?.parentElement,
+      input.closest("label"),
+      input.closest("button"),
+      input.closest("[role='button']"),
+      input.closest("[class*='upload']"),
+      input.closest("[class*='resume']"),
+      input.closest("[class*='file']"),
+      input.closest("[class*='dropzone']"),
+      input.closest("[data-upload]"),
+      input.closest("[data-test*='upload']"),
+      input.closest("[data-test*='resume']"),
+      input.closest("[data-testid*='resume']"),
+      input.closest("[data-testid*='upload']"),
+      scopedContainer
+    ]) {
+      addTarget(candidate);
+    }
+    for (const element of [
+      ...collectReferencedUploadElements(input),
+      ...collectRelevantUploadContainers(input)
+    ]) {
+      addTarget(element);
+    }
+    for (const root of Array.from(targets)) {
+      for (const candidate of Array.from(
+        root.querySelectorAll(
+          "button, [role='button'], label, [role='status'], [aria-live], [class*='upload'], [class*='resume'], [class*='file'], [class*='dropzone'], [data-upload], [data-testid*='upload'], [data-testid*='resume'], [data-test*='upload'], [data-test*='resume']"
+        )
+      )) {
+        if (candidate !== input && isLikelyUploadStateElement(candidate)) {
+          targets.add(candidate);
+        }
+      }
+    }
+    return Array.from(targets);
   }
   function scopeDiceResumeUploadInputs(inputs, root = document) {
     const resumePanel = findDiceResumePanel(root);
@@ -13844,6 +13961,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   var OVERLAY_EDGE_MARGIN = 18;
   var OVERLAY_DRAG_PADDING = 12;
   var OVERLAY_POSITION_STORAGE_KEY = "remote-job-search-overlay-position";
+  var SUCCESS_CELEBRATION_VISIBLE_MS = 4400;
+  var SUCCESS_CELEBRATION_CLOSE_DELAY_MS = 650;
   var PENDING_MANAGED_COMPLETION_STORAGE_KEY_PREFIX = "remote-job-search-pending-managed-completion:";
   var MAX_STAGE_DEPTH = 10;
   var IS_TOP_FRAME = window.top === window;
@@ -13952,7 +14071,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     title: null,
     meta: null,
     spinner: null,
-    count: null,
+    countRow: null,
+    queueCount: null,
+    reviewedCount: null,
+    appliedCount: null,
     text: null,
     actionButton: null,
     stopButton: null,
@@ -14162,25 +14284,27 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return Boolean(findApplyAction(site, "job-page"));
   }
   async function openApplicationTargetInNewTab(url, site, description) {
-    if (!await ensureApplicationTargetReachable(url, site, description)) {
+    const targetSite = resolveAutomationTargetSite(site, url);
+    const targetStage = isLikelyApplyUrl(url, targetSite) ? "autofill-form" : "open-apply";
+    if (!await ensureApplicationTargetReachable(url, targetSite, description)) {
       return;
     }
     const response = await spawnTabs([
       {
         url,
-        site,
-        stage: "open-apply",
+        site: targetSite,
+        stage: targetStage,
         runId: currentRunId,
         active: shouldKeepJobPageOpen(site),
         claimedJobKey: resolveCurrentClaimedJobKey(),
         label: currentLabel,
         resumeKind: currentResumeKind,
         profileId: currentProfileId,
-        message: `Continuing application from ${description}...`
+        message: targetStage === "autofill-form" ? `Autofilling ${getSiteLabel(targetSite)} apply page...` : `Continuing ${getSiteLabel(targetSite)} application from ${description}...`
       }
     ]);
     if (response.opened <= 0) {
-      if (site === "dice") {
+      if (targetSite === "dice") {
         updateStatus(
           "running",
           `${description} looked blocked by a stale handoff. Opening it in this tab instead...`,
@@ -14430,7 +14554,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return false;
   }
   async function navigateToApplicationTarget(url, site, description) {
-    if (!await ensureApplicationTargetReachable(url, site, description)) {
+    const targetSite = resolveAutomationTargetSite(site, url);
+    if (!await ensureApplicationTargetReachable(url, targetSite, description)) {
       return false;
     }
     await markCurrentJobReviewedIfManaged();
@@ -14534,7 +14659,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return false;
     }
     const candidate = value;
-    return Number.isFinite(candidate.queuedJobCount) && typeof candidate.stopRequested === "boolean";
+    return Number.isFinite(candidate.queuedJobCount) && Number.isFinite(candidate.reviewedJobCount) && Number.isFinite(candidate.appliedJobCount) && typeof candidate.stopRequested === "boolean";
   }
   function applyOverlayPositionSnapshot(position) {
     overlay.position = {
@@ -15248,6 +15373,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return;
     }
     const items = reachableCollectedJobUrls.map((url, index) => {
+      const targetSite = resolveAutomationTargetSite(site, url);
       const claimedJobKey = getJobDedupKey(url) || void 0;
       const jobTitle = titleMap.get(getJobDedupKey(url)) ?? "";
       const itemResumeKind = resolveResumeKindForJob({
@@ -15256,14 +15382,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         jobTitle
       });
       const shouldActivateSpawn = index === 0;
-      if (isLikelyApplyUrl(url, site)) {
+      if (isLikelyApplyUrl(url, targetSite)) {
         return {
           url,
-          site,
+          site: targetSite,
           stage: "autofill-form",
           runId: currentRunId,
           active: shouldActivateSpawn,
-          message: `Autofilling ${labelPrefix}${getSiteLabel(site)} apply page...`,
+          message: `Autofilling ${labelPrefix}${getSiteLabel(targetSite)} apply page...`,
           claimedJobKey,
           label: currentLabel,
           resumeKind: itemResumeKind,
@@ -15272,11 +15398,11 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
       return {
         url,
-        site,
+        site: targetSite,
         stage: "open-apply",
         runId: currentRunId,
         active: shouldActivateSpawn,
-        message: `Opening ${labelPrefix}${getSiteLabel(site)} job page...`,
+        message: `Opening ${labelPrefix}${getSiteLabel(targetSite)} job page...`,
         claimedJobKey,
         label: currentLabel,
         resumeKind: itemResumeKind,
@@ -15344,6 +15470,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     await waitForCurrentPageToFinishLoading("open-apply");
     const urlAtStart = window.location.href;
     await markCurrentJobReviewedIfManaged();
+    if (hasLikelyApplicationSuccessSignals(document)) {
+      await finalizeSuccessfulApplication("Application submitted successfully.");
+      return;
+    }
     if (shouldTreatCurrentPageAsAppliedSafely(site)) {
       if (manualSubmitRequested) {
         await finalizeSuccessfulApplication("Application submitted successfully.");
@@ -16765,7 +16895,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         } catch {
         }
       }
-      const uploadVerificationDelays = isAshbyUploadSurface ? [500, 900, 1400, 1800, 2400] : [500, 900];
+      const uploadVerificationDelays = isAshbyUploadSurface ? [450, 900, 1400, 1900, 2500, 3200] : [350, 750, 1250, 1850, 2500];
       let success = false;
       for (const delayMs of uploadVerificationDelays) {
         await sleepWithAutomationChecks(delayMs);
@@ -16794,41 +16924,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
   }
   function collectResumeUploadEventTargets(input) {
-    const targets = /* @__PURE__ */ new Set();
-    const scopedContainer = findScopedResumeUploadContainer(input);
-    const id = input.id.trim();
-    if (id) {
-      for (const label of Array.from(
-        document.querySelectorAll(`label[for='${cssEscape(id)}']`)
-      )) {
-        if (!scopedContainer || scopedContainer.contains(label)) {
-          targets.add(label);
-        }
-      }
-    }
-    const candidates = [
-      input.parentElement,
-      input.parentElement?.parentElement,
-      input.closest("label"),
-      input.closest("button"),
-      input.closest("[role='button']"),
-      input.closest("[class*='upload']"),
-      input.closest("[class*='resume']"),
-      input.closest("[class*='file']"),
-      input.closest("[class*='dropzone']"),
-      input.closest("[data-upload]"),
-      input.closest("[data-test*='upload']"),
-      input.closest("[data-test*='resume']"),
-      input.closest("[data-testid*='resume']"),
-      input.closest("[data-testid*='upload']"),
-      scopedContainer
-    ];
-    for (const candidate of candidates) {
-      if (candidate instanceof HTMLElement && candidate !== input && (!scopedContainer || scopedContainer.contains(candidate) || candidate === scopedContainer)) {
-        targets.add(candidate);
-      }
-    }
-    return Array.from(targets);
+    return collectResumeUploadInteractionTargets(input);
   }
   function getAnswerForField(field, settings) {
     const question = getQuestionText(field);
@@ -17598,7 +17694,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           overlay.title = null;
           overlay.meta = null;
           overlay.spinner = null;
-          overlay.count = null;
+          overlay.countRow = null;
+          overlay.queueCount = null;
+          overlay.reviewedCount = null;
+          overlay.appliedCount = null;
           overlay.text = null;
           overlay.actionButton = null;
           overlay.stopButton = null;
@@ -17611,8 +17710,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const host = document.createElement("div");
     host.id = "remote-job-search-overlay-host";
     const shadow = host.attachShadow({ mode: "open" });
-    const wrapper = document.createElement("section"), header = document.createElement("div"), titleStack = document.createElement("div"), title = document.createElement("div"), meta = document.createElement("div"), spinner = document.createElement("span"), count = document.createElement("span"), controls = document.createElement("div"), text = document.createElement("div"), actionButton = document.createElement("button"), stopButton = document.createElement("button"), style = document.createElement("style");
-    style.textContent = `:host{all:initial}.panel{position:fixed;top:${OVERLAY_EDGE_MARGIN}px;right:${OVERLAY_EDGE_MARGIN}px;z-index:2147483647;width:min(380px,calc(100vw - 36px));padding:16px;border-radius:18px;background:rgba(16,26,39,.95);color:#f6efe2;font-family:"Segoe UI",sans-serif;box-shadow:0 18px 44px rgba(0,0,0,.32);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(14px);transition:opacity .3s,transform .3s}.header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 10px;cursor:grab;user-select:none;touch-action:none}.panel.dragging .header{cursor:grabbing}.title-stack{display:flex;flex-direction:column;gap:8px;min-width:0}.title{margin:0;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#f2b54b}.meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:rgba(248,245,239,.74)}.spinner{width:11px;height:11px;border-radius:999px;border:2px solid rgba(255,255,255,.2);border-top-color:#f2b54b;display:inline-block;animation:rjs-spin 1s linear infinite}.spinner[data-active='false']{animation:none;opacity:.45;border-top-color:rgba(255,255,255,.35)}.count{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.08)}.text{margin:0;font-size:13px;line-height:1.55;color:#f8f5ef}.controls{display:flex;align-items:center;gap:8px}.action,.stop{appearance:none;border:1px solid rgba(242,181,75,.35);background:rgba(255,255,255,.08);color:#f8f5ef;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700;line-height:1;cursor:pointer;white-space:nowrap}.action:hover:not(:disabled),.stop:hover:not(:disabled){background:rgba(255,255,255,.14)}.action:disabled,.stop:disabled{opacity:.55;cursor:wait}.stop{border-color:rgba(255,107,107,.4);color:#ffd4d4}@keyframes rjs-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`;
+    const wrapper = document.createElement("section"), header = document.createElement("div"), titleStack = document.createElement("div"), title = document.createElement("div"), meta = document.createElement("div"), spinner = document.createElement("span"), countRow = document.createElement("div"), queueCount = document.createElement("span"), reviewedCount = document.createElement("span"), appliedCount = document.createElement("span"), controls = document.createElement("div"), text = document.createElement("div"), actionButton = document.createElement("button"), stopButton = document.createElement("button"), style = document.createElement("style");
+    style.textContent = `:host{all:initial}.panel{position:fixed;top:${OVERLAY_EDGE_MARGIN}px;right:${OVERLAY_EDGE_MARGIN}px;z-index:2147483647;width:min(380px,calc(100vw - 36px));padding:16px;border-radius:18px;background:rgba(16,26,39,.95);color:#f6efe2;font-family:"Segoe UI",sans-serif;box-shadow:0 18px 44px rgba(0,0,0,.32);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(14px);transition:opacity .3s,transform .3s}.header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 10px;cursor:grab;user-select:none;touch-action:none}.panel.dragging .header{cursor:grabbing}.title-stack{display:flex;flex-direction:column;gap:8px;min-width:0}.title{margin:0;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#f2b54b}.meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:rgba(248,245,239,.74)}.spinner{width:11px;height:11px;border-radius:999px;border:2px solid rgba(255,255,255,.2);border-top-color:#f2b54b;display:inline-block;animation:rjs-spin 1s linear infinite}.spinner[data-active='false']{animation:none;opacity:.45;border-top-color:rgba(255,255,255,.35)}.count-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.count{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.08)}.count[data-tone='reviewed']{background:rgba(102,186,255,.12);border-color:rgba(102,186,255,.18)}.count[data-tone='applied']{background:rgba(70,199,138,.14);border-color:rgba(70,199,138,.2)}.text{margin:0;font-size:13px;line-height:1.55;color:#f8f5ef}.controls{display:flex;align-items:center;gap:8px}.action,.stop{appearance:none;border:1px solid rgba(242,181,75,.35);background:rgba(255,255,255,.08);color:#f8f5ef;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700;line-height:1;cursor:pointer;white-space:nowrap}.action:hover:not(:disabled),.stop:hover:not(:disabled){background:rgba(255,255,255,.14)}.action:disabled,.stop:disabled{opacity:.55;cursor:wait}.stop{border-color:rgba(255,107,107,.4);color:#ffd4d4}@keyframes rjs-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`;
     wrapper.className = "panel";
     header.className = "header";
     titleStack.className = "title-stack";
@@ -17620,7 +17719,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     meta.className = "meta";
     spinner.className = "spinner";
     spinner.setAttribute("aria-hidden", "true");
-    count.className = "count";
+    countRow.className = "count-row";
+    queueCount.className = "count";
+    reviewedCount.className = "count";
+    reviewedCount.dataset.tone = "reviewed";
+    appliedCount.className = "count";
+    appliedCount.dataset.tone = "applied";
     controls.className = "controls";
     text.className = "text";
     actionButton.className = "action";
@@ -17631,7 +17735,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     stopButton.textContent = "Stop";
     stopButton.hidden = true;
     header.title = "Drag to move";
-    meta.append(spinner, count);
+    countRow.append(queueCount, reviewedCount, appliedCount);
+    meta.append(spinner, countRow);
     controls.append(actionButton, stopButton);
     titleStack.append(title, meta);
     header.append(titleStack, controls);
@@ -17717,7 +17822,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     overlay.title = title;
     overlay.meta = meta;
     overlay.spinner = spinner;
-    overlay.count = count;
+    overlay.countRow = countRow;
+    overlay.queueCount = queueCount;
+    overlay.reviewedCount = reviewedCount;
+    overlay.appliedCount = appliedCount;
     overlay.text = text;
     overlay.actionButton = actionButton;
     overlay.stopButton = stopButton;
@@ -17797,14 +17905,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return;
     }
     ensureOverlay();
-    if (!overlay.host || !overlay.title || !overlay.spinner || !overlay.count || !overlay.text || !overlay.actionButton || !overlay.stopButton)
+    if (!overlay.host || !overlay.title || !overlay.spinner || !overlay.countRow || !overlay.queueCount || !overlay.reviewedCount || !overlay.appliedCount || !overlay.text || !overlay.actionButton || !overlay.stopButton)
       return;
     const siteText = status.site === "unsupported" ? "Automation" : getSiteLabel(status.site);
     overlay.title.textContent = currentResumeKind ? `Remote Job Search - ${siteText} - ${getResumeKindLabel(currentResumeKind)}` : `Remote Job Search - ${siteText}`;
     overlay.spinner.dataset.active = status.phase === "running" || status.phase === "waiting_for_verification" ? "true" : "false";
     const queuedJobCount = currentRunSummary?.queuedJobCount ?? 0;
-    overlay.count.hidden = queuedJobCount <= 0;
-    overlay.count.textContent = queuedJobCount > 0 ? `Queue: ${queuedJobCount}` : "";
+    const reviewedJobCount = currentRunSummary?.reviewedJobCount ?? 0;
+    const appliedJobCount = currentRunSummary?.appliedJobCount ?? 0;
+    overlay.countRow.hidden = !currentRunSummary;
+    overlay.queueCount.textContent = `Queue: ${queuedJobCount}`;
+    overlay.reviewedCount.textContent = `Reviewed: ${reviewedJobCount}`;
+    overlay.appliedCount.textContent = `Applied: ${appliedJobCount}`;
     overlay.text.textContent = status.message;
     const actionLabel = getOverlayActionLabel();
     overlay.actionButton.hidden = !actionLabel;
@@ -17869,13 +17981,37 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (!hostDocument?.body) {
       return;
     }
+    const appliedJobCount = currentRunSummary?.appliedJobCount ?? 0;
+    const reviewedJobCount = currentRunSummary?.reviewedJobCount ?? 0;
     const container = hostDocument.createElement("div");
     container.setAttribute(
       "style",
-      "position:fixed;inset:0;pointer-events:none;z-index:2147483646;overflow:hidden"
+      "position:fixed;inset:0;pointer-events:none;z-index:2147483647;overflow:hidden"
     );
+    const overlayHost = hostDocument.querySelector(
+      "#remote-job-search-overlay-host"
+    );
+    const previousOverlayDisplay = overlayHost?.style.display ?? "";
+    if (overlayHost) {
+      overlayHost.style.display = "none";
+    }
     const style = hostDocument.createElement("style");
     style.textContent = `
+    @keyframes rjs-firework-backdrop {
+      0% { opacity: 0; }
+      14% { opacity: 1; }
+      100% { opacity: 0; }
+    }
+    @keyframes rjs-firework-ambient {
+      0% { opacity: .12; transform: scale(.92) translate3d(0, 0, 0); }
+      45% { opacity: .3; transform: scale(1.08) translate3d(2%, -3%, 0); }
+      100% { opacity: .1; transform: scale(1.02) translate3d(-2%, 2%, 0); }
+    }
+    @keyframes rjs-firework-badge {
+      0% { opacity: 0; transform: translate(-50%, calc(-50% + 26px)) scale(.86); }
+      16% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+      100% { opacity: 0; transform: translate(-50%, calc(-50% - 10px)) scale(1.02); }
+    }
     @keyframes rjs-firework-burst {
       0% { opacity: 0; transform: translate(-50%, -50%) rotate(var(--rotation, 0deg)) translate(0, 0) scale(.2); }
       12% { opacity: 1; }
@@ -17893,6 +18029,46 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
   `;
     container.append(style);
+    const backdrop = hostDocument.createElement("div");
+    backdrop.setAttribute(
+      "style",
+      "position:absolute;inset:0;background:radial-gradient(circle at 18% 20%, hsla(34 100% 68% /.22) 0%, transparent 34%),radial-gradient(circle at 82% 14%, hsla(188 100% 72% /.2) 0%, transparent 32%),radial-gradient(circle at 50% 100%, hsla(332 100% 74% /.18) 0%, transparent 42%),linear-gradient(180deg, rgba(7,12,20,.2), rgba(7,12,20,.52));backdrop-filter:blur(7px) saturate(130%);animation:rjs-firework-backdrop 2500ms ease-out forwards"
+    );
+    container.append(backdrop);
+    const ambientGlows = [
+      {
+        style: "position:absolute;left:8%;top:12%;width:30vw;height:30vw;min-width:220px;min-height:220px;border-radius:999px;background:radial-gradient(circle, hsla(38 100% 66% /.28), transparent 72%);filter:blur(18px);animation:rjs-firework-ambient 2400ms ease-in-out forwards"
+      },
+      {
+        style: "position:absolute;right:10%;top:8%;width:24vw;height:24vw;min-width:180px;min-height:180px;border-radius:999px;background:radial-gradient(circle, hsla(194 100% 70% /.24), transparent 72%);filter:blur(18px);animation:rjs-firework-ambient 2450ms ease-in-out 70ms forwards"
+      },
+      {
+        style: "position:absolute;left:50%;bottom:-8%;width:36vw;height:28vw;min-width:260px;min-height:180px;transform:translateX(-50%);border-radius:999px;background:radial-gradient(circle, hsla(332 100% 72% /.2), transparent 72%);filter:blur(22px);animation:rjs-firework-ambient 2550ms ease-in-out 120ms forwards"
+      }
+    ];
+    for (const glowConfig of ambientGlows) {
+      const glow = hostDocument.createElement("span");
+      glow.setAttribute("style", glowConfig.style);
+      container.append(glow);
+    }
+    const badge = hostDocument.createElement("div");
+    badge.setAttribute(
+      "style",
+      "position:absolute;left:50%;top:50%;transform:translate(-50%, -50%);width:min(360px, calc(100vw - 48px));padding:20px 24px;border-radius:26px;border:1px solid rgba(255,255,255,.16);background:linear-gradient(180deg, rgba(16,26,39,.9), rgba(10,16,24,.82));box-shadow:0 24px 70px rgba(0,0,0,.36), inset 0 1px 0 rgba(255,255,255,.16);color:#f8f5ef;text-align:center;animation:rjs-firework-badge 2400ms cubic-bezier(.18,.84,.18,1) forwards"
+    );
+    badge.innerHTML = `
+    <div style="display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:999px;background:rgba(242,181,75,.14);border:1px solid rgba(242,181,75,.24);font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#f2b54b">
+      <span style="width:8px;height:8px;border-radius:999px;background:#f2b54b;box-shadow:0 0 16px rgba(242,181,75,.72)"></span>
+      Application Submitted
+    </div>
+    <div style="margin-top:14px;font-size:24px;font-weight:800;line-height:1.15;color:#ffffff">Moving to the next opportunity</div>
+    <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:14px">
+      <span style="display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;background:rgba(70,199,138,.14);border:1px solid rgba(70,199,138,.2);font-size:12px;font-weight:700;color:#ecfff4">Applied: ${appliedJobCount}</span>
+      <span style="display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;background:rgba(102,186,255,.12);border:1px solid rgba(102,186,255,.18);font-size:12px;font-weight:700;color:#eef7ff">Reviewed: ${reviewedJobCount}</span>
+    </div>
+    <div style="margin-top:8px;font-size:13px;line-height:1.55;color:rgba(248,245,239,.78)">This tab will close and the next queued job will open automatically.</div>
+  `;
+    container.append(badge);
     const palette = [12, 24, 40, 54, 188, 204, 332];
     const burstOrigins = [
       { left: 14, top: 26, delay: 0 },
@@ -17941,8 +18117,24 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
     }
     hostDocument.body.append(container);
-    await sleep(2100);
+    await waitForCelebrationPaint(hostDocument);
+    await sleep(SUCCESS_CELEBRATION_VISIBLE_MS);
     container.remove();
+    if (overlayHost?.isConnected) {
+      overlayHost.style.display = previousOverlayDisplay;
+    }
+  }
+  async function waitForCelebrationPaint(hostDocument) {
+    const hostWindow = hostDocument.defaultView;
+    if (!hostWindow?.requestAnimationFrame) {
+      await sleep(34);
+      return;
+    }
+    await new Promise((resolve) => {
+      hostWindow.requestAnimationFrame(() => {
+        hostWindow.requestAnimationFrame(() => resolve());
+      });
+    });
   }
   async function pushFinalSessionStatus(message, completionKind) {
     currentStage = "autofill-form";
@@ -17969,7 +18161,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     currentRunSummary = await readCurrentRunSummary() ?? currentRunSummary;
     renderOverlay();
     await showSuccessFireworks();
-    await sleep(250);
+    await sleep(SUCCESS_CELEBRATION_CLOSE_DELAY_MS);
     await closeCurrentTab();
   }
   async function persistManualSubmitAndResumeIfNeeded() {

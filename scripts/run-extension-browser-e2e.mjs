@@ -753,6 +753,8 @@ async function seedManagedRun(worker, options) {
     claimedJobKey: currentClaimedJobKey,
     runSummary: {
       queuedJobCount: 1,
+      reviewedJobCount: 0,
+      appliedJobCount: 0,
       stopRequested: false,
     },
   };
@@ -783,6 +785,7 @@ async function seedManagedRun(worker, options) {
           currentClaimedJobKey,
           queuedItem.claimedJobKey,
         ],
+        reviewedJobKeys: [],
         successfulJobPages: 0,
         successfulJobKeys: [],
         queuedJobItems: [queuedItem],
@@ -848,11 +851,12 @@ async function runGreenhouseScenario() {
   try {
     logProgress("greenhouse", "Launching mocked job routes.");
     await context.route(
-      "https://job-boards.greenhouse.io/impiricus/jobs/gh-*",
+      "https://job-boards.greenhouse.io/impiricus*",
       async (route) => {
         const requestUrl = route.request().url();
         logProgress("greenhouse", `Mock route hit: ${requestUrl}`);
-        const isSecondJob = requestUrl.includes("gh-2");
+        const isSecondJob =
+          requestUrl.includes("gh-2") || requestUrl.includes("error=true");
         await fulfillHtml(
           route,
           greenhouseJobHtml(
@@ -906,7 +910,7 @@ async function runGreenhouseScenario() {
 
     const secondJobPromise = waitForNewPageMatchingUrl(
       context,
-      /job-boards\.greenhouse\.io\/impiricus\/jobs\/gh-2/i
+      /job-boards\.greenhouse\.io\/impiricus(?:\/jobs\/gh-2|\?error=true)?/i
     );
     secondJobPromise.catch(() => null);
     const startResponse = await startSessionOnTab(

@@ -442,6 +442,17 @@ async function waitForMeaningfulLiveContent(page: Page): Promise<void> {
         return true;
       }
 
+      const temporaryFailureSignals = [
+        "service unavailable",
+        "request timeout",
+        "gateway timeout",
+        "bad gateway",
+        "temporarily unavailable",
+      ];
+      if (temporaryFailureSignals.some((signal) => combinedText.includes(signal))) {
+        return true;
+      }
+
       if (bodyText.includes("you need to enable javascript to run this app")) {
         return false;
       }
@@ -821,6 +832,23 @@ function isLikelyJavascriptShellPage(probe: ProbeResult): boolean {
   ].some((pattern) => pattern.test(text));
 }
 
+function isLikelyTemporaryUnavailablePage(probe: ProbeResult): boolean {
+  const text = `${probe.title} ${probe.bodySnippet}`
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return [
+    /\bservice unavailable\b/,
+    /\brequest timeout\b/,
+    /\bgateway timeout\b/,
+    /\bbad gateway\b/,
+    /\btemporarily unavailable\b/,
+    /\bplease try again later\b/,
+    /\btemporarily down\b/,
+  ].some((pattern) => pattern.test(text));
+}
+
 for (const target of buildSearchTargets("indeed", "https://www.indeed.com", "software engineer")) {
   test(`live Indeed search works: ${target.label}`, async ({ page }) => {
     const probe = await navigateAndCollect(page, "indeed", target);
@@ -971,6 +999,10 @@ for (const target of STARTUP_TARGETS) {
       `Startup target hit a challenge page.\n${describeProbeFailure(target, probe)}`
     );
     test.skip(
+      probe.candidateUrls.length === 0 && isLikelyTemporaryUnavailablePage(probe),
+      `Startup target is temporarily unavailable.\n${describeProbeFailure(target, probe)}`
+    );
+    test.skip(
       probe.candidateUrls.length === 0 && isLikelyNoOpeningsPage(probe),
       `Startup target currently shows no open jobs.\n${describeProbeFailure(target, probe)}`
     );
@@ -996,6 +1028,10 @@ for (const target of OTHER_SITE_TARGETS) {
     test.skip(
       probe.verificationDetected,
       `Other-site target hit a challenge page.\n${describeProbeFailure(target, probe)}`
+    );
+    test.skip(
+      probe.candidateUrls.length === 0 && isLikelyTemporaryUnavailablePage(probe),
+      `Other-site target is temporarily unavailable.\n${describeProbeFailure(target, probe)}`
     );
     test.skip(
       probe.candidateUrls.length === 0 && isLikelyNoOpeningsPage(probe),

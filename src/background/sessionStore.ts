@@ -24,6 +24,7 @@ export type AutomationRunState = {
   jobPageLimit: number;
   openedJobPages: number;
   openedJobKeys: string[];
+  reviewedJobKeys: string[];
   successfulJobPages: number;
   successfulJobKeys: string[];
   queuedJobItems: AutomationQueuedJobItem[];
@@ -139,6 +140,11 @@ export async function getRunState(
       : 0,
     openedJobKeys: Array.isArray(raw.openedJobKeys)
       ? raw.openedJobKeys.filter(
+          (key): key is string => typeof key === "string" && Boolean(key.trim())
+        )
+      : [],
+    reviewedJobKeys: Array.isArray(raw.reviewedJobKeys)
+      ? raw.reviewedJobKeys.filter(
           (key): key is string => typeof key === "string" && Boolean(key.trim())
         )
       : [],

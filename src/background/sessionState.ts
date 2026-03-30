@@ -28,6 +28,23 @@ export async function resolveContentReadySession(
   }
 
   if (typeof session.controllerFrameId === "number") {
+    if (
+      senderFrameId === 0 &&
+      looksLikeApplicationSurface &&
+      session.controllerFrameId !== 0
+    ) {
+      const reclaimedSession: AutomationSession = {
+        ...session,
+        controllerFrameId: 0,
+      };
+      await persistSession(reclaimedSession);
+
+      return {
+        session: reclaimedSession,
+        shouldResume: Boolean(reclaimedSession.shouldResume),
+      };
+    }
+
     return {
       session,
       shouldResume:

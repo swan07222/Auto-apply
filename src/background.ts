@@ -23,6 +23,7 @@ import {
   parseSearchKeywords,
   readAutomationSettings,
   refreshStartupCompanies,
+  resolveAutomationTargetSite,
   resolveStartupTargetRegions,
   shouldKeepManagedJobPageOpen,
 } from "./shared";
@@ -41,6 +42,7 @@ import {
   shouldReleaseManagedJobOpening,
 } from "./background/sessionState";
 import {
+  AutomationRunState,
   AutomationQueuedJobItem,
   addActiveRunId,
   createRunId,
@@ -1347,6 +1349,8 @@ async function getRunSummaryForSession(
 
   return {
     queuedJobCount: runState.queuedJobItems.length,
+    reviewedJobCount: runState.reviewedJobKeys.length,
+    appliedJobCount: runState.successfulJobPages,
     stopRequested: runState.stopRequested,
   };
 }
@@ -1626,6 +1630,9 @@ async function markJobReviewed(
     for (const key of memoryKeys.size > 0 ? memoryKeys : [completionKey]) {
       await rememberReviewedJobKey(key);
     }
+    if (session.runId) {
+      await recordReviewedJobForRun(session.runId, completionKey);
+    }
   }
 
   return {
@@ -1776,13 +1783,21 @@ async function attachSessionToSiteOpenedChildTab(
     return;
   }
 
+  const childUrl = getTabUrl(tab as BackgroundSourceTab);
+  const childSite = resolveAutomationTargetSite(openerSession.site, childUrl);
+  const childStage = isLikelyManagedApplyTarget(childUrl, childSite)
+    ? ("autofill-form" as const)
+    : ("open-apply" as const);
+
   const childSession = createSession(
     childTabId,
-    openerSession.site,
+    childSite,
     "running",
-    `Continuing ${getReadableSiteName(openerSession.site)} application in a new tab...`,
+    childStage === "autofill-form"
+      ? `Autofilling ${getReadableSiteName(childSite)} apply page...`
+      : `Continuing ${getReadableSiteName(childSite)} application in a new tab...`,
     true,
-    "open-apply",
+    childStage,
     openerSession.runId,
     openerSession.label,
     openerSession.keyword,
@@ -1793,7 +1808,7 @@ async function attachSessionToSiteOpenedChildTab(
   childSession.jobSlots = openerSession.jobSlots;
   childSession.claimedJobKey = openerSession.claimedJobKey;
   childSession.openedUrlKey =
-    getSpawnDedupKey(getTabUrl(tab as BackgroundSourceTab)) ??
+    getSpawnDedupKey(childUrl) ??
     openerSession.openedUrlKey;
 
   await setSession(childSession);
@@ -1987,6 +2002,7 @@ async function startAutomationForTab(
     jobPageLimit: settings.jobPageLimit,
     openedJobPages: 0,
     openedJobKeys: [],
+    reviewedJobKeys: [],
     successfulJobPages: 0,
     successfulJobKeys: [],
     queuedJobItems: [],
@@ -2095,6 +2111,7 @@ async function startStartupAutomation(
     jobPageLimit: settings.jobPageLimit,
     openedJobPages: 0,
     openedJobKeys: [],
+    reviewedJobKeys: [],
     successfulJobPages: 0,
     successfulJobKeys: [],
     queuedJobItems: [],
@@ -2234,6 +2251,7 @@ async function startOtherSitesAutomation(
     jobPageLimit: settings.jobPageLimit,
     openedJobPages: 0,
     openedJobKeys: [],
+    reviewedJobKeys: [],
     successfulJobPages: 0,
     successfulJobKeys: [],
     queuedJobItems: [],
@@ -2877,9 +2895,10 @@ async function recordSuccessfulJobCompletion(
 
     successfulKeys.add(completionKey);
 
+    const nextRunState = appendReviewedJobKeyToRunState(runState, completionKey);
     await setRunState({
-      ...runState,
-      successfulJobPages: runState.successfulJobPages + 1,
+      ...nextRunState,
+      successfulJobPages: nextRunState.successfulJobPages + 1,
       successfulJobKeys: Array.from(successfulKeys),
       updatedAt: Date.now(),
     });
@@ -2942,7 +2961,53 @@ async function releaseManagedJobOpening(
   }
 
   await rememberReviewedJobKey(completionKey);
+  await recordReviewedJobForRun(runId, completionKey);
   await releaseJobOpeningsForRunId(runId, [completionKey]);
+}
+
+function appendReviewedJobKeyToRunState(
+  runState: AutomationRunState,
+  reviewedJobKey: string
+): AutomationRunState {
+  const normalizedKey = reviewedJobKey.trim();
+  if (!normalizedKey || runState.reviewedJobKeys.includes(normalizedKey)) {
+    return runState;
+  }
+
+  return {
+    ...runState,
+    reviewedJobKeys: [...runState.reviewedJobKeys, normalizedKey],
+  };
+}
+
+async function recordReviewedJobForRun(
+  runId: string,
+  reviewedJobKey: string
+): Promise<void> {
+  const normalizedKey = reviewedJobKey.trim();
+  if (!normalizedKey) {
+    return;
+  }
+
+  await withRunLock(runId, async () => {
+    const runState = await getRunState(runId);
+    if (!runState) {
+      return;
+    }
+
+    const nextRunState = appendReviewedJobKeyToRunState(
+      runState,
+      normalizedKey
+    );
+    if (nextRunState === runState) {
+      return;
+    }
+
+    await setRunState({
+      ...nextRunState,
+      updatedAt: Date.now(),
+    });
+  });
 }
 
 type LiveRunSessionInfo = {

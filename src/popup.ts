@@ -52,6 +52,8 @@ const siteName = requireElement<HTMLElement>("#site-name");
 const statusPanel = requireElement<HTMLElement>("#status-panel");
 const statusText = requireElement<HTMLElement>("#status-text");
 const queueCount = requireElement<HTMLElement>("#queue-count");
+const reviewedCount = requireElement<HTMLElement>("#reviewed-count");
+const appliedCount = requireElement<HTMLElement>("#applied-count");
 const settingsStatus = requireElement<HTMLElement>("#settings-status");
 const savedAnswerCount = requireElement<HTMLElement>("#saved-answer-count");
 const savedAnswerList = requireElement<HTMLElement>("#saved-answer-list");
@@ -1057,6 +1059,8 @@ function applyStatus(status: AutomationStatus): void {
   statusPanel.dataset.phase = status.phase;
   statusText.textContent = status.message;
   queueCount.textContent = String(activeRunSummary?.queuedJobCount ?? 0);
+  reviewedCount.textContent = String(activeRunSummary?.reviewedJobCount ?? 0);
+  appliedCount.textContent = String(activeRunSummary?.appliedJobCount ?? 0);
   updateSiteNameDisplay();
 }
 
@@ -2148,6 +2152,8 @@ function isAutomationRunSummary(
   const candidate = value as Partial<AutomationRunSummary>;
   return (
     Number.isFinite(candidate.queuedJobCount) &&
+    Number.isFinite(candidate.reviewedJobCount) &&
+    Number.isFinite(candidate.appliedJobCount) &&
     typeof candidate.stopRequested === "boolean"
   );
 }

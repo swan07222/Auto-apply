@@ -3,9 +3,17 @@
   "version": "1.0.0",
   "private": true,
   "description": "Chrome extension for profile-based, keyword-driven remote job search and application assistance across major job boards and curated career sites.",
+  "engines": {
+    "node": ">=18",
+    "npm": ">=9"
+  },
   "scripts": {
+    "clean": "node ./scripts/clean.mjs",
     "build": "node ./scripts/build.mjs",
+    "rebuild": "npm run clean && npm run build",
     "typecheck": "tsc --noEmit",
+    "typecheck:tools": "tsc --noEmit -p tsconfig.tools.json",
+    "typecheck:all": "npm run typecheck && npm run typecheck:tools",
     "test": "npm run test:unit",
     "test:unit": "vitest run",
     "test:unit:verbose": "vitest run --reporter=verbose",
@@ -14,7 +22,7 @@
     "test:watch": "vitest",
     "test:smoke": "node ./scripts/run-live-tests.mjs",
     "test:live": "npm run test:smoke --",
-    "test:ci": "npm run test:coverage && npm run typecheck && npm run build",
+    "test:ci": "npm run test:coverage && npm run typecheck:all && npm run build",
     "test:check": "npm run test:ci",
     "test:full": "npm run test:ci && npm run test:smoke"
   },

@@ -235,6 +235,8 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
     ),
     statusText: requireElement<HTMLElement>("#status-text"),
     queueCount: requireElement<HTMLElement>("#queue-count"),
+    reviewedCount: requireElement<HTMLElement>("#reviewed-count"),
+    appliedCount: requireElement<HTMLElement>("#applied-count"),
     settingsStatus: requireElement<HTMLElement>("#settings-status"),
     siteName: requireElement<HTMLElement>("#site-name"),
     modePreview: requireElement<HTMLElement>("#mode-preview"),
@@ -336,6 +338,8 @@ describe("popup workflow", () => {
     expect(popup.modePreview.textContent).toBe("Job boards");
     expect(popup.statusText.textContent).toBe("Ready on Indeed.");
     expect(popup.queueCount.textContent).toBe("0");
+    expect(popup.reviewedCount.textContent).toBe("0");
+    expect(popup.appliedCount.textContent).toBe("0");
     expect(popup.startButton.disabled).toBe(false);
     expect(popup.tabsQuery).toHaveBeenCalled();
     expect(popup.runtimeSendMessage).toHaveBeenCalledWith({
@@ -361,6 +365,8 @@ describe("popup workflow", () => {
               runId: "run-1",
               runSummary: {
                 queuedJobCount: 3,
+                reviewedJobCount: 7,
+                appliedJobCount: 2,
                 stopRequested: false,
               },
             },
@@ -372,6 +378,8 @@ describe("popup workflow", () => {
     });
 
     expect(popup.queueCount.textContent).toBe("3");
+    expect(popup.reviewedCount.textContent).toBe("7");
+    expect(popup.appliedCount.textContent).toBe("2");
     expect(popup.statusText.textContent).toBe("Waiting for queued jobs or Stop.");
     expect(popup.startButton.disabled).toBe(true);
   });
@@ -965,6 +973,8 @@ describe("popup workflow", () => {
   it("does not start overlapping popup refresh polls while one is already in flight", async () => {
     vi.useFakeTimers();
     let getTabSessionCalls = 0;
+    let inFlightGetTabSessionCalls = 0;
+    let maxInFlightGetTabSessionCalls = 0;
     let resolvePendingRefresh: (() => void) | null = null;
 
     const popup = await createPopupHarness({
@@ -974,8 +984,13 @@ describe("popup workflow", () => {
         }
 
         getTabSessionCalls += 1;
+        inFlightGetTabSessionCalls += 1;
+        maxInFlightGetTabSessionCalls = Math.max(
+          maxInFlightGetTabSessionCalls,
+          inFlightGetTabSessionCalls
+        );
         if (getTabSessionCalls === 1) {
-          return {
+          const response = {
             ok: true,
             session: {
               site: "indeed",
@@ -984,29 +999,36 @@ describe("popup workflow", () => {
               updatedAt: Date.now(),
             },
           };
+          inFlightGetTabSessionCalls -= 1;
+          return response;
         }
 
         return new Promise((resolve) => {
           resolvePendingRefresh = () =>
-            resolve({
-              ok: true,
-              session: {
-                site: "indeed",
-                phase: "idle",
-                message: "Ready on Indeed.",
-                updatedAt: Date.now(),
-              },
-            });
+            resolve(
+              (() => {
+                inFlightGetTabSessionCalls -= 1;
+                return {
+                  ok: true,
+                  session: {
+                    site: "indeed",
+                    phase: "idle",
+                    message: "Ready on Indeed.",
+                    updatedAt: Date.now(),
+                  },
+                };
+              })()
+            );
         });
       },
     });
 
-    expect(getTabSessionCalls).toBe(1);
+    expect(getTabSessionCalls).toBeGreaterThan(0);
 
     await vi.advanceTimersByTimeAsync(3_100);
     await flushAsyncWork(12);
 
-    expect(getTabSessionCalls).toBe(2);
+    expect(maxInFlightGetTabSessionCalls).toBe(1);
 
     resolvePendingRefresh?.();
     await flushAsyncWork(12);

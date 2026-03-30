@@ -379,6 +379,12 @@
   function getSessionStorageKey(tabId) {
     return `remote-job-search-session:${tabId}`;
   }
+  function resolveSessionSite(sessionSite, detectedSite) {
+    return detectedSite ?? sessionSite;
+  }
+  function resolveAutomationTargetSite(fallbackSite, targetUrl) {
+    return resolveSessionSite(fallbackSite, detectSiteFromUrl(targetUrl));
+  }
   function isJobBoardSite(site) {
     return site === "indeed" || site === "ziprecruiter" || site === "dice" || site === "monster" || site === "glassdoor" || site === "greenhouse" || site === "builtin";
   }
@@ -1090,6 +1096,17 @@
       };
     }
     if (typeof session.controllerFrameId === "number") {
+      if (senderFrameId === 0 && looksLikeApplicationSurface && session.controllerFrameId !== 0) {
+        const reclaimedSession = {
+          ...session,
+          controllerFrameId: 0
+        };
+        await persistSession(reclaimedSession);
+        return {
+          session: reclaimedSession,
+          shouldResume: Boolean(reclaimedSession.shouldResume)
+        };
+      }
       return {
         session,
         shouldResume: session.controllerFrameId === senderFrameId && Boolean(session.shouldResume)
@@ -1226,6 +1243,9 @@
       jobPageLimit: Number.isFinite(Number(raw.jobPageLimit)) ? Math.max(0, Math.floor(Number(raw.jobPageLimit))) : 0,
       openedJobPages: Number.isFinite(Number(raw.openedJobPages)) ? Math.max(0, Math.floor(Number(raw.openedJobPages))) : 0,
       openedJobKeys: Array.isArray(raw.openedJobKeys) ? raw.openedJobKeys.filter(
+        (key2) => typeof key2 === "string" && Boolean(key2.trim())
+      ) : [],
+      reviewedJobKeys: Array.isArray(raw.reviewedJobKeys) ? raw.reviewedJobKeys.filter(
         (key2) => typeof key2 === "string" && Boolean(key2.trim())
       ) : [],
       successfulJobPages: Number.isFinite(Number(raw.successfulJobPages)) ? Math.max(0, Math.floor(Number(raw.successfulJobPages))) : 0,
@@ -2160,6 +2180,8 @@
     }
     return {
       queuedJobCount: runState.queuedJobItems.length,
+      reviewedJobCount: runState.reviewedJobKeys.length,
+      appliedJobCount: runState.successfulJobPages,
       stopRequested: runState.stopRequested
     };
   }
@@ -2339,6 +2361,9 @@
       for (const key of memoryKeys.size > 0 ? memoryKeys : [completionKey]) {
         await rememberReviewedJobKey(key);
       }
+      if (session.runId) {
+        await recordReviewedJobForRun(session.runId, completionKey);
+      }
     }
     return {
       ok: true,
@@ -2446,13 +2471,16 @@
       }
       return;
     }
+    const childUrl = getTabUrl(tab);
+    const childSite = resolveAutomationTargetSite(openerSession.site, childUrl);
+    const childStage = isLikelyManagedApplyTarget(childUrl, childSite) ? "autofill-form" : "open-apply";
     const childSession = createSession(
       childTabId,
-      openerSession.site,
+      childSite,
       "running",
-      `Continuing ${getReadableSiteName(openerSession.site)} application in a new tab...`,
+      childStage === "autofill-form" ? `Autofilling ${getReadableSiteName(childSite)} apply page...` : `Continuing ${getReadableSiteName(childSite)} application in a new tab...`,
       true,
-      "open-apply",
+      childStage,
       openerSession.runId,
       openerSession.label,
       openerSession.keyword,
@@ -2461,7 +2489,7 @@
     );
     childSession.jobSlots = openerSession.jobSlots;
     childSession.claimedJobKey = openerSession.claimedJobKey;
-    childSession.openedUrlKey = getSpawnDedupKey(getTabUrl(tab)) ?? openerSession.openedUrlKey;
+    childSession.openedUrlKey = getSpawnDedupKey(childUrl) ?? openerSession.openedUrlKey;
     await setSession(childSession);
     scheduleSessionRestartOnTabComplete(childTabId);
     try {
@@ -2586,6 +2614,7 @@
       jobPageLimit: settings.jobPageLimit,
       openedJobPages: 0,
       openedJobKeys: [],
+      reviewedJobKeys: [],
       successfulJobPages: 0,
       successfulJobKeys: [],
       queuedJobItems: [],
@@ -2669,6 +2698,7 @@
       jobPageLimit: settings.jobPageLimit,
       openedJobPages: 0,
       openedJobKeys: [],
+      reviewedJobKeys: [],
       successfulJobPages: 0,
       successfulJobKeys: [],
       queuedJobItems: [],
@@ -2777,6 +2807,7 @@
       jobPageLimit: settings.jobPageLimit,
       openedJobPages: 0,
       openedJobKeys: [],
+      reviewedJobKeys: [],
       successfulJobPages: 0,
       successfulJobKeys: [],
       queuedJobItems: [],
@@ -3236,9 +3267,10 @@
         return;
       }
       successfulKeys.add(completionKey);
+      const nextRunState = appendReviewedJobKeyToRunState(runState, completionKey);
       await setRunState({
-        ...runState,
-        successfulJobPages: runState.successfulJobPages + 1,
+        ...nextRunState,
+        successfulJobPages: nextRunState.successfulJobPages + 1,
         successfulJobKeys: Array.from(successfulKeys),
         updatedAt: Date.now()
       });
@@ -3284,7 +3316,41 @@
       return;
     }
     await rememberReviewedJobKey(completionKey);
+    await recordReviewedJobForRun(runId, completionKey);
     await releaseJobOpeningsForRunId(runId, [completionKey]);
+  }
+  function appendReviewedJobKeyToRunState(runState, reviewedJobKey) {
+    const normalizedKey = reviewedJobKey.trim();
+    if (!normalizedKey || runState.reviewedJobKeys.includes(normalizedKey)) {
+      return runState;
+    }
+    return {
+      ...runState,
+      reviewedJobKeys: [...runState.reviewedJobKeys, normalizedKey]
+    };
+  }
+  async function recordReviewedJobForRun(runId, reviewedJobKey) {
+    const normalizedKey = reviewedJobKey.trim();
+    if (!normalizedKey) {
+      return;
+    }
+    await withRunLock(runId, async () => {
+      const runState = await getRunState(runId);
+      if (!runState) {
+        return;
+      }
+      const nextRunState = appendReviewedJobKeyToRunState(
+        runState,
+        normalizedKey
+      );
+      if (nextRunState === runState) {
+        return;
+      }
+      await setRunState({
+        ...nextRunState,
+        updatedAt: Date.now()
+      });
+    });
   }
   async function listLiveRunSessionInfos(runId) {
     const sessions = await listLiveSessionsForRunId(runId);

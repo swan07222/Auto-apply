@@ -10,8 +10,9 @@ It can:
 - upload a saved resume when supported
 - remember answers from previous applications and reuse them later
 - pause when human verification or final review is required
+- continue into supported company-site and ATS handoff flows when a board redirects externally
 
-Important: the extension does not auto-submit applications. Final review and submission stay manual.
+Important: the extension can advance and submit supported flows when a page is clearly ready, but it still pauses for human verification, missing required answers, or ambiguous review states.
 
 ## Supported Modes
 
@@ -56,6 +57,7 @@ Builds keyword searches for curated external sites:
 - Resume upload support for `.pdf`, `.doc`, `.docx`, `.txt`, `.md`, and `.rtf`
 - Remembered answer capture plus editable saved question-and-answer entries
 - Applied-state detection to avoid retrying jobs that already look submitted
+- Cross-site handoff support for direct-apply flows that move into another supported surface
 - Manual-review and human-verification pauses so the run can safely resume
 
 ## How It Works
@@ -128,15 +130,19 @@ For Job Boards mode, open a supported job board in the active tab first.
 
 For Startup Careers and Other Job Sites mode, you can start from any page. The extension opens the generated targets for the configured region and keywords.
 
-### 4. Review Before Submit
+### 4. Review and Submission
 
-The extension may fill fields, upload resumes, and advance through application steps, but it intentionally stops short of automatic submission. If a site requires CAPTCHA, additional verification, or a final review screen, you handle that part manually.
+The extension can fill fields, upload resumes, move through supported steps, and submit some flows when the page is clearly ready. If a site requires CAPTCHA, additional verification, manual answers, or a risky review state, the run pauses and lets you take over.
 
 ## Development Commands
 
 ```bash
+npm run clean
 npm run build
+npm run rebuild
 npm run typecheck
+npm run typecheck:tools
+npm run typecheck:all
 npm run test:unit
 npm run test:unit:verbose
 npm run test:coverage
@@ -216,7 +222,11 @@ Data is stored locally through the extension's storage layer and includes:
 - Site layouts and application flows change frequently, so behavior is heuristic-based
 - Some sites block automation with verification pages or rate limits
 - Resume upload and autofill depend on the target form exposing standard controls
-- Final application submission is intentionally manual
+- Some flows still require manual answers or manual verification before submit can continue
+
+## CI
+
+GitHub Actions runs `npm run test:ci` on pushes, pull requests, and manual dispatches. Dependabot is configured to keep npm packages and GitHub Actions dependencies up to date weekly.
 
 ## Contributing
 

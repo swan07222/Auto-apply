@@ -988,6 +988,8 @@ var siteName = requireElement("#site-name");
 var statusPanel = requireElement("#status-panel");
 var statusText = requireElement("#status-text");
 var queueCount = requireElement("#queue-count");
+var reviewedCount = requireElement("#reviewed-count");
+var appliedCount = requireElement("#applied-count");
 var settingsStatus = requireElement("#settings-status");
 var savedAnswerCount = requireElement("#saved-answer-count");
 var savedAnswerList = requireElement("#saved-answer-list");
@@ -1758,6 +1760,8 @@ function applyStatus(status) {
   statusPanel.dataset.phase = status.phase;
   statusText.textContent = status.message;
   queueCount.textContent = String(activeRunSummary?.queuedJobCount ?? 0);
+  reviewedCount.textContent = String(activeRunSummary?.reviewedJobCount ?? 0);
+  appliedCount.textContent = String(activeRunSummary?.appliedJobCount ?? 0);
   updateSiteNameDisplay();
 }
 function setSettingsStatus(message, tone = "muted", visible = true) {
@@ -2571,7 +2575,7 @@ function isAutomationRunSummary(value) {
     return false;
   }
   const candidate = value;
-  return Number.isFinite(candidate.queuedJobCount) && typeof candidate.stopRequested === "boolean";
+  return Number.isFinite(candidate.queuedJobCount) && Number.isFinite(candidate.reviewedJobCount) && Number.isFinite(candidate.appliedJobCount) && typeof candidate.stopRequested === "boolean";
 }
 function updateModeUi() {
   const searchMode = getSelectedSearchMode2();

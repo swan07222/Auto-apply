@@ -70,6 +70,31 @@ describe("background session state helpers", () => {
     expect(persisted).toHaveLength(1);
   });
 
+  it("lets the top frame reclaim a frame-bound session after navigation to a success surface", async () => {
+    const persisted: AutomationSession[] = [];
+    const session = createSession({
+      stage: "autofill-form",
+      controllerFrameId: 7,
+    });
+
+    const resolved = await resolveContentReadySession(
+      session,
+      0,
+      true,
+      async (next) => {
+        persisted.push(next);
+      }
+    );
+
+    expect(resolved.shouldResume).toBe(true);
+    expect(resolved.session.controllerFrameId).toBe(0);
+    expect(persisted).toEqual([
+      expect.objectContaining({
+        controllerFrameId: 0,
+      }),
+    ]);
+  });
+
   it("recognizes managed job stages and queueing rules", () => {
     expect(isManagedJobStage("open-apply")).toBe(true);
     expect(isManagedJobStage("autofill-form")).toBe(true);

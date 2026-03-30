@@ -2817,6 +2817,8 @@ describe("background spawn quota handling", () => {
         ok: true,
         summary: expect.objectContaining({
           queuedJobCount: 0,
+          reviewedJobCount: 1,
+          appliedJobCount: 1,
         }),
       })
     );
@@ -4327,6 +4329,105 @@ describe("background spawn quota handling", () => {
     });
   });
 
+  it("resolves a company-site child tab to the supported job-board site", async () => {
+    const openerTabId = 42;
+    const childTabId = 202;
+    const runId = "run-company-to-builtin-child";
+    const claimedJobKey = getJobDedupKey(
+      "https://company.example.com/careers/software-engineer"
+    );
+
+    const chromeMock = createBackgroundChrome(
+      {
+        [`remote-job-search-session:${openerTabId}`]: {
+          tabId: openerTabId,
+          site: "other_sites",
+          phase: "running",
+          message: "Opening company application...",
+          shouldResume: true,
+          stage: "open-apply",
+          runId,
+          claimedJobKey,
+          updatedAt: 1,
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    chromeMock.dispatchTabCreated({
+      id: childTabId,
+      openerTabId,
+      url: "https://builtin.com/job/software-engineer/8472985",
+    });
+
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    expect(
+      chromeMock.local.state[`remote-job-search-session:${childTabId}`]
+    ).toEqual(
+      expect.objectContaining({
+        tabId: childTabId,
+        site: "builtin",
+        stage: "open-apply",
+        runId,
+        claimedJobKey,
+      })
+    );
+  });
+
+  it("starts direct child apply pages in autofill mode after a company-site handoff", async () => {
+    const openerTabId = 42;
+    const childTabId = 202;
+    const runId = "run-company-to-greenhouse-apply";
+    const claimedJobKey = getJobDedupKey(
+      "https://company.example.com/careers/software-engineer"
+    );
+
+    const chromeMock = createBackgroundChrome(
+      {
+        [`remote-job-search-session:${openerTabId}`]: {
+          tabId: openerTabId,
+          site: "other_sites",
+          phase: "running",
+          message: "Opening company application...",
+          shouldResume: true,
+          stage: "open-apply",
+          runId,
+          claimedJobKey,
+          updatedAt: 1,
+        },
+      },
+      vi.fn()
+    );
+
+    await import("../src/background");
+
+    chromeMock.dispatchTabCreated({
+      id: childTabId,
+      openerTabId,
+      url: "https://job-boards.greenhouse.io/example/jobs/1234567/apply",
+    });
+
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    expect(
+      chromeMock.local.state[`remote-job-search-session:${childTabId}`]
+    ).toEqual(
+      expect.objectContaining({
+        tabId: childTabId,
+        site: "greenhouse",
+        stage: "autofill-form",
+        runId,
+        claimedJobKey,
+        message: "Autofilling Greenhouse apply page...",
+      })
+    );
+  });
+
   it("closes the Built In opener tab after handing off to a site-opened child tab", async () => {
     const openerTabId = 42;
     const childTabId = 202;
@@ -4369,7 +4470,7 @@ describe("background spawn quota handling", () => {
       expect.objectContaining({
         tabId: childTabId,
         site: "builtin",
-        stage: "open-apply",
+        stage: "autofill-form",
         runId,
         claimedJobKey,
       })
@@ -4380,7 +4481,7 @@ describe("background spawn quota handling", () => {
         type: "start-automation",
         session: expect.objectContaining({
           tabId: childTabId,
-          stage: "open-apply",
+          stage: "autofill-form",
           runId,
           claimedJobKey,
         }),
@@ -4437,7 +4538,7 @@ describe("background spawn quota handling", () => {
       expect.objectContaining({
         tabId: childTabId,
         site: "ziprecruiter",
-        stage: "open-apply",
+        stage: "autofill-form",
         runId,
         claimedJobKey,
       })

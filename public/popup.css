@@ -287,7 +287,8 @@ h3 {
 .status-chip {
   display: inline-grid;
   gap: 2px;
-  min-width: 96px;
+  min-width: 84px;
+  flex: 1 1 84px;
   padding: 10px 12px;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.08);

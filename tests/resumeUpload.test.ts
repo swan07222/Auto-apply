@@ -1,6 +1,7 @@
 // Note: describe, expect, it are provided globally by vitest (globals: true)
 
 import {
+  collectResumeUploadInteractionTargets,
   hasAcceptedFileUploadState,
   hasAcceptedResumeUpload,
   findDiceUploadPanel,
@@ -303,6 +304,47 @@ describe("resume upload helpers", () => {
 
     expect(hasAcceptedFileUploadState(resumeInput)).toBe(true);
     expect(hasAcceptedResumeUpload(resumeInput, "backend-resume.pdf")).toBe(true);
+  });
+
+  it("accepts uploaded resume state exposed through aria-describedby status blocks", () => {
+    document.body.innerHTML = `
+      <section class="resume-panel">
+        <label for="resume-input">Resume/CV *</label>
+        <input id="resume-input" type="file" aria-describedby="resume-status" />
+      </section>
+      <div id="resume-status" role="status">
+        backend-resume.pdf uploaded successfully. Replace file
+      </div>
+    `;
+
+    const resumeInput = document.querySelector("#resume-input") as HTMLInputElement;
+
+    expect(hasAcceptedFileUploadState(resumeInput)).toBe(true);
+    expect(hasAcceptedResumeUpload(resumeInput, "backend-resume.pdf")).toBe(true);
+  });
+
+  it("collects visible upload triggers and status elements around resume inputs", () => {
+    document.body.innerHTML = `
+      <section class="resume-panel">
+        <label for="resume-input">Upload resume</label>
+        <button type="button" class="upload-trigger">Choose resume</button>
+        <div class="dropzone" role="button">Drag and drop your CV</div>
+        <input id="resume-input" type="file" aria-describedby="resume-status" />
+      </section>
+      <div id="resume-status" role="status">Resume ready</div>
+    `;
+
+    const resumeInput = document.querySelector("#resume-input") as HTMLInputElement;
+    const targets = collectResumeUploadInteractionTargets(resumeInput);
+
+    expect(targets).toEqual(
+      expect.arrayContaining([
+        document.querySelector("label[for='resume-input']"),
+        document.querySelector(".upload-trigger"),
+        document.querySelector(".dropzone"),
+        document.querySelector("#resume-status"),
+      ])
+    );
   });
 
   it("never treats the cover-letter uploader as a resume target", () => {

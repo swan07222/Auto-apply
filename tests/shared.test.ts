@@ -20,6 +20,7 @@ import {
   normalizeGreenhouseCountryLabel,
   normalizeGreenhouseCountryShortCode,
   normalizeQuestionKey,
+  resolveAutomationTargetSite,
   resolveStartupRegion,
   resolveStartupTargetRegions,
   resolveSessionSite,
@@ -564,6 +565,27 @@ describe("shared automation target logic", () => {
     expect(resolveSessionSite("unsupported", "ziprecruiter")).toBe(
       "ziprecruiter"
     );
+  });
+
+  it("resolves direct-apply destinations to the supported target site", () => {
+    expect(
+      resolveAutomationTargetSite(
+        "other_sites",
+        "https://job-boards.greenhouse.io/example/jobs/1234567/apply"
+      )
+    ).toBe("greenhouse");
+    expect(
+      resolveAutomationTargetSite(
+        "startup",
+        "https://builtin.com/job/software-engineer/3985663"
+      )
+    ).toBe("builtin");
+    expect(
+      resolveAutomationTargetSite(
+        "other_sites",
+        "https://jobs.ashbyhq.com/example/12345678-1234-1234-1234-1234567890ab/application"
+      )
+    ).toBe("other_sites");
   });
 
   it("dedupes equivalent Dice detail URLs that expose the same non-hex job id", () => {

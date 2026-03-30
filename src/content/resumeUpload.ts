@@ -142,6 +142,7 @@ function collectRelevantUploadContainers(
   input: HTMLInputElement
 ): HTMLElement[] {
   const containers = new Set<HTMLElement>();
+  const scopedContainer = findScopedResumeUploadContainer(input);
 
   const addContainer = (element: Element | null | undefined): void => {
     if (element instanceof HTMLElement) {
@@ -149,7 +150,7 @@ function collectRelevantUploadContainers(
     }
   };
 
-  addContainer(findScopedResumeUploadContainer(input));
+  addContainer(scopedContainer);
   addContainer(input.closest("label"));
   addContainer(input.parentElement);
   addContainer(input.closest("[class*='upload']"));
@@ -162,7 +163,96 @@ function collectRelevantUploadContainers(
   addContainer(input.closest("article"));
   addContainer(input.closest("fieldset"));
 
+  for (const referenced of collectReferencedUploadElements(input)) {
+    addContainer(referenced);
+    addContainer(referenced.closest("section"));
+    addContainer(referenced.closest("article"));
+    addContainer(referenced.closest("fieldset"));
+    addContainer(referenced.closest("div"));
+  }
+
+  for (const sibling of collectNearbyUploadElements(input.parentElement, input)) {
+    addContainer(sibling);
+  }
+
+  if (scopedContainer && scopedContainer !== input.parentElement) {
+    for (const sibling of collectNearbyUploadElements(scopedContainer, input)) {
+      addContainer(sibling);
+    }
+  }
+
   return Array.from(containers);
+}
+
+function collectReferencedUploadElements(
+  input: HTMLInputElement
+): HTMLElement[] {
+  const elements = new Set<HTMLElement>();
+
+  for (const attribute of ["aria-describedby", "aria-controls", "aria-owns"]) {
+    const value = input.getAttribute(attribute)?.trim();
+    if (!value) {
+      continue;
+    }
+
+    for (const id of value.split(/\s+/).map((token) => token.trim()).filter(Boolean)) {
+      const element = document.getElementById(id);
+      if (element instanceof HTMLElement) {
+        elements.add(element);
+      }
+    }
+  }
+
+  return Array.from(elements);
+}
+
+function collectNearbyUploadElements(
+  root: ParentNode | null,
+  input: HTMLInputElement
+): HTMLElement[] {
+  if (!(root instanceof HTMLElement)) {
+    return [];
+  }
+
+  return Array.from(root.children).filter(
+    (element): element is HTMLElement =>
+      element instanceof HTMLElement &&
+      element !== input &&
+      isLikelyUploadStateElement(element)
+  );
+}
+
+function isLikelyUploadStateElement(element: HTMLElement): boolean {
+  if (
+    element.matches(
+      "[role='status'], [aria-live], button, [role='button'], label, [class*='upload'], [class*='resume'], [class*='file'], [class*='dropzone'], [data-upload], [data-testid*='upload'], [data-testid*='resume'], [data-test*='upload'], [data-test*='resume']"
+    )
+  ) {
+    return true;
+  }
+
+  const context = normalizeChoiceText(
+    cleanText(
+      [
+        element.getAttribute("aria-label"),
+        element.getAttribute("title"),
+        element.getAttribute("data-testid"),
+        element.getAttribute("data-test"),
+        element.className,
+        element.textContent,
+      ]
+        .filter(Boolean)
+        .join(" ")
+    ).slice(0, 600)
+  );
+
+  if (!context) {
+    return false;
+  }
+
+  return /\b(upload|uploaded|resume|cv|attachment|file|document|replace|remove|selected|added|drag and drop|drop files|drop file)\b/.test(
+    context
+  );
 }
 
 function hasGenericAcceptedFileState(text: string): boolean {
@@ -572,6 +662,64 @@ export function findScopedResumeUploadContainer(
   }
 
   return best && best.score > 0 ? best.element : null;
+}
+
+export function collectResumeUploadInteractionTargets(
+  input: HTMLInputElement
+): HTMLElement[] {
+  const targets = new Set<HTMLElement>();
+  const scopedContainer = findScopedResumeUploadContainer(input);
+
+  const addTarget = (element: Element | null | undefined): void => {
+    if (element instanceof HTMLElement && element !== input) {
+      targets.add(element);
+    }
+  };
+
+  for (const label of Array.from(input.labels ?? [])) {
+    addTarget(label);
+  }
+
+  for (const candidate of [
+    input.parentElement,
+    input.parentElement?.parentElement,
+    input.closest("label"),
+    input.closest("button"),
+    input.closest("[role='button']"),
+    input.closest("[class*='upload']"),
+    input.closest("[class*='resume']"),
+    input.closest("[class*='file']"),
+    input.closest("[class*='dropzone']"),
+    input.closest("[data-upload]"),
+    input.closest("[data-test*='upload']"),
+    input.closest("[data-test*='resume']"),
+    input.closest("[data-testid*='resume']"),
+    input.closest("[data-testid*='upload']"),
+    scopedContainer,
+  ]) {
+    addTarget(candidate);
+  }
+
+  for (const element of [
+    ...collectReferencedUploadElements(input),
+    ...collectRelevantUploadContainers(input),
+  ]) {
+    addTarget(element);
+  }
+
+  for (const root of Array.from(targets)) {
+    for (const candidate of Array.from(
+      root.querySelectorAll<HTMLElement>(
+        "button, [role='button'], label, [role='status'], [aria-live], [class*='upload'], [class*='resume'], [class*='file'], [class*='dropzone'], [data-upload], [data-testid*='upload'], [data-testid*='resume'], [data-test*='upload'], [data-test*='resume']"
+      )
+    )) {
+      if (candidate !== input && isLikelyUploadStateElement(candidate)) {
+        targets.add(candidate);
+      }
+    }
+  }
+
+  return Array.from(targets);
 }
 
 export function scopeDiceResumeUploadInputs(

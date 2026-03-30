@@ -1,0 +1,10 @@
+node_modules/
+coverage/
+playwright-report/
+test-results/
+reports/
+artifacts/
+tmp-*.log
+tmp-*.err
+.DS_Store
+Thumbs.db

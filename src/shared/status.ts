@@ -107,6 +107,21 @@ export function resolveSessionSite(
   return detectedSite ?? sessionSite;
 }
 
+export function resolveAutomationTargetSite(
+  fallbackSite: SiteKey,
+  targetUrl: string
+): SiteKey;
+export function resolveAutomationTargetSite(
+  fallbackSite: SiteKey | "unsupported",
+  targetUrl: string
+): SiteKey | "unsupported";
+export function resolveAutomationTargetSite(
+  fallbackSite: SiteKey | "unsupported",
+  targetUrl: string
+): SiteKey | "unsupported" {
+  return resolveSessionSite(fallbackSite, detectSiteFromUrl(targetUrl));
+}
+
 export function isJobBoardSite(
   site: SiteKey | null | "unsupported"
 ): site is JobBoardSite {
