@@ -34,7 +34,7 @@
     "esbuild": "^0.25.10",
     "jsdom": "^29.0.0",
     "typescript": "^5.9.2",
-    "vitest": "^1.6.0"
+    "vitest": "^4.1.2"
   },
   "dependencies": {
     "jszip": "^3.10.1",
