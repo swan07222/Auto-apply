@@ -349,12 +349,39 @@ async function initialize(): Promise<void> {
   registerChromeTabListeners();
   await refreshActiveTabContext();
   let settingsLoadFailed = false;
+  let isFirstStart = false;
 
   try {
     settings = await readAutomationSettings();
+    // Check if this is first start - no profiles or only empty default profile
+    const profiles = Object.values(settings.profiles);
+    if (profiles.length === 0) {
+      isFirstStart = true;
+    } else if (profiles.length === 1) {
+      const profile = profiles[0];
+      const candidate = profile.candidate;
+      // Check if it's an empty default profile
+      if (
+        profile.name === "Default Profile" &&
+        !candidate.fullName &&
+        !candidate.email &&
+        !candidate.phone &&
+        !candidate.city &&
+        !candidate.state &&
+        !candidate.country
+      ) {
+        isFirstStart = true;
+      }
+    }
   } catch {
     settings = createEmptySettings();
     settingsLoadFailed = true;
+    isFirstStart = true;
+  }
+
+  // On first start, show create profile modal before populating the form
+  if (isFirstStart) {
+    await handleFirstStartProfileCreation();
   }
 
   populateSettingsForm(settings);
@@ -1322,6 +1349,44 @@ async function switchActiveProfile(profileId: string): Promise<void> {
   }
 }
 
+async function handleFirstStartProfileCreation(): Promise<void> {
+  const name = await promptForProfileName("Create Profile", "");
+  if (!name) {
+    // User cancelled, create a default profile to avoid infinite loop
+    const profileId = createProfileId();
+    settings = await persistSettings((current) => ({
+      profiles: {
+        ...current.profiles,
+        [profileId]: createAutomationProfile(profileId, name || "Default Profile"),
+      },
+      activeProfileId: profileId,
+    }));
+    return;
+  }
+
+  const profileId = createProfileId();
+  setSettingsStatus(`Creating "${name}"...`, "muted", true);
+
+  try {
+    settings = await persistSettings((current) => ({
+      profiles: {
+        ...current.profiles,
+        [profileId]: createAutomationProfile(profileId, name),
+      },
+      activeProfileId: profileId,
+    }));
+    setSettingsStatus(`Created profile "${name}".`, "success", true);
+  } catch (error: unknown) {
+    setSettingsStatus(
+      error instanceof Error
+        ? `Error: ${error.message}`
+        : "Failed to create profile.",
+      "error",
+      true
+    );
+  }
+}
+
 async function createProfile(): Promise<void> {
   await flushPendingAutoSave();
   const name = await promptForProfileName("Create Profile", "");
@@ -2274,12 +2339,30 @@ async function promptForSavedAnswer(
     secondaryPlaceholder: "Short, reusable answer",
     submitLabel: initialQuestion ? "Save" : "Add",
     validate: (question, value) => {
-      if (!question.trim()) {
+      const trimmedQuestion = question.trim();
+      const trimmedValue = value.trim();
+      
+      if (!trimmedQuestion) {
         return "Question cannot be empty.";
       }
 
-      if (!value.trim()) {
+      if (trimmedQuestion.length > 500) {
+        return "Question is too long (max 500 characters).";
+      }
+
+      if (!trimmedValue) {
         return "Answer cannot be empty.";
+      }
+
+      if (trimmedValue.length > 5000) {
+        return "Answer is too long (max 5000 characters).";
+      }
+
+      // Check for filter/search-like questions
+      const normalizedQuestion = trimmedQuestion.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+      const blockedKeys = ["search", "keyword", "keywords", "query", "q", "what", "where", "radius", "distance", "filter"];
+      if (blockedKeys.includes(normalizedQuestion)) {
+        return "This looks like a search filter, not a question to save.";
       }
 
       return null;

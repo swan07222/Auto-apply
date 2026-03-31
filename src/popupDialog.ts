@@ -118,23 +118,27 @@ export function createPopupDialogController(
 
   const restoreFocusBeforeHide = (): void => {
     const activeElement = elements.root.ownerDocument.activeElement;
-    if (!(activeElement instanceof HTMLElement) || !elements.root.contains(activeElement)) {
+    const isFocusInsideDialog =
+      activeElement instanceof HTMLElement && elements.root.contains(activeElement);
+
+    if (!isFocusInsideDialog) {
       return;
     }
 
+    // Move focus away from the dialog before hiding it to avoid aria-hidden on focused element
     if (
       restoreFocusTarget &&
       restoreFocusTarget.isConnected &&
       !elements.root.contains(restoreFocusTarget)
     ) {
       restoreFocusTarget.focus();
-      return;
+    } else {
+      focusBodyFallback();
     }
-
-    focusBodyFallback();
   };
 
   const closeDialog = (): void => {
+    // Move focus away first before setting aria-hidden to avoid accessibility warnings
     restoreFocusBeforeHide();
     setDialogHiddenState(true);
     elements.submitButton.dataset.tone = "default";

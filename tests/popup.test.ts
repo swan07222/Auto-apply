@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-
 // Note: describe, expect, it, afterEach are provided globally by vitest (globals: true)
 // vi must be imported for mocking
 import { vi } from "vitest";
@@ -12,9 +9,11 @@ import {
   sanitizeAutomationSettings,
 } from "../src/shared";
 
-const popupHtml = readFileSync(resolve(process.cwd(), "public/popup.html"), "utf8");
-const popupBody =
-  popupHtml.match(/<body[^>]*>([\s\S]*)<\/body>/i)?.[1]?.trim() ?? "";
+// Lazy-load fs to ensure Node.js context is available
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { readFileSync } = require("node:fs") as typeof import("node:fs");
+const popupHtml = readFileSync(process.cwd() + "/public/popup.html", "utf8");
+let popupBody = popupHtml.match(/<body[^>]*>([\s\S]*)<\/body>/i)?.[1]?.trim() ?? "";
 
 type MockTab = {
   id?: number;

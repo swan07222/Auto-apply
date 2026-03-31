@@ -155,7 +155,13 @@ export function shouldAutofillField(
     descriptor.includes("ssn") ||
     descriptor.includes("password") ||
     descriptor.includes("credit card") ||
-    descriptor.includes("card number")
+    descriptor.includes("card number") ||
+    descriptor.includes("cvv") ||
+    descriptor.includes("expiry") ||
+    descriptor.includes("bank account") ||
+    descriptor.includes("routing number") ||
+    descriptor.includes("driver license") ||
+    descriptor.includes("passport")
   ) {
     return false;
   }
@@ -195,6 +201,10 @@ export function shouldOverwriteAutofillValue(
     return false;
   }
 
+  if (field.hasAttribute("readonly") || field.getAttribute("aria-readonly") === "true") {
+    return false;
+  }
+
   const descriptor = getFieldDescriptor(field, question);
   if (!matchesDescriptor(descriptor, [...STABLE_PROFILE_FIELD_TOKENS])) {
     return false;
@@ -227,6 +237,10 @@ export function shouldOverwriteAutofillValue(
     return true;
   }
 
+  if (field.value.length > 0 && field.value !== field.defaultValue) {
+    return false;
+  }
+
   return true;
 }
 
@@ -234,12 +248,40 @@ export function setFieldValue(
   field: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
   value: string
 ): void {
+  if (field.hasAttribute("readonly") || field.getAttribute("aria-readonly") === "true") {
+    return;
+  }
+
   const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), "value");
-  if (descriptor?.set) descriptor.set.call(field, value);
-  else field.value = value;
-  field.dispatchEvent(new Event("input", { bubbles: true }));
-  field.dispatchEvent(new Event("change", { bubbles: true }));
-  field.dispatchEvent(new Event("blur", { bubbles: true }));
+  if (descriptor?.set) {
+    try {
+      descriptor.set.call(field, value);
+    } catch {
+      field.value = value;
+    }
+  } else {
+    field.value = value;
+  }
+
+  try {
+    field.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+  } catch {
+    // Ignore input event dispatch failures.
+  }
+
+  try {
+    field.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+  } catch {
+    // Ignore change event dispatch failures.
+  }
+
+  if (document.activeElement !== field) {
+    try {
+      field.dispatchEvent(new Event("blur", { bubbles: true }));
+    } catch {
+      // Ignore blur event dispatch failures.
+    }
+  }
 }
 
 export function getQuestionText(field: AutofillField | HTMLInputElement): string {
@@ -263,9 +305,12 @@ export function getQuestionText(field: AutofillField | HTMLInputElement): string
       .closest(
         "label, [role='group'], .field, .form-field, .question, .application-question, [class*='form-group'], [class*='field-wrapper']"
       )
-      ?.querySelector("label, .label, .question, .prompt, .title, span")?.textContent
+      ?.querySelector("label, .label, .question, .prompt, .title, span, p, h1, h2, h3, h4")?.textContent
   );
   if (wrapper) return wrapper;
+
+  const headingSibling = findHeadingSibling(field);
+  if (headingSibling) return headingSibling;
 
   return (
     cleanText(field.getAttribute("aria-label")) ||
@@ -274,6 +319,24 @@ export function getQuestionText(field: AutofillField | HTMLInputElement): string
     cleanText(field.getAttribute("id")) ||
     ""
   );
+}
+
+function findHeadingSibling(field: AutofillField | HTMLInputElement): string {
+  const parent = field.parentElement;
+  if (!parent) return "";
+
+  const previousSibling = parent.previousElementSibling;
+  if (!previousSibling) return "";
+
+  const heading = previousSibling.querySelector("h1, h2, h3, h4, h5, h6, .title, .heading");
+  if (heading) {
+    const text = cleanText(heading.textContent);
+    if (text && text.length < 200) {
+      return text;
+    }
+  }
+
+  return "";
 }
 
 export function getAssociatedLabelText(field: Element): string {
@@ -411,7 +474,7 @@ export function scoreChoiceMatch(answer: string, candidate: string): number {
   if (normalizedBoolean !== null) {
     if (
       normalizedBoolean &&
-      ["yes", "true", "authorized", "eligible", "i am", "i do", "i have", "i will"].some(
+      ["yes", "true", "authorized", "eligible", "i am", "i do", "i have", "i will", "absolutely", "definitely"].some(
         (word) => normalizedCandidate.includes(word)
       )
     ) {
@@ -419,7 +482,7 @@ export function scoreChoiceMatch(answer: string, candidate: string): number {
     }
     if (
       !normalizedBoolean &&
-      ["no", "false", "not authorized", "i am not", "i do not", "i don t"].some((word) =>
+      ["no", "false", "not authorized", "i am not", "i do not", "i don t", "never", "none"].some((word) =>
         normalizedCandidate.includes(word)
       )
     ) {
@@ -429,6 +492,17 @@ export function scoreChoiceMatch(answer: string, candidate: string): number {
 
   if (normalizedCandidate.includes(normalizedAnswer) || normalizedAnswer.includes(normalizedCandidate)) {
     return 70;
+  }
+
+  const answerWords = normalizedAnswer.split(/\s+/).filter((w) => w.length > 2);
+  const candidateWords = normalizedCandidate.split(/\s+/).filter((w) => w.length > 2);
+  
+  if (answerWords.length > 0 && candidateWords.length > 0) {
+    const matches = answerWords.filter((word) => candidateWords.some((cw) => cw.includes(word) || word.includes(cw)));
+    const matchRatio = matches.length / Math.max(answerWords.length, candidateWords.length);
+    if (matchRatio >= 0.6) {
+      return Math.round(50 + matchRatio * 20);
+    }
   }
 
   return 0;
@@ -477,18 +551,31 @@ export function isFieldRequired(field: AutofillField): boolean {
     container.className,
     container.getAttribute("data-required"),
     container.getAttribute("aria-required"),
+    container.getAttribute("data-test"),
+    container.getAttribute("data-testid"),
   ]
     .join(" ")
     .toLowerCase();
 
-  if (attrs.includes("required")) {
+  if (attrs.includes("required") || attrs.includes("is-required") || attrs.includes("required-field")) {
     return true;
   }
 
   const labelText = cleanText(
     container.querySelector("label, legend, .label, .question, .prompt, .title")?.textContent
   );
-  return /\*/.test(labelText);
+  if (/\*/.test(labelText)) {
+    return true;
+  }
+
+  const hasRequiredClass = /\b(required|is-required|required-field|field-required)\b/.test(
+    container.className.toLowerCase()
+  );
+  if (hasRequiredClass) {
+    return true;
+  }
+
+  return false;
 }
 
 export function shouldRememberField(field: AutofillField): boolean {
@@ -514,11 +601,23 @@ export function shouldRememberField(field: AutofillField): boolean {
     descriptor.includes("ssn") ||
     descriptor.includes("date of birth") ||
     descriptor.includes("dob") ||
+    descriptor.includes("age") ||
+    descriptor.includes("birth date") ||
     descriptor.includes("resume") ||
     descriptor.includes("credit card") ||
     descriptor.includes("card number") ||
     descriptor.includes("cvv") ||
-    descriptor.includes("expiry")
+    descriptor.includes("expiry") ||
+    descriptor.includes("bank account") ||
+    descriptor.includes("routing number") ||
+    descriptor.includes("driver license") ||
+    descriptor.includes("passport") ||
+    descriptor.includes("gender") ||
+    descriptor.includes("marital status") ||
+    descriptor.includes("ethnicity") ||
+    descriptor.includes("race") ||
+    descriptor.includes("veteran") ||
+    descriptor.includes("disability")
   ) {
     return false;
   }
@@ -611,7 +710,24 @@ export function isFieldContextVisible(field: AutofillField): boolean {
   }
 
   const root = field.getRootNode();
-  return root instanceof ShadowRoot && root.host instanceof HTMLElement && isElementVisible(root.host);
+  if (root instanceof ShadowRoot && root.host instanceof HTMLElement && isElementVisible(root.host)) {
+    return true;
+  }
+
+  if (root instanceof Document && window.location !== window.top?.location) {
+    try {
+      const iframe = Array.from(document.querySelectorAll("iframe")).find(
+        (frame) => frame.contentDocument === root
+      );
+      if (iframe && isElementVisible(iframe)) {
+        return true;
+      }
+    } catch {
+      // Cross-origin iframe, cannot check visibility.
+    }
+  }
+
+  return false;
 }
 
 function hasHiddenAncestor(field: AutofillField): boolean {

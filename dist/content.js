@@ -280,6 +280,52 @@
     /(?:^|[\s_-])(?:csrf|captcha|recaptcha|hcaptcha|g\s*recaptcha|requestverificationtoken|verificationtoken|authenticitytoken|viewstate|eventvalidation|xsrf|nonce)(?:$|[\s_-])/i,
     /(?:^|[\s_-])(?:distance|radius|keyword|keywords|search|query)(?:$|[\s_-])/i
   ];
+  var MAX_QUESTION_LENGTH = 500;
+  var MAX_ANSWER_LENGTH = 5e3;
+  function trimOldestSavedAnswers(settings, keepRatio = 0.7) {
+    const profiles = { ...settings.profiles };
+    for (const [profileId, profile] of Object.entries(profiles)) {
+      const answers = profile.answers;
+      const preferenceAnswers = profile.preferenceAnswers;
+      const allAnswers = [
+        ...Object.entries(answers).map(([key, answer]) => ({
+          key,
+          answer,
+          type: "answer"
+        })),
+        ...Object.entries(preferenceAnswers).map(([key, answer]) => ({
+          key,
+          answer,
+          type: "preference"
+        }))
+      ].sort((a, b) => a.answer.updatedAt - b.answer.updatedAt);
+      const keepCount = Math.max(
+        1,
+        Math.floor(allAnswers.length * keepRatio)
+      );
+      const toRemove = allAnswers.slice(0, allAnswers.length - keepCount);
+      for (const { key, type } of toRemove) {
+        if (type === "answer") {
+          delete answers[key];
+        } else {
+          delete preferenceAnswers[key];
+        }
+      }
+      profiles[profileId] = {
+        ...profile,
+        answers,
+        preferenceAnswers
+      };
+    }
+    console.log(
+      "[Storage] Trimmed oldest saved answers",
+      { keepRatio, remainingProfiles: Object.keys(profiles).length }
+    );
+    return {
+      ...settings,
+      profiles
+    };
+  }
   function normalizeQuestionKey(question) {
     return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
   }
@@ -287,6 +333,9 @@
     const cleanedQuestion = typeof question === "string" ? question.replace(/\s+/g, " ").trim() : "";
     const normalizedQuestion = normalizeQuestionKey(cleanedQuestion);
     if (!cleanedQuestion || !normalizedQuestion) {
+      return false;
+    }
+    if (cleanedQuestion.length > MAX_QUESTION_LENGTH) {
       return false;
     }
     if (BLOCKED_SAVED_ANSWER_QUESTION_KEYS.has(normalizedQuestion)) {
@@ -304,7 +353,11 @@
     return true;
   }
   function isUsefulSavedAnswer(question, value) {
-    return isUsefulSavedAnswerQuestion(question) && readString2(value).length > 0;
+    const cleanedValue = readString2(value);
+    if (cleanedValue.length > MAX_ANSWER_LENGTH) {
+      return false;
+    }
+    return isUsefulSavedAnswerQuestion(question) && cleanedValue.length > 0;
   }
   async function readAutomationSettings() {
     const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
@@ -315,8 +368,22 @@
       const current = await readAutomationSettings();
       const nextRaw = typeof update === "function" ? update(current) : update;
       const sanitized = applyAutomationSettingsUpdate(current, nextRaw);
-      await chrome.storage.local.set({ [AUTOMATION_SETTINGS_STORAGE_KEY]: sanitized });
-      return sanitized;
+      try {
+        await chrome.storage.local.set({ [AUTOMATION_SETTINGS_STORAGE_KEY]: sanitized });
+        return sanitized;
+      } catch (error) {
+        if (error instanceof Error && (error.message.includes("QUOTA_BYTES") || error.message.includes("quota") || error.message.includes("storage limit"))) {
+          console.error(
+            "[Storage] Quota exceeded - trimming old saved answers",
+            error
+          );
+          const trimmed = trimOldestSavedAnswers(sanitized, 0.7);
+          await chrome.storage.local.set({ [AUTOMATION_SETTINGS_STORAGE_KEY]: trimmed });
+          return trimmed;
+        }
+        console.error("[Storage] Failed to write automation settings", error);
+        throw error;
+      }
     });
     automationSettingsWriteQueue = queuedWrite.then(
       () => void 0,
@@ -2157,7 +2224,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (descriptor === "what" || descriptor === "where" || descriptor === "search" || descriptor === "q") {
       return false;
     }
-    if (descriptor.includes("captcha") || descriptor.includes("social security") || descriptor.includes("ssn") || descriptor.includes("password") || descriptor.includes("credit card") || descriptor.includes("card number")) {
+    if (descriptor.includes("captcha") || descriptor.includes("social security") || descriptor.includes("ssn") || descriptor.includes("password") || descriptor.includes("credit card") || descriptor.includes("card number") || descriptor.includes("cvv") || descriptor.includes("expiry") || descriptor.includes("bank account") || descriptor.includes("routing number") || descriptor.includes("driver license") || descriptor.includes("passport")) {
       return false;
     }
     if (!includeOptionalFields && !(field instanceof HTMLInputElement && field.type.toLowerCase() === "file") && !isFieldRequired(field)) {
@@ -2178,6 +2245,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function shouldOverwriteAutofillValue(field, answer, question = getQuestionText(field)) {
     if (!answer.trim() || document.activeElement === field) {
+      return false;
+    }
+    if (field.hasAttribute("readonly") || field.getAttribute("aria-readonly") === "true") {
       return false;
     }
     const descriptor = getFieldDescriptor(field, question);
@@ -2205,15 +2275,39 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (isPlaceholderLikeValue(current)) {
       return true;
     }
+    if (field.value.length > 0 && field.value !== field.defaultValue) {
+      return false;
+    }
     return true;
   }
   function setFieldValue(field, value) {
+    if (field.hasAttribute("readonly") || field.getAttribute("aria-readonly") === "true") {
+      return;
+    }
     const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), "value");
-    if (descriptor?.set) descriptor.set.call(field, value);
-    else field.value = value;
-    field.dispatchEvent(new Event("input", { bubbles: true }));
-    field.dispatchEvent(new Event("change", { bubbles: true }));
-    field.dispatchEvent(new Event("blur", { bubbles: true }));
+    if (descriptor?.set) {
+      try {
+        descriptor.set.call(field, value);
+      } catch {
+        field.value = value;
+      }
+    } else {
+      field.value = value;
+    }
+    try {
+      field.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+    } catch {
+    }
+    try {
+      field.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+    } catch {
+    }
+    if (document.activeElement !== field) {
+      try {
+        field.dispatchEvent(new Event("blur", { bubbles: true }));
+      } catch {
+      }
+    }
   }
   function getQuestionText(field) {
     const legend = cleanText(field.closest("fieldset")?.querySelector("legend")?.textContent);
@@ -2229,10 +2323,26 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const wrapper = cleanText(
       field.closest(
         "label, [role='group'], .field, .form-field, .question, .application-question, [class*='form-group'], [class*='field-wrapper']"
-      )?.querySelector("label, .label, .question, .prompt, .title, span")?.textContent
+      )?.querySelector("label, .label, .question, .prompt, .title, span, p, h1, h2, h3, h4")?.textContent
     );
     if (wrapper) return wrapper;
+    const headingSibling = findHeadingSibling(field);
+    if (headingSibling) return headingSibling;
     return cleanText(field.getAttribute("aria-label")) || cleanText(field.getAttribute("placeholder")) || cleanText(field.getAttribute("name")) || cleanText(field.getAttribute("id")) || "";
+  }
+  function findHeadingSibling(field) {
+    const parent = field.parentElement;
+    if (!parent) return "";
+    const previousSibling = parent.previousElementSibling;
+    if (!previousSibling) return "";
+    const heading = previousSibling.querySelector("h1, h2, h3, h4, h5, h6, .title, .heading");
+    if (heading) {
+      const text = cleanText(heading.textContent);
+      if (text && text.length < 200) {
+        return text;
+      }
+    }
+    return "";
   }
   function getAssociatedLabelText(field) {
     const id = field.getAttribute("id");
@@ -2322,12 +2432,12 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (normalizedAnswer === normalizedCandidate) return 100;
     const normalizedBoolean = normalizeBooleanAnswer(normalizedAnswer);
     if (normalizedBoolean !== null) {
-      if (normalizedBoolean && ["yes", "true", "authorized", "eligible", "i am", "i do", "i have", "i will"].some(
+      if (normalizedBoolean && ["yes", "true", "authorized", "eligible", "i am", "i do", "i have", "i will", "absolutely", "definitely"].some(
         (word) => normalizedCandidate.includes(word)
       )) {
         return 80;
       }
-      if (!normalizedBoolean && ["no", "false", "not authorized", "i am not", "i do not", "i don t"].some(
+      if (!normalizedBoolean && ["no", "false", "not authorized", "i am not", "i do not", "i don t", "never", "none"].some(
         (word) => normalizedCandidate.includes(word)
       )) {
         return 80;
@@ -2335,6 +2445,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     if (normalizedCandidate.includes(normalizedAnswer) || normalizedAnswer.includes(normalizedCandidate)) {
       return 70;
+    }
+    const answerWords = normalizedAnswer.split(/\s+/).filter((w) => w.length > 2);
+    const candidateWords = normalizedCandidate.split(/\s+/).filter((w) => w.length > 2);
+    if (answerWords.length > 0 && candidateWords.length > 0) {
+      const matches = answerWords.filter((word) => candidateWords.some((cw) => cw.includes(word) || word.includes(cw)));
+      const matchRatio = matches.length / Math.max(answerWords.length, candidateWords.length);
+      if (matchRatio >= 0.6) {
+        return Math.round(50 + matchRatio * 20);
+      }
     }
     return 0;
   }
@@ -2372,15 +2491,26 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const attrs = [
       container.className,
       container.getAttribute("data-required"),
-      container.getAttribute("aria-required")
+      container.getAttribute("aria-required"),
+      container.getAttribute("data-test"),
+      container.getAttribute("data-testid")
     ].join(" ").toLowerCase();
-    if (attrs.includes("required")) {
+    if (attrs.includes("required") || attrs.includes("is-required") || attrs.includes("required-field")) {
       return true;
     }
     const labelText = cleanText(
       container.querySelector("label, legend, .label, .question, .prompt, .title")?.textContent
     );
-    return /\*/.test(labelText);
+    if (/\*/.test(labelText)) {
+      return true;
+    }
+    const hasRequiredClass = /\b(required|is-required|required-field|field-required)\b/.test(
+      container.className.toLowerCase()
+    );
+    if (hasRequiredClass) {
+      return true;
+    }
+    return false;
   }
   function shouldRememberField(field) {
     if (field instanceof HTMLInputElement && (field.type === "checkbox" || field.type === "radio") && isConsentField(field)) {
@@ -2390,7 +2520,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return false;
     }
     const descriptor = getFieldDescriptor(field, getQuestionText(field));
-    if (descriptor.includes("password") || descriptor.includes("social security") || descriptor.includes("ssn") || descriptor.includes("date of birth") || descriptor.includes("dob") || descriptor.includes("resume") || descriptor.includes("credit card") || descriptor.includes("card number") || descriptor.includes("cvv") || descriptor.includes("expiry")) {
+    if (descriptor.includes("password") || descriptor.includes("social security") || descriptor.includes("ssn") || descriptor.includes("date of birth") || descriptor.includes("dob") || descriptor.includes("age") || descriptor.includes("birth date") || descriptor.includes("resume") || descriptor.includes("credit card") || descriptor.includes("card number") || descriptor.includes("cvv") || descriptor.includes("expiry") || descriptor.includes("bank account") || descriptor.includes("routing number") || descriptor.includes("driver license") || descriptor.includes("passport") || descriptor.includes("gender") || descriptor.includes("marital status") || descriptor.includes("ethnicity") || descriptor.includes("race") || descriptor.includes("veteran") || descriptor.includes("disability")) {
       return false;
     }
     if (matchesDescriptor(descriptor, [...BLOCKED_REMEMBER_DESCRIPTOR_TOKENS]) || looksLikeBlockedRememberFieldIdentifier(field)) {
@@ -2463,7 +2593,21 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return true;
     }
     const root = field.getRootNode();
-    return root instanceof ShadowRoot && root.host instanceof HTMLElement && isElementVisible(root.host);
+    if (root instanceof ShadowRoot && root.host instanceof HTMLElement && isElementVisible(root.host)) {
+      return true;
+    }
+    if (root instanceof Document && window.location !== window.top?.location) {
+      try {
+        const iframe = Array.from(document.querySelectorAll("iframe")).find(
+          (frame) => frame.contentDocument === root
+        );
+        if (iframe && isElementVisible(iframe)) {
+          return true;
+        }
+      } catch {
+      }
+    }
+    return false;
   }
   function hasHiddenAncestor(field) {
     let current = field.parentElement;
@@ -2578,7 +2722,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         "authorized to work",
         "legally authorized",
         "eligible to work",
-        "work authorization"
+        "work authorization",
+        "work permit",
+        "employment authorization"
       ]
     },
     {
@@ -2587,16 +2733,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         "sponsorship",
         "visa",
         "require sponsorship",
-        "need sponsorship"
+        "need sponsorship",
+        "h1b",
+        "work visa"
       ]
     },
     {
       intent: "relocation",
-      tokens: ["relocate", "relocation", "move for this role"]
+      tokens: ["relocate", "relocation", "move for this role", "willing to relocate"]
     },
     {
       intent: "experience",
-      tokens: ["years of experience", "years experience", "experience with"]
+      tokens: ["years of experience", "years experience", "experience with", "how many years"]
     },
     {
       intent: "motivation",
@@ -2606,7 +2754,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         "why this role",
         "why this company",
         "tell us why",
-        "motivation"
+        "motivation",
+        "interest in"
       ]
     },
     {
@@ -2616,44 +2765,59 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         "compensation",
         "pay expectation",
         "expected pay",
-        "expected salary"
+        "expected salary",
+        "salary expectation",
+        "pay rate",
+        "hourly rate"
       ]
     },
     {
       intent: "portfolio",
-      tokens: ["portfolio", "personal site", "website"]
+      tokens: ["portfolio", "personal site", "website", "work samples"]
     },
     {
       intent: "linkedin",
-      tokens: ["linkedin"]
+      tokens: ["linkedin", "linkedin profile", "linkedin url"]
     },
     {
       intent: "github",
-      tokens: ["github"]
+      tokens: ["github", "github profile", "github url", "gitlab", "bitbucket"]
     },
     {
       intent: "city",
-      tokens: ["city"]
+      tokens: ["city", "current city", "home city"]
     },
     {
       intent: "state",
-      tokens: ["state", "province", "region"]
+      tokens: ["state", "province", "region", "territory"]
     },
     {
       intent: "country",
-      tokens: ["country"]
+      tokens: ["country", "nation"]
     },
     {
       intent: "location",
-      tokens: ["location"]
+      tokens: ["location", "address", "where do you live", "residence"]
     },
     {
       intent: "notice_period",
-      tokens: ["notice period"]
+      tokens: ["notice period", "notice time", "available after"]
     },
     {
       intent: "start_date",
-      tokens: ["start date", "available to start", "can you start"]
+      tokens: ["start date", "available to start", "can you start", "earliest start", "start immediately"]
+    },
+    {
+      intent: "website",
+      tokens: ["website", "web site", "portfolio site", "personal website"]
+    },
+    {
+      intent: "phone",
+      tokens: ["phone", "telephone", "mobile", "cell phone", "contact number"]
+    },
+    {
+      intent: "email",
+      tokens: ["email", "e-mail", "email address"]
     }
   ];
   var EXPERIENCE_SUBJECT_STOP_WORDS = /* @__PURE__ */ new Set([
@@ -2716,7 +2880,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         continue;
       }
       const sharesIntent = lookup.intents.size > 0 && candidate.intents.size > 0 && hasCompatibleQuestionIntents(lookup.intents, candidate.intents);
-      let score = 0;
+      const exactMatch = lookup.keys.some(
+        (lk) => candidate.keys.some((ck) => lk === ck)
+      );
+      let score = exactMatch ? 1 : 0;
       for (const lookupKey of lookup.keys) {
         for (const candidateKey of candidate.keys) {
           if (lookupKey === candidateKey) {
@@ -2726,23 +2893,26 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           if (lookupKey.includes(candidateKey) || candidateKey.includes(lookupKey)) {
             score = Math.max(score, 0.92);
           }
-          score = Math.max(score, textSimilarity(lookupKey, candidateKey));
+          const similarity = textSimilarity(lookupKey, candidateKey);
+          if (similarity > 0.85) {
+            score = Math.max(score, similarity);
+          }
         }
       }
       const overlap = calculateTokenOverlap(lookup.tokens, candidate.tokens);
-      if (overlap === 0 && !sharesIntent && score < 0.92) {
+      if (overlap === 0 && !sharesIntent && score < 0.92 && !exactMatch) {
         continue;
       }
-      score = Math.max(score, overlap * 0.9);
-      if (sharesIntent) {
-        score = Math.max(score, 0.78);
-      }
       if (overlap > 0) {
+        score = Math.max(score, overlap * 0.9);
         score = Math.max(score, score * 0.8 + overlap * 0.2);
       }
-      if (lookup.intents.size > 0 && candidate.intents.size > 0) {
+      if (sharesIntent) {
+        score = Math.max(score, 0.78);
         score = Math.min(1, score + 0.05);
       }
+      const recencyBoost = Math.min(0.05, (Date.now() - answer.updatedAt) / (30 * 24 * 60 * 60 * 1e3) * 0.05);
+      score = Math.min(1, score + recencyBoost);
       if (!best || score > best.score) {
         best = { answer, score };
       }
@@ -2863,6 +3033,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   // src/content/pendingAnswers.ts
   var PENDING_ANSWER_FALLBACK_STORAGE_KEY = "remote-job-search-pending-answers-fallback";
   var DEFAULT_PENDING_ANSWER_PROFILE_KEY = "__default__";
+  var STALE_ANSWER_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1e3;
   function mergeSavedAnswerRecords(base, incoming) {
     const merged = {};
     for (const [key, answer] of Object.entries(base)) {
@@ -2974,6 +3145,22 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return Object.keys(buckets).some(
       (profileKey) => Object.keys(buckets[profileKey] ?? {}).length > 0
     );
+  }
+  function cleanupStalePendingAnswers(buckets, now = Date.now()) {
+    const threshold = now - STALE_ANSWER_THRESHOLD_MS;
+    let removedCount = 0;
+    for (const [profileKey, answers] of Object.entries(buckets)) {
+      for (const [key, answer] of Object.entries(answers)) {
+        if (answer.updatedAt < threshold) {
+          delete answers[key];
+          removedCount++;
+        }
+      }
+      if (Object.keys(answers).length === 0) {
+        delete buckets[profileKey];
+      }
+    }
+    return removedCount;
   }
   function resolvePendingAnswerTargetProfileId(profiles, activeProfileId, profileId) {
     const normalizedProfileId = typeof profileId === "string" ? profileId.trim() : "";
@@ -3158,9 +3345,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
 
   // src/content/choiceFill.ts
   function applyAnswerToRadioGroup(field, answer, allowOverwrite = false) {
+    if (field.disabled || field.hasAttribute("readonly")) {
+      return false;
+    }
     const radios = getGroupedInputs(field, "radio");
     const best = findBestChoice(radios, answer);
     if (!best) {
+      return false;
+    }
+    if (best.disabled || best.hasAttribute("readonly")) {
       return false;
     }
     if (best.checked) {
@@ -3172,6 +3365,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return applyChoiceInputState(best, true);
   }
   function applyAnswerToCheckbox(field, answer) {
+    if (field.disabled || field.hasAttribute("readonly")) {
+      return false;
+    }
     const boxes = getGroupedInputs(field, "checkbox");
     if (boxes.length > 1) {
       const values = answer.split(/[,;|]/).map((entry) => normalizeChoiceText(entry)).filter(Boolean);
@@ -3180,6 +3376,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       }
       let changed = false;
       for (const box of boxes) {
+        if (box.disabled || box.hasAttribute("readonly")) {
+          continue;
+        }
         const optionText = normalizeChoiceText(getOptionLabelText(box) || box.value);
         if (values.some((value) => optionText.includes(value) || value.includes(optionText)) && !box.checked) {
           changed = applyChoiceInputState(box, true) || changed;
@@ -3197,10 +3396,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     return applyChoiceInputState(field, bool);
   }
   function selectOptionByAnswer(select, answer) {
+    if (select.disabled || select.hasAttribute("readonly")) {
+      return false;
+    }
     const normalizedAnswer = normalizeChoiceText(answer);
     let bestOption = null;
     let bestScore = -1;
     for (const option of Array.from(select.options)) {
+      if (option.disabled) {
+        continue;
+      }
       const score = scoreChoiceMatch(
         normalizedAnswer,
         `${normalizeChoiceText(option.textContent || "")} ${normalizeChoiceText(option.value)}`
@@ -3213,10 +3418,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (!bestOption || bestScore <= 0 || select.value === bestOption.value) {
       return false;
     }
-    select.value = bestOption.value;
-    select.dispatchEvent(new Event("input", { bubbles: true }));
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-    return true;
+    try {
+      select.value = bestOption.value;
+      select.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+      select.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+      return true;
+    } catch {
+      return false;
+    }
   }
   function findBestChoice(inputs, answer) {
     const normalizedAnswer = normalizeChoiceText(answer);
@@ -9947,7 +10156,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const candidates = [];
     const elements = Array.from(
       document.querySelectorAll(
-        "[data-job-id], [data-jid], [data-jobid], [data-job]"
+        "[data-job-id], [data-jid], [data-jobid], [data-job], [data-qa*='job'], [class*='job_card'], [class*='job-card']"
       )
     );
     for (const el of elements) {
@@ -9977,6 +10186,26 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         detailUrl.searchParams.delete("lk");
         detailUrl.searchParams.set("jid", jobId);
         addJobCandidate(candidates, detailUrl.toString(), title, contextText);
+      }
+    }
+    if (candidates.length === 0) {
+      const jobLinks = Array.from(
+        document.querySelectorAll(
+          "a[href*='/jobs/'], a[href*='/job/'], a[href*='/job-details/'], a[data-testid*='job-title']"
+        )
+      );
+      for (const link of jobLinks) {
+        if (!isElementVisible(link)) continue;
+        const title = cleanText(
+          link.textContent || link.getAttribute("aria-label") || link.getAttribute("title") || ""
+        );
+        if (title && title.length > 3 && title.length < 200) {
+          const card = link.closest(
+            "[data-testid*='job'], [class*='job_card'], [class*='job-card'], article, section"
+          );
+          const contextText = buildZipRecruiterCandidateContext(card || document.body, link);
+          addJobCandidate(candidates, link.href, title, contextText);
+        }
       }
     }
     return candidates;
@@ -11865,7 +12094,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         )
       );
       const combinedUrls = mergeJobUrlLists(bestUrls, urls);
-      if (combinedUrls.length >= bestUrls.length) {
+      if (combinedUrls.length > bestUrls.length) {
         bestUrls = combinedUrls;
       }
       if (site === "monster" && bestUrls.length < desiredCount && monsterEmbeddedAttempts < 2 && (attempt === 4 || attempt === 12)) {
@@ -11881,10 +12110,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           bestUrls = mergedUrls;
         }
       }
-      const signature = bestUrls.slice(0, Math.max(desiredCount, 8)).join("|");
+      const signature = bestUrls.length > 0 ? bestUrls.slice(0, Math.max(desiredCount, 8)).join("|") : "";
       if (signature && signature === previousSignature) {
         stablePasses += 1;
-      } else {
+      } else if (signature) {
         stablePasses = 0;
         previousSignature = signature;
       }
@@ -12470,12 +12699,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
   }
   async function waitForDomSettle(maxWaitMs, quietWindowMs) {
-    const observer = new MutationObserver(() => {
-      lastMutationAt = Date.now();
-    });
+    let observer = null;
     let lastMutationAt = Date.now();
     const startedAt = lastMutationAt;
     try {
+      observer = new MutationObserver(() => {
+        lastMutationAt = Date.now();
+      });
       observer.observe(document.documentElement, {
         childList: true,
         subtree: true,
@@ -12495,7 +12725,9 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         await sleep(Math.min(quietWindowMs, 150));
       }
     } finally {
-      observer.disconnect();
+      if (observer) {
+        observer.disconnect();
+      }
     }
   }
   async function collectMonsterEmbeddedUrls({
@@ -12508,9 +12740,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       const response = await chrome.runtime.sendMessage({
         type: "extract-monster-search-results"
       });
+      if (!response || typeof response !== "object") {
+        return [];
+      }
       const embeddedCandidates = collectMonsterEmbeddedCandidates(
         response?.jobResults
       );
+      if (!embeddedCandidates || embeddedCandidates.length === 0) {
+        return [];
+      }
       return Array.from(
         new Set(
           pickRelevantJobUrls(
@@ -12523,7 +12761,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           )
         )
       );
-    } catch {
+    } catch (error) {
       return [];
     }
   }
@@ -15103,6 +15341,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     document.addEventListener("submit", handlePotentialManualSubmit, true);
     window.addEventListener("pagehide", flushPendingAnswersOnPageHide);
     document.addEventListener("visibilitychange", flushPendingAnswersOnPageHide, true);
+    const removedCount = cleanupStalePendingAnswers(pendingAnswerBuckets);
+    if (removedCount > 0) {
+      console.log("[AnswerMemory] Cleaned up stale pending answers", { removedCount });
+      persistPendingAnswerBuckets();
+    }
+    window.addEventListener("popstate", () => {
+      console.log("[AnswerMemory] Navigation detected - flushing pending answers");
+      flushPendingAnswersOnPageHide();
+    });
   }
   initializeEventListeners();
   void flushPendingAnswers().catch(() => {
@@ -16908,6 +17155,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   async function setFileInputValue(input, asset) {
     if (input.disabled) return false;
     const isAshbyUploadSurface = window.location.hostname.toLowerCase().includes("ashbyhq.com");
+    const isGreenhouseUploadSurface = window.location.hostname.toLowerCase().includes("greenhouse.io");
     const hasDataTransferSupport = typeof DataTransfer === "function";
     const hasFileApiSupport = typeof File === "function";
     if (!hasDataTransferSupport || !hasFileApiSupport) {
@@ -17008,7 +17256,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         } catch {
         }
       }
-      const uploadVerificationDelays = isAshbyUploadSurface ? [450, 900, 1400, 1900, 2500, 3200] : [350, 750, 1250, 1850, 2500];
+      const uploadVerificationDelays = isAshbyUploadSurface ? [450, 900, 1400, 1900, 2500, 3200] : isGreenhouseUploadSurface ? [500, 1e3, 1600, 2400, 3500] : [350, 750, 1250, 1850, 2500];
       let success = false;
       for (const delayMs of uploadVerificationDelays) {
         await sleepWithAutomationChecks(delayMs);
@@ -17018,18 +17266,29 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         }
       }
       if (!success) {
-        updateStatus(
-          "error",
-          "Resume upload was not accepted by the page. Please upload your resume manually.",
-          false,
-          "autofill-form"
-        );
+        if (isGreenhouseUploadSurface && (Boolean(input.files?.length) || getSelectedFileName(input))) {
+          success = true;
+        } else {
+          updateStatus(
+            "error",
+            "Resume upload was not accepted by the page. Please upload your resume manually.",
+            false,
+            "autofill-form"
+          );
+        }
       }
       return success;
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (isGreenhouseUploadSurface) {
+        await sleepWithAutomationChecks(400);
+        if (Boolean(input.files?.length) || getSelectedFileName(input)) {
+          return true;
+        }
+      }
       updateStatus(
         "error",
-        `Resume upload failed: ${error instanceof Error ? error.message : "Unknown error"}. Please upload manually.`,
+        `Resume upload failed: ${errorMessage}. Please upload manually.`,
         false,
         "autofill-form"
       );
@@ -18368,12 +18627,11 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         const batches = listPendingAnswerBatches(pendingAnswerBuckets);
         let flushedAnyBatch = false;
         for (const batch of batches) {
-          if (Object.keys(
-            getPendingAnswersForProfile(
-              pendingAnswerBuckets,
-              batch.profileId
-            )
-          ).length === 0) {
+          const pendingAnswersForProfile = getPendingAnswersForProfile(
+            pendingAnswerBuckets,
+            batch.profileId
+          );
+          if (Object.keys(pendingAnswersForProfile).length === 0) {
             continue;
           }
           let retryCount = 0;
@@ -18395,6 +18653,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
               });
               if (skippedMissingProfile) {
                 persistPendingAnswerBuckets();
+                console.warn("[AnswerMemory] Skipped flush - target profile not found", {
+                  profileId: batch.profileId,
+                  answerCount: Object.keys(batch.answers).length
+                });
                 break;
               }
               removePendingAnswers(
@@ -18405,10 +18667,25 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
               persistPendingAnswerBuckets();
               success = true;
               flushedAnyBatch = true;
+              console.log("[AnswerMemory] Successfully flushed answers", {
+                profileId: batch.profileId,
+                answerCount: Object.keys(batch.answers).length
+              });
             } catch (error) {
               retryCount += 1;
+              console.error(
+                `[AnswerMemory] Flush failed (attempt ${retryCount}/${MAX_ANSWER_FLUSH_RETRIES})`,
+                error
+              );
               if (retryCount >= MAX_ANSWER_FLUSH_RETRIES) {
                 persistPendingAnswerBuckets();
+                console.error(
+                  "[AnswerMemory] Flush failed after all retries - answers preserved in fallback storage",
+                  {
+                    profileId: batch.profileId,
+                    answerCount: Object.keys(batch.answers).length
+                  }
+                );
                 break;
               }
               await sleepWithAutomationChecks(

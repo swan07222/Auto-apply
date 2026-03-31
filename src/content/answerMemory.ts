@@ -67,7 +67,10 @@ const QUESTION_INTENT_PATTERNS: Array<{
     | "country"
     | "location"
     | "notice_period"
-    | "start_date";
+    | "start_date"
+    | "website"
+    | "phone"
+    | "email";
   tokens: string[];
 }> = [
   {
@@ -77,6 +80,8 @@ const QUESTION_INTENT_PATTERNS: Array<{
       "legally authorized",
       "eligible to work",
       "work authorization",
+      "work permit",
+      "employment authorization",
     ],
   },
   {
@@ -86,15 +91,17 @@ const QUESTION_INTENT_PATTERNS: Array<{
       "visa",
       "require sponsorship",
       "need sponsorship",
+      "h1b",
+      "work visa",
     ],
   },
   {
     intent: "relocation",
-    tokens: ["relocate", "relocation", "move for this role"],
+    tokens: ["relocate", "relocation", "move for this role", "willing to relocate"],
   },
   {
     intent: "experience",
-    tokens: ["years of experience", "years experience", "experience with"],
+    tokens: ["years of experience", "years experience", "experience with", "how many years"],
   },
   {
     intent: "motivation",
@@ -105,6 +112,7 @@ const QUESTION_INTENT_PATTERNS: Array<{
       "why this company",
       "tell us why",
       "motivation",
+      "interest in",
     ],
   },
   {
@@ -115,43 +123,58 @@ const QUESTION_INTENT_PATTERNS: Array<{
       "pay expectation",
       "expected pay",
       "expected salary",
+      "salary expectation",
+      "pay rate",
+      "hourly rate",
     ],
   },
   {
     intent: "portfolio",
-    tokens: ["portfolio", "personal site", "website"],
+    tokens: ["portfolio", "personal site", "website", "work samples"],
   },
   {
     intent: "linkedin",
-    tokens: ["linkedin"],
+    tokens: ["linkedin", "linkedin profile", "linkedin url"],
   },
   {
     intent: "github",
-    tokens: ["github"],
+    tokens: ["github", "github profile", "github url", "gitlab", "bitbucket"],
   },
   {
     intent: "city",
-    tokens: ["city"],
+    tokens: ["city", "current city", "home city"],
   },
   {
     intent: "state",
-    tokens: ["state", "province", "region"],
+    tokens: ["state", "province", "region", "territory"],
   },
   {
     intent: "country",
-    tokens: ["country"],
+    tokens: ["country", "nation"],
   },
   {
     intent: "location",
-    tokens: ["location"],
+    tokens: ["location", "address", "where do you live", "residence"],
   },
   {
     intent: "notice_period",
-    tokens: ["notice period"],
+    tokens: ["notice period", "notice time", "available after"],
   },
   {
     intent: "start_date",
-    tokens: ["start date", "available to start", "can you start"],
+    tokens: ["start date", "available to start", "can you start", "earliest start", "start immediately"],
+  },
+  {
+    intent: "website",
+    tokens: ["website", "web site", "portfolio site", "personal website"],
+  },
+  {
+    intent: "phone",
+    tokens: ["phone", "telephone", "mobile", "cell phone", "contact number"],
+  },
+  {
+    intent: "email",
+    tokens: ["email", "e-mail", "email address"],
   },
 ];
 
@@ -242,8 +265,14 @@ export function findBestSavedAnswerMatch(
       candidate.intents.size > 0 &&
       hasCompatibleQuestionIntents(lookup.intents, candidate.intents);
 
-    let score = 0;
+    // Check for exact question match first (highest priority)
+    const exactMatch = lookup.keys.some(lk => 
+      candidate.keys.some(ck => lk === ck)
+    );
+    
+    let score = exactMatch ? 1.0 : 0;
 
+    // Calculate similarity scores
     for (const lookupKey of lookup.keys) {
       for (const candidateKey of candidate.keys) {
         if (lookupKey === candidateKey) {
@@ -251,6 +280,7 @@ export function findBestSavedAnswerMatch(
           continue;
         }
 
+        // Substring match (high confidence)
         if (
           lookupKey.includes(candidateKey) ||
           candidateKey.includes(lookupKey)
@@ -258,25 +288,36 @@ export function findBestSavedAnswerMatch(
           score = Math.max(score, 0.92);
         }
 
-        score = Math.max(score, textSimilarity(lookupKey, candidateKey));
+        // Fuzzy text similarity
+        const similarity = textSimilarity(lookupKey, candidateKey);
+        if (similarity > 0.85) {
+          score = Math.max(score, similarity);
+        }
       }
     }
 
     const overlap = calculateTokenOverlap(lookup.tokens, candidate.tokens);
-    if (overlap === 0 && !sharesIntent && score < 0.92) {
+    
+    // Skip if no signal at all
+    if (overlap === 0 && !sharesIntent && score < 0.92 && !exactMatch) {
       continue;
     }
 
-    score = Math.max(score, overlap * 0.9);
-    if (sharesIntent) {
-      score = Math.max(score, 0.78);
-    }
+    // Boost score based on token overlap
     if (overlap > 0) {
+      score = Math.max(score, overlap * 0.9);
       score = Math.max(score, score * 0.8 + overlap * 0.2);
     }
-    if (lookup.intents.size > 0 && candidate.intents.size > 0) {
+    
+    // Boost for shared intent
+    if (sharesIntent) {
+      score = Math.max(score, 0.78);
       score = Math.min(1, score + 0.05);
     }
+    
+    // Boost for recent answers (prefer fresher data)
+    const recencyBoost = Math.min(0.05, (Date.now() - answer.updatedAt) / (30 * 24 * 60 * 60 * 1000) * 0.05);
+    score = Math.min(1, score + recencyBoost);
 
     if (!best || score > best.score) {
       best = { answer, score };

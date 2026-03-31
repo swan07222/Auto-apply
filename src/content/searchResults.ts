@@ -173,8 +173,9 @@ export async function waitForJobDetailUrls({
       )
     );
 
+    // Always merge new URLs with bestUrls to avoid losing progress
     const combinedUrls = mergeJobUrlLists(bestUrls, urls);
-    if (combinedUrls.length >= bestUrls.length) {
+    if (combinedUrls.length > bestUrls.length) {
       bestUrls = combinedUrls;
     }
 
@@ -198,12 +199,17 @@ export async function waitForJobDetailUrls({
       }
     }
 
-    const signature = bestUrls
-      .slice(0, Math.max(desiredCount, 8))
-      .join("|");
+    // Only check stability after we have some URLs
+    const signature = bestUrls.length > 0
+      ? bestUrls
+          .slice(0, Math.max(desiredCount, 8))
+          .join("|")
+      : "";
+      
     if (signature && signature === previousSignature) {
       stablePasses += 1;
-    } else {
+    } else if (signature) {
+      // Reset stable passes only if we have new URLs, not if we lost them
       stablePasses = 0;
       previousSignature = signature;
     }
@@ -977,13 +983,15 @@ async function waitForDomSettle(
   maxWaitMs: number,
   quietWindowMs: number
 ): Promise<void> {
-  const observer = new MutationObserver(() => {
-    lastMutationAt = Date.now();
-  });
+  let observer: MutationObserver | null = null;
   let lastMutationAt = Date.now();
   const startedAt = lastMutationAt;
 
   try {
+    observer = new MutationObserver(() => {
+      lastMutationAt = Date.now();
+    });
+    
     observer.observe(document.documentElement, {
       childList: true,
       subtree: true,
@@ -1005,7 +1013,9 @@ async function waitForDomSettle(
       await sleep(Math.min(quietWindowMs, 150));
     }
   } finally {
-    observer.disconnect();
+    if (observer) {
+      observer.disconnect();
+    }
   }
 }
 
@@ -1025,9 +1035,18 @@ async function collectMonsterEmbeddedUrls({
     const response = await chrome.runtime.sendMessage({
       type: "extract-monster-search-results",
     });
+    
+    if (!response || typeof response !== "object") {
+      return [];
+    }
+    
     const embeddedCandidates = collectMonsterEmbeddedCandidates(
       response?.jobResults
     );
+
+    if (!embeddedCandidates || embeddedCandidates.length === 0) {
+      return [];
+    }
 
     return Array.from(
       new Set(
@@ -1041,7 +1060,8 @@ async function collectMonsterEmbeddedUrls({
         )
       )
     );
-  } catch {
+  } catch (error) {
+    // Silently handle extension context errors and other runtime issues
     return [];
   }
 }

@@ -5,6 +5,7 @@ export const PENDING_ANSWER_FALLBACK_STORAGE_KEY =
   "remote-job-search-pending-answers-fallback";
 
 const DEFAULT_PENDING_ANSWER_PROFILE_KEY = "__default__";
+const STALE_ANSWER_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 export type PendingAnswerBuckets = Record<string, Record<string, SavedAnswer>>;
 
@@ -181,6 +182,28 @@ export function hasPendingAnswerBatches(
   return Object.keys(buckets).some(
     (profileKey) => Object.keys(buckets[profileKey] ?? {}).length > 0
   );
+}
+
+export function cleanupStalePendingAnswers(
+  buckets: PendingAnswerBuckets,
+  now = Date.now()
+): number {
+  const threshold = now - STALE_ANSWER_THRESHOLD_MS;
+  let removedCount = 0;
+
+  for (const [profileKey, answers] of Object.entries(buckets)) {
+    for (const [key, answer] of Object.entries(answers)) {
+      if (answer.updatedAt < threshold) {
+        delete answers[key];
+        removedCount++;
+      }
+    }
+    if (Object.keys(answers).length === 0) {
+      delete buckets[profileKey];
+    }
+  }
+
+  return removedCount;
 }
 
 export function resolvePendingAnswerTargetProfileId(

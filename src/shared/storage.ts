@@ -52,6 +52,66 @@ const BLOCKED_SAVED_ANSWER_QUESTION_PATTERNS = [
   /(?:^|[\s_-])(?:distance|radius|keyword|keywords|search|query)(?:$|[\s_-])/i,
 ];
 
+const MAX_QUESTION_LENGTH = 500;
+const MAX_ANSWER_LENGTH = 5000;
+
+function trimOldestSavedAnswers(
+  settings: AutomationSettings,
+  keepRatio = 0.7
+): AutomationSettings {
+  const profiles = { ...settings.profiles };
+
+  for (const [profileId, profile] of Object.entries(profiles)) {
+    const answers = profile.answers;
+    const preferenceAnswers = profile.preferenceAnswers;
+
+    // Sort answers by updatedAt (oldest first)
+    const allAnswers = [
+      ...Object.entries(answers).map(([key, answer]) => ({
+        key,
+        answer,
+        type: "answer" as const
+      })),
+      ...Object.entries(preferenceAnswers).map(([key, answer]) => ({
+        key,
+        answer,
+        type: "preference" as const
+      })),
+    ].sort((a, b) => a.answer.updatedAt - b.answer.updatedAt);
+
+    // Keep only the newest answers
+    const keepCount = Math.max(
+      1,
+      Math.floor(allAnswers.length * keepRatio)
+    );
+    const toRemove = allAnswers.slice(0, allAnswers.length - keepCount);
+
+    for (const { key, type } of toRemove) {
+      if (type === "answer") {
+        delete answers[key];
+      } else {
+        delete preferenceAnswers[key];
+      }
+    }
+
+    profiles[profileId] = {
+      ...profile,
+      answers,
+      preferenceAnswers,
+    };
+  }
+
+  console.log(
+    "[Storage] Trimmed oldest saved answers",
+    { keepRatio, remainingProfiles: Object.keys(profiles).length }
+  );
+
+  return {
+    ...settings,
+    profiles,
+  };
+}
+
 export function normalizeQuestionKey(question: string): string {
   return question
     .toLowerCase()
@@ -66,6 +126,11 @@ export function isUsefulSavedAnswerQuestion(question: string): boolean {
   const normalizedQuestion = normalizeQuestionKey(cleanedQuestion);
 
   if (!cleanedQuestion || !normalizedQuestion) {
+    return false;
+  }
+
+  // Block questions that are too long (likely not real questions)
+  if (cleanedQuestion.length > MAX_QUESTION_LENGTH) {
     return false;
   }
 
@@ -98,7 +163,14 @@ export function isUsefulSavedAnswer(
   question: string,
   value: string
 ): boolean {
-  return isUsefulSavedAnswerQuestion(question) && readString(value).length > 0;
+  const cleanedValue = readString(value);
+  
+  // Block answers that are too long (likely not real answers)
+  if (cleanedValue.length > MAX_ANSWER_LENGTH) {
+    return false;
+  }
+  
+  return isUsefulSavedAnswerQuestion(question) && cleanedValue.length > 0;
 }
 
 export async function readAutomationSettings(): Promise<AutomationSettings> {
@@ -116,8 +188,32 @@ export async function writeAutomationSettings(
     const current = await readAutomationSettings();
     const nextRaw = typeof update === "function" ? update(current) : update;
     const sanitized = applyAutomationSettingsUpdate(current, nextRaw);
-    await chrome.storage.local.set({ [AUTOMATION_SETTINGS_STORAGE_KEY]: sanitized });
-    return sanitized;
+    
+    try {
+      await chrome.storage.local.set({ [AUTOMATION_SETTINGS_STORAGE_KEY]: sanitized });
+      return sanitized;
+    } catch (error) {
+      // Handle storage quota exceeded error
+      if (
+        error instanceof Error &&
+        (error.message.includes("QUOTA_BYTES") ||
+         error.message.includes("quota") ||
+         error.message.includes("storage limit"))
+      ) {
+        console.error(
+          "[Storage] Quota exceeded - trimming old saved answers",
+          error
+        );
+        
+        // Trim oldest answers to make space
+        const trimmed = trimOldestSavedAnswers(sanitized, 0.7);
+        await chrome.storage.local.set({ [AUTOMATION_SETTINGS_STORAGE_KEY]: trimmed });
+        return trimmed;
+      }
+      
+      console.error("[Storage] Failed to write automation settings", error);
+      throw error;
+    }
   });
 
   automationSettingsWriteQueue = queuedWrite.then(

@@ -11,10 +11,18 @@ export function applyAnswerToRadioGroup(
   answer: string,
   allowOverwrite = false
 ): boolean {
+  if (field.disabled || field.hasAttribute("readonly")) {
+    return false;
+  }
+
   const radios = getGroupedInputs(field, "radio");
   const best = findBestChoice(radios, answer);
 
   if (!best) {
+    return false;
+  }
+
+  if (best.disabled || best.hasAttribute("readonly")) {
     return false;
   }
 
@@ -33,6 +41,10 @@ export function applyAnswerToCheckbox(
   field: HTMLInputElement,
   answer: string
 ): boolean {
+  if (field.disabled || field.hasAttribute("readonly")) {
+    return false;
+  }
+
   const boxes = getGroupedInputs(field, "checkbox");
 
   if (boxes.length > 1) {
@@ -47,6 +59,10 @@ export function applyAnswerToCheckbox(
 
     let changed = false;
     for (const box of boxes) {
+      if (box.disabled || box.hasAttribute("readonly")) {
+        continue;
+      }
+
       const optionText = normalizeChoiceText(getOptionLabelText(box) || box.value);
       if (
         values.some((value) => optionText.includes(value) || value.includes(optionText)) &&
@@ -74,11 +90,19 @@ export function selectOptionByAnswer(
   select: HTMLSelectElement,
   answer: string
 ): boolean {
+  if (select.disabled || select.hasAttribute("readonly")) {
+    return false;
+  }
+
   const normalizedAnswer = normalizeChoiceText(answer);
   let bestOption: HTMLOptionElement | null = null;
   let bestScore = -1;
 
   for (const option of Array.from(select.options)) {
+    if (option.disabled) {
+      continue;
+    }
+
     const score = scoreChoiceMatch(
       normalizedAnswer,
       `${normalizeChoiceText(option.textContent || "")} ${normalizeChoiceText(option.value)}`
@@ -93,10 +117,14 @@ export function selectOptionByAnswer(
     return false;
   }
 
-  select.value = bestOption.value;
-  select.dispatchEvent(new Event("input", { bubbles: true }));
-  select.dispatchEvent(new Event("change", { bubbles: true }));
-  return true;
+  try {
+    select.value = bestOption.value;
+    select.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function findBestChoice(

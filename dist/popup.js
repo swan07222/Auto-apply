@@ -335,6 +335,8 @@ var BLOCKED_SAVED_ANSWER_QUESTION_PATTERNS = [
   /(?:^|[\s_-])(?:csrf|captcha|recaptcha|hcaptcha|g\s*recaptcha|requestverificationtoken|verificationtoken|authenticitytoken|viewstate|eventvalidation|xsrf|nonce)(?:$|[\s_-])/i,
   /(?:^|[\s_-])(?:distance|radius|keyword|keywords|search|query)(?:$|[\s_-])/i
 ];
+var MAX_QUESTION_LENGTH = 500;
+var MAX_ANSWER_LENGTH = 5e3;
 function normalizeQuestionKey(question) {
   return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -342,6 +344,9 @@ function isUsefulSavedAnswerQuestion(question) {
   const cleanedQuestion = typeof question === "string" ? question.replace(/\s+/g, " ").trim() : "";
   const normalizedQuestion = normalizeQuestionKey(cleanedQuestion);
   if (!cleanedQuestion || !normalizedQuestion) {
+    return false;
+  }
+  if (cleanedQuestion.length > MAX_QUESTION_LENGTH) {
     return false;
   }
   if (BLOCKED_SAVED_ANSWER_QUESTION_KEYS.has(normalizedQuestion)) {
@@ -359,7 +364,11 @@ function isUsefulSavedAnswerQuestion(question) {
   return true;
 }
 function isUsefulSavedAnswer(question, value) {
-  return isUsefulSavedAnswerQuestion(question) && readString2(value).length > 0;
+  const cleanedValue = readString2(value);
+  if (cleanedValue.length > MAX_ANSWER_LENGTH) {
+    return false;
+  }
+  return isUsefulSavedAnswerQuestion(question) && cleanedValue.length > 0;
 }
 async function readAutomationSettings() {
   const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
@@ -697,14 +706,15 @@ function createPopupDialogController(elements) {
   };
   const restoreFocusBeforeHide = () => {
     const activeElement = elements.root.ownerDocument.activeElement;
-    if (!(activeElement instanceof HTMLElement) || !elements.root.contains(activeElement)) {
+    const isFocusInsideDialog = activeElement instanceof HTMLElement && elements.root.contains(activeElement);
+    if (!isFocusInsideDialog) {
       return;
     }
     if (restoreFocusTarget && restoreFocusTarget.isConnected && !elements.root.contains(restoreFocusTarget)) {
       restoreFocusTarget.focus();
-      return;
+    } else {
+      focusBodyFallback();
     }
-    focusBodyFallback();
   };
   const closeDialog = () => {
     restoreFocusBeforeHide();
@@ -1237,11 +1247,26 @@ async function initialize() {
   registerChromeTabListeners();
   await refreshActiveTabContext();
   let settingsLoadFailed = false;
+  let isFirstStart = false;
   try {
     settings = await readAutomationSettings();
+    const profiles = Object.values(settings.profiles);
+    if (profiles.length === 0) {
+      isFirstStart = true;
+    } else if (profiles.length === 1) {
+      const profile = profiles[0];
+      const candidate = profile.candidate;
+      if (profile.name === "Default Profile" && !candidate.fullName && !candidate.email && !candidate.phone && !candidate.city && !candidate.state && !candidate.country) {
+        isFirstStart = true;
+      }
+    }
   } catch {
     settings = createEmptySettings();
     settingsLoadFailed = true;
+    isFirstStart = true;
+  }
+  if (isFirstStart) {
+    await handleFirstStartProfileCreation();
   }
   populateSettingsForm(settings);
   if (settingsLoadFailed) {
@@ -1957,6 +1982,38 @@ async function switchActiveProfile(profileId) {
     );
   }
 }
+async function handleFirstStartProfileCreation() {
+  const name = await promptForProfileName("Create Profile", "");
+  if (!name) {
+    const profileId2 = createProfileId();
+    settings = await persistSettings((current) => ({
+      profiles: {
+        ...current.profiles,
+        [profileId2]: createAutomationProfile(profileId2, name || "Default Profile")
+      },
+      activeProfileId: profileId2
+    }));
+    return;
+  }
+  const profileId = createProfileId();
+  setSettingsStatus(`Creating "${name}"...`, "muted", true);
+  try {
+    settings = await persistSettings((current) => ({
+      profiles: {
+        ...current.profiles,
+        [profileId]: createAutomationProfile(profileId, name)
+      },
+      activeProfileId: profileId
+    }));
+    setSettingsStatus(`Created profile "${name}".`, "success", true);
+  } catch (error) {
+    setSettingsStatus(
+      error instanceof Error ? `Error: ${error.message}` : "Failed to create profile.",
+      "error",
+      true
+    );
+  }
+}
 async function createProfile() {
   await flushPendingAutoSave();
   const name = await promptForProfileName("Create Profile", "");
@@ -2662,11 +2719,24 @@ async function promptForSavedAnswer(title, initialQuestion, initialValue) {
     secondaryPlaceholder: "Short, reusable answer",
     submitLabel: initialQuestion ? "Save" : "Add",
     validate: (question, value) => {
-      if (!question.trim()) {
+      const trimmedQuestion = question.trim();
+      const trimmedValue = value.trim();
+      if (!trimmedQuestion) {
         return "Question cannot be empty.";
       }
-      if (!value.trim()) {
+      if (trimmedQuestion.length > 500) {
+        return "Question is too long (max 500 characters).";
+      }
+      if (!trimmedValue) {
         return "Answer cannot be empty.";
+      }
+      if (trimmedValue.length > 5e3) {
+        return "Answer is too long (max 5000 characters).";
+      }
+      const normalizedQuestion = trimmedQuestion.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+      const blockedKeys = ["search", "keyword", "keywords", "query", "q", "what", "where", "radius", "distance", "filter"];
+      if (blockedKeys.includes(normalizedQuestion)) {
+        return "This looks like a search filter, not a question to save.";
       }
       return null;
     }

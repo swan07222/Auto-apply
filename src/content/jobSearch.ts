@@ -14,6 +14,7 @@ import {
   collectShadowHosts,
   getActionText,
   getNavigationUrl,
+  isElementVisible,
   normalizeUrl,
 } from "./dom";
 import {
@@ -2358,7 +2359,7 @@ function collectZipRecruiterDataAttributeCandidates(): JobCandidate[] {
   // Some ZipRecruiter layouts store job IDs in data attributes
   const elements = Array.from(
     document.querySelectorAll<HTMLElement>(
-      "[data-job-id], [data-jid], [data-jobid], [data-job]"
+      "[data-job-id], [data-jid], [data-jobid], [data-job], [data-qa*='job'], [class*='job_card'], [class*='job-card']"
     )
   );
 
@@ -2402,6 +2403,34 @@ function collectZipRecruiterDataAttributeCandidates(): JobCandidate[] {
       detailUrl.searchParams.delete("lk");
       detailUrl.searchParams.set("jid", jobId);
       addJobCandidate(candidates, detailUrl.toString(), title, contextText);
+    }
+  }
+
+  // Fallback: collect all job links from the page if no data attributes found
+  if (candidates.length === 0) {
+    const jobLinks = Array.from(
+      document.querySelectorAll<HTMLAnchorElement>(
+        "a[href*='/jobs/'], a[href*='/job/'], a[href*='/job-details/'], a[data-testid*='job-title']"
+      )
+    );
+
+    for (const link of jobLinks) {
+      if (!isElementVisible(link)) continue;
+
+      const title = cleanText(
+        link.textContent ||
+        link.getAttribute("aria-label") ||
+        link.getAttribute("title") ||
+        ""
+      );
+
+      if (title && title.length > 3 && title.length < 200) {
+        const card = link.closest<HTMLElement>(
+          "[data-testid*='job'], [class*='job_card'], [class*='job-card'], article, section"
+        );
+        const contextText = buildZipRecruiterCandidateContext(card || document.body, link);
+        addJobCandidate(candidates, link.href, title, contextText);
+      }
     }
   }
 

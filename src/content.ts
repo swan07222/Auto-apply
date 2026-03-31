@@ -63,6 +63,7 @@ import {
 import {
   PENDING_ANSWER_FALLBACK_STORAGE_KEY,
   addPendingAnswer,
+  cleanupStalePendingAnswers,
   getPendingAnswersForProfile,
   hasPendingAnswerBatches,
   listPendingAnswerBatches,
@@ -1835,6 +1836,19 @@ function initializeEventListeners(): void {
   document.addEventListener("submit", handlePotentialManualSubmit, true);
   window.addEventListener("pagehide", flushPendingAnswersOnPageHide);
   document.addEventListener("visibilitychange", flushPendingAnswersOnPageHide, true);
+  
+  // Cleanup stale pending answers on initialization
+  const removedCount = cleanupStalePendingAnswers(pendingAnswerBuckets);
+  if (removedCount > 0) {
+    console.log("[AnswerMemory] Cleaned up stale pending answers", { removedCount });
+    persistPendingAnswerBuckets();
+  }
+  
+  // Flush pending answers on navigation
+  window.addEventListener("popstate", () => {
+    console.log("[AnswerMemory] Navigation detected - flushing pending answers");
+    flushPendingAnswersOnPageHide();
+  });
 }
 
 initializeEventListeners();
@@ -4126,11 +4140,14 @@ async function setFileInputValue(
   const isAshbyUploadSurface = window.location.hostname
     .toLowerCase()
     .includes("ashbyhq.com");
-  
+  const isGreenhouseUploadSurface = window.location.hostname
+    .toLowerCase()
+    .includes("greenhouse.io");
+
   // Some pages disable the DataTransfer API entirely.
   const hasDataTransferSupport = typeof DataTransfer === "function";
   const hasFileApiSupport = typeof File === "function";
-  
+
   if (!hasDataTransferSupport || !hasFileApiSupport) {
     updateStatus(
       "error",
@@ -4140,7 +4157,7 @@ async function setFileInputValue(
     );
     return false;
   }
-  
+
   try {
     const resp = await fetch(asset.dataUrl);
     const blob = await resp.blob();
@@ -4156,7 +4173,7 @@ async function setFileInputValue(
       HTMLInputElement.prototype,
       "files"
     );
-    
+
     if (!filesDescriptor?.set) {
       updateStatus(
         "error",
@@ -4166,7 +4183,7 @@ async function setFileInputValue(
       );
       return false;
     }
-    
+
     filesDescriptor.set.call(input, transfer.files);
 
     // Dispatch events to notify frameworks
@@ -4249,7 +4266,9 @@ async function setFileInputValue(
 
     const uploadVerificationDelays = isAshbyUploadSurface
       ? [450, 900, 1_400, 1_900, 2_500, 3_200]
-      : [350, 750, 1_250, 1_850, 2_500];
+      : isGreenhouseUploadSurface
+        ? [500, 1_000, 1_600, 2_400, 3_500]
+        : [350, 750, 1_250, 1_850, 2_500];
     let success = false;
 
     for (const delayMs of uploadVerificationDelays) {
@@ -4266,19 +4285,34 @@ async function setFileInputValue(
     }
 
     if (!success) {
-      updateStatus(
-        "error",
-        "Resume upload was not accepted by the page. Please upload your resume manually.",
-        false,
-        "autofill-form"
-      );
+      // For Greenhouse, check if there's any file upload activity even if verification failed
+      if (isGreenhouseUploadSurface && (Boolean(input.files?.length) || getSelectedFileName(input))) {
+        success = true;
+      } else {
+        updateStatus(
+          "error",
+          "Resume upload was not accepted by the page. Please upload your resume manually.",
+          false,
+          "autofill-form"
+        );
+      }
     }
 
     return success;
-  } catch (error) {
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    
+    // For Greenhouse, ignore custom upload widget errors if file was set
+    if (isGreenhouseUploadSurface) {
+      await sleepWithAutomationChecks(400);
+      if (Boolean(input.files?.length) || getSelectedFileName(input)) {
+        return true;
+      }
+    }
+    
     updateStatus(
       "error",
-      `Resume upload failed: ${error instanceof Error ? error.message : "Unknown error"}. Please upload manually.`,
+      `Resume upload failed: ${errorMessage}. Please upload manually.`,
       false,
       "autofill-form"
     );
@@ -6179,14 +6213,12 @@ async function flushPendingAnswers(): Promise<void> {
       let flushedAnyBatch = false;
 
       for (const batch of batches) {
-        if (
-          Object.keys(
-            getPendingAnswersForProfile(
-              pendingAnswerBuckets,
-              batch.profileId
-            )
-          ).length === 0
-        ) {
+        const pendingAnswersForProfile = getPendingAnswersForProfile(
+          pendingAnswerBuckets,
+          batch.profileId
+        );
+        
+        if (Object.keys(pendingAnswersForProfile).length === 0) {
           continue;
         }
 
@@ -6210,6 +6242,10 @@ async function flushPendingAnswers(): Promise<void> {
             });
             if (skippedMissingProfile) {
               persistPendingAnswerBuckets();
+              console.warn("[AnswerMemory] Skipped flush - target profile not found", {
+                profileId: batch.profileId,
+                answerCount: Object.keys(batch.answers).length,
+              });
               break;
             }
             removePendingAnswers(
@@ -6220,10 +6256,25 @@ async function flushPendingAnswers(): Promise<void> {
             persistPendingAnswerBuckets();
             success = true;
             flushedAnyBatch = true;
+            console.log("[AnswerMemory] Successfully flushed answers", {
+              profileId: batch.profileId,
+              answerCount: Object.keys(batch.answers).length,
+            });
           } catch (error) {
             retryCount += 1;
+            console.error(
+              `[AnswerMemory] Flush failed (attempt ${retryCount}/${MAX_ANSWER_FLUSH_RETRIES})`,
+              error
+            );
             if (retryCount >= MAX_ANSWER_FLUSH_RETRIES) {
               persistPendingAnswerBuckets();
+              console.error(
+                "[AnswerMemory] Flush failed after all retries - answers preserved in fallback storage",
+                {
+                  profileId: batch.profileId,
+                  answerCount: Object.keys(batch.answers).length,
+                }
+              );
               break;
             }
             await sleepWithAutomationChecks(

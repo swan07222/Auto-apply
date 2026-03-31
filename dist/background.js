@@ -417,6 +417,8 @@
     /(?:^|[\s_-])(?:csrf|captcha|recaptcha|hcaptcha|g\s*recaptcha|requestverificationtoken|verificationtoken|authenticitytoken|viewstate|eventvalidation|xsrf|nonce)(?:$|[\s_-])/i,
     /(?:^|[\s_-])(?:distance|radius|keyword|keywords|search|query)(?:$|[\s_-])/i
   ];
+  var MAX_QUESTION_LENGTH = 500;
+  var MAX_ANSWER_LENGTH = 5e3;
   function normalizeQuestionKey(question) {
     return question.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
   }
@@ -424,6 +426,9 @@
     const cleanedQuestion = typeof question === "string" ? question.replace(/\s+/g, " ").trim() : "";
     const normalizedQuestion = normalizeQuestionKey(cleanedQuestion);
     if (!cleanedQuestion || !normalizedQuestion) {
+      return false;
+    }
+    if (cleanedQuestion.length > MAX_QUESTION_LENGTH) {
       return false;
     }
     if (BLOCKED_SAVED_ANSWER_QUESTION_KEYS.has(normalizedQuestion)) {
@@ -441,7 +446,11 @@
     return true;
   }
   function isUsefulSavedAnswer(question, value) {
-    return isUsefulSavedAnswerQuestion(question) && readString2(value).length > 0;
+    const cleanedValue = readString2(value);
+    if (cleanedValue.length > MAX_ANSWER_LENGTH) {
+      return false;
+    }
+    return isUsefulSavedAnswerQuestion(question) && cleanedValue.length > 0;
   }
   async function readAutomationSettings() {
     const stored = await chrome.storage.local.get(AUTOMATION_SETTINGS_STORAGE_KEY);
