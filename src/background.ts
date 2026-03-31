@@ -3948,6 +3948,32 @@ async function loadReviewedJobKeySet(): Promise<Set<string>> {
   return new Set(reviewedHistory.keys());
 }
 
+function getStartOfToday(): number {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+}
+
+function countJobsToday(history: Map<string, number>): number {
+  const todayStart = getStartOfToday();
+  let count = 0;
+  for (const timestamp of history.values()) {
+    if (timestamp >= todayStart) {
+      count++;
+    }
+  }
+  return count;
+}
+
+async function getTodayAppliedJobCount(): Promise<number> {
+  const appliedHistory = await loadAppliedJobHistory();
+  return countJobsToday(appliedHistory);
+}
+
+async function getTodayReviewedJobCount(): Promise<number> {
+  const reviewedHistory = await loadReviewedJobHistory();
+  return countJobsToday(reviewedHistory);
+}
+
 type BackgroundSourceTab = chrome.tabs.Tab & { pendingUrl?: string };
 
 async function getTabSafely(tabId: number): Promise<BackgroundSourceTab | null> {

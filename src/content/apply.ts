@@ -3272,6 +3272,7 @@ function isBlockedProgressionCandidate(value: string): boolean {
       "log in",
       "back to jobs",
       "back to search",
+      "tell us more",
     ].some((phrase) => value.includes(phrase)) ||
     hasAnyProgressionKeyword(value, [
       "back",

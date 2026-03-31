@@ -7118,7 +7118,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "sign up",
       "log in",
       "back to jobs",
-      "back to search"
+      "back to search",
+      "tell us more"
     ].some((phrase) => value.includes(phrase)) || hasAnyProgressionKeyword(value, [
       "back",
       "cancel",
@@ -13617,7 +13618,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     "node.js",
     "vue.js",
     "back to search",
-    "back to results"
+    "back to results",
+    "tell us more"
   ];
   function shouldStartManualReviewPause(target) {
     if (!(target instanceof HTMLElement)) {

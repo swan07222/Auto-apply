@@ -59,6 +59,7 @@ const MANUAL_PROGRESS_BLOCK_PATTERNS = [
   "vue.js",
   "back to search",
   "back to results",
+  "tell us more",
 ];
 
 export function shouldStartManualReviewPause(
