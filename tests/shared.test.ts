@@ -578,12 +578,12 @@ describe("shared automation target logic", () => {
 
   it("resolves startup region from candidate country", () => {
     expect(resolveStartupRegion("auto", "United States")).toBe("us");
-    expect(resolveStartupRegion("auto", "United Kingdom")).toBe("uk");
-    expect(resolveStartupRegion("auto", "Germany")).toBe("eu");
+    expect(resolveStartupRegion("auto", "United Kingdom")).toBe("us");
+    expect(resolveStartupRegion("auto", "Germany")).toBe("us");
     expect(resolveStartupRegion("us", "Germany")).toBe("us");
     expect(inferStartupRegionFromCountry("")).toBeNull();
-    expect(resolveStartupTargetRegions("auto", "")).toEqual(["us", "uk", "eu"]);
-    expect(formatStartupRegionList(["us", "uk", "eu"])).toBe("US / UK / EU");
+    expect(resolveStartupTargetRegions("auto", "")).toEqual(["us"]);
+    expect(formatStartupRegionList(["us"])).toBe("US");
   });
 
   it("builds US startup targets from direct ATS boards where configured", () => {
@@ -604,7 +604,7 @@ describe("shared automation target logic", () => {
     expect(urls).toContain("https://job-boards.greenhouse.io/vercel");
     expect(urls).toContain("https://jobs.lever.co/plaid");
     expect(urls).toContain("https://job-boards.greenhouse.io/figma");
-    expect(urls).toContain("https://careers.veeva.com/job-search-results/");
+    expect(urls).not.toContain("https://careers.veeva.com/job-search-results/");
     expect(urls).not.toContain("https://job-boards.greenhouse.io/monzo");
     expect(targets.every((target) => target.resumeKind === undefined)).toBe(true);
     expect(targets.every((target) => target.keyword === "software engineer")).toBe(true);
@@ -630,13 +630,14 @@ describe("shared automation target logic", () => {
       },
     };
 
-    expect(buildStartupSearchTargets(ukSettings).map((target) => target.url)).toContain(
+    // Veeva and other multi-region companies removed - only US companies included
+    expect(buildStartupSearchTargets(ukSettings).map((target) => target.url)).not.toContain(
       "https://careers.veeva.com/job-search-results/"
     );
-    expect(buildStartupSearchTargets(ukSettings).map((target) => target.url)).toContain(
+    expect(buildStartupSearchTargets(ukSettings).map((target) => target.url)).not.toContain(
       "https://wise.jobs/engineering"
     );
-    expect(buildStartupSearchTargets(euSettings).map((target) => target.url)).toContain(
+    expect(buildStartupSearchTargets(euSettings).map((target) => target.url)).not.toContain(
       "https://careers.veeva.com/job-search-results/"
     );
   });
@@ -735,22 +736,12 @@ describe("shared automation target logic", () => {
       },
     };
 
+    // Berlin Startup Jobs removed - only US sites included
     const berlinTargets = buildOtherJobSiteTargets(settings).filter((target) =>
       target.label.startsWith("Berlin Startup Jobs:")
     );
 
-    expect(berlinTargets).toEqual([
-      {
-        label: "Berlin Startup Jobs: software engineer",
-        keyword: "software engineer",
-        url: "https://berlinstartupjobs.com/engineering/",
-      },
-      {
-        label: "Berlin Startup Jobs: marketing manager",
-        keyword: "marketing manager",
-        url: "https://berlinstartupjobs.com/marketing/",
-      },
-    ]);
+    expect(berlinTargets).toEqual([]);
   });
 
   it("dedupes equivalent other-site keyword variants before building search targets", () => {

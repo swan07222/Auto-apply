@@ -128,8 +128,8 @@ export function resolveStartupTargetRegions(
     return [startupRegion];
   }
 
-  const inferred = inferStartupRegionFromCountry(candidateCountry);
-  return inferred ? [inferred] : getStartupTargetRegions();
+  // Always default to US-only for auto mode
+  return ["us"];
 }
 
 export function resolveStartupRegion(

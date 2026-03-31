@@ -931,7 +931,14 @@ async function performRefreshStatus(): Promise<void> {
       (!activeJobBoardSite && contentStatus.site !== "unsupported")
     )
   ) {
-    if (!activeJobBoardSite && isRunnableCurrentTabSite(contentStatus.site)) {
+    // Trust content script site detection when:
+    // 1. Tab URL is also a supported site (confirms detection), OR
+    // 2. Content script detected Greenhouse (which can be on custom domains)
+    const contentSiteIsSupported = isRunnableCurrentTabSite(contentStatus.site);
+    const tabUrlIsSupported = isRunnableCurrentTabSite(activeSite);
+    const isGreenhouseDetection = contentStatus.site === "greenhouse";
+    
+    if (!activeJobBoardSite && contentSiteIsSupported && (tabUrlIsSupported || isGreenhouseDetection)) {
       activeSite = contentStatus.site;
       activeJobBoardSite = contentStatus.site;
       updateSiteNameDisplay();
@@ -1042,18 +1049,23 @@ function updateSiteNameDisplay(): void {
   } else if (searchMode === "other_job_sites") {
     siteName.textContent = "Other Job Sites";
   } else {
-    const sessionSite =
-      activeSession?.site && activeSession.site !== "unsupported"
-        ? activeSession.site
-        : isRunnableCurrentTabSite(currentStatusSnapshot.site)
-          ? currentStatusSnapshot.site
-          : null;
-
-    siteName.textContent = isRunnableCurrentTabSite(activeSite)
-      ? getSiteLabel(activeSite)
-      : sessionSite
-        ? getSiteLabel(sessionSite)
-        : "No supported site";
+    // In job board mode, only show a supported site name when the current tab is on a supported site
+    // or when the session belongs to the current tab. This avoids showing stale site data from
+    // other tabs.
+    const currentTabIsSupported = isRunnableCurrentTabSite(activeSite);
+    
+    if (currentTabIsSupported) {
+      siteName.textContent = getSiteLabel(activeSite);
+    } else if (
+      activeSession?.site &&
+      activeSession.site !== "unsupported" &&
+      activeSession.tabId === activeTabId
+    ) {
+      // Session belongs to current tab but site detection failed (e.g., custom domain)
+      siteName.textContent = getSiteLabel(activeSession.site);
+    } else {
+      siteName.textContent = "No supported site";
+    }
   }
 
   updateDatePostedWindowInputState();
@@ -1117,7 +1129,7 @@ function applyStatus(status: AutomationStatus): void {
   statusPanel.dataset.phase = status.phase;
   statusText.textContent = status.message;
   queueCount.textContent = String(activeRunSummary?.queuedJobCount ?? 0);
-  appliedCount.textContent = String(activeRunSummary?.reviewedJobCount ?? 0);
+  appliedCount.textContent = String(activeRunSummary?.appliedJobCount ?? 0);
   updateSiteNameDisplay();
 }
 

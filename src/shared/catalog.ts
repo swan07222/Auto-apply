@@ -94,21 +94,6 @@ export const DEFAULT_STARTUP_COMPANIES: StartupCompany[] = [
   { name: "Plaid", careersUrl: "https://jobs.lever.co/plaid", regions: ["us"] },
   { name: "Figma", careersUrl: "https://job-boards.greenhouse.io/figma", regions: ["us"] },
   { name: "Notion", careersUrl: "https://www.notion.so/careers", regions: ["us"] },
-  {
-    name: "Veeva",
-    careersUrl: "https://careers.veeva.com/job-search-results/",
-    regions: ["us", "uk", "eu"],
-  },
-  { name: "Monzo", careersUrl: "https://job-boards.greenhouse.io/monzo", regions: ["uk"] },
-  { name: "Wise", careersUrl: "https://wise.jobs/engineering", regions: ["uk"] },
-  { name: "Synthesia", careersUrl: "https://synthesia.io/careers", regions: ["uk"] },
-  { name: "Snyk", careersUrl: "https://snyk.io/careers/", regions: ["uk"] },
-  { name: "Checkout.com", careersUrl: "https://www.checkout.com/careers", regions: ["uk"] },
-  { name: "N26", careersUrl: "https://n26.com/en-eu/careers", regions: ["eu"] },
-  { name: "Bolt", careersUrl: "https://bolt.eu/en/careers/", regions: ["eu"] },
-  { name: "Adyen", careersUrl: "https://careers.adyen.com/", regions: ["eu"] },
-  { name: "GetYourGuide", careersUrl: "https://www.getyourguide.careers/", regions: ["eu"] },
-  { name: "Klarna", careersUrl: "https://www.klarna.com/careers/", regions: ["eu"] },
 ];
 
 export const STARTUP_COMPANIES = DEFAULT_STARTUP_COMPANIES;
@@ -138,35 +123,6 @@ export const OTHER_JOB_SITE_DEFINITIONS: CuratedJobSiteDefinition[] = [
     regions: ["us"],
     buildUrl: (keyword) =>
       `https://www.workatastartup.com/jobs?query=${encodeURIComponent(keyword)}`,
-  },
-  {
-    label: "Reed",
-    regions: ["uk"],
-    buildUrl: (keyword) =>
-      `https://www.reed.co.uk/jobs/${encodeSearchQueryForPath(keyword)}-jobs-in-united-kingdom`,
-  },
-  {
-    label: "CWJobs",
-    regions: ["uk"],
-    buildUrl: (keyword) =>
-      `https://www.cwjobs.co.uk/jobs/${encodeSearchQueryForPath(keyword)}/in-united-kingdom`,
-  },
-  {
-    label: "Totaljobs",
-    regions: ["uk"],
-    buildUrl: (keyword) =>
-      `https://www.totaljobs.com/jobs/${encodeSearchQueryForPath(keyword)}/in-united-kingdom`,
-  },
-  {
-    label: "Welcome to the Jungle",
-    regions: ["eu"],
-    buildUrl: (keyword) =>
-      `https://www.welcometothejungle.com/en/jobs?query=${encodeURIComponent(keyword)}`,
-  },
-  {
-    label: "Berlin Startup Jobs",
-    regions: ["eu"],
-    buildUrl: (keyword) => buildBerlinStartupJobsUrl(keyword),
   },
 ];
 
@@ -214,8 +170,6 @@ export const CANONICAL_JOB_BOARD_ORIGINS = {
 
 const STARTUP_TARGET_REGIONS: Array<Exclude<StartupRegion, "auto">> = [
   "us",
-  "uk",
-  "eu",
 ];
 
 const INDEED_DATE_POSTED_WINDOWS: readonly DatePostedWindow[] =

@@ -30,7 +30,45 @@ type PopupHarnessOptions = {
 };
 
 function createSettings(overrides: Record<string, unknown> = {}): AutomationSettings {
-  return sanitizeAutomationSettings(overrides);
+  // Ensure we have a non-empty default profile to avoid first-start modal
+  const defaultCandidate = {
+    fullName: "Test User",
+    email: "test@example.com",
+    phone: "",
+    city: "",
+    state: "",
+    country: "",
+    linkedinUrl: "",
+    portfolioUrl: "",
+    currentCompany: "",
+    yearsExperience: "",
+    workAuthorization: "",
+    needsSponsorship: "",
+    willingToRelocate: "",
+  };
+
+  const candidate = { ...defaultCandidate, ...(overrides.candidate as Record<string, unknown> || {}) };
+
+  const defaultProfile = {
+    id: "default-profile",
+    name: "Default Profile",
+    candidate,
+    resume: null,
+    answers: {},
+    preferenceAnswers: {},
+    updatedAt: Date.now(),
+  };
+
+  const { candidate: _, ...restOverrides } = overrides;
+
+  return sanitizeAutomationSettings({
+    activeProfileId: "default-profile",
+    profiles: {
+      "default-profile": defaultProfile,
+    },
+    searchKeywords: "software engineer",
+    ...restOverrides,
+  });
 }
 
 function requireElement<T extends HTMLElement>(selector: string): T {
@@ -45,7 +83,7 @@ function mountPopupDom(): void {
   document.body.innerHTML = popupBody;
 }
 
-async function flushAsyncWork(rounds = 8): Promise<void> {
+async function flushAsyncWork(rounds = 24): Promise<void> {
   for (let index = 0; index < rounds; index += 1) {
     await Promise.resolve();
   }
@@ -92,6 +130,11 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
     async (tabId: number, message: Record<string, unknown>) => {
       if (options.tabsSendMessage) {
         return options.tabsSendMessage(tabId, message);
+      }
+
+      // Default response for get-status content script messages
+      if (message.type === "get-status") {
+        return { status: { site: "indeed", phase: "idle", message: "Ready on Indeed.", updatedAt: Date.now() } };
       }
 
       return null;
@@ -208,7 +251,7 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
   });
 
   await import("../src/popup");
-  await flushAsyncWork(16);
+  await flushAsyncWork(64);
 
   return {
     getLatestSettings: () =>

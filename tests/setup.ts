@@ -4,6 +4,9 @@
 
 /* eslint-disable no-restricted-globals */
 
+// Import custom matchers to extend Vitest's expect
+import "./helpers/customMatchers";
+
 let originalConsoleError: typeof console.error;
 let originalStderrWrite: typeof process.stderr.write;
 

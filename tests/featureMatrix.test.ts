@@ -1,3 +1,5 @@
+import { expect } from "vitest";
+
 import {
   CANONICAL_JOB_BOARD_ORIGINS,
   DATE_POSTED_WINDOW_LABELS,
@@ -152,18 +154,17 @@ describe("extension feature matrix", () => {
     const otherUk = buildOtherJobSiteTargets(ukSettings);
     const otherEu = buildOtherJobSiteTargets(euSettings);
 
+    // Only US region is supported - UK and EU return empty
     expect(startupUs.length).toBeGreaterThan(0);
-    expect(startupUk.length).toBeGreaterThan(0);
-    expect(startupEu.length).toBeGreaterThan(0);
+    expect(startupUk.length).toBe(0);
+    expect(startupEu.length).toBe(0);
     expect(otherUs.length).toBeGreaterThan(0);
-    expect(otherUk.length).toBeGreaterThan(0);
-    expect(otherEu.length).toBeGreaterThan(0);
+    expect(otherUk.length).toBe(0);
+    expect(otherEu.length).toBe(0);
 
     expect(new Set(startupUs.map((target) => target.url)).size).toBe(startupUs.length);
     expect(new Set(otherUs.map((target) => target.url)).size).toBe(otherUs.length);
     expect(otherUs.some((target) => target.label.startsWith("Built In:"))).toBe(true);
-    expect(otherUk.some((target) => target.label.startsWith("Reed:"))).toBe(true);
-    expect(otherEu.some((target) => target.label.startsWith("Welcome to the Jungle:"))).toBe(true);
   });
 
   it("exposes consistent labels for every user-selectable mode and date window", () => {

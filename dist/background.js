@@ -79,22 +79,7 @@
     { name: "Vercel", careersUrl: "https://job-boards.greenhouse.io/vercel", regions: ["us"] },
     { name: "Plaid", careersUrl: "https://jobs.lever.co/plaid", regions: ["us"] },
     { name: "Figma", careersUrl: "https://job-boards.greenhouse.io/figma", regions: ["us"] },
-    { name: "Notion", careersUrl: "https://www.notion.so/careers", regions: ["us"] },
-    {
-      name: "Veeva",
-      careersUrl: "https://careers.veeva.com/job-search-results/",
-      regions: ["us", "uk", "eu"]
-    },
-    { name: "Monzo", careersUrl: "https://job-boards.greenhouse.io/monzo", regions: ["uk"] },
-    { name: "Wise", careersUrl: "https://wise.jobs/engineering", regions: ["uk"] },
-    { name: "Synthesia", careersUrl: "https://synthesia.io/careers", regions: ["uk"] },
-    { name: "Snyk", careersUrl: "https://snyk.io/careers/", regions: ["uk"] },
-    { name: "Checkout.com", careersUrl: "https://www.checkout.com/careers", regions: ["uk"] },
-    { name: "N26", careersUrl: "https://n26.com/en-eu/careers", regions: ["eu"] },
-    { name: "Bolt", careersUrl: "https://bolt.eu/en/careers/", regions: ["eu"] },
-    { name: "Adyen", careersUrl: "https://careers.adyen.com/", regions: ["eu"] },
-    { name: "GetYourGuide", careersUrl: "https://www.getyourguide.careers/", regions: ["eu"] },
-    { name: "Klarna", careersUrl: "https://www.klarna.com/careers/", regions: ["eu"] }
+    { name: "Notion", careersUrl: "https://www.notion.so/careers", regions: ["us"] }
   ];
   var STARTUP_COMPANIES = DEFAULT_STARTUP_COMPANIES;
   var STARTUP_COMPANIES_FEED_URL = "https://raw.githubusercontent.com/swan07222/Auto-apply/main/data/startup-companies.json";
@@ -117,31 +102,6 @@
       label: "Work at a Startup",
       regions: ["us"],
       buildUrl: (keyword) => `https://www.workatastartup.com/jobs?query=${encodeURIComponent(keyword)}`
-    },
-    {
-      label: "Reed",
-      regions: ["uk"],
-      buildUrl: (keyword) => `https://www.reed.co.uk/jobs/${encodeSearchQueryForPath(keyword)}-jobs-in-united-kingdom`
-    },
-    {
-      label: "CWJobs",
-      regions: ["uk"],
-      buildUrl: (keyword) => `https://www.cwjobs.co.uk/jobs/${encodeSearchQueryForPath(keyword)}/in-united-kingdom`
-    },
-    {
-      label: "Totaljobs",
-      regions: ["uk"],
-      buildUrl: (keyword) => `https://www.totaljobs.com/jobs/${encodeSearchQueryForPath(keyword)}/in-united-kingdom`
-    },
-    {
-      label: "Welcome to the Jungle",
-      regions: ["eu"],
-      buildUrl: (keyword) => `https://www.welcometothejungle.com/en/jobs?query=${encodeURIComponent(keyword)}`
-    },
-    {
-      label: "Berlin Startup Jobs",
-      regions: ["eu"],
-      buildUrl: (keyword) => buildBerlinStartupJobsUrl(keyword)
     }
   ];
   var SEARCH_OPEN_DELAY_MS = 900;
@@ -169,128 +129,6 @@
     answers: {},
     preferenceAnswers: {}
   };
-  var STARTUP_TARGET_REGIONS = [
-    "us",
-    "uk",
-    "eu"
-  ];
-  function getStartupTargetRegions() {
-    return [...STARTUP_TARGET_REGIONS];
-  }
-  function encodeSearchQueryForPath(query) {
-    return query.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  }
-  function buildBerlinStartupJobsUrl(keyword) {
-    const normalizedKeyword = ` ${normalizeCuratedKeyword(keyword)} `;
-    if (includesAnyNormalizedKeywordToken(normalizedKeyword, [
-      "engineer",
-      "engineering",
-      "developer",
-      "software",
-      "frontend",
-      "front end",
-      "front-end",
-      "backend",
-      "back end",
-      "back-end",
-      "fullstack",
-      "full stack",
-      "full-stack",
-      "devops",
-      "platform",
-      "site reliability",
-      "sre",
-      "qa",
-      "automation",
-      "security",
-      "mobile",
-      "android",
-      "ios",
-      "data",
-      "machine learning",
-      "ml",
-      "ai",
-      "cloud",
-      "infrastructure",
-      "infra",
-      "python",
-      "java",
-      "javascript",
-      "typescript",
-      "react",
-      "node",
-      "php",
-      "go",
-      "rust",
-      "ruby"
-    ])) {
-      return "https://berlinstartupjobs.com/engineering/";
-    }
-    const categoryRoutes = [
-      {
-        path: "/product-management/",
-        tokens: ["product manager", "product owner", "product management"]
-      },
-      {
-        path: "/design-ux/",
-        tokens: ["designer", "design", "ux", "ui", "researcher"]
-      },
-      {
-        path: "/marketing/",
-        tokens: ["marketing", "growth", "seo", "content", "brand", "communications"]
-      },
-      {
-        path: "/sales/",
-        tokens: [
-          "sales",
-          "account executive",
-          "business development",
-          "sdr",
-          "bdr",
-          "partnerships"
-        ]
-      },
-      {
-        path: "/hr-recruiting/",
-        tokens: ["recruit", "recruiter", "talent", "human resources", "people ops", "hr"]
-      },
-      {
-        path: "/finance/",
-        tokens: ["finance", "financial", "accounting", "controller", "bookkeeper", "fp a"]
-      },
-      {
-        path: "/operations/",
-        tokens: ["operations", "support", "customer support", "office manager", "logistics"]
-      },
-      {
-        path: "/internships/",
-        tokens: ["intern", "internship", "working student"]
-      },
-      {
-        path: "/contracting-positions/",
-        tokens: ["contract", "contractor", "freelance", "freelancer", "consultant"]
-      },
-      {
-        path: "/seeking-co-founders/",
-        tokens: ["cofounder", "co founder", "co-founder", "founder"]
-      }
-    ];
-    for (const category of categoryRoutes) {
-      if (includesAnyNormalizedKeywordToken(normalizedKeyword, category.tokens)) {
-        return `https://berlinstartupjobs.com${category.path}`;
-      }
-    }
-    return "https://berlinstartupjobs.com/engineering/";
-  }
-  function normalizeCuratedKeyword(value) {
-    return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ");
-  }
-  function includesAnyNormalizedKeywordToken(normalizedKeyword, tokens) {
-    return tokens.some((token) => {
-      const normalizedToken = normalizeCuratedKeyword(token);
-      return normalizedToken ? normalizedKeyword.includes(` ${normalizedToken} `) : false;
-    });
-  }
   function isDatePostedWindow(value) {
     return value === "any" || value === "24h" || value === "2d" || value === "3d" || value === "5d" || value === "1w" || value === "10d" || value === "14d" || value === "30d";
   }
@@ -688,64 +526,7 @@
     if (startupRegion !== "auto") {
       return [startupRegion];
     }
-    const inferred = inferStartupRegionFromCountry(candidateCountry);
-    return inferred ? [inferred] : getStartupTargetRegions();
-  }
-  function inferStartupRegionFromCountry(candidateCountry) {
-    const normalized = normalizeQuestionKey(candidateCountry);
-    if (!normalized) {
-      return null;
-    }
-    if (["us", "usa", "united states", "united states of america", "america"].includes(normalized)) {
-      return "us";
-    }
-    if ([
-      "uk",
-      "u k",
-      "united kingdom",
-      "great britain",
-      "britain",
-      "england",
-      "scotland",
-      "wales",
-      "northern ireland"
-    ].includes(normalized)) {
-      return "uk";
-    }
-    const euCountries = /* @__PURE__ */ new Set([
-      "eu",
-      "europe",
-      "european union",
-      "austria",
-      "belgium",
-      "bulgaria",
-      "croatia",
-      "cyprus",
-      "czech republic",
-      "czechia",
-      "denmark",
-      "estonia",
-      "finland",
-      "france",
-      "germany",
-      "greece",
-      "hungary",
-      "ireland",
-      "italy",
-      "latvia",
-      "lithuania",
-      "luxembourg",
-      "malta",
-      "netherlands",
-      "poland",
-      "portugal",
-      "romania",
-      "slovakia",
-      "slovenia",
-      "spain",
-      "sweden"
-    ]);
-    return euCountries.has(normalized) ? "eu" : null;
+    return ["us"];
   }
   function formatStartupRegionList(regions) {
     return regions.filter((region, index, values) => values.indexOf(region) === index).map((region) => STARTUP_REGION_LABELS[region]).join(" / ");

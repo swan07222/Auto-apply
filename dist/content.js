@@ -3567,6 +3567,11 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   function collectRelevantUploadContainers(input) {
     const containers = /* @__PURE__ */ new Set();
     const scopedContainer = findScopedResumeUploadContainer(input);
+    const hostname = window.location.hostname.toLowerCase();
+    const isLeverUploadSurface = hostname.includes("lever.co");
+    const isWorkdayUploadSurface = hostname.includes("workdayjobs.com") || hostname.includes("myworkdayjobs.com");
+    const isIcimsUploadSurface = hostname.includes("icims.com");
+    const isSmartRecruitersUploadSurface = hostname.includes("smartrecruiters.com");
     const addContainer = (element) => {
       if (element instanceof HTMLElement) {
         containers.add(element);
@@ -3584,6 +3589,28 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     addContainer(input.closest("section"));
     addContainer(input.closest("article"));
     addContainer(input.closest("fieldset"));
+    if (isLeverUploadSurface) {
+      addContainer(input.closest("[class*='file']"));
+      addContainer(input.closest("[class*='attachment']"));
+      addContainer(input.closest("form"));
+    }
+    if (isWorkdayUploadSurface) {
+      addContainer(input.closest("[role='button']"));
+      addContainer(input.closest("[class*='file']"));
+      addContainer(input.closest("[class*='attachment']"));
+      addContainer(input.closest("tbody"));
+      addContainer(input.closest("tr"));
+    }
+    if (isIcimsUploadSurface) {
+      addContainer(input.closest("[class*='file']"));
+      addContainer(input.closest("[class*='attachment']"));
+      addContainer(input.closest("[id*='upload']"));
+    }
+    if (isSmartRecruitersUploadSurface) {
+      addContainer(input.closest("[class*='file']"));
+      addContainer(input.closest("[class*='attachment']"));
+      addContainer(input.closest("[data-automation*='upload']"));
+    }
     for (const referenced of collectReferencedUploadElements(input)) {
       addContainer(referenced);
       addContainer(referenced.closest("section"));
@@ -17189,8 +17216,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   async function setFileInputValue(input, asset) {
     if (input.disabled) return false;
-    const isAshbyUploadSurface = window.location.hostname.toLowerCase().includes("ashbyhq.com");
-    const isGreenhouseUploadSurface = window.location.hostname.toLowerCase().includes("greenhouse.io");
+    const hostname = window.location.hostname.toLowerCase();
+    const isAshbyUploadSurface = hostname.includes("ashbyhq.com");
+    const isGreenhouseUploadSurface = hostname.includes("greenhouse.io");
+    const isLeverUploadSurface = hostname.includes("lever.co");
+    const isWorkdayUploadSurface = hostname.includes("workdayjobs.com") || hostname.includes("myworkdayjobs.com");
+    const isIcimsUploadSurface = hostname.includes("icims.com");
+    const isSmartRecruitersUploadSurface = hostname.includes("smartrecruiters.com");
     const hasDataTransferSupport = typeof DataTransfer === "function";
     const hasFileApiSupport = typeof File === "function";
     if (!hasDataTransferSupport || !hasFileApiSupport) {
@@ -17291,7 +17323,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         } catch {
         }
       }
-      const uploadVerificationDelays = isAshbyUploadSurface ? [450, 900, 1400, 1900, 2500, 3200] : isGreenhouseUploadSurface ? [500, 1e3, 1600, 2400, 3500] : [350, 750, 1250, 1850, 2500];
+      const uploadVerificationDelays = isAshbyUploadSurface ? [450, 900, 1400, 1900, 2500, 3200] : isGreenhouseUploadSurface ? [500, 1e3, 1600, 2400, 3500] : isLeverUploadSurface || isWorkdayUploadSurface ? [600, 1200, 1800, 2600, 3500, 4500] : isIcimsUploadSurface || isSmartRecruitersUploadSurface ? [500, 1e3, 1600, 2400, 3200, 4200] : [350, 750, 1250, 1850, 2500];
       let success = false;
       for (const delayMs of uploadVerificationDelays) {
         await sleepWithAutomationChecks(delayMs);
@@ -17301,7 +17333,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         }
       }
       if (!success) {
-        if (isGreenhouseUploadSurface && (Boolean(input.files?.length) || getSelectedFileName(input))) {
+        if ((isGreenhouseUploadSurface || isLeverUploadSurface || isWorkdayUploadSurface || isIcimsUploadSurface || isSmartRecruitersUploadSurface) && (Boolean(input.files?.length) || getSelectedFileName(input))) {
           success = true;
         } else {
           updateStatus(
@@ -17315,7 +17347,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return success;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      if (isGreenhouseUploadSurface) {
+      if (isGreenhouseUploadSurface || isLeverUploadSurface || isWorkdayUploadSurface || isIcimsUploadSurface || isSmartRecruitersUploadSurface) {
         await sleepWithAutomationChecks(400);
         if (Boolean(input.files?.length) || getSelectedFileName(input)) {
           return true;
@@ -18116,7 +18148,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     host.id = "remote-job-search-overlay-host";
     const shadow = host.attachShadow({ mode: "open" });
     const wrapper = document.createElement("section"), header = document.createElement("div"), titleStack = document.createElement("div"), title = document.createElement("div"), meta = document.createElement("div"), spinner = document.createElement("span"), countRow = document.createElement("div"), queueCount = document.createElement("span"), appliedCount = document.createElement("span"), controls = document.createElement("div"), text = document.createElement("div"), actionButton = document.createElement("button"), stopButton = document.createElement("button"), style = document.createElement("style");
-    style.textContent = `:host{all:initial}.panel{position:fixed;top:${OVERLAY_EDGE_MARGIN}px;right:${OVERLAY_EDGE_MARGIN}px;z-index:2147483647;width:min(380px,calc(100vw - 36px));padding:16px;border-radius:18px;background:rgba(16,26,39,.95);color:#f6efe2;font-family:"Segoe UI",sans-serif;box-shadow:0 18px 44px rgba(0,0,0,.32);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(14px);transition:opacity .3s,transform .3s}.header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 10px;cursor:grab;user-select:none;touch-action:none}.panel.dragging .header{cursor:grabbing}.title-stack{display:flex;flex-direction:column;gap:8px;min-width:0}.title{margin:0;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#f2b54b}.meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:rgba(248,245,239,.74)}.spinner{width:11px;height:11px;border-radius:999px;border:2px solid rgba(255,255,255,.2);border-top-color:#f2b54b;display:inline-block;animation:rjs-spin 1s linear infinite}.spinner[data-active='false']{animation:none;opacity:.45;border-top-color:rgba(255,255,255,.35)}.count-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.count{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.08)}.count[data-tone='applied']{background:rgba(70,199,138,.14);border-color:rgba(70,199,138,.2)}.text{margin:0;font-size:13px;line-height:1.55;color:#f8f5ef}.controls{display:flex;align-items:center;gap:8px}.action,.stop{appearance:none;border:1px solid rgba(242,181,75,.35);background:rgba(255,255,255,.08);color:#f8f5ef;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700;line-height:1;cursor:pointer;white-space:nowrap}.action:hover:not(:disabled),.stop:hover:not(:disabled){background:rgba(255,255,255,.14)}.action:disabled,.stop:disabled{opacity:.55;cursor:wait}.stop{border-color:rgba(255,107,107,.4);color:#ffd4d4}@keyframes rjs-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`;
+    style.textContent = `:host{all:initial}.panel{position:fixed;top:${OVERLAY_EDGE_MARGIN}px;right:${OVERLAY_EDGE_MARGIN}px;z-index:2147483647;width:min(380px,calc(100vw - 36px));padding:16px;border-radius:18px;background:rgba(16,26,39,.98);color:#f6efe2;font-family:"Segoe UI",sans-serif;box-shadow:0 18px 44px rgba(0,0,0,.42);border:1px solid rgba(255,255,255,.12);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);transition:opacity .3s,transform .3s}@supports not (backdrop-filter:blur(14px)){.panel{background:rgba(16,26,39,.98)}}.header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 10px;cursor:grab;user-select:none;touch-action:none}.panel.dragging .header{cursor:grabbing}.title-stack{display:flex;flex-direction:column;gap:8px;min-width:0}.title{margin:0;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#f2b54b}.meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:rgba(248,245,239,.78)}.spinner{width:11px;height:11px;border-radius:999px;border:2px solid rgba(255,255,255,.25);border-top-color:#f2b54b;display:inline-block;animation:rjs-spin 1s linear infinite}.spinner[data-active='false']{animation:none;opacity:.5;border-top-color:rgba(255,255,255,.4)}.count-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.count{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:999px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.12)}.count[data-tone='applied']{background:rgba(70,199,138,.18);border-color:rgba(70,199,138,.28)}.text{margin:0;font-size:13px;line-height:1.55;color:#f8f5ef}.controls{display:flex;align-items:center;gap:8px}.action,.stop{appearance:none;border:1px solid rgba(242,181,75,.4);background:rgba(255,255,255,.1);color:#f8f5ef;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700;line-height:1;cursor:pointer;white-space:nowrap}.action:hover:not(:disabled),.stop:hover:not(:disabled){background:rgba(255,255,255,.16)}.action:disabled,.stop:disabled{opacity:.6;cursor:wait}.stop{border-color:rgba(255,107,107,.5);color:#ffd4d4}@keyframes rjs-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`;
     wrapper.className = "panel";
     header.className = "header";
     titleStack.className = "title-stack";

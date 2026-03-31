@@ -143,6 +143,11 @@ function collectRelevantUploadContainers(
 ): HTMLElement[] {
   const containers = new Set<HTMLElement>();
   const scopedContainer = findScopedResumeUploadContainer(input);
+  const hostname = window.location.hostname.toLowerCase();
+  const isLeverUploadSurface = hostname.includes("lever.co");
+  const isWorkdayUploadSurface = hostname.includes("workdayjobs.com") || hostname.includes("myworkdayjobs.com");
+  const isIcimsUploadSurface = hostname.includes("icims.com");
+  const isSmartRecruitersUploadSurface = hostname.includes("smartrecruiters.com");
 
   const addContainer = (element: Element | null | undefined): void => {
     if (element instanceof HTMLElement) {
@@ -162,6 +167,30 @@ function collectRelevantUploadContainers(
   addContainer(input.closest("section"));
   addContainer(input.closest("article"));
   addContainer(input.closest("fieldset"));
+
+  // Company site specific containers
+  if (isLeverUploadSurface) {
+    addContainer(input.closest("[class*='file']"));
+    addContainer(input.closest("[class*='attachment']"));
+    addContainer(input.closest("form"));
+  }
+  if (isWorkdayUploadSurface) {
+    addContainer(input.closest("[role='button']"));
+    addContainer(input.closest("[class*='file']"));
+    addContainer(input.closest("[class*='attachment']"));
+    addContainer(input.closest("tbody"));
+    addContainer(input.closest("tr"));
+  }
+  if (isIcimsUploadSurface) {
+    addContainer(input.closest("[class*='file']"));
+    addContainer(input.closest("[class*='attachment']"));
+    addContainer(input.closest("[id*='upload']"));
+  }
+  if (isSmartRecruitersUploadSurface) {
+    addContainer(input.closest("[class*='file']"));
+    addContainer(input.closest("[class*='attachment']"));
+    addContainer(input.closest("[data-automation*='upload']"));
+  }
 
   for (const referenced of collectReferencedUploadElements(input)) {
     addContainer(referenced);

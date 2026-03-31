@@ -118,11 +118,6 @@ var DEFAULT_SETTINGS = {
   answers: {},
   preferenceAnswers: {}
 };
-var STARTUP_TARGET_REGIONS = [
-  "us",
-  "uk",
-  "eu"
-];
 var INDEED_DATE_POSTED_WINDOWS = DATE_POSTED_WINDOW_OPTIONS;
 var ZIPRECRUITER_DATE_POSTED_WINDOWS = [
   "any",
@@ -169,9 +164,6 @@ var OTHER_JOB_SITES_DATE_POSTED_WINDOWS = [
   "1w",
   "30d"
 ];
-function getStartupTargetRegions() {
-  return [...STARTUP_TARGET_REGIONS];
-}
 function isMyGreenhousePortalUrl(url) {
   try {
     const parsed = new URL(url);
@@ -608,64 +600,7 @@ function resolveStartupTargetRegions(startupRegion, candidateCountry) {
   if (startupRegion !== "auto") {
     return [startupRegion];
   }
-  const inferred = inferStartupRegionFromCountry(candidateCountry);
-  return inferred ? [inferred] : getStartupTargetRegions();
-}
-function inferStartupRegionFromCountry(candidateCountry) {
-  const normalized = normalizeQuestionKey(candidateCountry);
-  if (!normalized) {
-    return null;
-  }
-  if (["us", "usa", "united states", "united states of america", "america"].includes(normalized)) {
-    return "us";
-  }
-  if ([
-    "uk",
-    "u k",
-    "united kingdom",
-    "great britain",
-    "britain",
-    "england",
-    "scotland",
-    "wales",
-    "northern ireland"
-  ].includes(normalized)) {
-    return "uk";
-  }
-  const euCountries = /* @__PURE__ */ new Set([
-    "eu",
-    "europe",
-    "european union",
-    "austria",
-    "belgium",
-    "bulgaria",
-    "croatia",
-    "cyprus",
-    "czech republic",
-    "czechia",
-    "denmark",
-    "estonia",
-    "finland",
-    "france",
-    "germany",
-    "greece",
-    "hungary",
-    "ireland",
-    "italy",
-    "latvia",
-    "lithuania",
-    "luxembourg",
-    "malta",
-    "netherlands",
-    "poland",
-    "portugal",
-    "romania",
-    "slovakia",
-    "slovenia",
-    "spain",
-    "sweden"
-  ]);
-  return euCountries.has(normalized) ? "eu" : null;
+  return ["us"];
 }
 function formatStartupRegionList(regions) {
   return regions.filter((region, index, values) => values.indexOf(region) === index).map((region) => STARTUP_REGION_LABELS[region]).join(" / ");
@@ -1678,7 +1613,10 @@ async function performRefreshStatus() {
   }
   const contentStatus = await getContentStatus(activeTabId);
   if (contentStatus && (contentStatus.site === activeJobBoardSite || !activeJobBoardSite && contentStatus.site !== "unsupported")) {
-    if (!activeJobBoardSite && isRunnableCurrentTabSite2(contentStatus.site)) {
+    const contentSiteIsSupported = isRunnableCurrentTabSite2(contentStatus.site);
+    const tabUrlIsSupported = isRunnableCurrentTabSite2(activeSite);
+    const isGreenhouseDetection = contentStatus.site === "greenhouse";
+    if (!activeJobBoardSite && contentSiteIsSupported && (tabUrlIsSupported || isGreenhouseDetection)) {
       activeSite = contentStatus.site;
       activeJobBoardSite = contentStatus.site;
       updateSiteNameDisplay();
@@ -1766,8 +1704,14 @@ function updateSiteNameDisplay() {
   } else if (searchMode === "other_job_sites") {
     siteName.textContent = "Other Job Sites";
   } else {
-    const sessionSite = activeSession?.site && activeSession.site !== "unsupported" ? activeSession.site : isRunnableCurrentTabSite2(currentStatusSnapshot.site) ? currentStatusSnapshot.site : null;
-    siteName.textContent = isRunnableCurrentTabSite2(activeSite) ? getSiteLabel(activeSite) : sessionSite ? getSiteLabel(sessionSite) : "No supported site";
+    const currentTabIsSupported = isRunnableCurrentTabSite2(activeSite);
+    if (currentTabIsSupported) {
+      siteName.textContent = getSiteLabel(activeSite);
+    } else if (activeSession?.site && activeSession.site !== "unsupported" && activeSession.tabId === activeTabId) {
+      siteName.textContent = getSiteLabel(activeSession.site);
+    } else {
+      siteName.textContent = "No supported site";
+    }
   }
   updateDatePostedWindowInputState();
 }
@@ -1809,7 +1753,7 @@ function applyStatus(status) {
   statusPanel.dataset.phase = status.phase;
   statusText.textContent = status.message;
   queueCount.textContent = String(activeRunSummary?.queuedJobCount ?? 0);
-  appliedCount.textContent = String(activeRunSummary?.reviewedJobCount ?? 0);
+  appliedCount.textContent = String(activeRunSummary?.appliedJobCount ?? 0);
   updateSiteNameDisplay();
 }
 function setSettingsStatus(message, tone = "muted", visible = true) {
