@@ -88,14 +88,12 @@ describe("shared automation target logic", () => {
       "monster",
       "https://www.monster.com",
       "software engineer",
-      "",
       "24h"
     );
     const twoWeekTargets = buildSearchTargets(
       "monster",
       "https://www.monster.com",
       "software engineer",
-      "",
       "14d"
     );
 
@@ -110,7 +108,6 @@ describe("shared automation target logic", () => {
       "monster",
       "https://www.monster.com",
       "full stack",
-      "",
       "2d"
     );
 
@@ -125,7 +122,6 @@ describe("shared automation target logic", () => {
       "indeed",
       "https://www.indeed.com",
       "software engineer",
-      "",
       "3d"
     );
 
@@ -143,7 +139,6 @@ describe("shared automation target logic", () => {
       "indeed",
       "https://www.indeed.com",
       "software engineer",
-      "",
       "14d"
     );
 
@@ -190,7 +185,6 @@ describe("shared automation target logic", () => {
       "dice",
       "https://www.dice.com",
       "software engineer",
-      "",
       "3d"
     );
 
@@ -205,7 +199,6 @@ describe("shared automation target logic", () => {
       "dice",
       "https://www.dice.com",
       "software engineer",
-      "",
       "5d"
     );
 
@@ -218,7 +211,6 @@ describe("shared automation target logic", () => {
       "dice",
       "https://www.dice.com",
       "software engineer",
-      "",
       "14d"
     );
 
@@ -231,7 +223,6 @@ describe("shared automation target logic", () => {
       "ziprecruiter",
       "https://www.ziprecruiter.com",
       "software engineer",
-      "",
       "24h"
     );
 
@@ -249,14 +240,12 @@ describe("shared automation target logic", () => {
       "ziprecruiter",
       "https://www.ziprecruiter.com",
       "software engineer",
-      "",
       "3d"
     );
     const twoWeekTargets = buildSearchTargets(
       "ziprecruiter",
       "https://www.ziprecruiter.com",
       "software engineer",
-      "",
       "14d"
     );
 
@@ -269,7 +258,6 @@ describe("shared automation target logic", () => {
       "ziprecruiter",
       "https://www.ziprecruiter.com",
       "software engineer",
-      "",
       "any"
     );
 
@@ -284,7 +272,6 @@ describe("shared automation target logic", () => {
       "dice",
       "https://www.dice.com",
       "software engineer",
-      "",
       "any"
     );
 
@@ -328,8 +315,7 @@ describe("shared automation target logic", () => {
     const targets = buildSearchTargets(
       "greenhouse",
       "https://job-boards.greenhouse.io/vercel/jobs/5732855004",
-      "site engineer",
-      "United States"
+      "site engineer"
     );
 
     expect(targets).toHaveLength(1);
@@ -358,8 +344,7 @@ describe("shared automation target logic", () => {
     const targets = buildSearchTargets(
       "greenhouse",
       "https://my.greenhouse.io/",
-      "site engineer",
-      "US"
+      "site engineer"
     );
 
     expect(targets).toHaveLength(1);
@@ -407,8 +392,7 @@ describe("shared automation target logic", () => {
     const targets = buildSearchTargets(
       "greenhouse",
       "https://my.greenhouse.io/jobs?query=full%20stack%20remote",
-      "full stack",
-      "US"
+      "full stack"
     );
 
     expect(targets).toHaveLength(1);
@@ -432,7 +416,6 @@ describe("shared automation target logic", () => {
       "greenhouse",
       "https://my.greenhouse.io/jobs",
       "full stack",
-      "US",
       "24h"
     );
 
@@ -445,14 +428,12 @@ describe("shared automation target logic", () => {
       "greenhouse",
       "https://my.greenhouse.io/jobs",
       "full stack",
-      "US",
       "3d"
     );
     const oneWeekTargets = buildSearchTargets(
       "greenhouse",
       "https://my.greenhouse.io/jobs",
       "full stack",
-      "US",
       "1w"
     );
 
@@ -469,14 +450,12 @@ describe("shared automation target logic", () => {
       "greenhouse",
       "https://my.greenhouse.io/jobs",
       "full stack",
-      "US",
       "14d"
     );
     const monthTargets = buildSearchTargets(
       "greenhouse",
       "https://my.greenhouse.io/jobs",
       "full stack",
-      "US",
       "30d"
     );
 
@@ -507,7 +486,6 @@ describe("shared automation target logic", () => {
       "builtin",
       "https://builtin.com/job/software-engineer/3985663",
       "software engineer",
-      "",
       "24h"
     );
 
@@ -522,14 +500,12 @@ describe("shared automation target logic", () => {
       "builtin",
       "https://builtin.com/job/software-engineer/3985663",
       "software engineer",
-      "",
       "10d"
     );
     const monthTargets = buildSearchTargets(
       "builtin",
       "https://builtin.com/job/software-engineer/3985663",
       "software engineer",
-      "",
       "30d"
     );
 
@@ -542,7 +518,6 @@ describe("shared automation target logic", () => {
       "builtin",
       "https://builtin.com/job/software-engineer/3985663",
       "software engineer",
-      "",
       "any"
     );
 
@@ -1207,6 +1182,22 @@ describe("shared automation target logic", () => {
     expect(hasLikelyApplicationSuccessSignals(document)).toBe(true);
   });
 
+  it("does not treat Indeed review steps with future email-confirmation copy as submitted", () => {
+    window.history.replaceState({}, "", "/beta/indeedapply/form/review-module");
+    document.title = "Indeed Apply";
+    document.body.innerHTML = `
+      <main>
+        <h1>Please review your application</h1>
+        <p>Before you submit your application, confirm your details are accurate.</p>
+        <p>After you submit, you will get an email confirmation at ava.stone@example.com.</p>
+        <button type="button">Back</button>
+        <button type="submit">Submit your application</button>
+      </main>
+    `;
+
+    expect(hasLikelyApplicationSuccessSignals(document)).toBe(false);
+  });
+
   it("detects interactive captcha gates on Indeed final submit pages as verification", () => {
     window.history.replaceState({}, "", "/beta/indeedapply/form/review-module");
     document.title = "Indeed Apply";
@@ -1301,6 +1292,20 @@ describe("shared automation target logic", () => {
         <footer>
           This site is protected by reCAPTCHA and the Google Privacy Policy and Terms of Service apply.
         </footer>
+      </main>
+    `;
+
+    expect(hasLikelyApplicationSuccessSignals(document)).toBe(true);
+    expect(isProbablyHumanVerificationPage(document)).toBe(false);
+  });
+
+  it("detects Gem confirmation pages from congratulations and received copy", () => {
+    window.history.replaceState({}, "", "/ondo-finance/gem-1");
+    document.title = "Congratulations!";
+    document.body.innerHTML = `
+      <main>
+        <h1>Congratulations!</h1>
+        <p>Your application for QA Engineer, Web / Frontend has been received!</p>
       </main>
     `;
 

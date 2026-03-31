@@ -2175,10 +2175,12 @@
     if (!runState) {
       return null;
     }
+    const appliedJobCount = Math.max(0, runState.successfulJobPages);
+    const reviewedJobCount = Math.max(0, runState.reviewedJobKeys.length);
     return {
       queuedJobCount: runState.queuedJobItems.length,
-      reviewedJobCount: runState.reviewedJobKeys.length,
-      appliedJobCount: runState.successfulJobPages,
+      reviewedJobCount,
+      appliedJobCount,
       stopRequested: runState.stopRequested
     };
   }
@@ -2579,7 +2581,7 @@
     if (!tab || tab.id === void 0) {
       return {
         ok: false,
-        error: "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or supported company application page and try again."
+        error: "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, Glassdoor, Greenhouse, Built In, or supported company application page and try again."
       };
     }
     const resolvedTabId = tab.id;
@@ -2593,7 +2595,7 @@
     if (!isRunnableCurrentTabSite(site)) {
       return {
         ok: false,
-        error: "Open an Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or supported company application page first."
+        error: "Open an Indeed, ZipRecruiter, Dice, Glassdoor, Greenhouse, Built In, or supported company application page first."
       };
     }
     if (searchKeywords.length === 0) {
@@ -3031,9 +3033,10 @@
       if (!runState || runState.stopRequested) {
         return 0;
       }
-      const blockedJobKeys = await loadBlockedJobKeySet();
+      const appliedJobKeys = await loadAppliedJobKeySet();
       const seenKeys = /* @__PURE__ */ new Set([
         ...runState.openedJobKeys ?? [],
+        ...runState.reviewedJobKeys ?? [],
         ...runState.successfulJobKeys ?? [],
         ...runState.queuedJobItems.map((item) => item.claimedJobKey?.trim() || getJobDedupKey(item.url)).filter((key) => Boolean(key))
       ]);
@@ -3047,7 +3050,7 @@
         if (!claimedJobKey) {
           continue;
         }
-        if (seenKeys.has(claimedJobKey) || blockedJobKeys.has(claimedJobKey)) {
+        if (seenKeys.has(claimedJobKey) || appliedJobKeys.has(claimedJobKey)) {
           continue;
         }
         seenKeys.add(claimedJobKey);
@@ -3539,8 +3542,8 @@
     return isLikelyManagedApplyTarget(item.url, item.site);
   }
   async function filterManagedSpawnItemsByStoredHistory(items) {
-    const blockedJobKeys = await loadBlockedJobKeySet();
-    if (blockedJobKeys.size === 0) {
+    const appliedJobKeys = await loadAppliedJobKeySet();
+    if (appliedJobKeys.size === 0) {
       return {
         items,
         skippedItems: []
@@ -3554,7 +3557,7 @@
         continue;
       }
       const claimedJobKey = item.claimedJobKey?.trim() || getJobDedupKey(item.url);
-      if (!claimedJobKey || !blockedJobKeys.has(claimedJobKey)) {
+      if (!claimedJobKey || !appliedJobKeys.has(claimedJobKey)) {
         filtered.push(item);
         continue;
       }
@@ -3772,12 +3775,9 @@
     }
     await persistReviewedJobHistory(reviewedHistory);
   }
-  async function loadBlockedJobKeySet() {
-    const [appliedHistory, reviewedHistory] = await Promise.all([
-      loadAppliedJobHistory(),
-      loadReviewedJobHistory()
-    ]);
-    return /* @__PURE__ */ new Set([...appliedHistory.keys(), ...reviewedHistory.keys()]);
+  async function loadAppliedJobKeySet() {
+    const appliedHistory = await loadAppliedJobHistory();
+    return new Set(appliedHistory.keys());
   }
   async function getTabSafely(tabId) {
     try {

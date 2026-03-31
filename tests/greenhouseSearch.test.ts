@@ -98,7 +98,6 @@ describe("greenhouse search helpers", () => {
       resolveMyGreenhouseCanonicalSearchUrl(
         "https://my.greenhouse.io/jobs",
         "full stack",
-        "US",
         "24h"
       )
     ).toBe(

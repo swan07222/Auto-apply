@@ -596,6 +596,23 @@ export function hasLikelyApplicationSuccessSignals(doc: Document): boolean {
   const applicationText = (doc.body?.innerText ?? "").toLowerCase();
   const title = (doc.title ?? "").toLowerCase();
   const combinedText = `${title} ${applicationText}`.replace(/\s+/g, " ").trim();
+  const hasReceivedApplicationCopy =
+    /\b(?:your\s+)?application(?:\s+for\s+[^.!?]{0,160})?\s+has been received\b/.test(
+      combinedText
+    );
+  const hasExplicitSubmittedSuccessCopy =
+    hasReceivedApplicationCopy ||
+    /\b(your application has been submitted|application has been submitted|your application was submitted|application was submitted|your application was successfully submitted|application was successfully submitted|application submitted|application successfully submitted|your application is on its way|application is on its way|application complete|application received|application sent|we have received your application|successfully applied|you've successfully applied|you have successfully applied|you've applied|you have applied|thanks for applying|thank you for applying)\b/.test(
+      combinedText
+    );
+  const isIndeedPreSubmitReviewStep =
+    pageUrl.includes("/indeedapply/form/") &&
+    !pageUrl.includes("/indeedapply/form/post-apply") &&
+    !hasExplicitSubmittedSuccessCopy &&
+    (hasLikelyApplicationStepSignals(doc) ||
+      /\b(please review your application|review your application|submit your application|confirm and submit|before you submit)\b/.test(
+        combinedText
+      ));
 
   const successPhrases = [
     "your application has been submitted",
@@ -657,11 +674,23 @@ export function hasLikelyApplicationSuccessSignals(doc: Document): boolean {
     /\b(application is on its way|application submitted|thanks for applying|my jobs|job search)\b/.test(
       combinedText
     );
+  const gemConfirmation =
+    hasReceivedApplicationCopy ||
+    (combinedText.includes("congratulations") &&
+      /\bapplication\b/.test(combinedText) &&
+      /\b(received|submitted|thank you for applying|thanks for applying)\b/.test(
+        combinedText
+      ));
+
+  if (isIndeedPreSubmitReviewStep) {
+    return false;
+  }
 
   return (
     greenhouseConfirmation ||
     indeedPostApplyConfirmation ||
     diceWizardSuccess ||
+    gemConfirmation ||
     successSignalCount >= 2 ||
     (onKnownApplyFlowUrl && successSignalCount >= 1)
   );

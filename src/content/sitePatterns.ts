@@ -70,6 +70,7 @@ export const KNOWN_ATS_HOST_TOKENS = [
   "recruitee.com",
   "breezy.hr",
   "bamboohr.com",
+  "jobs.gem.com",
 ] as const;
 
 export const JOB_DETAIL_ATS_URL_TOKENS = [
@@ -87,6 +88,7 @@ export const JOB_DETAIL_ATS_URL_TOKENS = [
   "recruitee.com",
   "breezy.hr",
   "bamboohr.com",
+  "jobs.gem.com",
 ] as const;
 
 export const ATS_APPLICATION_URL_TOKENS = [

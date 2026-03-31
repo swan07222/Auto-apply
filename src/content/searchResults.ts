@@ -69,7 +69,6 @@ type WaitForJobDetailUrlsOptions = {
   detectedSite: SiteKey | null;
   resumeKind?: ResumeKind;
   searchKeywords?: string[];
-  candidateCountry?: string;
   label?: string;
   onOpenListingsSurface?: (message: string) => void;
 };
@@ -111,7 +110,6 @@ export async function waitForJobDetailUrls({
   detectedSite,
   resumeKind,
   searchKeywords = [],
-  candidateCountry,
   label,
   onOpenListingsSurface,
 }: WaitForJobDetailUrlsOptions): Promise<string[]> {
@@ -170,8 +168,7 @@ export async function waitForJobDetailUrls({
           resumeKind,
           datePostedWindow,
           searchKeywords,
-          window.location.href,
-          candidateCountry
+          window.location.href
         )
       )
     );
@@ -193,7 +190,6 @@ export async function waitForJobDetailUrls({
         resumeKind,
         datePostedWindow,
         searchKeywords,
-        candidateCountry,
       });
 
       const mergedUrls = mergeJobUrlLists(bestUrls, urls, embeddedUrls);
@@ -202,7 +198,9 @@ export async function waitForJobDetailUrls({
       }
     }
 
-    const signature = urls.slice(0, Math.max(desiredCount, 8)).join("|");
+    const signature = bestUrls
+      .slice(0, Math.max(desiredCount, 8))
+      .join("|");
     if (signature && signature === previousSignature) {
       stablePasses += 1;
     } else {
@@ -235,7 +233,6 @@ export async function waitForJobDetailUrls({
           detectedSite,
           resumeKind,
           searchKeywords,
-          candidateCountry,
           label,
           onOpenListingsSurface,
         });
@@ -244,17 +241,7 @@ export async function waitForJobDetailUrls({
         }
       }
 
-      if (attempt % 5 === 0) {
-        advanceCareerSiteResultsSurface(site, attempt);
-      } else if (attempt % 5 === 1) {
-        advanceCareerSiteResultsSurface(site, attempt);
-      } else if (attempt % 5 === 2) {
-        advanceCareerSiteResultsSurface(site, attempt);
-      } else if (attempt % 5 === 3) {
-        advanceCareerSiteResultsSurface(site, attempt);
-      } else {
-        advanceCareerSiteResultsSurface(site, attempt);
-      }
+      advanceCareerSiteResultsSurface(site, attempt);
 
       if (attempt === 10 || attempt === 20 || attempt === 30) {
         tryClickLoadMoreButton();
@@ -1027,14 +1014,12 @@ async function collectMonsterEmbeddedUrls({
   resumeKind,
   datePostedWindow,
   searchKeywords = [],
-  candidateCountry,
 }: Pick<
   WaitForJobDetailUrlsOptions,
   | "detectedSite"
   | "resumeKind"
   | "datePostedWindow"
   | "searchKeywords"
-  | "candidateCountry"
 >): Promise<string[]> {
   try {
     const response = await chrome.runtime.sendMessage({
@@ -1052,8 +1037,7 @@ async function collectMonsterEmbeddedUrls({
           resumeKind,
           datePostedWindow,
           searchKeywords,
-          window.location.href,
-          candidateCountry
+          window.location.href
         )
       )
     );
@@ -1136,7 +1120,6 @@ async function tryOpenCareerListingsSurface({
   detectedSite,
   resumeKind,
   searchKeywords = [],
-  candidateCountry,
   label,
   onOpenListingsSurface,
 }: Omit<WaitForJobDetailUrlsOptions, "targetCount">): Promise<boolean> {
@@ -1183,8 +1166,7 @@ async function tryOpenCareerListingsSurface({
       resumeKind,
       datePostedWindow,
       searchKeywords,
-      window.location.href,
-      candidateCountry
+      window.location.href
     );
     if (updatedUrls.length > 0) {
       return true;

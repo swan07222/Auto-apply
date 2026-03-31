@@ -106,7 +106,6 @@ export function getMyGreenhouseControlValue(
 export function resolveMyGreenhouseCanonicalSearchUrl(
   currentUrl: string,
   keyword: string,
-  candidateCountry: string,
   datePostedWindow: DatePostedWindow = "any"
 ): string | null {
   if (!currentUrl || !keyword.trim()) {
@@ -118,7 +117,6 @@ export function resolveMyGreenhouseCanonicalSearchUrl(
       "greenhouse",
       currentUrl,
       keyword,
-      candidateCountry,
       datePostedWindow
     )[0]?.url ?? null
   );

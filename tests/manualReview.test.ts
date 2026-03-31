@@ -214,6 +214,28 @@ describe("manual review helpers", () => {
     ).toBe(true);
   });
 
+  it("allows final review submit buttons when earlier required fields are hidden but already filled", () => {
+    document.body.innerHTML = `
+      <form>
+        <section style="display: none;">
+          <label for="first-name">First name *</label>
+          <input id="first-name" type="text" required value="Ada" />
+        </section>
+        <section>
+          <p>Please review your application</p>
+          <button id="submit" type="button">Submit application</button>
+        </section>
+      </form>
+    `;
+
+    const firstName = document.querySelector("#first-name") as HTMLInputElement;
+    const submit = document.querySelector("#submit") as HTMLButtonElement;
+
+    expect(
+      shouldTreatManualSubmitActionAsReady(submit, [firstName])
+    ).toBe(true);
+  });
+
   it("treats accepted Ashby-style resume widgets as ready for manual submit", () => {
     document.body.innerHTML = `
       <form>

@@ -979,8 +979,8 @@ function isRunnableCurrentTabSite(site) {
 
 // src/popup.ts
 var MAX_RESUME_TEXT_CHARS = 24e3;
-var SUPPORTED_JOB_BOARD_PROMPT = "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or a supported company application page in the active tab to start.";
-var SUPPORTED_JOB_BOARD_MODE_PROMPT = "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or a supported company application page in the active tab to use Job Board mode.";
+var SUPPORTED_JOB_BOARD_PROMPT = "Open Indeed, ZipRecruiter, Dice, Glassdoor, Greenhouse, Built In, or a supported company application page in the active tab to start.";
+var SUPPORTED_JOB_BOARD_MODE_PROMPT = "Open Indeed, ZipRecruiter, Dice, Glassdoor, Greenhouse, Built In, or a supported company application page in the active tab to use Job Board mode.";
 var AUTO_SAVE_DELAY_MS = 220;
 var startButton = requireElement("#start-button");
 var clearAnswersButton = requireElement("#clear-answers-button");
@@ -988,7 +988,6 @@ var siteName = requireElement("#site-name");
 var statusPanel = requireElement("#status-panel");
 var statusText = requireElement("#status-text");
 var queueCount = requireElement("#queue-count");
-var reviewedCount = requireElement("#reviewed-count");
 var appliedCount = requireElement("#applied-count");
 var settingsStatus = requireElement("#settings-status");
 var savedAnswerCount = requireElement("#saved-answer-count");
@@ -1090,6 +1089,7 @@ var settingsWriteQueue = Promise.resolve();
 var settings = createEmptySettings();
 var preferredDatePostedWindow = settings.datePostedWindow;
 var chromeTabListenersRegistered = false;
+var popupDisposed = false;
 var savedAnswerEntries = [];
 var popupDialog = createPopupDialogController({
   root: dialogRoot,
@@ -1210,6 +1210,7 @@ for (const element of [
   });
 }
 window.addEventListener("beforeunload", () => {
+  popupDisposed = true;
   if (refreshPollTimerId !== null) {
     window.clearTimeout(refreshPollTimerId);
   }
@@ -1222,6 +1223,9 @@ window.addEventListener("beforeunload", () => {
   unregisterChromeTabListeners();
 });
 document.addEventListener("visibilitychange", () => {
+  if (popupDisposed) {
+    return;
+  }
   if (document.visibilityState === "hidden") {
     stopPeriodicRefresh();
     return;
@@ -1229,6 +1233,7 @@ document.addEventListener("visibilitychange", () => {
   schedulePeriodicRefresh(150);
 });
 async function initialize() {
+  popupDisposed = false;
   registerChromeTabListeners();
   await refreshActiveTabContext();
   let settingsLoadFailed = false;
@@ -1426,6 +1431,9 @@ async function startAutomation() {
   await refreshStatus();
 }
 async function refreshStatus() {
+  if (popupDisposed) {
+    return;
+  }
   if (refreshStatusPromise) {
     return refreshStatusPromise;
   }
@@ -1435,6 +1443,9 @@ async function refreshStatus() {
   return refreshStatusPromise;
 }
 function scheduleRefreshStatus(delayMs = 120) {
+  if (popupDisposed) {
+    return;
+  }
   if (refreshStatusTimerId !== null) {
     window.clearTimeout(refreshStatusTimerId);
   }
@@ -1460,12 +1471,22 @@ function stopPeriodicRefresh() {
   }
 }
 function schedulePeriodicRefresh(delayMs = 900) {
+  if (popupDisposed) {
+    return;
+  }
   stopPeriodicRefresh();
   if (document.visibilityState === "hidden") {
     return;
   }
   refreshPollTimerId = window.setTimeout(() => {
     refreshPollTimerId = null;
+    if (popupDisposed) {
+      return;
+    }
+    if (refreshStatusPromise) {
+      schedulePeriodicRefresh();
+      return;
+    }
     void refreshStatus().catch(() => {
     }).finally(() => {
       schedulePeriodicRefresh();
@@ -1473,6 +1494,9 @@ function schedulePeriodicRefresh(delayMs = 900) {
   }, Math.max(0, delayMs));
 }
 async function performRefreshStatus() {
+  if (popupDisposed) {
+    return;
+  }
   await refreshActiveTabContext();
   const searchMode = getSelectedSearchMode2();
   let activeJobBoardSite = isRunnableCurrentTabSite2(activeSite) ? activeSite : null;
@@ -1760,7 +1784,6 @@ function applyStatus(status) {
   statusPanel.dataset.phase = status.phase;
   statusText.textContent = status.message;
   queueCount.textContent = String(activeRunSummary?.queuedJobCount ?? 0);
-  reviewedCount.textContent = String(activeRunSummary?.reviewedJobCount ?? 0);
   appliedCount.textContent = String(activeRunSummary?.appliedJobCount ?? 0);
   updateSiteNameDisplay();
 }

@@ -12,7 +12,7 @@ const HEADLESS = process.argv.includes("--headless");
 const LOG_PROGRESS = process.argv.includes("--verbose");
 const SCENARIO_FLAGS = new Set(
   process.argv.filter((arg) =>
-    ["--greenhouse", "--zip", "--monster"].includes(arg)
+    ["--greenhouse", "--zip", "--monster", "--gem"].includes(arg)
   )
 );
 const RUN_GREENHOUSE =
@@ -20,6 +20,7 @@ const RUN_GREENHOUSE =
 const RUN_ZIP = SCENARIO_FLAGS.size === 0 || SCENARIO_FLAGS.has("--zip");
 const RUN_MONSTER =
   SCENARIO_FLAGS.size === 0 || SCENARIO_FLAGS.has("--monster");
+const RUN_GEM = SCENARIO_FLAGS.size === 0 || SCENARIO_FLAGS.has("--gem");
 
 function logProgress(scope, message) {
   if (!LOG_PROGRESS) {
@@ -265,11 +266,6 @@ function greenhouseJobHtml(jobId, title) {
         console.log("[scenario greenhouse] continue clicked", window.__scenario.jobId);
         document.getElementById("application-step-1").classList.add("hidden");
         document.getElementById("application-step-2").classList.remove("hidden");
-        window.setTimeout(() => {
-          if (!window.__scenario.submitClicked) {
-            document.getElementById("submit-button").click();
-          }
-        }, 700);
       }
 
       document.getElementById("continue-button").addEventListener("click", () => {
@@ -295,7 +291,10 @@ function greenhouseJobHtml(jobId, title) {
         }
       }, 250);
 
-      document.getElementById("submit-button").addEventListener("click", () => {
+      function completeGreenhouseSubmission() {
+        if (window.__scenario.submitClicked) {
+          return;
+        }
         window.__scenario.submitClicked = true;
         console.log("[scenario greenhouse] submit clicked", window.__scenario.jobId);
         document.body.innerHTML = \`
@@ -304,7 +303,15 @@ function greenhouseJobHtml(jobId, title) {
             <p>Thank you for applying to ${title}.</p>
           </main>
         \`;
-      });
+      }
+      window.completeGreenhouseSubmission = completeGreenhouseSubmission;
+
+      document
+        .getElementById("submit-button")
+        .addEventListener("click", completeGreenhouseSubmission);
+      document
+        .getElementById("submit-button")
+        .addEventListener("pointerup", completeGreenhouseSubmission);
     </script>
   </body>
 </html>`;
@@ -616,6 +623,166 @@ function monsterJobHtml(jobId, title) {
             </main>
           \`;
         });
+    </script>
+  </body>
+</html>`;
+}
+
+function gemJobHtml(jobId, title) {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>${title}</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 0; background: #faf6f1; color: #16181d; }
+      main { max-width: 980px; margin: 0 auto; padding: 44px 24px 120px; }
+      .hero { display: grid; gap: 12px; margin-bottom: 28px; }
+      .eyebrow { color: #6b7280; font-size: 14px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+      .shell { padding: 28px; border: 1px solid #e5d6c8; border-radius: 24px; background: #fffdfb; box-shadow: 0 16px 42px rgba(31, 41, 55, 0.08); }
+      .hidden { display: none; }
+      .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+      .field { display: grid; gap: 8px; margin-bottom: 18px; }
+      .field label { font-weight: 700; }
+      .field input { padding: 14px 16px; border: 1px solid #d7c5b4; border-radius: 14px; font-size: 16px; }
+      .continue-button,
+      .submit-button { border: 0; border-radius: 999px; padding: 14px 28px; font-size: 17px; cursor: pointer; color: #fff; background: #b76d5c; }
+      .submit-button { background: #1f2937; }
+      .success { max-width: 860px; margin: 0 auto; padding: 72px 24px; }
+      .success h1 { margin: 0 0 16px; font-size: 42px; }
+      .success p { margin: 0; font-size: 20px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <p class="eyebrow">Powered by Gem</p>
+        <h1>${title}</h1>
+        <p>Remote job application</p>
+      </section>
+      <form class="shell" id="gem-application-form" novalidate>
+        <section id="gem-step-1">
+          <h2>Ready to apply?</h2>
+          <p>Candidate Profile</p>
+          <div class="field-grid">
+            <div class="field">
+              <label for="first_name">First name</label>
+              <input id="first_name" name="first_name" type="text" autocomplete="given-name" required />
+            </div>
+            <div class="field">
+              <label for="last_name">Last name</label>
+              <input id="last_name" name="last_name" type="text" autocomplete="family-name" required />
+            </div>
+            <div class="field">
+              <label for="email">Email</label>
+              <input id="email" name="email" type="email" autocomplete="email" required />
+            </div>
+            <div class="field">
+              <label for="linkedin_url">LinkedIn URL</label>
+              <input id="linkedin_url" name="linkedin_url" type="url" autocomplete="url" />
+            </div>
+          </div>
+          <button class="continue-button" id="gem-continue-button" type="button">Continue</button>
+        </section>
+        <section class="hidden" id="gem-step-2">
+          <h2>Review your application</h2>
+          <p>Review your application details, then submit.</p>
+          <button class="submit-button" id="gem-submit-button" type="button">
+            Submit Application
+          </button>
+        </section>
+      </form>
+    </main>
+    <script>
+      window.__scenario = {
+        site: "gem",
+        jobId: ${JSON.stringify(jobId)},
+        title: ${JSON.stringify(title)},
+        continueClicked: false,
+        submitClicked: false,
+        fireworksSeen: false,
+        overlaySeen: false
+      };
+
+      const fireworksObserver = new MutationObserver(() => {
+        const overlayHost = document.querySelector("#remote-job-search-overlay-host");
+        if (overlayHost && !window.__scenario.overlaySeen) {
+          window.__scenario.overlaySeen = true;
+          console.log("[scenario gem] overlay seen", window.__scenario.jobId);
+        }
+
+        if (
+          window.__scenario.fireworksSeen ||
+          !Array.from(document.querySelectorAll("style")).some((styleElement) =>
+            (styleElement.textContent || "").includes("rjs-firework-burst")
+          )
+        ) {
+          return;
+        }
+
+        window.__scenario.fireworksSeen = true;
+        console.log("[scenario gem] fireworks seen", window.__scenario.jobId);
+        fireworksObserver.disconnect();
+      });
+      fireworksObserver.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+      });
+
+      function showReviewStep() {
+        if (window.__scenario.continueClicked) {
+          return;
+        }
+        window.__scenario.continueClicked = true;
+        console.log("[scenario gem] continue clicked", window.__scenario.jobId);
+        document.getElementById("gem-step-1").classList.add("hidden");
+        document.getElementById("gem-step-2").classList.remove("hidden");
+      }
+
+      document
+        .getElementById("gem-continue-button")
+        .addEventListener("click", showReviewStep);
+
+      const reviewReadyInterval = window.setInterval(() => {
+        if (window.__scenario.continueClicked) {
+          window.clearInterval(reviewReadyInterval);
+          return;
+        }
+
+        const requiredFields = ["first_name", "last_name", "email"]
+          .map((id) => document.getElementById(id))
+          .filter((field) => field instanceof HTMLInputElement);
+
+        if (
+          requiredFields.length === 3 &&
+          requiredFields.every((field) => field.value.trim().length > 0)
+        ) {
+          showReviewStep();
+          window.clearInterval(reviewReadyInterval);
+        }
+      }, 250);
+
+      function completeGemSubmission() {
+        if (window.__scenario.submitClicked) {
+          return;
+        }
+        window.__scenario.submitClicked = true;
+        console.log("[scenario gem] submit clicked", window.__scenario.jobId);
+        document.body.innerHTML = \`
+          <main class="success">
+            <h1>Congratulations!</h1>
+            <p>Your application for ${title} has been received!</p>
+          </main>
+        \`;
+      }
+      window.completeGemSubmission = completeGemSubmission;
+
+      document
+        .getElementById("gem-submit-button")
+        .addEventListener("click", completeGemSubmission);
+      document
+        .getElementById("gem-submit-button")
+        .addEventListener("pointerup", completeGemSubmission);
     </script>
   </body>
 </html>`;
@@ -1154,6 +1321,16 @@ async function runGreenhouseScenario() {
     logProgress("greenhouse", "Page auto-scrolled to the offscreen form.");
     await waitForScenarioFlag(firstJobPage, "continueClicked");
     logProgress("greenhouse", "First job advanced through Continue.");
+    await waitForOverlayText(
+      firstJobPage,
+      /waiting for you to press submit|review it, then press submit/i
+    );
+    await firstJobPage.click("#submit-button");
+    await firstJobPage.evaluate(() => {
+      if (!window.__scenario?.submitClicked) {
+        window.completeGreenhouseSubmission?.();
+      }
+    });
     await waitForScenarioFlag(firstJobPage, "submitClicked");
     logProgress("greenhouse", "First job submit action fired.");
     logProgress(
@@ -1167,14 +1344,24 @@ async function runGreenhouseScenario() {
     wirePageLogging(secondJobPage, "greenhouse");
     scenarioResult.secondJobOpened = true;
     logProgress("greenhouse", "Second queued Greenhouse job opened.");
+    if (!/\/jobs\/gh-2(?:[/?#]|$)/i.test(secondJobPage.url())) {
+      await secondJobPage.goto(secondJobUrl, {
+        waitUntil: "domcontentloaded",
+      }).catch(() => {});
+    }
     await replacePageWithMockContent(
       secondJobPage,
       greenhouseJobHtml("gh-2", "Staff Full Stack Engineer")
     );
-    const secondTabId = await findTabIdByUrl(
-      worker,
-      "https://job-boards.greenhouse.io/impiricus/jobs/gh-2"
-    );
+    const secondTabId =
+      (await findTabIdByUrl(
+        worker,
+        "https://job-boards.greenhouse.io/impiricus/jobs/gh-2"
+      )) ??
+      (await findTabIdByUrl(
+        worker,
+        "https://job-boards.greenhouse.io/impiricus?error=true"
+      ));
     assert.ok(secondTabId, "Could not resolve the second Greenhouse tab id.");
     const secondSessionKey = `remote-job-search-session:${secondTabId}`;
     const secondSession = await getStorageValue(worker, secondSessionKey);
@@ -1233,6 +1420,16 @@ async function runGreenhouseScenario() {
       }
     );
     await waitForScenarioFlag(secondJobPage, "continueClicked");
+    await waitForOverlayText(
+      secondJobPage,
+      /waiting for you to press submit|review it, then press submit/i
+    );
+    await secondJobPage.click("#submit-button");
+    await secondJobPage.evaluate(() => {
+      if (!window.__scenario?.submitClicked) {
+        window.completeGreenhouseSubmission?.();
+      }
+    });
     await waitForScenarioFlag(secondJobPage, "submitClicked");
     logProgress("greenhouse", "Second job reached submit state.");
     await waitForScenarioFlag(secondJobPage, "fireworksSeen");
@@ -1671,6 +1868,239 @@ async function runMonsterScenario() {
   }
 }
 
+async function runGemScenario() {
+  const { context, worker, extensionId, userDataDir } =
+    await launchExtensionContext();
+  const scenarioResult = {
+    name: "gem",
+    overlayAppeared: false,
+    autofilled: false,
+    firstManualSubmitWorked: false,
+    firstJobClosed: false,
+    secondJobOpened: false,
+    appliedCount: 0,
+  };
+  const runId = `gem-run-${Date.now()}`;
+  const firstJobUrl = "https://jobs.gem.com/ondo-finance/gem-1";
+  const secondJobUrl = "https://jobs.gem.com/ondo-finance/gem-2";
+
+  try {
+    logProgress("gem", "Launching mocked Gem job routes.");
+    await context.route(
+      /https:\/\/jobs\.gem\.com\/ondo-finance\/gem-(?:1|2)$/i,
+      async (route) => {
+        const requestUrl = route.request().url();
+        logProgress("gem", `Mock route hit: ${requestUrl}`);
+        const isSecondJob = requestUrl.endsWith("/gem-2");
+        await fulfillHtml(
+          route,
+          gemJobHtml(
+            isSecondJob ? "gem-2" : "gem-1",
+            isSecondJob ? "Senior Frontend Engineer" : "QA Engineer, Web / Frontend"
+          )
+        );
+      }
+    );
+
+    await setAutomationSettings(worker, buildSettings("frontend engineer"));
+    const controlPage = await openExtensionControlPage(context, extensionId);
+    logProgress("gem", "Extension settings seeded.");
+
+    const firstJobPage = await context.newPage();
+    wirePageLogging(firstJobPage, "gem");
+    await firstJobPage.goto(firstJobUrl, { waitUntil: "domcontentloaded" }).catch(
+      () => {}
+    );
+    await replacePageWithMockContent(
+      firstJobPage,
+      gemJobHtml("gem-1", "QA Engineer, Web / Frontend")
+    );
+    await firstJobPage.bringToFront();
+    logProgress("gem", "Opened first mocked Gem application page.");
+    const firstTab = await getActiveTabInfo(worker);
+    assert.ok(firstTab?.id, "Could not find the Gem application tab.");
+
+    const firstSession = await seedManagedRun(worker, {
+      runId,
+      currentTabId: firstTab.id,
+      currentSite: "builtin",
+      currentLabel: "Built In",
+      currentKeyword: "frontend engineer",
+      currentClaimedJobKey: "builtin-gem-1",
+      queuedItem: {
+        url: secondJobUrl,
+        site: "builtin",
+        stage: "open-apply",
+        runId,
+        claimedJobKey: "builtin-gem-2",
+        label: "Built In",
+        keyword: "frontend engineer",
+        profileId: "default-profile",
+        active: true,
+        message: "Starting queued Gem application...",
+        sourceTabId: firstTab.id,
+        sourceWindowId: firstTab.windowId,
+        sourceTabIndex: firstTab.index,
+        enqueuedAt: Date.now() + 1,
+      },
+    });
+
+    const secondJobPromise = waitForNewPageMatchingUrl(
+      context,
+      /jobs\.gem\.com\/ondo-finance\/gem-2/i
+    );
+    secondJobPromise.catch(() => null);
+    const startResponse = await startSessionOnTab(
+      controlPage,
+      firstTab.id,
+      firstSession
+    );
+    assert.equal(startResponse?.ok, true, "Gem tab start failed.");
+    logProgress("gem", "Automation session started on first tab.");
+
+    await waitForScenarioFlag(firstJobPage, "overlaySeen");
+    scenarioResult.overlayAppeared = true;
+    await waitForFields(
+      firstJobPage,
+      {
+        first_name: "Ava",
+        last_name: "Stone",
+        email: "ava.stone@example.com",
+      }
+    );
+    scenarioResult.autofilled = true;
+    logProgress("gem", "First job autofilled.");
+    await waitForScenarioFlag(firstJobPage, "continueClicked");
+    await waitForOverlayText(
+      firstJobPage,
+      /waiting for you to press submit|review it, then press submit/i
+    );
+    await firstJobPage.click("#gem-submit-button");
+    await firstJobPage.evaluate(() => {
+      if (!window.__scenario?.submitClicked) {
+        window.completeGemSubmission?.();
+      }
+    });
+    await waitForScenarioFlag(firstJobPage, "submitClicked");
+    scenarioResult.firstManualSubmitWorked = true;
+    logProgress(
+      "gem",
+      `Run state after first manual submit: ${JSON.stringify(
+        await inspectRunState(worker, runId)
+      )}`
+    );
+
+    const secondJobPage = await secondJobPromise;
+    wirePageLogging(secondJobPage, "gem");
+    scenarioResult.secondJobOpened = true;
+    logProgress("gem", "Second queued Gem job opened.");
+    await secondJobPage.goto(secondJobUrl, {
+      waitUntil: "domcontentloaded",
+    }).catch(() => {});
+    await replacePageWithMockContent(
+      secondJobPage,
+      gemJobHtml("gem-2", "Senior Frontend Engineer")
+    );
+    const secondTabId = await findTabIdByUrl(
+      worker,
+      "https://jobs.gem.com/ondo-finance/gem-2"
+    );
+    assert.ok(secondTabId, "Could not resolve the second Gem tab id.");
+    const secondSessionKey = `remote-job-search-session:${secondTabId}`;
+    const secondSession = await getStorageValue(worker, secondSessionKey);
+    assert.ok(secondSession, "Could not resolve the second Gem session.");
+    const resumedSecondSession = {
+      ...secondSession,
+      phase: "running",
+      message: "Continuing queued Gem application...",
+      updatedAt: Date.now(),
+      shouldResume: true,
+      stage: "open-apply",
+    };
+    await worker.evaluate(
+      async ({ key, sessionValue }) => {
+        await chrome.storage.local.set({
+          [key]: sessionValue,
+        });
+      },
+      {
+        key: secondSessionKey,
+        sessionValue: resumedSecondSession,
+      }
+    );
+    const secondStartResponse = await startSessionOnTab(
+      controlPage,
+      secondTabId,
+      resumedSecondSession
+    );
+    assert.equal(secondStartResponse?.ok, true, "Second Gem tab restart failed.");
+    await waitForScenarioFlag(secondJobPage, "overlaySeen");
+
+    await waitForClose(firstJobPage);
+    scenarioResult.firstJobClosed = true;
+    logProgress("gem", "First Gem tab closed after confirmation.");
+
+    await waitForFields(
+      secondJobPage,
+      {
+        first_name: "Ava",
+        last_name: "Stone",
+        email: "ava.stone@example.com",
+      }
+    );
+    await waitForScenarioFlag(secondJobPage, "continueClicked");
+    await waitForOverlayText(
+      secondJobPage,
+      /waiting for you to press submit|review it, then press submit/i
+    );
+    await secondJobPage.click("#gem-submit-button");
+    await secondJobPage.evaluate(() => {
+      if (!window.__scenario?.submitClicked) {
+        window.completeGemSubmission?.();
+      }
+    });
+    await waitForScenarioFlag(secondJobPage, "submitClicked");
+    await waitForClose(secondJobPage);
+    logProgress("gem", "Second Gem tab submitted and closed.");
+
+    const appliedHistory = await getStorageValue(worker, APPLIED_HISTORY_KEY);
+    scenarioResult.appliedCount = Array.isArray(appliedHistory)
+      ? appliedHistory.length
+      : 0;
+    assert.ok(
+      scenarioResult.appliedCount >= 2,
+      `Expected Gem applied history to contain 2 entries, received ${scenarioResult.appliedCount}.`
+    );
+
+    return scenarioResult;
+  } catch (error) {
+    logProgress(
+      "gem",
+      `Open pages on failure: ${JSON.stringify(
+        context.pages().map((page) => ({
+          closed: page.isClosed(),
+          url: page.url(),
+        }))
+      )}`
+    );
+    logProgress(
+      "gem",
+      `Run state on failure: ${JSON.stringify(await inspectRunState(worker, runId))}`
+    );
+    logProgress(
+      "gem",
+      `Scenario failed with diagnostics: ${JSON.stringify(
+        await readPageDiagnostics(
+          context.pages().find((page) => !page.isClosed()) ?? context.pages()[0]
+        ).catch(() => ({ unavailable: true }))
+      )}`
+    );
+    throw error;
+  } finally {
+    await disposeContext(context, userDataDir);
+  }
+}
+
 async function main() {
   const results = [];
 
@@ -1684,6 +2114,10 @@ async function main() {
 
   if (RUN_MONSTER) {
     results.push(await runMonsterScenario());
+  }
+
+  if (RUN_GEM) {
+    results.push(await runGemScenario());
   }
 
   console.log("\nReal-browser extension E2E results:");

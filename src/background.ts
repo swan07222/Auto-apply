@@ -1338,10 +1338,13 @@ async function getRunSummaryForSession(
     return null;
   }
 
+  const appliedJobCount = Math.max(0, runState.successfulJobPages);
+  const reviewedJobCount = Math.max(0, runState.reviewedJobKeys.length);
+
   return {
     queuedJobCount: runState.queuedJobItems.length,
-    reviewedJobCount: runState.reviewedJobKeys.length,
-    appliedJobCount: runState.successfulJobPages,
+    reviewedJobCount,
+    appliedJobCount,
     stopRequested: runState.stopRequested,
   };
 }
@@ -1955,7 +1958,7 @@ async function startAutomationForTab(
     return {
       ok: false,
       error:
-        "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or supported company application page and try again.",
+        "The active tab could not be accessed. Focus an Indeed, ZipRecruiter, Dice, Glassdoor, Greenhouse, Built In, or supported company application page and try again.",
     };
   }
 
@@ -1972,7 +1975,7 @@ async function startAutomationForTab(
     return {
       ok: false,
       error:
-        "Open an Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or supported company application page first.",
+        "Open an Indeed, ZipRecruiter, Dice, Glassdoor, Greenhouse, Built In, or supported company application page first.",
     };
   }
 
@@ -2564,9 +2567,10 @@ async function enqueueJobTabsForRunId(
       return 0;
     }
 
-    const blockedJobKeys = await loadBlockedJobKeySet();
+    const appliedJobKeys = await loadAppliedJobKeySet();
     const seenKeys = new Set([
       ...(runState.openedJobKeys ?? []),
+      ...(runState.reviewedJobKeys ?? []),
       ...(runState.successfulJobKeys ?? []),
       ...runState.queuedJobItems
         .map((item) => item.claimedJobKey?.trim() || getJobDedupKey(item.url))
@@ -2587,7 +2591,7 @@ async function enqueueJobTabsForRunId(
 
       if (
         seenKeys.has(claimedJobKey) ||
-        blockedJobKeys.has(claimedJobKey)
+        appliedJobKeys.has(claimedJobKey)
       ) {
         continue;
       }
@@ -3317,8 +3321,8 @@ function canOpenSeparateApplyTabForClaimedJob(
 async function filterManagedSpawnItemsByStoredHistory(
   items: SpawnTabRequest[]
 ): Promise<{ items: SpawnTabRequest[]; skippedItems: SpawnTabRequest[] }> {
-  const blockedJobKeys = await loadBlockedJobKeySet();
-  if (blockedJobKeys.size === 0) {
+  const appliedJobKeys = await loadAppliedJobKeySet();
+  if (appliedJobKeys.size === 0) {
     return {
       items,
       skippedItems: [],
@@ -3335,7 +3339,7 @@ async function filterManagedSpawnItemsByStoredHistory(
     }
 
     const claimedJobKey = item.claimedJobKey?.trim() || getJobDedupKey(item.url);
-    if (!claimedJobKey || !blockedJobKeys.has(claimedJobKey)) {
+    if (!claimedJobKey || !appliedJobKeys.has(claimedJobKey)) {
       filtered.push(item);
       continue;
     }
@@ -3641,13 +3645,9 @@ async function rememberReviewedJobKey(
   await persistReviewedJobHistory(reviewedHistory);
 }
 
-async function loadBlockedJobKeySet(): Promise<Set<string>> {
-  const [appliedHistory, reviewedHistory] = await Promise.all([
-    loadAppliedJobHistory(),
-    loadReviewedJobHistory(),
-  ]);
-
-  return new Set([...appliedHistory.keys(), ...reviewedHistory.keys()]);
+async function loadAppliedJobKeySet(): Promise<Set<string>> {
+  const appliedHistory = await loadAppliedJobHistory();
+  return new Set(appliedHistory.keys());
 }
 
 type BackgroundSourceTab = chrome.tabs.Tab & { pendingUrl?: string };

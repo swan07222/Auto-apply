@@ -507,6 +507,13 @@ export function hasLikelyApplicationSurface(
     return true;
   }
 
+  if (
+    (site === "builtin" || site === "other_sites" || site === "startup") &&
+    hasLikelyGemHostedApplicationSurface(collectors)
+  ) {
+    return true;
+  }
+
   const onApplyLikeUrl = isAlreadyOnApplyPage(site, window.location.href);
   const hasPageContent = hasLikelyApplicationPageContent();
   const hasProgression = Boolean(findProgressionAction(site));
@@ -522,6 +529,90 @@ export function hasLikelyApplicationSurface(
       !stillLooksLikeJobPage) ||
     (onApplyLikeUrl && hasPageContent)
   );
+}
+
+function hasLikelyGemHostedApplicationSurface(
+  collectors: ApplicationSurfaceCollectors
+): boolean {
+  const text = cleanText(document.body?.innerText || document.body?.textContent || "")
+    .toLowerCase()
+    .slice(0, 5000);
+  const hasGemBranding = text.includes("powered by gem");
+
+  if (!isGemHostedApplicationUrl(window.location.href) && !hasGemBranding) {
+    return false;
+  }
+
+  const relevantFields = collectors.collectAutofillFields().filter(
+    (field) => shouldAutofillField(field, true, true) && isLikelyApplicationField(field)
+  );
+  const relevantResumeInputs = collectors.collectResumeFileInputs().filter(
+    (input) => shouldAutofillField(input, true, true) && isLikelyApplicationField(input)
+  );
+  const signalCount = [
+    "ready to apply",
+    "candidate profile",
+    "powered by gem",
+    "upload your resume",
+    "upload resume",
+    "click to upload",
+    "drag and drop here",
+    "application received",
+    "submit application",
+    "work authorization",
+  ].filter((signal) => text.includes(signal)).length;
+  const hasActionControl = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      "button, a[href], [role='button'], input[type='button'], input[type='submit']"
+    )
+  ).some((control) => {
+    if (!isElementVisible(control)) {
+      return false;
+    }
+
+    const controlText = cleanText(
+      [
+        control.innerText,
+        control.textContent,
+        control.getAttribute("aria-label"),
+        control.getAttribute("title"),
+        control.getAttribute("value"),
+      ]
+        .filter(Boolean)
+        .join(" ")
+    ).toLowerCase();
+
+    return /\b(continue|next|review|submit|start|apply)\b/.test(controlText);
+  });
+  const hasReviewSubmitState =
+    hasActionControl &&
+    (text.includes("review your application") ||
+      text.includes("review your application details") ||
+      text.includes("submit application"));
+
+  if (relevantFields.length >= 2) {
+    return true;
+  }
+
+  if (hasReviewSubmitState && (hasGemBranding || signalCount >= 2)) {
+    return true;
+  }
+
+  if (relevantResumeInputs.length > 0 && signalCount >= 2) {
+    return true;
+  }
+
+  return signalCount >= 3 && (relevantFields.length >= 1 || hasActionControl);
+}
+
+function isGemHostedApplicationUrl(url: string): boolean {
+  try {
+    const hostname = new URL(url, window.location.href).hostname.toLowerCase();
+    return hostname === "jobs.gem.com" || hostname.endsWith(".jobs.gem.com");
+  } catch {
+    const lower = url.toLowerCase();
+    return lower.includes("://jobs.gem.com/") || lower.includes(".jobs.gem.com/");
+  }
 }
 
 function hasMonsterInlineApplySurface(
@@ -1013,6 +1104,9 @@ export function hasLikelyApplicationPageContent(): boolean {
     "please review your application",
     "review your application",
     "review before submitting",
+    "ready to apply",
+    "candidate profile",
+    "powered by gem",
   ];
 
   if (strongSignals.some((token) => bodyText.includes(token))) {

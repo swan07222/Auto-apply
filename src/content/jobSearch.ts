@@ -585,8 +585,7 @@ export function pickRelevantJobUrls(
   resumeKind?: ResumeKind,
   datePostedWindow: DatePostedWindow = "any",
   searchKeywords: string[] = [],
-  currentUrl = window.location.href,
-  candidateCountry = ""
+  currentUrl = window.location.href
 ): string[] {
   const valid = preferCanonicalBuiltInHostedCandidates(
     dedupeJobCandidates(candidates).filter((candidate) =>
@@ -614,8 +613,7 @@ export function pickRelevantJobUrls(
       : filterCandidatesForRemotePreference(
           recencyEligible,
           site,
-          currentUrl,
-          candidateCountry
+          currentUrl
         );
 
   if (site === "greenhouse") {
@@ -777,8 +775,7 @@ function isBuiltInCanonicalJobDetailUrl(url: string): boolean {
 function filterCandidatesForRemotePreference(
   candidates: JobCandidate[],
   site: SiteKey | null,
-  currentUrl: string,
-  candidateCountry = ""
+  currentUrl: string
 ): JobCandidate[] {
   const annotated = candidates.map((candidate) => ({
     candidate,

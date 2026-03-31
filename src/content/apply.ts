@@ -4022,6 +4022,14 @@ function scoreExternalApplyUrl(url: string, sourceContext = ""): number {
 
   let score = 0;
   const hasApplyCue = hasApplyLikeExternalUrlCue(url);
+  const hasApplyContextCue = includesAnyToken(lowerContext, [
+    "apply",
+    "application",
+    "candidate",
+    "resume",
+    "career",
+    "job",
+  ]);
   const indeedHosted = lower.includes("indeed.com");
 
   if (indeedHosted && !isLikelyApplyUrl(url, "indeed")) {
@@ -4029,7 +4037,7 @@ function scoreExternalApplyUrl(url: string, sourceContext = ""): number {
   }
 
   if (includesAnyToken(lower, KNOWN_ATS_HOST_TOKENS)) {
-    score += hasApplyCue ? 120 : 20;
+    score += hasApplyCue ? 120 : hasApplyContextCue ? 95 : 20;
   }
 
   if (indeedHosted) {

@@ -399,7 +399,6 @@ const overlay: {
   spinner: HTMLSpanElement | null;
   countRow: HTMLDivElement | null;
   queueCount: HTMLSpanElement | null;
-  reviewedCount: HTMLSpanElement | null;
   appliedCount: HTMLSpanElement | null;
   text: HTMLDivElement | null;
   actionButton: HTMLButtonElement | null;
@@ -414,7 +413,6 @@ const overlay: {
   spinner: null,
   countRow: null,
   queueCount: null,
-  reviewedCount: null,
   appliedCount: null,
   text: null,
   actionButton: null,
@@ -897,6 +895,25 @@ function shouldAutoSubmitReadyManualAction(site: SiteKey): boolean {
     site === "greenhouse" ||
     site === "monster"
   );
+}
+
+async function tryAutoSubmitVisibleReviewAction(
+  site: SiteKey,
+  fields: AutofillField[]
+): Promise<"completed" | "advanced" | "stalled" | "not-applicable"> {
+  if (
+    !shouldAutoSubmitReadyManualAction(site) ||
+    !isLikelyManualSubmitReviewPage(document)
+  ) {
+    return "not-applicable";
+  }
+
+  const action = findVisibleManualSubmitAction();
+  if (!action || hasPendingRequiredAutofillFields(fields)) {
+    return "not-applicable";
+  }
+
+  return tryAutoSubmitReadyManualAction(site, action);
 }
 
 async function tryAutoSubmitReadyManualAction(
@@ -2062,7 +2079,6 @@ async function runBootstrapStage(site: JobBoardSite): Promise<void> {
     site,
     searchContextUrl,
     settings.searchKeywords,
-    settings.candidate.country,
     settings.datePostedWindow
   );
   if (targets.length === 0) {
@@ -2216,7 +2232,6 @@ async function runCollectResultsStage(site: SiteKey): Promise<void> {
     detectedSite: status.site === "unsupported" ? null : status.site,
     resumeKind: currentResumeKind,
     searchKeywords: keywordHints,
-    candidateCountry: settings.candidate.country,
     label: currentLabel,
     onOpenListingsSurface: (message) => {
       updateStatus("running", message, true, "collect-results");
@@ -3379,6 +3394,17 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
       }
     }
 
+    const reviewAutoSubmitResult = await tryAutoSubmitVisibleReviewAction(
+      site,
+      currentFields
+    );
+    if (reviewAutoSubmitResult === "completed") {
+      return;
+    }
+    if (reviewAutoSubmitResult === "advanced") {
+      continue;
+    }
+
     const onManualSubmitReviewPage =
       hasVisibleManualSubmitAction() &&
       isLikelyManualSubmitReviewPage(document);
@@ -3606,6 +3632,7 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
   const finalSettings = await readCurrentAutomationSettings();
   const finalResult = await autofillVisibleApplication(finalSettings);
   mergeAutofillResult(combinedResult, finalResult);
+  const finalFields = collectAutofillFields();
 
   if (
     combinedResult.uploadedResume &&
@@ -3625,6 +3652,18 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
     combinedResult.filledFields > 0 ||
     combinedResult.uploadedResume
   ) {
+    const finalReviewAutoSubmitResult = await tryAutoSubmitVisibleReviewAction(
+      site,
+      finalFields
+    );
+    if (finalReviewAutoSubmitResult === "completed") {
+      return;
+    }
+    if (finalReviewAutoSubmitResult === "advanced") {
+      await runAutofillStage(site);
+      return;
+    }
+
     if (hasVisibleManualSubmitAction()) {
       await waitForManualSubmitOutcome(
         site,
@@ -3644,6 +3683,18 @@ async function runAutofillStage(site: SiteKey): Promise<void> {
   if (hasLikelyApplicationForm() || hasLikelyApplicationPageContent()) {
     if (hasConfirmedManualSubmitSuccess(site)) {
       await finalizeSuccessfulApplication("Application submitted successfully.");
+      return;
+    }
+
+    const fallbackReviewAutoSubmitResult = await tryAutoSubmitVisibleReviewAction(
+      site,
+      finalFields
+    );
+    if (fallbackReviewAutoSubmitResult === "completed") {
+      return;
+    }
+    if (fallbackReviewAutoSubmitResult === "advanced") {
+      await runAutofillStage(site);
       return;
     }
 
@@ -5062,7 +5113,6 @@ async function searchMyGreenhousePortal(
   const canonicalPortalTarget = resolveMyGreenhouseCanonicalSearchUrl(
     window.location.href,
     keyword,
-    candidateCountry,
     datePostedWindow
   );
   const normalizedCurrentUrl = normalizeUrl(window.location.href);
@@ -5395,7 +5445,6 @@ function ensureOverlay(): void {
         overlay.spinner = null;
         overlay.countRow = null;
         overlay.queueCount = null;
-        overlay.reviewedCount = null;
         overlay.appliedCount = null;
         overlay.text = null;
         overlay.actionButton = null;
@@ -5419,14 +5468,13 @@ function ensureOverlay(): void {
     spinner = document.createElement("span"),
     countRow = document.createElement("div"),
     queueCount = document.createElement("span"),
-    reviewedCount = document.createElement("span"),
     appliedCount = document.createElement("span"),
     controls = document.createElement("div"),
     text = document.createElement("div"),
     actionButton = document.createElement("button"),
     stopButton = document.createElement("button"),
     style = document.createElement("style");
-  style.textContent = `:host{all:initial}.panel{position:fixed;top:${OVERLAY_EDGE_MARGIN}px;right:${OVERLAY_EDGE_MARGIN}px;z-index:2147483647;width:min(380px,calc(100vw - 36px));padding:16px;border-radius:18px;background:rgba(16,26,39,.95);color:#f6efe2;font-family:"Segoe UI",sans-serif;box-shadow:0 18px 44px rgba(0,0,0,.32);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(14px);transition:opacity .3s,transform .3s}.header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 10px;cursor:grab;user-select:none;touch-action:none}.panel.dragging .header{cursor:grabbing}.title-stack{display:flex;flex-direction:column;gap:8px;min-width:0}.title{margin:0;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#f2b54b}.meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:rgba(248,245,239,.74)}.spinner{width:11px;height:11px;border-radius:999px;border:2px solid rgba(255,255,255,.2);border-top-color:#f2b54b;display:inline-block;animation:rjs-spin 1s linear infinite}.spinner[data-active='false']{animation:none;opacity:.45;border-top-color:rgba(255,255,255,.35)}.count-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.count{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.08)}.count[data-tone='reviewed']{background:rgba(102,186,255,.12);border-color:rgba(102,186,255,.18)}.count[data-tone='applied']{background:rgba(70,199,138,.14);border-color:rgba(70,199,138,.2)}.text{margin:0;font-size:13px;line-height:1.55;color:#f8f5ef}.controls{display:flex;align-items:center;gap:8px}.action,.stop{appearance:none;border:1px solid rgba(242,181,75,.35);background:rgba(255,255,255,.08);color:#f8f5ef;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700;line-height:1;cursor:pointer;white-space:nowrap}.action:hover:not(:disabled),.stop:hover:not(:disabled){background:rgba(255,255,255,.14)}.action:disabled,.stop:disabled{opacity:.55;cursor:wait}.stop{border-color:rgba(255,107,107,.4);color:#ffd4d4}@keyframes rjs-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`;
+  style.textContent = `:host{all:initial}.panel{position:fixed;top:${OVERLAY_EDGE_MARGIN}px;right:${OVERLAY_EDGE_MARGIN}px;z-index:2147483647;width:min(380px,calc(100vw - 36px));padding:16px;border-radius:18px;background:rgba(16,26,39,.95);color:#f6efe2;font-family:"Segoe UI",sans-serif;box-shadow:0 18px 44px rgba(0,0,0,.32);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(14px);transition:opacity .3s,transform .3s}.header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 10px;cursor:grab;user-select:none;touch-action:none}.panel.dragging .header{cursor:grabbing}.title-stack{display:flex;flex-direction:column;gap:8px;min-width:0}.title{margin:0;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#f2b54b}.meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:rgba(248,245,239,.74)}.spinner{width:11px;height:11px;border-radius:999px;border:2px solid rgba(255,255,255,.2);border-top-color:#f2b54b;display:inline-block;animation:rjs-spin 1s linear infinite}.spinner[data-active='false']{animation:none;opacity:.45;border-top-color:rgba(255,255,255,.35)}.count-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.count{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.08)}.count[data-tone='applied']{background:rgba(70,199,138,.14);border-color:rgba(70,199,138,.2)}.text{margin:0;font-size:13px;line-height:1.55;color:#f8f5ef}.controls{display:flex;align-items:center;gap:8px}.action,.stop{appearance:none;border:1px solid rgba(242,181,75,.35);background:rgba(255,255,255,.08);color:#f8f5ef;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700;line-height:1;cursor:pointer;white-space:nowrap}.action:hover:not(:disabled),.stop:hover:not(:disabled){background:rgba(255,255,255,.14)}.action:disabled,.stop:disabled{opacity:.55;cursor:wait}.stop{border-color:rgba(255,107,107,.4);color:#ffd4d4}@keyframes rjs-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`;
   wrapper.className = "panel";
   header.className = "header";
   titleStack.className = "title-stack";
@@ -5436,8 +5484,6 @@ function ensureOverlay(): void {
   spinner.setAttribute("aria-hidden", "true");
   countRow.className = "count-row";
   queueCount.className = "count";
-  reviewedCount.className = "count";
-  reviewedCount.dataset.tone = "reviewed";
   appliedCount.className = "count";
   appliedCount.dataset.tone = "applied";
   controls.className = "controls";
@@ -5450,7 +5496,7 @@ function ensureOverlay(): void {
   stopButton.textContent = "Stop";
   stopButton.hidden = true;
   header.title = "Drag to move";
-  countRow.append(queueCount, reviewedCount, appliedCount);
+  countRow.append(queueCount, appliedCount);
   meta.append(spinner, countRow);
   controls.append(actionButton, stopButton);
   titleStack.append(title, meta);
@@ -5563,7 +5609,6 @@ function ensureOverlay(): void {
   overlay.spinner = spinner;
   overlay.countRow = countRow;
   overlay.queueCount = queueCount;
-  overlay.reviewedCount = reviewedCount;
   overlay.appliedCount = appliedCount;
   overlay.text = text;
   overlay.actionButton = actionButton;
@@ -5666,7 +5711,6 @@ function renderOverlay(): void {
     !overlay.spinner ||
     !overlay.countRow ||
     !overlay.queueCount ||
-    !overlay.reviewedCount ||
     !overlay.appliedCount ||
     !overlay.text ||
     !overlay.actionButton ||
@@ -5685,11 +5729,9 @@ function renderOverlay(): void {
       ? "true"
       : "false";
   const queuedJobCount = currentRunSummary?.queuedJobCount ?? 0;
-  const reviewedJobCount = currentRunSummary?.reviewedJobCount ?? 0;
   const appliedJobCount = currentRunSummary?.appliedJobCount ?? 0;
   overlay.countRow.hidden = !currentRunSummary;
   overlay.queueCount.textContent = `Queue: ${queuedJobCount}`;
-  overlay.reviewedCount.textContent = `Reviewed: ${reviewedJobCount}`;
   overlay.appliedCount.textContent = `Applied: ${appliedJobCount}`;
   overlay.text.textContent = status.message;
   const actionLabel = getOverlayActionLabel();
@@ -5788,7 +5830,6 @@ async function showSuccessFireworks(): Promise<void> {
     return;
   }
   const appliedJobCount = currentRunSummary?.appliedJobCount ?? 0;
-  const reviewedJobCount = currentRunSummary?.reviewedJobCount ?? 0;
 
   const container = hostDocument.createElement("div");
   container.setAttribute(
@@ -5879,7 +5920,6 @@ async function showSuccessFireworks(): Promise<void> {
     <div style="margin-top:14px;font-size:24px;font-weight:800;line-height:1.15;color:#ffffff">Moving to the next opportunity</div>
     <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:14px">
       <span style="display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;background:rgba(70,199,138,.14);border:1px solid rgba(70,199,138,.2);font-size:12px;font-weight:700;color:#ecfff4">Applied: ${appliedJobCount}</span>
-      <span style="display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;background:rgba(102,186,255,.12);border:1px solid rgba(102,186,255,.18);font-size:12px;font-weight:700;color:#eef7ff">Reviewed: ${reviewedJobCount}</span>
     </div>
     <div style="margin-top:8px;font-size:13px;line-height:1.55;color:rgba(248,245,239,.78)">This tab will close and the next queued job will open automatically.</div>
   `;

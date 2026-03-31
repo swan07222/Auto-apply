@@ -554,7 +554,7 @@
     }
     return Array.from(deduped.values());
   }
-  function buildSearchTargets(site, currentUrl, searchKeywords, candidateCountry = "", datePostedWindow = "any") {
+  function buildSearchTargets(site, currentUrl, searchKeywords, datePostedWindow = "any") {
     return dedupeSearchTargets(
       parseSearchKeywords(searchKeywords).map((keyword) => ({
         label: keyword,
@@ -563,7 +563,6 @@
           site,
           keyword,
           currentUrl,
-          candidateCountry,
           datePostedWindow
         )
       }))
@@ -586,7 +585,7 @@
     }
     return Array.from(deduped.values());
   }
-  function buildSingleSearchUrl(site, query, currentUrl, candidateCountry = "", datePostedWindow = "any") {
+  function buildSingleSearchUrl(site, query, currentUrl, datePostedWindow = "any") {
     const baseOrigin = CANONICAL_JOB_BOARD_ORIGINS[site];
     switch (site) {
       case "indeed": {
@@ -619,7 +618,6 @@
           query,
           currentUrl,
           baseOrigin,
-          candidateCountry,
           datePostedWindow
         );
       case "builtin":
@@ -750,7 +748,7 @@
       return fallbackOrigin;
     }
   }
-  function buildGreenhouseSearchUrl(query, currentUrl, fallbackOrigin, candidateCountry = "", datePostedWindow = "any") {
+  function buildGreenhouseSearchUrl(query, currentUrl, fallbackOrigin, datePostedWindow = "any") {
     if (isMyGreenhousePortalUrl(currentUrl)) {
       try {
         const parsed = new URL(currentUrl);
@@ -1325,6 +1323,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const applicationText = (doc.body?.innerText ?? "").toLowerCase();
     const title = (doc.title ?? "").toLowerCase();
     const combinedText = `${title} ${applicationText}`.replace(/\s+/g, " ").trim();
+    const hasReceivedApplicationCopy = /\b(?:your\s+)?application(?:\s+for\s+[^.!?]{0,160})?\s+has been received\b/.test(
+      combinedText
+    );
+    const hasExplicitSubmittedSuccessCopy = hasReceivedApplicationCopy || /\b(your application has been submitted|application has been submitted|your application was submitted|application was submitted|your application was successfully submitted|application was successfully submitted|application submitted|application successfully submitted|your application is on its way|application is on its way|application complete|application received|application sent|we have received your application|successfully applied|you've successfully applied|you have successfully applied|you've applied|you have applied|thanks for applying|thank you for applying)\b/.test(
+      combinedText
+    );
+    const isIndeedPreSubmitReviewStep = pageUrl.includes("/indeedapply/form/") && !pageUrl.includes("/indeedapply/form/post-apply") && !hasExplicitSubmittedSuccessCopy && (hasLikelyApplicationStepSignals(doc) || /\b(please review your application|review your application|submit your application|confirm and submit|before you submit)\b/.test(
+      combinedText
+    ));
     const successPhrases = [
       "your application has been submitted",
       "application has been submitted",
@@ -1366,7 +1373,13 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const diceWizardSuccess = pageUrl.includes("/wizard/success") && /\b(application is on its way|application submitted|thanks for applying|my jobs|job search)\b/.test(
       combinedText
     );
-    return greenhouseConfirmation || indeedPostApplyConfirmation || diceWizardSuccess || successSignalCount >= 2 || onKnownApplyFlowUrl && successSignalCount >= 1;
+    const gemConfirmation = hasReceivedApplicationCopy || combinedText.includes("congratulations") && /\bapplication\b/.test(combinedText) && /\b(received|submitted|thank you for applying|thanks for applying)\b/.test(
+      combinedText
+    );
+    if (isIndeedPreSubmitReviewStep) {
+      return false;
+    }
+    return greenhouseConfirmation || indeedPostApplyConfirmation || diceWizardSuccess || gemConfirmation || successSignalCount >= 2 || onKnownApplyFlowUrl && successSignalCount >= 1;
   }
   function isLikelyVisibleFormField(field) {
     if (field.disabled) {
@@ -3877,7 +3890,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const input = control;
     return cleanText(input.value || control.innerText || control.textContent || "");
   }
-  function resolveMyGreenhouseCanonicalSearchUrl(currentUrl, keyword, candidateCountry, datePostedWindow = "any") {
+  function resolveMyGreenhouseCanonicalSearchUrl(currentUrl, keyword, datePostedWindow = "any") {
     if (!currentUrl || !keyword.trim()) {
       return null;
     }
@@ -3885,7 +3898,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "greenhouse",
       currentUrl,
       keyword,
-      candidateCountry,
       datePostedWindow
     )[0]?.url ?? null;
   }
@@ -4149,7 +4161,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     "applytojob.com",
     "recruitee.com",
     "breezy.hr",
-    "bamboohr.com"
+    "bamboohr.com",
+    "jobs.gem.com"
   ];
   var JOB_DETAIL_ATS_URL_TOKENS = [
     "gh_jid=",
@@ -4165,7 +4178,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     "applytojob.com",
     "recruitee.com",
     "breezy.hr",
-    "bamboohr.com"
+    "bamboohr.com",
+    "jobs.gem.com"
   ];
   var ATS_APPLICATION_URL_TOKENS = [
     "job_app",
@@ -7361,12 +7375,20 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     let score = 0;
     const hasApplyCue = hasApplyLikeExternalUrlCue(url);
+    const hasApplyContextCue = includesAnyToken(lowerContext, [
+      "apply",
+      "application",
+      "candidate",
+      "resume",
+      "career",
+      "job"
+    ]);
     const indeedHosted = lower.includes("indeed.com");
     if (indeedHosted && !isLikelyApplyUrl(url, "indeed")) {
       return -1;
     }
     if (includesAnyToken(lower, KNOWN_ATS_HOST_TOKENS)) {
-      score += hasApplyCue ? 120 : 20;
+      score += hasApplyCue ? 120 : hasApplyContextCue ? 95 : 20;
     }
     if (indeedHosted) {
       score += hasApplyCue ? 120 : 30;
@@ -8734,7 +8756,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     }
     return dedupeJobCandidates(candidates);
   }
-  function pickRelevantJobUrls(candidates, site, resumeKind, datePostedWindow = "any", searchKeywords = [], currentUrl = window.location.href, candidateCountry = "") {
+  function pickRelevantJobUrls(candidates, site, resumeKind, datePostedWindow = "any", searchKeywords = [], currentUrl = window.location.href) {
     const valid = preferCanonicalBuiltInHostedCandidates(
       dedupeJobCandidates(candidates).filter(
         (candidate) => isLikelyJobDetailUrl(site, candidate.url, candidate.title, candidate.contextText)
@@ -8753,8 +8775,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const eligible = site === "dice" ? recencyEligible.filter((candidate) => isExplicitlyRemoteDiceCandidate(candidate)) : site === "greenhouse" ? recencyEligible : filterCandidatesForRemotePreference(
       recencyEligible,
       site,
-      currentUrl,
-      candidateCountry
+      currentUrl
     );
     if (site === "greenhouse") {
       return sortCandidatesByRecency(eligible, datePostedWindow).map(
@@ -8841,7 +8862,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return false;
     }
   }
-  function filterCandidatesForRemotePreference(candidates, site, currentUrl, candidateCountry = "") {
+  function filterCandidatesForRemotePreference(candidates, site, currentUrl) {
     const annotated = candidates.map((candidate) => ({
       candidate,
       remoteScore: scoreRemotePreference(candidate)
@@ -11153,12 +11174,79 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if ((site === "builtin" || site === "other_sites" || site === "startup") && hasLikelyAtsLaunchModalSurface()) {
       return true;
     }
+    if ((site === "builtin" || site === "other_sites" || site === "startup") && hasLikelyGemHostedApplicationSurface(collectors)) {
+      return true;
+    }
     const onApplyLikeUrl = isAlreadyOnApplyPage(site, window.location.href);
     const hasPageContent = hasLikelyApplicationPageContent();
     const hasProgression = Boolean(findProgressionAction(site));
     const hasCompanySiteStep = Boolean(findCompanySiteAction());
     const stillLooksLikeJobPage = Boolean(findApplyAction(site, "job-page"));
     return hasLikelyApplicationForm(collectors) || hasLikelyApplicationFrame() || onApplyLikeUrl && (hasPageContent || hasProgression || hasCompanySiteStep) || hasPageContent && (hasProgression || hasCompanySiteStep) && !stillLooksLikeJobPage || onApplyLikeUrl && hasPageContent;
+  }
+  function hasLikelyGemHostedApplicationSurface(collectors) {
+    const text = cleanText(document.body?.innerText || document.body?.textContent || "").toLowerCase().slice(0, 5e3);
+    const hasGemBranding = text.includes("powered by gem");
+    if (!isGemHostedApplicationUrl(window.location.href) && !hasGemBranding) {
+      return false;
+    }
+    const relevantFields = collectors.collectAutofillFields().filter(
+      (field) => shouldAutofillField(field, true, true) && isLikelyApplicationField(field)
+    );
+    const relevantResumeInputs = collectors.collectResumeFileInputs().filter(
+      (input) => shouldAutofillField(input, true, true) && isLikelyApplicationField(input)
+    );
+    const signalCount = [
+      "ready to apply",
+      "candidate profile",
+      "powered by gem",
+      "upload your resume",
+      "upload resume",
+      "click to upload",
+      "drag and drop here",
+      "application received",
+      "submit application",
+      "work authorization"
+    ].filter((signal) => text.includes(signal)).length;
+    const hasActionControl = Array.from(
+      document.querySelectorAll(
+        "button, a[href], [role='button'], input[type='button'], input[type='submit']"
+      )
+    ).some((control) => {
+      if (!isElementVisible(control)) {
+        return false;
+      }
+      const controlText = cleanText(
+        [
+          control.innerText,
+          control.textContent,
+          control.getAttribute("aria-label"),
+          control.getAttribute("title"),
+          control.getAttribute("value")
+        ].filter(Boolean).join(" ")
+      ).toLowerCase();
+      return /\b(continue|next|review|submit|start|apply)\b/.test(controlText);
+    });
+    const hasReviewSubmitState = hasActionControl && (text.includes("review your application") || text.includes("review your application details") || text.includes("submit application"));
+    if (relevantFields.length >= 2) {
+      return true;
+    }
+    if (hasReviewSubmitState && (hasGemBranding || signalCount >= 2)) {
+      return true;
+    }
+    if (relevantResumeInputs.length > 0 && signalCount >= 2) {
+      return true;
+    }
+    return signalCount >= 3 && (relevantFields.length >= 1 || hasActionControl);
+  }
+  function isGemHostedApplicationUrl(url) {
+    try {
+      const hostname = new URL(url, window.location.href).hostname.toLowerCase();
+      return hostname === "jobs.gem.com" || hostname.endsWith(".jobs.gem.com");
+    } catch {
+      const lower = url.toLowerCase();
+      return lower.includes("://jobs.gem.com/") || lower.includes(".jobs.gem.com/");
+    }
   }
   function hasMonsterInlineApplySurface(collectors) {
     const relevantFields = collectors.collectAutofillFields().filter(
@@ -11549,7 +11637,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       "you re on your way to apply",
       "please review your application",
       "review your application",
-      "review before submitting"
+      "review before submitting",
+      "ready to apply",
+      "candidate profile",
+      "powered by gem"
     ];
     if (strongSignals.some((token) => bodyText.includes(token))) {
       return true;
@@ -11732,7 +11823,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     detectedSite,
     resumeKind,
     searchKeywords = [],
-    candidateCountry,
     label,
     onOpenListingsSurface
   }) {
@@ -11770,8 +11860,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             resumeKind,
             datePostedWindow,
             searchKeywords,
-            window.location.href,
-            candidateCountry
+            window.location.href
           )
         )
       );
@@ -11785,15 +11874,14 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           detectedSite,
           resumeKind,
           datePostedWindow,
-          searchKeywords,
-          candidateCountry
+          searchKeywords
         });
         const mergedUrls = mergeJobUrlLists(bestUrls, urls, embeddedUrls);
         if (mergedUrls.length > bestUrls.length) {
           bestUrls = mergedUrls;
         }
       }
-      const signature = urls.slice(0, Math.max(desiredCount, 8)).join("|");
+      const signature = bestUrls.slice(0, Math.max(desiredCount, 8)).join("|");
       if (signature && signature === previousSignature) {
         stablePasses += 1;
       } else {
@@ -11818,7 +11906,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             detectedSite,
             resumeKind,
             searchKeywords,
-            candidateCountry,
             label,
             onOpenListingsSurface
           });
@@ -11826,17 +11913,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             await waitForDomSettle(2400, 500);
           }
         }
-        if (attempt % 5 === 0) {
-          advanceCareerSiteResultsSurface(site, attempt);
-        } else if (attempt % 5 === 1) {
-          advanceCareerSiteResultsSurface(site, attempt);
-        } else if (attempt % 5 === 2) {
-          advanceCareerSiteResultsSurface(site, attempt);
-        } else if (attempt % 5 === 3) {
-          advanceCareerSiteResultsSurface(site, attempt);
-        } else {
-          advanceCareerSiteResultsSurface(site, attempt);
-        }
+        advanceCareerSiteResultsSurface(site, attempt);
         if (attempt === 10 || attempt === 20 || attempt === 30) {
           tryClickLoadMoreButton();
         }
@@ -12425,8 +12502,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     detectedSite,
     resumeKind,
     datePostedWindow,
-    searchKeywords = [],
-    candidateCountry
+    searchKeywords = []
   }) {
     try {
       const response = await chrome.runtime.sendMessage({
@@ -12443,8 +12519,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
             resumeKind,
             datePostedWindow,
             searchKeywords,
-            window.location.href,
-            candidateCountry
+            window.location.href
           )
         )
       );
@@ -12512,7 +12587,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     detectedSite,
     resumeKind,
     searchKeywords = [],
-    candidateCountry,
     label,
     onOpenListingsSurface
   }) {
@@ -12551,8 +12625,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         resumeKind,
         datePostedWindow,
         searchKeywords,
-        window.location.href,
-        candidateCountry
+        window.location.href
       );
       if (updatedUrls.length > 0) {
         return true;
@@ -14073,7 +14146,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     spinner: null,
     countRow: null,
     queueCount: null,
-    reviewedCount: null,
     appliedCount: null,
     text: null,
     actionButton: null,
@@ -14396,6 +14468,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
   }
   function shouldAutoSubmitReadyManualAction(site) {
     return site === "ziprecruiter" || site === "greenhouse" || site === "monster";
+  }
+  async function tryAutoSubmitVisibleReviewAction(site, fields) {
+    if (!shouldAutoSubmitReadyManualAction(site) || !isLikelyManualSubmitReviewPage(document)) {
+      return "not-applicable";
+    }
+    const action = findVisibleManualSubmitAction();
+    if (!action || hasPendingRequiredAutofillFields(fields)) {
+      return "not-applicable";
+    }
+    return tryAutoSubmitReadyManualAction(site, action);
   }
   async function tryAutoSubmitReadyManualAction(site, action) {
     const waitSteps = [250, 250, 300, 300, 400, 400, 500, 500, 700, 700, 900, 900];
@@ -15195,7 +15277,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       site,
       searchContextUrl,
       settings.searchKeywords,
-      settings.candidate.country,
       settings.datePostedWindow
     );
     if (targets.length === 0) {
@@ -15301,7 +15382,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       detectedSite: status.site === "unsupported" ? null : status.site,
       resumeKind: currentResumeKind,
       searchKeywords: keywordHints,
-      candidateCountry: settings.candidate.country,
       label: currentLabel,
       onOpenListingsSurface: (message) => {
         updateStatus("running", message, true, "collect-results");
@@ -16260,6 +16340,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           continue;
         }
       }
+      const reviewAutoSubmitResult = await tryAutoSubmitVisibleReviewAction(
+        site,
+        currentFields
+      );
+      if (reviewAutoSubmitResult === "completed") {
+        return;
+      }
+      if (reviewAutoSubmitResult === "advanced") {
+        continue;
+      }
       const onManualSubmitReviewPage = hasVisibleManualSubmitAction() && isLikelyManualSubmitReviewPage(document);
       if (onManualSubmitReviewPage) {
         noProgressCount = 0;
@@ -16448,6 +16538,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const finalSettings = await readCurrentAutomationSettings();
     const finalResult = await autofillVisibleApplication(finalSettings);
     mergeAutofillResult(combinedResult, finalResult);
+    const finalFields = collectAutofillFields();
     if (combinedResult.uploadedResume && hasPendingResumeUploadSurface(applicationSurfaceCollectors)) {
       updateStatus(
         "completed",
@@ -16459,6 +16550,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return;
     }
     if (combinedResult.filledFields > 0 || combinedResult.uploadedResume) {
+      const finalReviewAutoSubmitResult = await tryAutoSubmitVisibleReviewAction(
+        site,
+        finalFields
+      );
+      if (finalReviewAutoSubmitResult === "completed") {
+        return;
+      }
+      if (finalReviewAutoSubmitResult === "advanced") {
+        await runAutofillStage(site);
+        return;
+      }
       if (hasVisibleManualSubmitAction()) {
         await waitForManualSubmitOutcome(
           site,
@@ -16476,6 +16578,17 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (hasLikelyApplicationForm2() || hasLikelyApplicationPageContent2()) {
       if (hasConfirmedManualSubmitSuccess(site)) {
         await finalizeSuccessfulApplication("Application submitted successfully.");
+        return;
+      }
+      const fallbackReviewAutoSubmitResult = await tryAutoSubmitVisibleReviewAction(
+        site,
+        finalFields
+      );
+      if (fallbackReviewAutoSubmitResult === "completed") {
+        return;
+      }
+      if (fallbackReviewAutoSubmitResult === "advanced") {
+        await runAutofillStage(site);
         return;
       }
       if (hasVisibleManualSubmitAction() || isLikelyManualSubmitReviewPage(document)) {
@@ -17465,7 +17578,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const canonicalPortalTarget = resolveMyGreenhouseCanonicalSearchUrl(
       window.location.href,
       keyword,
-      candidateCountry,
       datePostedWindow
     );
     const normalizedCurrentUrl = normalizeUrl(window.location.href);
@@ -17696,7 +17808,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
           overlay.spinner = null;
           overlay.countRow = null;
           overlay.queueCount = null;
-          overlay.reviewedCount = null;
           overlay.appliedCount = null;
           overlay.text = null;
           overlay.actionButton = null;
@@ -17710,8 +17821,8 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const host = document.createElement("div");
     host.id = "remote-job-search-overlay-host";
     const shadow = host.attachShadow({ mode: "open" });
-    const wrapper = document.createElement("section"), header = document.createElement("div"), titleStack = document.createElement("div"), title = document.createElement("div"), meta = document.createElement("div"), spinner = document.createElement("span"), countRow = document.createElement("div"), queueCount = document.createElement("span"), reviewedCount = document.createElement("span"), appliedCount = document.createElement("span"), controls = document.createElement("div"), text = document.createElement("div"), actionButton = document.createElement("button"), stopButton = document.createElement("button"), style = document.createElement("style");
-    style.textContent = `:host{all:initial}.panel{position:fixed;top:${OVERLAY_EDGE_MARGIN}px;right:${OVERLAY_EDGE_MARGIN}px;z-index:2147483647;width:min(380px,calc(100vw - 36px));padding:16px;border-radius:18px;background:rgba(16,26,39,.95);color:#f6efe2;font-family:"Segoe UI",sans-serif;box-shadow:0 18px 44px rgba(0,0,0,.32);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(14px);transition:opacity .3s,transform .3s}.header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 10px;cursor:grab;user-select:none;touch-action:none}.panel.dragging .header{cursor:grabbing}.title-stack{display:flex;flex-direction:column;gap:8px;min-width:0}.title{margin:0;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#f2b54b}.meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:rgba(248,245,239,.74)}.spinner{width:11px;height:11px;border-radius:999px;border:2px solid rgba(255,255,255,.2);border-top-color:#f2b54b;display:inline-block;animation:rjs-spin 1s linear infinite}.spinner[data-active='false']{animation:none;opacity:.45;border-top-color:rgba(255,255,255,.35)}.count-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.count{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.08)}.count[data-tone='reviewed']{background:rgba(102,186,255,.12);border-color:rgba(102,186,255,.18)}.count[data-tone='applied']{background:rgba(70,199,138,.14);border-color:rgba(70,199,138,.2)}.text{margin:0;font-size:13px;line-height:1.55;color:#f8f5ef}.controls{display:flex;align-items:center;gap:8px}.action,.stop{appearance:none;border:1px solid rgba(242,181,75,.35);background:rgba(255,255,255,.08);color:#f8f5ef;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700;line-height:1;cursor:pointer;white-space:nowrap}.action:hover:not(:disabled),.stop:hover:not(:disabled){background:rgba(255,255,255,.14)}.action:disabled,.stop:disabled{opacity:.55;cursor:wait}.stop{border-color:rgba(255,107,107,.4);color:#ffd4d4}@keyframes rjs-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`;
+    const wrapper = document.createElement("section"), header = document.createElement("div"), titleStack = document.createElement("div"), title = document.createElement("div"), meta = document.createElement("div"), spinner = document.createElement("span"), countRow = document.createElement("div"), queueCount = document.createElement("span"), appliedCount = document.createElement("span"), controls = document.createElement("div"), text = document.createElement("div"), actionButton = document.createElement("button"), stopButton = document.createElement("button"), style = document.createElement("style");
+    style.textContent = `:host{all:initial}.panel{position:fixed;top:${OVERLAY_EDGE_MARGIN}px;right:${OVERLAY_EDGE_MARGIN}px;z-index:2147483647;width:min(380px,calc(100vw - 36px));padding:16px;border-radius:18px;background:rgba(16,26,39,.95);color:#f6efe2;font-family:"Segoe UI",sans-serif;box-shadow:0 18px 44px rgba(0,0,0,.32);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(14px);transition:opacity .3s,transform .3s}.header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 10px;cursor:grab;user-select:none;touch-action:none}.panel.dragging .header{cursor:grabbing}.title-stack{display:flex;flex-direction:column;gap:8px;min-width:0}.title{margin:0;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#f2b54b}.meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:rgba(248,245,239,.74)}.spinner{width:11px;height:11px;border-radius:999px;border:2px solid rgba(255,255,255,.2);border-top-color:#f2b54b;display:inline-block;animation:rjs-spin 1s linear infinite}.spinner[data-active='false']{animation:none;opacity:.45;border-top-color:rgba(255,255,255,.35)}.count-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.count{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.08)}.count[data-tone='applied']{background:rgba(70,199,138,.14);border-color:rgba(70,199,138,.2)}.text{margin:0;font-size:13px;line-height:1.55;color:#f8f5ef}.controls{display:flex;align-items:center;gap:8px}.action,.stop{appearance:none;border:1px solid rgba(242,181,75,.35);background:rgba(255,255,255,.08);color:#f8f5ef;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700;line-height:1;cursor:pointer;white-space:nowrap}.action:hover:not(:disabled),.stop:hover:not(:disabled){background:rgba(255,255,255,.14)}.action:disabled,.stop:disabled{opacity:.55;cursor:wait}.stop{border-color:rgba(255,107,107,.4);color:#ffd4d4}@keyframes rjs-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`;
     wrapper.className = "panel";
     header.className = "header";
     titleStack.className = "title-stack";
@@ -17721,8 +17832,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     spinner.setAttribute("aria-hidden", "true");
     countRow.className = "count-row";
     queueCount.className = "count";
-    reviewedCount.className = "count";
-    reviewedCount.dataset.tone = "reviewed";
     appliedCount.className = "count";
     appliedCount.dataset.tone = "applied";
     controls.className = "controls";
@@ -17735,7 +17844,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     stopButton.textContent = "Stop";
     stopButton.hidden = true;
     header.title = "Drag to move";
-    countRow.append(queueCount, reviewedCount, appliedCount);
+    countRow.append(queueCount, appliedCount);
     meta.append(spinner, countRow);
     controls.append(actionButton, stopButton);
     titleStack.append(title, meta);
@@ -17824,7 +17933,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     overlay.spinner = spinner;
     overlay.countRow = countRow;
     overlay.queueCount = queueCount;
-    overlay.reviewedCount = reviewedCount;
     overlay.appliedCount = appliedCount;
     overlay.text = text;
     overlay.actionButton = actionButton;
@@ -17905,17 +18013,15 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return;
     }
     ensureOverlay();
-    if (!overlay.host || !overlay.title || !overlay.spinner || !overlay.countRow || !overlay.queueCount || !overlay.reviewedCount || !overlay.appliedCount || !overlay.text || !overlay.actionButton || !overlay.stopButton)
+    if (!overlay.host || !overlay.title || !overlay.spinner || !overlay.countRow || !overlay.queueCount || !overlay.appliedCount || !overlay.text || !overlay.actionButton || !overlay.stopButton)
       return;
     const siteText = status.site === "unsupported" ? "Automation" : getSiteLabel(status.site);
     overlay.title.textContent = currentResumeKind ? `Remote Job Search - ${siteText} - ${getResumeKindLabel(currentResumeKind)}` : `Remote Job Search - ${siteText}`;
     overlay.spinner.dataset.active = status.phase === "running" || status.phase === "waiting_for_verification" ? "true" : "false";
     const queuedJobCount = currentRunSummary?.queuedJobCount ?? 0;
-    const reviewedJobCount = currentRunSummary?.reviewedJobCount ?? 0;
     const appliedJobCount = currentRunSummary?.appliedJobCount ?? 0;
     overlay.countRow.hidden = !currentRunSummary;
     overlay.queueCount.textContent = `Queue: ${queuedJobCount}`;
-    overlay.reviewedCount.textContent = `Reviewed: ${reviewedJobCount}`;
     overlay.appliedCount.textContent = `Applied: ${appliedJobCount}`;
     overlay.text.textContent = status.message;
     const actionLabel = getOverlayActionLabel();
@@ -17982,7 +18088,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
       return;
     }
     const appliedJobCount = currentRunSummary?.appliedJobCount ?? 0;
-    const reviewedJobCount = currentRunSummary?.reviewedJobCount ?? 0;
     const container = hostDocument.createElement("div");
     container.setAttribute(
       "style",
@@ -18064,7 +18169,6 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     <div style="margin-top:14px;font-size:24px;font-weight:800;line-height:1.15;color:#ffffff">Moving to the next opportunity</div>
     <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:14px">
       <span style="display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;background:rgba(70,199,138,.14);border:1px solid rgba(70,199,138,.2);font-size:12px;font-weight:700;color:#ecfff4">Applied: ${appliedJobCount}</span>
-      <span style="display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;background:rgba(102,186,255,.12);border:1px solid rgba(102,186,255,.18);font-size:12px;font-weight:700;color:#eef7ff">Reviewed: ${reviewedJobCount}</span>
     </div>
     <div style="margin-top:8px;font-size:13px;line-height:1.55;color:rgba(248,245,239,.78)">This tab will close and the next queued job will open automatically.</div>
   `;

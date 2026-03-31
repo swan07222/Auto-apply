@@ -487,6 +487,29 @@ describe("application progression actions", () => {
     }
   });
 
+  it("treats Gem ATS URLs in inline apply metadata as real external apply targets", () => {
+    document.body.innerHTML = `
+      <main>
+        <button type="button">Apply on company site</button>
+        <script type="application/json">
+          {
+            "applyUrl": "https://jobs.gem.com/ondo-finance/am9icG9zdDpS5VU_TnKCc6ivTilqcLHB"
+          }
+        </script>
+      </main>
+    `;
+
+    const action = findCompanySiteAction();
+
+    expect(action).not.toBeNull();
+    expect(action?.type).toBe("navigate");
+    if (action?.type === "navigate") {
+      expect(action.url).toBe(
+        "https://jobs.gem.com/ondo-finance/am9icG9zdDpS5VU_TnKCc6ivTilqcLHB"
+      );
+    }
+  });
+
   it("keeps Indeed-hosted apply URLs discoverable through fallback extraction", () => {
     document.body.innerHTML = `
       <main>

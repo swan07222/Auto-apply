@@ -85,6 +85,61 @@ describe("search result collection", () => {
     });
   });
 
+  it("stops waiting once embedded-only Monster results stabilize", async () => {
+    chrome.runtime.sendMessage = vi.fn().mockResolvedValue({
+      jobResults: [
+        {
+          normalizedJobPosting: {
+            title: "Frontend Engineer",
+            url: "https://www.monster.com/job-openings/frontend-engineer-remote--alpha123",
+            hiringOrganization: {
+              name: "Example Co",
+            },
+          },
+          location: {
+            displayText: "Remote",
+          },
+          dateRecency: "Posted today",
+        },
+        {
+          normalizedJobPosting: {
+            title: "Platform Engineer",
+            url: "https://www.monster.com/job-openings/platform-engineer-remote--beta456",
+            hiringOrganization: {
+              name: "Example Co",
+            },
+          },
+          location: {
+            displayText: "Remote",
+          },
+          dateRecency: "Posted today",
+        },
+      ],
+    });
+
+    const promise = waitForJobDetailUrls({
+      site: "monster",
+      datePostedWindow: "any",
+      targetCount: 3,
+      detectedSite: "monster",
+    });
+
+    let settled = false;
+    let urls: string[] | undefined;
+    void promise.then((value) => {
+      settled = true;
+      urls = value;
+    });
+
+    await vi.advanceTimersByTimeAsync(25_000);
+
+    expect(settled).toBe(true);
+    expect(urls).toEqual([
+      "https://www.monster.com/job-openings/frontend-engineer-remote--alpha123",
+      "https://www.monster.com/job-openings/platform-engineer-remote--beta456",
+    ]);
+  });
+
   it("scrolls the Monster results rail to load additional jobs before finishing review", async () => {
     chrome.runtime.sendMessage = vi.fn().mockResolvedValue({
       jobResults: [],

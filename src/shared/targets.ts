@@ -47,7 +47,6 @@ export function buildSearchTargets(
   site: JobBoardSite,
   currentUrl: string,
   searchKeywords: string,
-  candidateCountry = "",
   datePostedWindow: DatePostedWindow = "any"
 ): SearchTarget[] {
   return dedupeSearchTargets(
@@ -58,7 +57,6 @@ export function buildSearchTargets(
         site,
         keyword,
         currentUrl,
-        candidateCountry,
         datePostedWindow
       ),
     }))
@@ -234,7 +232,6 @@ function buildSingleSearchUrl(
   site: JobBoardSite,
   query: string,
   currentUrl: string,
-  candidateCountry = "",
   datePostedWindow: DatePostedWindow = "any"
 ): string {
   const baseOrigin = CANONICAL_JOB_BOARD_ORIGINS[site];
@@ -270,7 +267,6 @@ function buildSingleSearchUrl(
         query,
         currentUrl,
         baseOrigin,
-        candidateCountry,
         datePostedWindow
       );
     case "builtin":
@@ -447,7 +443,6 @@ function buildGreenhouseSearchUrl(
   query: string,
   currentUrl: string,
   fallbackOrigin: string,
-  candidateCountry = "",
   datePostedWindow: DatePostedWindow = "any"
 ): string {
   if (isMyGreenhousePortalUrl(currentUrl)) {

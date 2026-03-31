@@ -235,7 +235,6 @@ async function createPopupHarness(options: PopupHarnessOptions = {}) {
     ),
     statusText: requireElement<HTMLElement>("#status-text"),
     queueCount: requireElement<HTMLElement>("#queue-count"),
-    reviewedCount: requireElement<HTMLElement>("#reviewed-count"),
     appliedCount: requireElement<HTMLElement>("#applied-count"),
     settingsStatus: requireElement<HTMLElement>("#settings-status"),
     siteName: requireElement<HTMLElement>("#site-name"),
@@ -338,8 +337,8 @@ describe("popup workflow", () => {
     expect(popup.modePreview.textContent).toBe("Job boards");
     expect(popup.statusText.textContent).toBe("Ready on Indeed.");
     expect(popup.queueCount.textContent).toBe("0");
-    expect(popup.reviewedCount.textContent).toBe("0");
     expect(popup.appliedCount.textContent).toBe("0");
+    expect(document.querySelector("#reviewed-count")).toBeNull();
     expect(popup.startButton.disabled).toBe(false);
     expect(popup.tabsQuery).toHaveBeenCalled();
     expect(popup.runtimeSendMessage).toHaveBeenCalledWith({
@@ -378,8 +377,8 @@ describe("popup workflow", () => {
     });
 
     expect(popup.queueCount.textContent).toBe("3");
-    expect(popup.reviewedCount.textContent).toBe("7");
     expect(popup.appliedCount.textContent).toBe("2");
+    expect(document.querySelector("#reviewed-count")).toBeNull();
     expect(popup.statusText.textContent).toBe("Waiting for queued jobs or Stop.");
     expect(popup.startButton.disabled).toBe(true);
   });
@@ -518,7 +517,7 @@ describe("popup workflow", () => {
 
     expect(popup.siteName.textContent).toBe("No supported site");
     expect(popup.statusText.textContent).toBe(
-      "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or a supported company application page in the active tab to start."
+      "Open Indeed, ZipRecruiter, Dice, Glassdoor, Greenhouse, Built In, or a supported company application page in the active tab to start."
     );
     expect(popup.startButton.disabled).toBe(true);
   });

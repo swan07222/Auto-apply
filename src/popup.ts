@@ -40,9 +40,9 @@ import {
 
 const MAX_RESUME_TEXT_CHARS = 24_000;
 const SUPPORTED_JOB_BOARD_PROMPT =
-  "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or a supported company application page in the active tab to start.";
+  "Open Indeed, ZipRecruiter, Dice, Glassdoor, Greenhouse, Built In, or a supported company application page in the active tab to start.";
 const SUPPORTED_JOB_BOARD_MODE_PROMPT =
-  "Open Indeed, ZipRecruiter, Dice, Monster, Glassdoor, Greenhouse, Built In, or a supported company application page in the active tab to use Job Board mode.";
+  "Open Indeed, ZipRecruiter, Dice, Glassdoor, Greenhouse, Built In, or a supported company application page in the active tab to use Job Board mode.";
 const AUTO_SAVE_DELAY_MS = 220;
 
 const startButton = requireElement<HTMLButtonElement>("#start-button");
@@ -52,7 +52,6 @@ const siteName = requireElement<HTMLElement>("#site-name");
 const statusPanel = requireElement<HTMLElement>("#status-panel");
 const statusText = requireElement<HTMLElement>("#status-text");
 const queueCount = requireElement<HTMLElement>("#queue-count");
-const reviewedCount = requireElement<HTMLElement>("#reviewed-count");
 const appliedCount = requireElement<HTMLElement>("#applied-count");
 const settingsStatus = requireElement<HTMLElement>("#settings-status");
 const savedAnswerCount = requireElement<HTMLElement>("#saved-answer-count");
@@ -163,6 +162,7 @@ let settingsWriteQueue: Promise<void> = Promise.resolve();
 let settings = createEmptySettings();
 let preferredDatePostedWindow: DatePostedWindow = settings.datePostedWindow;
 let chromeTabListenersRegistered = false;
+let popupDisposed = false;
 let savedAnswerEntries: SavedAnswerListEntry[] = [];
 const popupDialog = createPopupDialogController({
   root: dialogRoot,
@@ -318,6 +318,7 @@ for (const element of [
 }
 
 window.addEventListener("beforeunload", () => {
+  popupDisposed = true;
   if (refreshPollTimerId !== null) {
     window.clearTimeout(refreshPollTimerId);
   }
@@ -331,6 +332,10 @@ window.addEventListener("beforeunload", () => {
 });
 
 document.addEventListener("visibilitychange", () => {
+  if (popupDisposed) {
+    return;
+  }
+
   if (document.visibilityState === "hidden") {
     stopPeriodicRefresh();
     return;
@@ -340,6 +345,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 async function initialize(): Promise<void> {
+  popupDisposed = false;
   registerChromeTabListeners();
   await refreshActiveTabContext();
   let settingsLoadFailed = false;
@@ -589,6 +595,10 @@ async function startAutomation(): Promise<void> {
 }
 
 async function refreshStatus(): Promise<void> {
+  if (popupDisposed) {
+    return;
+  }
+
   if (refreshStatusPromise) {
     return refreshStatusPromise;
   }
@@ -601,6 +611,10 @@ async function refreshStatus(): Promise<void> {
 }
 
 function scheduleRefreshStatus(delayMs = 120): void {
+  if (popupDisposed) {
+    return;
+  }
+
   if (refreshStatusTimerId !== null) {
     window.clearTimeout(refreshStatusTimerId);
   }
@@ -632,6 +646,10 @@ function stopPeriodicRefresh(): void {
 }
 
 function schedulePeriodicRefresh(delayMs = 900): void {
+  if (popupDisposed) {
+    return;
+  }
+
   stopPeriodicRefresh();
 
   if (document.visibilityState === "hidden") {
@@ -640,6 +658,15 @@ function schedulePeriodicRefresh(delayMs = 900): void {
 
   refreshPollTimerId = window.setTimeout(() => {
     refreshPollTimerId = null;
+    if (popupDisposed) {
+      return;
+    }
+
+    if (refreshStatusPromise) {
+      schedulePeriodicRefresh();
+      return;
+    }
+
     void refreshStatus()
       .catch(() => {
         // Ignore transient popup refresh failures so the UI stays usable.
@@ -651,6 +678,10 @@ function schedulePeriodicRefresh(delayMs = 900): void {
 }
 
 async function performRefreshStatus(): Promise<void> {
+  if (popupDisposed) {
+    return;
+  }
+
   await refreshActiveTabContext();
 
   const searchMode = getSelectedSearchMode();
@@ -1059,7 +1090,6 @@ function applyStatus(status: AutomationStatus): void {
   statusPanel.dataset.phase = status.phase;
   statusText.textContent = status.message;
   queueCount.textContent = String(activeRunSummary?.queuedJobCount ?? 0);
-  reviewedCount.textContent = String(activeRunSummary?.reviewedJobCount ?? 0);
   appliedCount.textContent = String(activeRunSummary?.appliedJobCount ?? 0);
   updateSiteNameDisplay();
 }

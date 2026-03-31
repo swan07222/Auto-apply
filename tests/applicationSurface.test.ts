@@ -187,6 +187,51 @@ describe("application surface helpers", () => {
     expect(hasLikelyApplicationSurface("builtin", collectors)).toBe(true);
   });
 
+  it("recognizes Gem-hosted company application pages on Built In sessions", () => {
+    window.history.replaceState({}, "", "/ondo-finance/gem-1");
+    document.body.innerHTML = `
+      <main>
+        <h1>Ready to apply?</h1>
+        <p>Powered by Gem</p>
+        <section aria-label="Candidate Profile">
+          <label>
+            First name
+            <input name="first_name" type="text" autocomplete="given-name" />
+          </label>
+          <label>
+            Last name
+            <input name="last_name" type="text" autocomplete="family-name" />
+          </label>
+          <label>
+            Email
+            <input name="email" type="email" autocomplete="email" />
+          </label>
+          <button type="button">Continue</button>
+        </section>
+      </main>
+    `;
+
+    expect(hasLikelyApplicationPageContent()).toBe(true);
+    expect(hasLikelyApplicationSurface("builtin", collectors)).toBe(true);
+  });
+
+  it("keeps Gem final review steps with only a submit action classified as application surfaces", () => {
+    window.history.replaceState({}, "", "/ondo-finance/gem-review");
+    document.body.innerHTML = `
+      <main>
+        <p>Powered by Gem</p>
+        <section>
+          <h2>Review your application</h2>
+          <p>Review your application details, then submit.</p>
+          <button type="submit">Submit Application</button>
+        </section>
+      </main>
+    `;
+
+    expect(hasLikelyApplicationPageContent()).toBe(true);
+    expect(hasLikelyApplicationSurface("builtin", collectors)).toBe(true);
+  });
+
   it("recognizes Greenhouse launch surfaces before the embedded form fully renders", () => {
     document.body.innerHTML = `
       <main class="job-post">

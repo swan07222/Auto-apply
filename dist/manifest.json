@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Remote Job Search Starter",
-  "description": "Searches Indeed, ZipRecruiter, Dice, Monster, and Glassdoor, then opens application flows and autofills blank fields with saved resume and profile data.",
+  "description": "Searches Indeed, ZipRecruiter, Dice, Glassdoor, Greenhouse, Built In, and supported company sites, then opens application flows and autofills blank fields with saved resume and profile data.",
   "version": "1.0.0",
   "permissions": ["storage", "tabs", "scripting", "clipboardWrite", "alarms"],
   "host_permissions": ["http://*/*", "https://*/*"],
