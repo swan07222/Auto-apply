@@ -58,6 +58,84 @@ import {
   setSession,
 } from "./background/sessionStore";
 
+// ============================================================================
+// Structured Logging
+// ============================================================================
+
+type LogLevel = "debug" | "info" | "warn" | "error";
+
+interface LogEntry {
+  timestamp: number;
+  level: LogLevel;
+  category: string;
+  message: string;
+  data?: Record<string, unknown>;
+  error?: string;
+}
+
+const LOG_CATEGORIES = {
+  STORAGE: "storage",
+  TAB_MANAGEMENT: "tab-management",
+  SESSION: "session",
+  RATE_LIMIT: "rate-limit",
+  QUEUE: "queue",
+  MONSTER: "monster",
+  GENERAL: "general",
+} as const;
+
+function log(
+  level: LogLevel,
+  category: string,
+  message: string,
+  data?: Record<string, unknown>,
+  error?: Error
+): void {
+  const entry: LogEntry = {
+    timestamp: Date.now(),
+    level,
+    category,
+    message,
+    data,
+    error: error?.message,
+  };
+
+  const prefix = `[Auto-apply][${category.toUpperCase()}]`;
+  const logData = data ? [data] : [];
+  const logArgs = error ? [...logData, error] : logData;
+
+  switch (level) {
+    case "debug":
+      // eslint-disable-next-line no-console
+      console.debug(prefix, message, ...logArgs);
+      break;
+    case "info":
+      // eslint-disable-next-line no-console
+      console.info(prefix, message, ...logArgs);
+      break;
+    case "warn":
+      // eslint-disable-next-line no-console
+      console.warn(prefix, message, ...logArgs);
+      break;
+    case "error":
+      // eslint-disable-next-line no-console
+      console.error(prefix, message, ...logArgs);
+      break;
+  }
+}
+
+const debugLog = (category: string, message: string, data?: Record<string, unknown>) =>
+  log("debug", category, message, data);
+const infoLog = (category: string, message: string, data?: Record<string, unknown>) =>
+  log("info", category, message, data);
+const warnLog = (category: string, message: string, data?: Record<string, unknown>) =>
+  log("warn", category, message, data);
+const errorLog = (category: string, message: string, error?: Error, data?: Record<string, unknown>) =>
+  log("error", category, message, data, error);
+
+// ============================================================================
+// Type Definitions
+// ============================================================================
+
 type BackgroundRequest =
   | { type: "start-automation"; tabId: number }
   | { type: "start-startup-automation"; tabId?: number }
@@ -108,6 +186,10 @@ type PendingManagedCompletionRecord = {
   updatedAt: number;
 };
 
+// ============================================================================
+// Constants with validation
+// ============================================================================
+
 const ZIPRECRUITER_SPAWN_DELAY_MS = 4_000;
 const MONSTER_SPAWN_DELAY_MS = 9_000;
 const RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1_000;
@@ -120,16 +202,33 @@ const PENDING_MANAGED_COMPLETION_STORAGE_KEY_PREFIX =
 const MAX_APPLIED_JOB_HISTORY = 5_000;
 const MAX_REVIEWED_JOB_HISTORY = 10_000;
 
+// Cache TTL configuration (5 minutes)
+const CACHE_TTL_MS = 5 * 60 * 1_000;
+
+// ============================================================================
+// Module State with Proper Cleanup
+// ============================================================================
+
 const runLocks = new Map<string, Promise<void>>();
 const pendingExtensionTabSpawns = new Map<number, number>();
 const pendingManagedCompletionTimerIds = new Map<string, number>();
 let pendingSpawnPersistTimerId: number | null = null;
-let appliedJobHistoryCache: Map<string, number> | null = null;
+
+// Cache with TTL tracking
+interface CachedHistory {
+  data: Map<string, number>;
+  loadedAt: number;
+}
+
+let appliedJobHistoryCache: CachedHistory | null = null;
 let appliedJobHistoryLoadPromise: Promise<Map<string, number>> | null = null;
 let appliedJobHistoryWritePromise: Promise<void> = Promise.resolve();
-let reviewedJobHistoryCache: Map<string, number> | null = null;
+let reviewedJobHistoryCache: CachedHistory | null = null;
 let reviewedJobHistoryLoadPromise: Promise<Map<string, number>> | null = null;
 let reviewedJobHistoryWritePromise: Promise<void> = Promise.resolve();
+
+// Track pending spawns for cleanup
+let pendingSpawnCount = 0;
 
 chrome.runtime.onMessage.addListener(
   (message: BackgroundRequest, sender, sendResponse) => {
@@ -149,32 +248,50 @@ chrome.runtime.onMessage.addListener(
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   void (async () => {
-    const session = await getSession(tabId);
-    const pendingCompletion =
-      session?.runId && isManagedJobSession(session)
-        ? await consumePendingManagedCompletionForSession(session)
-        : null;
-
-    if (session?.runId && pendingCompletion) {
-      if (pendingCompletion.completionKind === "successful") {
-        await recordSuccessfulJobCompletion(
-          session.runId,
-          tabId,
-          pendingCompletion.fallbackUrl
-        );
-      } else if (pendingCompletion.completionKind === "released") {
-        await releaseManagedJobOpening(
-          session.runId,
-          tabId,
-          pendingCompletion.fallbackUrl
-        );
+    try {
+      const session = await getSession(tabId);
+      
+      // Session may already be removed by another handler
+      if (!session) {
+        debugLog(LOG_CATEGORIES.SESSION, "Tab removed but no session found", { tabId });
+        return;
       }
-    }
+      
+      const pendingCompletion =
+        session.runId && isManagedJobSession(session)
+          ? await consumePendingManagedCompletionForSession(session)
+          : null;
 
-    await removeSession(tabId);
-    if (session?.runId) {
-      await maybeOpenNextQueuedJobForRunId(session.runId);
-      await maybeFinalizeExhaustedRun(session.runId);
+      if (session.runId && pendingCompletion) {
+        if (pendingCompletion.completionKind === "successful") {
+          await recordSuccessfulJobCompletion(
+            session.runId,
+            tabId,
+            pendingCompletion.fallbackUrl
+          );
+        } else if (pendingCompletion.completionKind === "released") {
+          await releaseManagedJobOpening(
+            session.runId,
+            tabId,
+            pendingCompletion.fallbackUrl
+          );
+        }
+      }
+
+      await removeSession(tabId);
+      
+      if (session.runId) {
+        // These operations are idempotent, safe to call even if run was already finalized
+        await maybeOpenNextQueuedJobForRunId(session.runId);
+        await maybeFinalizeExhaustedRun(session.runId);
+      }
+    } catch (error) {
+      errorLog(
+        LOG_CATEGORIES.SESSION,
+        "Error handling tab removal",
+        error instanceof Error ? error : undefined,
+        { tabId }
+      );
     }
   })();
 });
@@ -224,6 +341,25 @@ chrome.runtime.onInstalled.addListener(() => {
   void refreshStartupCompanies(true);
 });
 
+// Cleanup on extension suspend/unload
+chrome.runtime.onSuspend?.addListener(() => {
+  // Clear all pending timers
+  for (const timerId of pendingManagedCompletionTimerIds.values()) {
+    clearTimeout(timerId);
+  }
+  pendingManagedCompletionTimerIds.clear();
+
+  if (pendingSpawnPersistTimerId !== null) {
+    clearTimeout(pendingSpawnPersistTimerId);
+    pendingSpawnPersistTimerId = null;
+  }
+
+  // Persist pending spawns before shutdown
+  void persistPendingSpawns();
+
+  infoLog(LOG_CATEGORIES.GENERAL, "Extension suspending - cleanup complete");
+});
+
 chrome.alarms?.onAlarm.addListener((alarm) => {
   if (alarm.name === STARTUP_COMPANIES_REFRESH_ALARM) {
     void refreshStartupCompanies(true);
@@ -236,15 +372,26 @@ async function restorePendingSpawnsFromStorage(): Promise<void> {
     const stored = await chrome.storage.local.get(key);
     const data = stored[key];
     if (data && typeof data === "object" && !Array.isArray(data)) {
+      let totalCount = 0;
       for (const [tabIdStr, count] of Object.entries(data)) {
         const tabId = Number(tabIdStr);
         if (Number.isFinite(tabId) && typeof count === "number" && count > 0) {
           pendingExtensionTabSpawns.set(tabId, count);
+          totalCount += count;
         }
       }
+      pendingSpawnCount = totalCount;
+      debugLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Restored pending spawns from storage", {
+        tabCount: pendingExtensionTabSpawns.size,
+        totalCount: pendingSpawnCount,
+      });
     }
-  } catch {
-    // Ignore restore errors.
+  } catch (error) {
+    errorLog(
+      LOG_CATEGORIES.STORAGE,
+      "Failed to restore pending spawns from storage",
+      error instanceof Error ? error : undefined
+    );
   }
 }
 
@@ -268,6 +415,15 @@ function buildPendingManagedCompletionStorageKey(
   )}:${encodeURIComponent(claimedJobKey)}`;
 }
 
+// Validate storage key to prevent injection
+function isValidStorageKey(key: string): boolean {
+  if (!key || typeof key !== "string") {
+    return false;
+  }
+  // Only allow alphanumeric, hyphens, underscores, and colons
+  return /^[a-zA-Z0-9_:\-]+$/.test(key);
+}
+
 function isPendingManagedCompletionRecord(
   value: unknown
 ): value is PendingManagedCompletionRecord {
@@ -276,17 +432,65 @@ function isPendingManagedCompletionRecord(
   }
 
   const candidate = value as Partial<PendingManagedCompletionRecord>;
-  return (
-    typeof candidate.runId === "string" &&
-    candidate.runId.trim().length > 0 &&
-    typeof candidate.claimedJobKey === "string" &&
-    candidate.claimedJobKey.trim().length > 0 &&
-    typeof candidate.message === "string" &&
-    Number.isFinite(candidate.updatedAt) &&
-    (candidate.completionKind === "successful" ||
-      candidate.completionKind === "released" ||
-      candidate.completionKind === "handoff")
-  );
+  
+  // Validate runId
+  if (typeof candidate.runId !== "string") {
+    return false;
+  }
+  const runId = candidate.runId.trim();
+  if (runId.length === 0 || runId.length > 500 || !isValidStorageKey(runId)) {
+    return false;
+  }
+  
+  // Validate claimedJobKey
+  if (typeof candidate.claimedJobKey !== "string") {
+    return false;
+  }
+  const claimedJobKey = candidate.claimedJobKey.trim();
+  if (claimedJobKey.length === 0 || claimedJobKey.length > 2000) {
+    return false;
+  }
+  
+  // Validate message
+  if (typeof candidate.message !== "string") {
+    return false;
+  }
+  if (candidate.message.length > 5000) {
+    return false;
+  }
+  
+  // Validate updatedAt
+  if (!Number.isFinite(candidate.updatedAt)) {
+    return false;
+  }
+  // Ensure timestamp is reasonable (not in the future by more than 1 hour)
+  if (candidate.updatedAt! > Date.now() + 60 * 60 * 1000) {
+    return false;
+  }
+  
+  // Validate completionKind
+  const validCompletionKinds = ["successful", "released", "handoff"] as const;
+  if (!validCompletionKinds.includes(candidate.completionKind as typeof validCompletionKinds[number])) {
+    return false;
+  }
+  
+  // Validate fallbackUrl if present
+  if (candidate.fallbackUrl !== undefined) {
+    if (typeof candidate.fallbackUrl !== "string") {
+      return false;
+    }
+    if (candidate.fallbackUrl.length > 2000) {
+      return false;
+    }
+    try {
+      // eslint-disable-next-line no-new
+      new URL(candidate.fallbackUrl);
+    } catch {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 async function consumePendingManagedCompletionForSession(
@@ -2568,6 +2772,7 @@ async function enqueueJobTabsForRunId(
     }
 
     const appliedJobKeys = await loadAppliedJobKeySet();
+    const reviewedJobKeys = await loadReviewedJobKeySet();
     const seenKeys = new Set([
       ...(runState.openedJobKeys ?? []),
       ...(runState.reviewedJobKeys ?? []),
@@ -2591,7 +2796,8 @@ async function enqueueJobTabsForRunId(
 
       if (
         seenKeys.has(claimedJobKey) ||
-        appliedJobKeys.has(claimedJobKey)
+        appliedJobKeys.has(claimedJobKey) ||
+        reviewedJobKeys.has(claimedJobKey)
       ) {
         continue;
       }
@@ -3322,7 +3528,11 @@ async function filterManagedSpawnItemsByStoredHistory(
   items: SpawnTabRequest[]
 ): Promise<{ items: SpawnTabRequest[]; skippedItems: SpawnTabRequest[] }> {
   const appliedJobKeys = await loadAppliedJobKeySet();
-  if (appliedJobKeys.size === 0) {
+  const reviewedJobKeys = await loadReviewedJobKeySet();
+  const hasAppliedFilters = appliedJobKeys.size > 0;
+  const hasReviewedFilters = reviewedJobKeys.size > 0;
+
+  if (!hasAppliedFilters && !hasReviewedFilters) {
     return {
       items,
       skippedItems: [],
@@ -3339,12 +3549,17 @@ async function filterManagedSpawnItemsByStoredHistory(
     }
 
     const claimedJobKey = item.claimedJobKey?.trim() || getJobDedupKey(item.url);
-    if (!claimedJobKey || !appliedJobKeys.has(claimedJobKey)) {
+    if (!claimedJobKey) {
       filtered.push(item);
       continue;
     }
 
-    skippedItems.push(item);
+    if (appliedJobKeys.has(claimedJobKey) || reviewedJobKeys.has(claimedJobKey)) {
+      skippedItems.push(item);
+      continue;
+    }
+
+    filtered.push(item);
   }
 
   return {
@@ -3493,9 +3708,18 @@ function trimJobHistory(
     .slice(-maxEntries);
 }
 
+// Check if cache is stale
+function isCacheStale(cache: CachedHistory | null): boolean {
+  if (!cache) {
+    return true;
+  }
+  return Date.now() - cache.loadedAt > CACHE_TTL_MS;
+}
+
 async function loadAppliedJobHistory(): Promise<Map<string, number>> {
-  if (appliedJobHistoryCache) {
-    return appliedJobHistoryCache;
+  // Return cached data if not stale
+  if (appliedJobHistoryCache && !isCacheStale(appliedJobHistoryCache)) {
+    return appliedJobHistoryCache.data;
   }
 
   if (appliedJobHistoryLoadPromise) {
@@ -3505,13 +3729,28 @@ async function loadAppliedJobHistory(): Promise<Map<string, number>> {
   appliedJobHistoryLoadPromise = (async () => {
     try {
       const stored = await chrome.storage.local.get(APPLIED_JOB_HISTORY_STORAGE_KEY);
-      appliedJobHistoryCache = parseJobHistoryEntries(
+      const parsed = parseJobHistoryEntries(
         stored[APPLIED_JOB_HISTORY_STORAGE_KEY]
       );
-      return appliedJobHistoryCache;
-    } catch {
-      appliedJobHistoryCache = new Map();
-      return appliedJobHistoryCache;
+      appliedJobHistoryCache = {
+        data: parsed,
+        loadedAt: Date.now(),
+      };
+      debugLog(LOG_CATEGORIES.STORAGE, "Loaded applied job history", {
+        count: parsed.size,
+      });
+      return parsed;
+    } catch (error) {
+      errorLog(
+        LOG_CATEGORIES.STORAGE,
+        "Failed to load applied job history, using empty cache",
+        error instanceof Error ? error : undefined
+      );
+      appliedJobHistoryCache = {
+        data: new Map(),
+        loadedAt: Date.now(),
+      };
+      return appliedJobHistoryCache.data;
     } finally {
       appliedJobHistoryLoadPromise = null;
     }
@@ -3521,8 +3760,9 @@ async function loadAppliedJobHistory(): Promise<Map<string, number>> {
 }
 
 async function loadReviewedJobHistory(): Promise<Map<string, number>> {
-  if (reviewedJobHistoryCache) {
-    return reviewedJobHistoryCache;
+  // Return cached data if not stale
+  if (reviewedJobHistoryCache && !isCacheStale(reviewedJobHistoryCache)) {
+    return reviewedJobHistoryCache.data;
   }
 
   if (reviewedJobHistoryLoadPromise) {
@@ -3532,13 +3772,28 @@ async function loadReviewedJobHistory(): Promise<Map<string, number>> {
   reviewedJobHistoryLoadPromise = (async () => {
     try {
       const stored = await chrome.storage.local.get(REVIEWED_JOB_HISTORY_STORAGE_KEY);
-      reviewedJobHistoryCache = parseJobHistoryEntries(
+      const parsed = parseJobHistoryEntries(
         stored[REVIEWED_JOB_HISTORY_STORAGE_KEY]
       );
-      return reviewedJobHistoryCache;
-    } catch {
-      reviewedJobHistoryCache = new Map();
-      return reviewedJobHistoryCache;
+      reviewedJobHistoryCache = {
+        data: parsed,
+        loadedAt: Date.now(),
+      };
+      debugLog(LOG_CATEGORIES.STORAGE, "Loaded reviewed job history", {
+        count: parsed.size,
+      });
+      return parsed;
+    } catch (error) {
+      errorLog(
+        LOG_CATEGORIES.STORAGE,
+        "Failed to load reviewed job history, using empty cache",
+        error instanceof Error ? error : undefined
+      );
+      reviewedJobHistoryCache = {
+        data: new Map(),
+        loadedAt: Date.now(),
+      };
+      return reviewedJobHistoryCache.data;
     } finally {
       reviewedJobHistoryLoadPromise = null;
     }
@@ -3562,9 +3817,20 @@ async function persistAppliedJobHistory(
         await chrome.storage.local.set({
           [APPLIED_JOB_HISTORY_STORAGE_KEY]: trimmedEntries,
         });
-        appliedJobHistoryCache = new Map(trimmedEntries);
-      } catch {
-        // Ignore persistence errors and keep the current in-memory map.
+        appliedJobHistoryCache = {
+          data: new Map(trimmedEntries),
+          loadedAt: Date.now(),
+        };
+        debugLog(LOG_CATEGORIES.STORAGE, "Persisted applied job history", {
+          count: trimmedEntries.length,
+        });
+      } catch (error) {
+        errorLog(
+          LOG_CATEGORIES.STORAGE,
+          "Failed to persist applied job history",
+          error instanceof Error ? error : undefined
+        );
+        // Keep the current in-memory map on failure
       }
     });
 
@@ -3586,9 +3852,20 @@ async function persistReviewedJobHistory(
         await chrome.storage.local.set({
           [REVIEWED_JOB_HISTORY_STORAGE_KEY]: trimmedEntries,
         });
-        reviewedJobHistoryCache = new Map(trimmedEntries);
-      } catch {
-        // Ignore persistence errors and keep the current in-memory map.
+        reviewedJobHistoryCache = {
+          data: new Map(trimmedEntries),
+          loadedAt: Date.now(),
+        };
+        debugLog(LOG_CATEGORIES.STORAGE, "Persisted reviewed job history", {
+          count: trimmedEntries.length,
+        });
+      } catch (error) {
+        errorLog(
+          LOG_CATEGORIES.STORAGE,
+          "Failed to persist reviewed job history",
+          error instanceof Error ? error : undefined
+        );
+        // Keep the current in-memory map on failure
       }
     });
 
@@ -3607,14 +3884,22 @@ async function rememberAppliedJobKey(
   const appliedHistory = await loadAppliedJobHistory();
   appliedHistory.set(normalizedKey, appliedAt);
 
-  while (appliedHistory.size > MAX_APPLIED_JOB_HISTORY) {
-    const oldest = Array.from(appliedHistory.entries()).sort(
-      (left, right) => left[1] - right[1]
-    )[0];
-    if (!oldest) {
-      break;
+  // Safely trim history to prevent infinite loop
+  if (appliedHistory.size > MAX_APPLIED_JOB_HISTORY) {
+    try {
+      const entries = Array.from(appliedHistory.entries());
+      entries.sort((left, right) => left[1] - right[1]);
+      const toRemove = entries.slice(0, entries.length - MAX_APPLIED_JOB_HISTORY);
+      for (const [key] of toRemove) {
+        appliedHistory.delete(key);
+      }
+    } catch (error) {
+      errorLog(
+        LOG_CATEGORIES.STORAGE,
+        "Failed to trim applied job history",
+        error instanceof Error ? error : undefined
+      );
     }
-    appliedHistory.delete(oldest[0]);
   }
 
   await persistAppliedJobHistory(appliedHistory);
@@ -3632,14 +3917,22 @@ async function rememberReviewedJobKey(
   const reviewedHistory = await loadReviewedJobHistory();
   reviewedHistory.set(normalizedKey, reviewedAt);
 
-  while (reviewedHistory.size > MAX_REVIEWED_JOB_HISTORY) {
-    const oldest = Array.from(reviewedHistory.entries()).sort(
-      (left, right) => left[1] - right[1]
-    )[0];
-    if (!oldest) {
-      break;
+  // Safely trim history to prevent infinite loop
+  if (reviewedHistory.size > MAX_REVIEWED_JOB_HISTORY) {
+    try {
+      const entries = Array.from(reviewedHistory.entries());
+      entries.sort((left, right) => left[1] - right[1]);
+      const toRemove = entries.slice(0, entries.length - MAX_REVIEWED_JOB_HISTORY);
+      for (const [key] of toRemove) {
+        reviewedHistory.delete(key);
+      }
+    } catch (error) {
+      errorLog(
+        LOG_CATEGORIES.STORAGE,
+        "Failed to trim reviewed job history",
+        error instanceof Error ? error : undefined
+      );
     }
-    reviewedHistory.delete(oldest[0]);
   }
 
   await persistReviewedJobHistory(reviewedHistory);
@@ -3648,6 +3941,11 @@ async function rememberReviewedJobKey(
 async function loadAppliedJobKeySet(): Promise<Set<string>> {
   const appliedHistory = await loadAppliedJobHistory();
   return new Set(appliedHistory.keys());
+}
+
+async function loadReviewedJobKeySet(): Promise<Set<string>> {
+  const reviewedHistory = await loadReviewedJobHistory();
+  return new Set(reviewedHistory.keys());
 }
 
 type BackgroundSourceTab = chrome.tabs.Tab & { pendingUrl?: string };
@@ -3904,13 +4202,33 @@ function isHttpUrl(url: string): boolean {
 
 function reserveExtensionSpawnSlots(tabId: number, count: number): void {
   if (!Number.isFinite(count) || count <= 0) {
+    warnLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Invalid spawn slot count", { tabId, count });
     return;
   }
 
-  pendingExtensionTabSpawns.set(
+  const current = pendingExtensionTabSpawns.get(tabId) ?? 0;
+  const newValue = current + count;
+  
+  // Prevent overflow
+  if (newValue > 10000) {
+    errorLog(
+      LOG_CATEGORIES.TAB_MANAGEMENT,
+      "Spawn slot reservation would exceed maximum",
+      undefined,
+      { tabId, current, requested: count, newValue }
+    );
+    return;
+  }
+
+  pendingExtensionTabSpawns.set(tabId, newValue);
+  pendingSpawnCount += count;
+  
+  debugLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Reserved spawn slots", {
     tabId,
-    (pendingExtensionTabSpawns.get(tabId) ?? 0) + count
-  );
+    count,
+    total: pendingExtensionTabSpawns.get(tabId),
+    globalTotal: pendingSpawnCount,
+  });
 
   schedulePendingSpawnsPersist();
 }
@@ -3928,25 +4246,37 @@ function consumePendingExtensionSpawn(tabId: number): boolean {
     pendingExtensionTabSpawns.set(tabId, remaining - 1);
   }
 
+  pendingSpawnCount = Math.max(0, pendingSpawnCount - 1);
   schedulePendingSpawnsPersist();
   return true;
 }
 
 function releaseExtensionSpawnSlots(tabId: number, count: number): void {
   if (!Number.isFinite(count) || count <= 0) {
+    warnLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Invalid spawn slot release count", { tabId, count });
     return;
   }
 
-  const remaining = Math.max(
-    0,
-    (pendingExtensionTabSpawns.get(tabId) ?? 0) - Math.floor(count)
-  );
+  const current = pendingExtensionTabSpawns.get(tabId) ?? 0;
+  const flooredCount = Math.floor(count);
+  const remaining = Math.max(0, current - flooredCount);
+  const released = current - remaining;
 
   if (remaining <= 0) {
     pendingExtensionTabSpawns.delete(tabId);
   } else {
     pendingExtensionTabSpawns.set(tabId, remaining);
   }
+
+  pendingSpawnCount = Math.max(0, pendingSpawnCount - released);
+
+  debugLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Released spawn slots", {
+    tabId,
+    requested: count,
+    released,
+    remaining,
+    globalTotal: pendingSpawnCount,
+  });
 
   schedulePendingSpawnsPersist();
 }
@@ -4022,15 +4352,25 @@ function isRunnableCurrentTabSite(
 }
 
 async function reloadTabAndWait(tabId: number): Promise<void> {
+  debugLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Reloading tab and waiting for completion", { tabId });
+  
   await new Promise<void>((resolve, reject) => {
     let settled = false;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const cleanup = () => {
-      chrome.tabs.onUpdated.removeListener(handleUpdated);
-      chrome.tabs.onRemoved.removeListener(handleRemoved);
+      if (!settled) {
+        return;
+      }
+      try {
+        chrome.tabs.onUpdated.removeListener(handleUpdated);
+        chrome.tabs.onRemoved.removeListener(handleRemoved);
+      } catch {
+        // Listeners may already be removed
+      }
       if (timeoutId !== null) {
         globalThis.clearTimeout(timeoutId);
+        timeoutId = null;
       }
     };
 
@@ -4051,6 +4391,7 @@ async function reloadTabAndWait(tabId: number): Promise<void> {
         return;
       }
       if (changeInfo.status === "complete") {
+        debugLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Tab reload completed", { tabId });
         finish(resolve);
       }
     };
@@ -4059,16 +4400,24 @@ async function reloadTabAndWait(tabId: number): Promise<void> {
       if (removedTabId !== tabId) {
         return;
       }
+      warnLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Tab was closed during reload", { tabId });
       finish(() => reject(new Error("Tab was closed.")));
     };
 
     chrome.tabs.onUpdated.addListener(handleUpdated);
     chrome.tabs.onRemoved.addListener(handleRemoved);
     timeoutId = globalThis.setTimeout(() => {
+      warnLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Tab reload timed out", { tabId });
       finish(() => reject(new Error("Timed out reloading tab.")));
     }, 30000);
 
     chrome.tabs.reload(tabId).catch((error: unknown) => {
+      errorLog(
+        LOG_CATEGORIES.TAB_MANAGEMENT,
+        "Failed to reload tab",
+        error instanceof Error ? error : undefined,
+        { tabId }
+      );
       finish(() =>
         reject(
           error instanceof Error

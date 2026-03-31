@@ -1117,7 +1117,7 @@ function applyStatus(status: AutomationStatus): void {
   statusPanel.dataset.phase = status.phase;
   statusText.textContent = status.message;
   queueCount.textContent = String(activeRunSummary?.queuedJobCount ?? 0);
-  appliedCount.textContent = String(activeRunSummary?.appliedJobCount ?? 0);
+  appliedCount.textContent = String(activeRunSummary?.reviewedJobCount ?? 0);
   updateSiteNameDisplay();
 }
 

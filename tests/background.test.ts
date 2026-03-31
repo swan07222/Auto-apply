@@ -3692,11 +3692,11 @@ describe("background spawn quota handling", () => {
     expect(createTabMock).toHaveBeenCalledTimes(1);
   });
 
-  it("allows reopening managed job tabs that were only reviewed in prior runs", async () => {
+  it("skips managed job tabs that were reviewed in prior runs", async () => {
     const runId = "run-reviewed-history-skip";
     const reviewedUrl = "https://www.indeed.com/viewjob?jk=alpha123";
     const reviewedKey = getJobDedupKey(reviewedUrl)!;
-    const createTabMock = vi.fn().mockResolvedValueOnce({ id: 101 });
+    const createTabMock = vi.fn();
     const chromeMock = createBackgroundChrome(
       {
         "remote-job-search-reviewed-job-history": [[reviewedKey, 1_711_111_111_111]],
@@ -3730,9 +3730,9 @@ describe("background spawn quota handling", () => {
 
     expect(response).toEqual({
       ok: true,
-      opened: 1,
+      opened: 0,
     });
-    expect(createTabMock).toHaveBeenCalledTimes(1);
+    expect(createTabMock).toHaveBeenCalledTimes(0);
   });
 
   it("still skips managed job tabs that were already applied in prior runs", async () => {

@@ -1344,6 +1344,46 @@
   }
 
   // src/background.ts
+  var LOG_CATEGORIES = {
+    STORAGE: "storage",
+    TAB_MANAGEMENT: "tab-management",
+    SESSION: "session",
+    RATE_LIMIT: "rate-limit",
+    QUEUE: "queue",
+    MONSTER: "monster",
+    GENERAL: "general"
+  };
+  function log(level, category, message, data, error) {
+    const entry = {
+      timestamp: Date.now(),
+      level,
+      category,
+      message,
+      data,
+      error: error?.message
+    };
+    const prefix = `[Auto-apply][${category.toUpperCase()}]`;
+    const logData = data ? [data] : [];
+    const logArgs = error ? [...logData, error] : logData;
+    switch (level) {
+      case "debug":
+        console.debug(prefix, message, ...logArgs);
+        break;
+      case "info":
+        console.info(prefix, message, ...logArgs);
+        break;
+      case "warn":
+        console.warn(prefix, message, ...logArgs);
+        break;
+      case "error":
+        console.error(prefix, message, ...logArgs);
+        break;
+    }
+  }
+  var debugLog = (category, message, data) => log("debug", category, message, data);
+  var infoLog = (category, message, data) => log("info", category, message, data);
+  var warnLog = (category, message, data) => log("warn", category, message, data);
+  var errorLog = (category, message, error, data) => log("error", category, message, data, error);
   var ZIPRECRUITER_SPAWN_DELAY_MS = 4e3;
   var MONSTER_SPAWN_DELAY_MS = 9e3;
   var RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1e3;
@@ -1353,6 +1393,7 @@
   var PENDING_MANAGED_COMPLETION_STORAGE_KEY_PREFIX = "remote-job-search-pending-managed-completion:";
   var MAX_APPLIED_JOB_HISTORY = 5e3;
   var MAX_REVIEWED_JOB_HISTORY = 1e4;
+  var CACHE_TTL_MS = 5 * 60 * 1e3;
   var runLocks = /* @__PURE__ */ new Map();
   var pendingExtensionTabSpawns = /* @__PURE__ */ new Map();
   var pendingManagedCompletionTimerIds = /* @__PURE__ */ new Map();
@@ -1363,6 +1404,7 @@
   var reviewedJobHistoryCache = null;
   var reviewedJobHistoryLoadPromise = null;
   var reviewedJobHistoryWritePromise = Promise.resolve();
+  var pendingSpawnCount = 0;
   chrome.runtime.onMessage.addListener(
     (message, sender, sendResponse) => {
       void handleMessage(message, sender).then((response) => sendResponse(response)).catch((error) => {
@@ -1376,27 +1418,40 @@
   );
   chrome.tabs.onRemoved.addListener((tabId) => {
     void (async () => {
-      const session = await getSession(tabId);
-      const pendingCompletion = session?.runId && isManagedJobSession(session) ? await consumePendingManagedCompletionForSession(session) : null;
-      if (session?.runId && pendingCompletion) {
-        if (pendingCompletion.completionKind === "successful") {
-          await recordSuccessfulJobCompletion(
-            session.runId,
-            tabId,
-            pendingCompletion.fallbackUrl
-          );
-        } else if (pendingCompletion.completionKind === "released") {
-          await releaseManagedJobOpening(
-            session.runId,
-            tabId,
-            pendingCompletion.fallbackUrl
-          );
+      try {
+        const session = await getSession(tabId);
+        if (!session) {
+          debugLog(LOG_CATEGORIES.SESSION, "Tab removed but no session found", { tabId });
+          return;
         }
-      }
-      await removeSession(tabId);
-      if (session?.runId) {
-        await maybeOpenNextQueuedJobForRunId(session.runId);
-        await maybeFinalizeExhaustedRun(session.runId);
+        const pendingCompletion = session.runId && isManagedJobSession(session) ? await consumePendingManagedCompletionForSession(session) : null;
+        if (session.runId && pendingCompletion) {
+          if (pendingCompletion.completionKind === "successful") {
+            await recordSuccessfulJobCompletion(
+              session.runId,
+              tabId,
+              pendingCompletion.fallbackUrl
+            );
+          } else if (pendingCompletion.completionKind === "released") {
+            await releaseManagedJobOpening(
+              session.runId,
+              tabId,
+              pendingCompletion.fallbackUrl
+            );
+          }
+        }
+        await removeSession(tabId);
+        if (session.runId) {
+          await maybeOpenNextQueuedJobForRunId(session.runId);
+          await maybeFinalizeExhaustedRun(session.runId);
+        }
+      } catch (error) {
+        errorLog(
+          LOG_CATEGORIES.SESSION,
+          "Error handling tab removal",
+          error instanceof Error ? error : void 0,
+          { tabId }
+        );
       }
     })();
   });
@@ -1437,6 +1492,18 @@
     void scheduleStartupCompanyRefresh();
     void refreshStartupCompanies(true);
   });
+  chrome.runtime.onSuspend?.addListener(() => {
+    for (const timerId of pendingManagedCompletionTimerIds.values()) {
+      clearTimeout(timerId);
+    }
+    pendingManagedCompletionTimerIds.clear();
+    if (pendingSpawnPersistTimerId !== null) {
+      clearTimeout(pendingSpawnPersistTimerId);
+      pendingSpawnPersistTimerId = null;
+    }
+    void persistPendingSpawns();
+    infoLog(LOG_CATEGORIES.GENERAL, "Extension suspending - cleanup complete");
+  });
   chrome.alarms?.onAlarm.addListener((alarm) => {
     if (alarm.name === STARTUP_COMPANIES_REFRESH_ALARM) {
       void refreshStartupCompanies(true);
@@ -1448,14 +1515,26 @@
       const stored = await chrome.storage.local.get(key);
       const data = stored[key];
       if (data && typeof data === "object" && !Array.isArray(data)) {
+        let totalCount = 0;
         for (const [tabIdStr, count] of Object.entries(data)) {
           const tabId = Number(tabIdStr);
           if (Number.isFinite(tabId) && typeof count === "number" && count > 0) {
             pendingExtensionTabSpawns.set(tabId, count);
+            totalCount += count;
           }
         }
+        pendingSpawnCount = totalCount;
+        debugLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Restored pending spawns from storage", {
+          tabCount: pendingExtensionTabSpawns.size,
+          totalCount: pendingSpawnCount
+        });
       }
-    } catch {
+    } catch (error) {
+      errorLog(
+        LOG_CATEGORIES.STORAGE,
+        "Failed to restore pending spawns from storage",
+        error instanceof Error ? error : void 0
+      );
     }
   }
   async function scheduleStartupCompanyRefresh() {
@@ -1472,12 +1551,61 @@
       runId
     )}:${encodeURIComponent(claimedJobKey)}`;
   }
+  function isValidStorageKey(key) {
+    if (!key || typeof key !== "string") {
+      return false;
+    }
+    return /^[a-zA-Z0-9_:\-]+$/.test(key);
+  }
   function isPendingManagedCompletionRecord(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       return false;
     }
     const candidate = value;
-    return typeof candidate.runId === "string" && candidate.runId.trim().length > 0 && typeof candidate.claimedJobKey === "string" && candidate.claimedJobKey.trim().length > 0 && typeof candidate.message === "string" && Number.isFinite(candidate.updatedAt) && (candidate.completionKind === "successful" || candidate.completionKind === "released" || candidate.completionKind === "handoff");
+    if (typeof candidate.runId !== "string") {
+      return false;
+    }
+    const runId = candidate.runId.trim();
+    if (runId.length === 0 || runId.length > 500 || !isValidStorageKey(runId)) {
+      return false;
+    }
+    if (typeof candidate.claimedJobKey !== "string") {
+      return false;
+    }
+    const claimedJobKey = candidate.claimedJobKey.trim();
+    if (claimedJobKey.length === 0 || claimedJobKey.length > 2e3) {
+      return false;
+    }
+    if (typeof candidate.message !== "string") {
+      return false;
+    }
+    if (candidate.message.length > 5e3) {
+      return false;
+    }
+    if (!Number.isFinite(candidate.updatedAt)) {
+      return false;
+    }
+    if (candidate.updatedAt > Date.now() + 60 * 60 * 1e3) {
+      return false;
+    }
+    const validCompletionKinds = ["successful", "released", "handoff"];
+    if (!validCompletionKinds.includes(candidate.completionKind)) {
+      return false;
+    }
+    if (candidate.fallbackUrl !== void 0) {
+      if (typeof candidate.fallbackUrl !== "string") {
+        return false;
+      }
+      if (candidate.fallbackUrl.length > 2e3) {
+        return false;
+      }
+      try {
+        new URL(candidate.fallbackUrl);
+      } catch {
+        return false;
+      }
+    }
+    return true;
   }
   async function consumePendingManagedCompletionForSession(session) {
     const runId = session.runId?.trim();
@@ -3043,6 +3171,7 @@
         return 0;
       }
       const appliedJobKeys = await loadAppliedJobKeySet();
+      const reviewedJobKeys = await loadReviewedJobKeySet();
       const seenKeys = /* @__PURE__ */ new Set([
         ...runState.openedJobKeys ?? [],
         ...runState.reviewedJobKeys ?? [],
@@ -3059,7 +3188,7 @@
         if (!claimedJobKey) {
           continue;
         }
-        if (seenKeys.has(claimedJobKey) || appliedJobKeys.has(claimedJobKey)) {
+        if (seenKeys.has(claimedJobKey) || appliedJobKeys.has(claimedJobKey) || reviewedJobKeys.has(claimedJobKey)) {
           continue;
         }
         seenKeys.add(claimedJobKey);
@@ -3552,7 +3681,10 @@
   }
   async function filterManagedSpawnItemsByStoredHistory(items) {
     const appliedJobKeys = await loadAppliedJobKeySet();
-    if (appliedJobKeys.size === 0) {
+    const reviewedJobKeys = await loadReviewedJobKeySet();
+    const hasAppliedFilters = appliedJobKeys.size > 0;
+    const hasReviewedFilters = reviewedJobKeys.size > 0;
+    if (!hasAppliedFilters && !hasReviewedFilters) {
       return {
         items,
         skippedItems: []
@@ -3566,11 +3698,15 @@
         continue;
       }
       const claimedJobKey = item.claimedJobKey?.trim() || getJobDedupKey(item.url);
-      if (!claimedJobKey || !appliedJobKeys.has(claimedJobKey)) {
+      if (!claimedJobKey) {
         filtered.push(item);
         continue;
       }
-      skippedItems.push(item);
+      if (appliedJobKeys.has(claimedJobKey) || reviewedJobKeys.has(claimedJobKey)) {
+        skippedItems.push(item);
+        continue;
+      }
+      filtered.push(item);
     }
     return {
       items: filtered,
@@ -3668,9 +3804,15 @@
   function trimJobHistory(history, maxEntries) {
     return Array.from(history.entries()).sort((left, right) => left[1] - right[1]).slice(-maxEntries);
   }
+  function isCacheStale(cache) {
+    if (!cache) {
+      return true;
+    }
+    return Date.now() - cache.loadedAt > CACHE_TTL_MS;
+  }
   async function loadAppliedJobHistory() {
-    if (appliedJobHistoryCache) {
-      return appliedJobHistoryCache;
+    if (appliedJobHistoryCache && !isCacheStale(appliedJobHistoryCache)) {
+      return appliedJobHistoryCache.data;
     }
     if (appliedJobHistoryLoadPromise) {
       return appliedJobHistoryLoadPromise;
@@ -3678,13 +3820,28 @@
     appliedJobHistoryLoadPromise = (async () => {
       try {
         const stored = await chrome.storage.local.get(APPLIED_JOB_HISTORY_STORAGE_KEY);
-        appliedJobHistoryCache = parseJobHistoryEntries(
+        const parsed = parseJobHistoryEntries(
           stored[APPLIED_JOB_HISTORY_STORAGE_KEY]
         );
-        return appliedJobHistoryCache;
-      } catch {
-        appliedJobHistoryCache = /* @__PURE__ */ new Map();
-        return appliedJobHistoryCache;
+        appliedJobHistoryCache = {
+          data: parsed,
+          loadedAt: Date.now()
+        };
+        debugLog(LOG_CATEGORIES.STORAGE, "Loaded applied job history", {
+          count: parsed.size
+        });
+        return parsed;
+      } catch (error) {
+        errorLog(
+          LOG_CATEGORIES.STORAGE,
+          "Failed to load applied job history, using empty cache",
+          error instanceof Error ? error : void 0
+        );
+        appliedJobHistoryCache = {
+          data: /* @__PURE__ */ new Map(),
+          loadedAt: Date.now()
+        };
+        return appliedJobHistoryCache.data;
       } finally {
         appliedJobHistoryLoadPromise = null;
       }
@@ -3692,8 +3849,8 @@
     return appliedJobHistoryLoadPromise;
   }
   async function loadReviewedJobHistory() {
-    if (reviewedJobHistoryCache) {
-      return reviewedJobHistoryCache;
+    if (reviewedJobHistoryCache && !isCacheStale(reviewedJobHistoryCache)) {
+      return reviewedJobHistoryCache.data;
     }
     if (reviewedJobHistoryLoadPromise) {
       return reviewedJobHistoryLoadPromise;
@@ -3701,13 +3858,28 @@
     reviewedJobHistoryLoadPromise = (async () => {
       try {
         const stored = await chrome.storage.local.get(REVIEWED_JOB_HISTORY_STORAGE_KEY);
-        reviewedJobHistoryCache = parseJobHistoryEntries(
+        const parsed = parseJobHistoryEntries(
           stored[REVIEWED_JOB_HISTORY_STORAGE_KEY]
         );
-        return reviewedJobHistoryCache;
-      } catch {
-        reviewedJobHistoryCache = /* @__PURE__ */ new Map();
-        return reviewedJobHistoryCache;
+        reviewedJobHistoryCache = {
+          data: parsed,
+          loadedAt: Date.now()
+        };
+        debugLog(LOG_CATEGORIES.STORAGE, "Loaded reviewed job history", {
+          count: parsed.size
+        });
+        return parsed;
+      } catch (error) {
+        errorLog(
+          LOG_CATEGORIES.STORAGE,
+          "Failed to load reviewed job history, using empty cache",
+          error instanceof Error ? error : void 0
+        );
+        reviewedJobHistoryCache = {
+          data: /* @__PURE__ */ new Map(),
+          loadedAt: Date.now()
+        };
+        return reviewedJobHistoryCache.data;
       } finally {
         reviewedJobHistoryLoadPromise = null;
       }
@@ -3725,8 +3897,19 @@
         await chrome.storage.local.set({
           [APPLIED_JOB_HISTORY_STORAGE_KEY]: trimmedEntries
         });
-        appliedJobHistoryCache = new Map(trimmedEntries);
-      } catch {
+        appliedJobHistoryCache = {
+          data: new Map(trimmedEntries),
+          loadedAt: Date.now()
+        };
+        debugLog(LOG_CATEGORIES.STORAGE, "Persisted applied job history", {
+          count: trimmedEntries.length
+        });
+      } catch (error) {
+        errorLog(
+          LOG_CATEGORIES.STORAGE,
+          "Failed to persist applied job history",
+          error instanceof Error ? error : void 0
+        );
       }
     });
     await appliedJobHistoryWritePromise;
@@ -3742,8 +3925,19 @@
         await chrome.storage.local.set({
           [REVIEWED_JOB_HISTORY_STORAGE_KEY]: trimmedEntries
         });
-        reviewedJobHistoryCache = new Map(trimmedEntries);
-      } catch {
+        reviewedJobHistoryCache = {
+          data: new Map(trimmedEntries),
+          loadedAt: Date.now()
+        };
+        debugLog(LOG_CATEGORIES.STORAGE, "Persisted reviewed job history", {
+          count: trimmedEntries.length
+        });
+      } catch (error) {
+        errorLog(
+          LOG_CATEGORIES.STORAGE,
+          "Failed to persist reviewed job history",
+          error instanceof Error ? error : void 0
+        );
       }
     });
     await reviewedJobHistoryWritePromise;
@@ -3755,14 +3949,21 @@
     }
     const appliedHistory = await loadAppliedJobHistory();
     appliedHistory.set(normalizedKey, appliedAt);
-    while (appliedHistory.size > MAX_APPLIED_JOB_HISTORY) {
-      const oldest = Array.from(appliedHistory.entries()).sort(
-        (left, right) => left[1] - right[1]
-      )[0];
-      if (!oldest) {
-        break;
+    if (appliedHistory.size > MAX_APPLIED_JOB_HISTORY) {
+      try {
+        const entries = Array.from(appliedHistory.entries());
+        entries.sort((left, right) => left[1] - right[1]);
+        const toRemove = entries.slice(0, entries.length - MAX_APPLIED_JOB_HISTORY);
+        for (const [key2] of toRemove) {
+          appliedHistory.delete(key2);
+        }
+      } catch (error) {
+        errorLog(
+          LOG_CATEGORIES.STORAGE,
+          "Failed to trim applied job history",
+          error instanceof Error ? error : void 0
+        );
       }
-      appliedHistory.delete(oldest[0]);
     }
     await persistAppliedJobHistory(appliedHistory);
   }
@@ -3773,20 +3974,31 @@
     }
     const reviewedHistory = await loadReviewedJobHistory();
     reviewedHistory.set(normalizedKey, reviewedAt);
-    while (reviewedHistory.size > MAX_REVIEWED_JOB_HISTORY) {
-      const oldest = Array.from(reviewedHistory.entries()).sort(
-        (left, right) => left[1] - right[1]
-      )[0];
-      if (!oldest) {
-        break;
+    if (reviewedHistory.size > MAX_REVIEWED_JOB_HISTORY) {
+      try {
+        const entries = Array.from(reviewedHistory.entries());
+        entries.sort((left, right) => left[1] - right[1]);
+        const toRemove = entries.slice(0, entries.length - MAX_REVIEWED_JOB_HISTORY);
+        for (const [key2] of toRemove) {
+          reviewedHistory.delete(key2);
+        }
+      } catch (error) {
+        errorLog(
+          LOG_CATEGORIES.STORAGE,
+          "Failed to trim reviewed job history",
+          error instanceof Error ? error : void 0
+        );
       }
-      reviewedHistory.delete(oldest[0]);
     }
     await persistReviewedJobHistory(reviewedHistory);
   }
   async function loadAppliedJobKeySet() {
     const appliedHistory = await loadAppliedJobHistory();
     return new Set(appliedHistory.keys());
+  }
+  async function loadReviewedJobKeySet() {
+    const reviewedHistory = await loadReviewedJobHistory();
+    return new Set(reviewedHistory.keys());
   }
   async function getTabSafely(tabId) {
     try {
@@ -3961,12 +4173,28 @@
   }
   function reserveExtensionSpawnSlots(tabId, count) {
     if (!Number.isFinite(count) || count <= 0) {
+      warnLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Invalid spawn slot count", { tabId, count });
       return;
     }
-    pendingExtensionTabSpawns.set(
+    const current = pendingExtensionTabSpawns.get(tabId) ?? 0;
+    const newValue = current + count;
+    if (newValue > 1e4) {
+      errorLog(
+        LOG_CATEGORIES.TAB_MANAGEMENT,
+        "Spawn slot reservation would exceed maximum",
+        void 0,
+        { tabId, current, requested: count, newValue }
+      );
+      return;
+    }
+    pendingExtensionTabSpawns.set(tabId, newValue);
+    pendingSpawnCount += count;
+    debugLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Reserved spawn slots", {
       tabId,
-      (pendingExtensionTabSpawns.get(tabId) ?? 0) + count
-    );
+      count,
+      total: pendingExtensionTabSpawns.get(tabId),
+      globalTotal: pendingSpawnCount
+    });
     schedulePendingSpawnsPersist();
   }
   function consumePendingExtensionSpawn(tabId) {
@@ -3979,22 +4207,32 @@
     } else {
       pendingExtensionTabSpawns.set(tabId, remaining - 1);
     }
+    pendingSpawnCount = Math.max(0, pendingSpawnCount - 1);
     schedulePendingSpawnsPersist();
     return true;
   }
   function releaseExtensionSpawnSlots(tabId, count) {
     if (!Number.isFinite(count) || count <= 0) {
+      warnLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Invalid spawn slot release count", { tabId, count });
       return;
     }
-    const remaining = Math.max(
-      0,
-      (pendingExtensionTabSpawns.get(tabId) ?? 0) - Math.floor(count)
-    );
+    const current = pendingExtensionTabSpawns.get(tabId) ?? 0;
+    const flooredCount = Math.floor(count);
+    const remaining = Math.max(0, current - flooredCount);
+    const released = current - remaining;
     if (remaining <= 0) {
       pendingExtensionTabSpawns.delete(tabId);
     } else {
       pendingExtensionTabSpawns.set(tabId, remaining);
     }
+    pendingSpawnCount = Math.max(0, pendingSpawnCount - released);
+    debugLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Released spawn slots", {
+      tabId,
+      requested: count,
+      released,
+      remaining,
+      globalTotal: pendingSpawnCount
+    });
     schedulePendingSpawnsPersist();
   }
   function getReadableSiteName(site) {
@@ -4057,14 +4295,22 @@
     return isJobBoardSite(site) || site === "other_sites";
   }
   async function reloadTabAndWait(tabId) {
+    debugLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Reloading tab and waiting for completion", { tabId });
     await new Promise((resolve, reject) => {
       let settled = false;
       let timeoutId = null;
       const cleanup = () => {
-        chrome.tabs.onUpdated.removeListener(handleUpdated);
-        chrome.tabs.onRemoved.removeListener(handleRemoved);
+        if (!settled) {
+          return;
+        }
+        try {
+          chrome.tabs.onUpdated.removeListener(handleUpdated);
+          chrome.tabs.onRemoved.removeListener(handleRemoved);
+        } catch {
+        }
         if (timeoutId !== null) {
           globalThis.clearTimeout(timeoutId);
+          timeoutId = null;
         }
       };
       const finish = (callback) => {
@@ -4080,6 +4326,7 @@
           return;
         }
         if (changeInfo.status === "complete") {
+          debugLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Tab reload completed", { tabId });
           finish(resolve);
         }
       };
@@ -4087,14 +4334,22 @@
         if (removedTabId !== tabId) {
           return;
         }
+        warnLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Tab was closed during reload", { tabId });
         finish(() => reject(new Error("Tab was closed.")));
       };
       chrome.tabs.onUpdated.addListener(handleUpdated);
       chrome.tabs.onRemoved.addListener(handleRemoved);
       timeoutId = globalThis.setTimeout(() => {
+        warnLog(LOG_CATEGORIES.TAB_MANAGEMENT, "Tab reload timed out", { tabId });
         finish(() => reject(new Error("Timed out reloading tab.")));
       }, 3e4);
       chrome.tabs.reload(tabId).catch((error) => {
+        errorLog(
+          LOG_CATEGORIES.TAB_MANAGEMENT,
+          "Failed to reload tab",
+          error instanceof Error ? error : void 0,
+          { tabId }
+        );
         finish(
           () => reject(
             error instanceof Error ? error : new Error("Failed to reload tab.")

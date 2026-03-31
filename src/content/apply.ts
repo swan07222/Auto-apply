@@ -2707,9 +2707,22 @@ function collectVisibleZipRecruiterDialogRoots(): HTMLElement[] {
 }
 
 function isActiveZipRecruiterApplyModal(modal: HTMLElement): boolean {
-  const text = cleanText(modal.innerText || modal.textContent || "")
+  let text = cleanText(modal.innerText || modal.textContent || "")
     .toLowerCase()
     .slice(0, 2500);
+
+  // Also extract text from shadow DOM
+  for (const host of collectShadowHosts(modal)) {
+    try {
+      const shadowText = cleanText(
+        host.shadowRoot?.textContent || ""
+      ).toLowerCase();
+      text += shadowText;
+    } catch {
+      continue;
+    }
+  }
+  text = text.slice(0, 2500);
 
   if (!text || isZipRecruiterAppliedStateText(text)) {
     return false;
@@ -2731,6 +2744,18 @@ function hasVisibleZipRecruiterEditableField(modal: HTMLElement): boolean {
     modal.querySelectorAll<HTMLElement>("input, textarea, select")
   );
 
+  // Also search in shadow DOM
+  for (const host of collectShadowHosts(modal)) {
+    try {
+      const shadowFields = Array.from(
+        host.shadowRoot?.querySelectorAll<HTMLElement>("input, textarea, select") ?? []
+      );
+      fields.push(...shadowFields);
+    } catch {
+      continue;
+    }
+  }
+
   return fields.some((field) => {
     if (!isElementVisible(field)) {
       return false;
@@ -2751,6 +2776,20 @@ function hasVisibleZipRecruiterApplyControl(modal: HTMLElement): boolean {
       "button, a[href], [role='button'], input[type='submit'], input[type='button']"
     )
   );
+
+  // Also search in shadow DOM
+  for (const host of collectShadowHosts(modal)) {
+    try {
+      const shadowControls = Array.from(
+        host.shadowRoot?.querySelectorAll<HTMLElement>(
+          "button, a[href], [role='button'], input[type='submit'], input[type='button']"
+        ) ?? []
+      );
+      controls.push(...shadowControls);
+    } catch {
+      continue;
+    }
+  }
 
   return controls.some((control) => {
     if (!isElementVisible(control)) {

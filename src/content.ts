@@ -5763,10 +5763,10 @@ function renderOverlay(): void {
       ? "true"
       : "false";
   const queuedJobCount = currentRunSummary?.queuedJobCount ?? 0;
-  const appliedJobCount = currentRunSummary?.appliedJobCount ?? 0;
+  const reviewedJobCount = currentRunSummary?.reviewedJobCount ?? 0;
   overlay.countRow.hidden = !currentRunSummary;
   overlay.queueCount.textContent = `Queue: ${queuedJobCount}`;
-  overlay.appliedCount.textContent = `Applied: ${appliedJobCount}`;
+  overlay.appliedCount.textContent = `Applied: ${reviewedJobCount}`;
   overlay.text.textContent = status.message;
   const actionLabel = getOverlayActionLabel();
   overlay.actionButton.hidden = !actionLabel;
@@ -5863,7 +5863,7 @@ async function showSuccessFireworks(): Promise<void> {
   if (!hostDocument?.body) {
     return;
   }
-  const appliedJobCount = currentRunSummary?.appliedJobCount ?? 0;
+  const reviewedJobCount = currentRunSummary?.reviewedJobCount ?? 0;
 
   const container = hostDocument.createElement("div");
   container.setAttribute(
@@ -5953,7 +5953,7 @@ async function showSuccessFireworks(): Promise<void> {
     </div>
     <div style="margin-top:14px;font-size:24px;font-weight:800;line-height:1.15;color:#ffffff">Moving to the next opportunity</div>
     <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:14px">
-      <span style="display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;background:rgba(70,199,138,.14);border:1px solid rgba(70,199,138,.2);font-size:12px;font-weight:700;color:#ecfff4">Applied: ${appliedJobCount}</span>
+      <span style="display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;background:rgba(70,199,138,.14);border:1px solid rgba(70,199,138,.2);font-size:12px;font-weight:700;color:#ecfff4">Applied: ${reviewedJobCount}</span>
     </div>
     <div style="margin-top:8px;font-size:13px;line-height:1.55;color:rgba(248,245,239,.78)">This tab will close and the next queued job will open automatically.</div>
   `;

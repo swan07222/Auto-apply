@@ -6716,7 +6716,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     );
   }
   function isActiveZipRecruiterApplyModal(modal) {
-    const text = cleanText(modal.innerText || modal.textContent || "").toLowerCase().slice(0, 2500);
+    let text = cleanText(modal.innerText || modal.textContent || "").toLowerCase().slice(0, 2500);
+    for (const host of collectShadowHosts(modal)) {
+      try {
+        const shadowText = cleanText(
+          host.shadowRoot?.textContent || ""
+        ).toLowerCase();
+        text += shadowText;
+      } catch {
+        continue;
+      }
+    }
+    text = text.slice(0, 2500);
     if (!text || isZipRecruiterAppliedStateText(text)) {
       return false;
     }
@@ -6732,6 +6743,16 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     const fields = Array.from(
       modal.querySelectorAll("input, textarea, select")
     );
+    for (const host of collectShadowHosts(modal)) {
+      try {
+        const shadowFields = Array.from(
+          host.shadowRoot?.querySelectorAll("input, textarea, select") ?? []
+        );
+        fields.push(...shadowFields);
+      } catch {
+        continue;
+      }
+    }
     return fields.some((field) => {
       if (!isElementVisible(field)) {
         return false;
@@ -6749,6 +6770,18 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
         "button, a[href], [role='button'], input[type='submit'], input[type='button']"
       )
     );
+    for (const host of collectShadowHosts(modal)) {
+      try {
+        const shadowControls = Array.from(
+          host.shadowRoot?.querySelectorAll(
+            "button, a[href], [role='button'], input[type='submit'], input[type='button']"
+          ) ?? []
+        );
+        controls.push(...shadowControls);
+      } catch {
+        continue;
+      }
+    }
     return controls.some((control) => {
       if (!isElementVisible(control)) {
         return false;
@@ -18278,10 +18311,10 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     overlay.title.textContent = currentResumeKind ? `Remote Job Search - ${siteText} - ${getResumeKindLabel(currentResumeKind)}` : `Remote Job Search - ${siteText}`;
     overlay.spinner.dataset.active = status.phase === "running" || status.phase === "waiting_for_verification" ? "true" : "false";
     const queuedJobCount = currentRunSummary?.queuedJobCount ?? 0;
-    const appliedJobCount = currentRunSummary?.appliedJobCount ?? 0;
+    const reviewedJobCount = currentRunSummary?.reviewedJobCount ?? 0;
     overlay.countRow.hidden = !currentRunSummary;
     overlay.queueCount.textContent = `Queue: ${queuedJobCount}`;
-    overlay.appliedCount.textContent = `Applied: ${appliedJobCount}`;
+    overlay.appliedCount.textContent = `Applied: ${reviewedJobCount}`;
     overlay.text.textContent = status.message;
     const actionLabel = getOverlayActionLabel();
     overlay.actionButton.hidden = !actionLabel;
@@ -18346,7 +18379,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     if (!hostDocument?.body) {
       return;
     }
-    const appliedJobCount = currentRunSummary?.appliedJobCount ?? 0;
+    const reviewedJobCount = currentRunSummary?.reviewedJobCount ?? 0;
     const container = hostDocument.createElement("div");
     container.setAttribute(
       "style",
@@ -18427,7 +18460,7 @@ ${rootText}`.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 8e3);
     </div>
     <div style="margin-top:14px;font-size:24px;font-weight:800;line-height:1.15;color:#ffffff">Moving to the next opportunity</div>
     <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:14px">
-      <span style="display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;background:rgba(70,199,138,.14);border:1px solid rgba(70,199,138,.2);font-size:12px;font-weight:700;color:#ecfff4">Applied: ${appliedJobCount}</span>
+      <span style="display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;background:rgba(70,199,138,.14);border:1px solid rgba(70,199,138,.2);font-size:12px;font-weight:700;color:#ecfff4">Applied: ${reviewedJobCount}</span>
     </div>
     <div style="margin-top:8px;font-size:13px;line-height:1.55;color:rgba(248,245,239,.78)">This tab will close and the next queued job will open automatically.</div>
   `;
