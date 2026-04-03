@@ -33,7 +33,7 @@
     "@vitest/coverage-v8": "^1.6.0",
     "esbuild": "^0.25.10",
     "jsdom": "^29.0.0",
-    "typescript": "^5.9.2",
+    "typescript": "^6.0.2",
     "vitest": "^1.6.0"
   },
   "dependencies": {
